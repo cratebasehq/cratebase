@@ -37,6 +37,10 @@ fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
     obj.insert("updated".into(), Value::String(row.try_get("updated")?));
     obj.insert("collectionId".into(), Value::String(collection.id.clone()));
     obj.insert("collectionName".into(), Value::String(collection.name.clone()));
+    if collection.is_auth() {
+        let email: Option<String> = row.try_get("email")?;
+        obj.insert("email".into(), email.map(Value::String).unwrap_or(Value::Null));
+    }
 
     for field in &collection.schema {
         let multiple = is_multiple(field);
@@ -238,9 +242,22 @@ pub async fn get_record(
 }
 
 pub async fn create_record(db: &Db, collection: &Collection, data: Map<String, Value>) -> DbResult<Value> {
+    create_record_with_id(db, collection, new_id(), data).await
+}
+
+/// Like [`create_record`] but with a caller-chosen id. Used when the id
+/// must be known before the row exists — e.g. uploaded files are stored
+/// under a key derived from the record id, so the server layer generates
+/// the id up front, uploads to storage, then creates the row with that
+/// same id.
+pub async fn create_record_with_id(
+    db: &Db,
+    collection: &Collection,
+    id: String,
+    data: Map<String, Value>,
+) -> DbResult<Value> {
     let normalized = crate::validate::validate_and_normalize(db, collection, &data, false).await?;
 
-    let id = new_id();
     let ts = now();
     let table = db.backend.quote_ident(&collection.table_name())?;
 
@@ -249,6 +266,23 @@ pub async fn create_record(db: &Db, collection: &Collection, data: Map<String, V
     args.add(id.clone()).map_err(encode_err)?;
     args.add(ts.clone()).map_err(encode_err)?;
     args.add(ts).map_err(encode_err)?;
+
+    // `email`/`password_hash` are physical columns on every Auth-typed
+    // collection's table (see `collections::sync_table`) but are not part
+    // of its user-editable `schema`, so they're pulled from the raw
+    // request `data` here rather than the schema-validated `normalized`
+    // map. The server layer is responsible for hashing the password and
+    // validating the email before it reaches this function.
+    if collection.is_auth() {
+        if let Some(email) = data.get("email").and_then(Value::as_str) {
+            columns.push("email".to_string());
+            ColumnValue::Text(Some(email.to_string())).bind(&mut args).map_err(encode_err)?;
+        }
+        if let Some(hash) = data.get("password_hash").and_then(Value::as_str) {
+            columns.push("password_hash".to_string());
+            ColumnValue::Text(Some(hash.to_string())).bind(&mut args).map_err(encode_err)?;
+        }
+    }
 
     for field in &collection.schema {
         let value = normalized.get(&field.name).cloned().unwrap_or(Value::Null);
@@ -280,7 +314,13 @@ pub async fn update_record(
     data: Map<String, Value>,
 ) -> DbResult<Value> {
     let normalized = crate::validate::validate_and_normalize(db, collection, &data, true).await?;
-    if normalized.is_empty() {
+    let auth_email = if collection.is_auth() { data.get("email").and_then(Value::as_str) } else { None };
+    let auth_password_hash = if collection.is_auth() {
+        data.get("password_hash").and_then(Value::as_str)
+    } else {
+        None
+    };
+    if normalized.is_empty() && auth_email.is_none() && auth_password_hash.is_none() {
         return fetch_by_id(db, collection, id).await;
     }
 
@@ -291,6 +331,16 @@ pub async fn update_record(
     args.add(ts).map_err(encode_err)?;
 
     let mut idx = 2;
+    if let Some(email) = auth_email {
+        sets.push(format!("{} = ${idx}", db.backend.quote_ident("email")?));
+        args.add(email.to_string()).map_err(encode_err)?;
+        idx += 1;
+    }
+    if let Some(hash) = auth_password_hash {
+        sets.push(format!("{} = ${idx}", db.backend.quote_ident("password_hash")?));
+        args.add(hash.to_string()).map_err(encode_err)?;
+        idx += 1;
+    }
     for field in &collection.schema {
         if let Some(value) = normalized.get(&field.name) {
             let multiple = is_multiple(field);
