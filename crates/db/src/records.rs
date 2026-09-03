@@ -41,10 +41,11 @@ fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
         Value::String(collection.name.clone()),
     );
     if collection.is_auth() {
-        let email: Option<String> = row.try_get("email")?;
+        let identity = collection.auth_options.identity_field();
+        let value: Option<String> = row.try_get(identity)?;
         obj.insert(
-            "email".into(),
-            email.map(Value::String).unwrap_or(Value::Null),
+            identity.to_string(),
+            value.map(Value::String).unwrap_or(Value::Null),
         );
     }
 
@@ -145,6 +146,16 @@ async fn fetch_by_id(db: &Db, collection: &Collection, id: &str) -> DbResult<Val
         Some(r) => row_to_record(&r, collection),
         None => Err(DbError::NotFound),
     }
+}
+
+/// Total row count for a collection's table, no filter/pagination. Used by
+/// the stats/metrics extension point rather than the paginated list path.
+pub async fn count_records(db: &Db, collection: &Collection) -> DbResult<i64> {
+    let table = db.backend.quote_ident(&collection.table_name())?;
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+        .fetch_one(&db.pool)
+        .await?;
+    Ok(count)
 }
 
 pub async fn list_records(
@@ -308,9 +319,10 @@ pub async fn create_record_with_id(
     // map. The server layer is responsible for hashing the password and
     // validating the email before it reaches this function.
     if collection.is_auth() {
-        if let Some(email) = data.get("email").and_then(Value::as_str) {
-            columns.push("email".to_string());
-            ColumnValue::Text(Some(email.to_string()))
+        let identity = collection.auth_options.identity_field();
+        if let Some(value) = data.get(identity).and_then(Value::as_str) {
+            columns.push(identity.to_string());
+            ColumnValue::Text(Some(value.to_string()))
                 .bind(&mut args)
                 .map_err(encode_err)?;
         }
@@ -353,8 +365,9 @@ pub async fn update_record(
     data: Map<String, Value>,
 ) -> DbResult<Value> {
     let normalized = crate::validate::validate_and_normalize(db, collection, &data, true).await?;
-    let auth_email = if collection.is_auth() {
-        data.get("email").and_then(Value::as_str)
+    let identity = collection.auth_options.identity_field();
+    let auth_identity = if collection.is_auth() {
+        data.get(identity).and_then(Value::as_str)
     } else {
         None
     };
@@ -363,7 +376,7 @@ pub async fn update_record(
     } else {
         None
     };
-    if normalized.is_empty() && auth_email.is_none() && auth_password_hash.is_none() {
+    if normalized.is_empty() && auth_identity.is_none() && auth_password_hash.is_none() {
         return fetch_by_id(db, collection, id).await;
     }
 
@@ -374,9 +387,9 @@ pub async fn update_record(
     args.add(ts).map_err(encode_err)?;
 
     let mut idx = 2;
-    if let Some(email) = auth_email {
-        sets.push(format!("{} = ${idx}", db.backend.quote_ident("email")?));
-        args.add(email.to_string()).map_err(encode_err)?;
+    if let Some(value) = auth_identity {
+        sets.push(format!("{} = ${idx}", db.backend.quote_ident(identity)?));
+        args.add(value.to_string()).map_err(encode_err)?;
         idx += 1;
     }
     if let Some(hash) = auth_password_hash {
@@ -428,23 +441,24 @@ pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResu
     }
 }
 
-/// Look up an auth-record's id and password hash by email, for the
-/// password login endpoint. One query instead of an id lookup followed by
-/// a separate hash lookup.
+/// Look up an auth-record's id and password hash by its identity field
+/// (e.g. email or username), for the password login endpoint. One query
+/// instead of an id lookup followed by a separate hash lookup.
 pub async fn find_auth_credentials(
     db: &Db,
     collection: &Collection,
-    email: &str,
+    identity_value: &str,
 ) -> DbResult<Option<(String, String)>> {
     let table = db.backend.quote_ident(&collection.table_name())?;
     let sql = format!(
         "SELECT {}, {} FROM {table} WHERE {} = $1",
         db.backend.quote_ident("id")?,
         db.backend.quote_ident("password_hash")?,
-        db.backend.quote_ident("email")?,
+        db.backend
+            .quote_ident(collection.auth_options.identity_field())?,
     );
     let row = sqlx::query(&sql)
-        .bind(email)
+        .bind(identity_value)
         .fetch_optional(&db.pool)
         .await?;
     Ok(match row {

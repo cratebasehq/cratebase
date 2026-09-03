@@ -208,7 +208,10 @@ pub async fn sync_table(
                 format!("{} TEXT NOT NULL", backend.quote_ident("updated")?),
             ];
             if collection.is_auth() {
-                cols.push(format!("{} TEXT NOT NULL", backend.quote_ident("email")?));
+                cols.push(format!(
+                    "{} TEXT NOT NULL",
+                    backend.quote_ident(collection.auth_options.identity_field())?
+                ));
                 cols.push(format!(
                     "{} TEXT NOT NULL",
                     backend.quote_ident("password_hash")?
@@ -224,10 +227,11 @@ pub async fn sync_table(
             let sql = format!("CREATE TABLE IF NOT EXISTS {table} ({})", cols.join(", "));
             sqlx::query(&sql).execute(&db.pool).await?;
             if collection.is_auth() {
-                let idx = backend.quote_ident(&format!("idx_{}_email", collection.name))?;
-                let email_col = backend.quote_ident("email")?;
+                let identity = collection.auth_options.identity_field();
+                let idx = backend.quote_ident(&format!("idx_{}_{identity}", collection.name))?;
+                let identity_col = backend.quote_ident(identity)?;
                 sqlx::query(&format!(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} ({email_col})"
+                    "CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} ({identity_col})"
                 ))
                 .execute(&db.pool)
                 .await?;

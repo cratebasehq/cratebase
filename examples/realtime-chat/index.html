@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cratebase Realtime Chat</title>
+    <script type="importmap">
+      { "imports": { "cratebase": "../../sdk/js/dist/index.js" } }
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --panel: #161923;
+        --panel-2: #1d212e;
+        --border: #2a2f3d;
+        --text: #e7e9ee;
+        --muted: #8a90a3;
+        --accent: #6c8dff;
+        --accent-2: #8f6cff;
+        --danger: #ff6c7c;
+        --radius: 14px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        background:
+          radial-gradient(1200px 600px at 15% -10%, rgba(108, 141, 255, 0.16), transparent),
+          radial-gradient(1000px 500px at 100% 0%, rgba(143, 108, 255, 0.12), transparent), var(--bg);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      .app {
+        width: 100%;
+        max-width: 640px;
+        height: min(760px, 92vh);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.6);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      header {
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        background: linear-gradient(180deg, rgba(108, 141, 255, 0.08), transparent);
+      }
+
+      header .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      header .brand .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px rgba(108, 141, 255, 0.18);
+      }
+
+      header .brand h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+
+      header .status {
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      header .status .led {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+        transition: background 0.2s ease;
+      }
+
+      header .status[data-state="connected"] .led {
+        background: #58e08c;
+        box-shadow: 0 0 8px rgba(88, 224, 140, 0.7);
+      }
+
+      header .status[data-state="error"] .led {
+        background: var(--danger);
+        box-shadow: 0 0 8px rgba(255, 108, 124, 0.7);
+      }
+
+      .identity-bar {
+        padding: 10px 22px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel-2);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .identity-bar label {
+        font-size: 12px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .identity-bar input {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text);
+        padding: 7px 10px;
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.15s ease;
+      }
+
+      .identity-bar input:focus {
+        border-color: var(--accent);
+      }
+
+      main#messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 18px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        scroll-behavior: smooth;
+      }
+
+      main#messages::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      main#messages::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 8px;
+      }
+
+      .empty {
+        margin: auto;
+        text-align: center;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .msg {
+        display: flex;
+        flex-direction: column;
+        max-width: 78%;
+        animation: rise 0.18s ease-out;
+      }
+
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      .msg .meta {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 3px;
+        padding: 0 4px;
+        display: flex;
+        gap: 6px;
+      }
+
+      .msg .bubble {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        padding: 9px 13px;
+        border-radius: 14px 14px 14px 4px;
+        font-size: 14px;
+        line-height: 1.4;
+        word-break: break-word;
+        white-space: pre-wrap;
+      }
+
+      .msg.mine {
+        align-self: flex-end;
+      }
+
+      .msg.mine .meta {
+        justify-content: flex-end;
+      }
+
+      .msg.mine .bubble {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        border-color: transparent;
+        color: #0d0f14;
+        border-radius: 14px 14px 4px 14px;
+        font-weight: 500;
+      }
+
+      form#composer {
+        display: flex;
+        gap: 10px;
+        padding: 16px 22px;
+        border-top: 1px solid var(--border);
+        background: var(--panel-2);
+      }
+
+      form#composer input[type="text"] {
+        flex: 1;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        color: var(--text);
+        padding: 11px 14px;
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.15s ease;
+      }
+
+      form#composer input[type="text"]:focus {
+        border-color: var(--accent);
+      }
+
+      form#composer button {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #0d0f14;
+        border: none;
+        border-radius: 10px;
+        padding: 0 20px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          transform 0.1s ease,
+          opacity 0.15s ease;
+      }
+
+      form#composer button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      form#composer button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      #banner {
+        display: none;
+        padding: 8px 22px;
+        font-size: 12px;
+        background: rgba(255, 108, 124, 0.12);
+        color: var(--danger);
+        border-bottom: 1px solid var(--border);
+      }
+
+      #banner.visible {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div class="brand">
+          <span class="dot"></span>
+          <h1>Cratebase Realtime Chat</h1>
+        </div>
+        <div id="status" class="status" data-state="connecting">
+          <span class="led"></span>
+          <span id="statusText">connecting…</span>
+        </div>
+      </header>
+
+      <div id="banner"></div>
+
+      <div class="identity-bar">
+        <label for="displayName">Name</label>
+        <input id="displayName" type="text" maxlength="40" placeholder="Anonymous" autocomplete="off" />
+      </div>
+
+      <main id="messages">
+        <div class="empty" id="emptyState">No messages yet. Say hello — open this page in another tab to watch it arrive live.</div>
+      </main>
+
+      <form id="composer" autocomplete="off">
+        <input id="content" type="text" maxlength="1000" placeholder="Type a message…" required />
+        <button id="send" type="submit">Send</button>
+      </form>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

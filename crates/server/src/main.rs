@@ -57,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.host, config.port);
     let state = build_state(config).await?;
+    cratebase_server::plugins::registry().spawn_tasks(&state);
     let app = build_app(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;

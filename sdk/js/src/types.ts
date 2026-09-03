@@ -54,6 +54,16 @@ export interface FieldSchema {
 
 export type CollectionType = "base" | "auth" | "view";
 
+export interface AuthOptions {
+  minPasswordLength?: number;
+  /** Which schema field identifies an auth record for login. Defaults to
+   * `"email"`; set to `"username"` (or any other field name) to log in
+   * with something other than an email address. */
+  identityField?: string;
+  requireEmailVerification?: boolean;
+  tokenTtlSeconds?: number;
+}
+
 export interface CollectionModel {
   id: string;
   name: string;
@@ -64,7 +74,7 @@ export interface CollectionModel {
   createRule: string | null;
   updateRule: string | null;
   deleteRule: string | null;
-  authOptions?: Record<string, unknown>;
+  authOptions?: AuthOptions;
   created: string;
   updated: string;
 }

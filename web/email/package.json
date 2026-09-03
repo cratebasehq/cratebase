@@ -1,0 +1,19 @@
+{
+  "name": "cratebase-email",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run scripts/build.tsx"
+  },
+  "dependencies": {
+    "@react-email/components": "^1.0.12",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@react-email/render": "^2.1.0",
+    "@types/react": "^19.2.18",
+    "typescript": "~6.0.2"
+  }
+}

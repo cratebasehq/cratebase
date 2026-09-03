@@ -55,10 +55,12 @@ export class RecordService<T extends RecordModel = RecordModel> {
     await this.client.send<void>(`${this.basePath}/${id}`, { method: "DELETE" });
   }
 
-  async authWithPassword(email: string, password: string): Promise<AuthResponse<T>> {
+  /** `identity` is whatever the collection's configured identity field is
+   * (email by default, but could be a username). */
+  async authWithPassword(identity: string, password: string): Promise<AuthResponse<T>> {
     const result = await this.client.send<AuthResponse<T>>(`/api/collections/${this.collectionIdOrName}/auth-with-password`, {
       method: "POST",
-      body: { email, password },
+      body: { identity, password },
     });
     this.client.authStore.save(result.token, result.record);
     return result;

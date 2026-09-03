@@ -48,6 +48,16 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
             input.name
         ))));
     }
+    if input.collection_type == CollectionType::Auth {
+        let identity_field = input.auth_options.identity_field();
+        if !cratebase_core::field::is_valid_identifier(identity_field)
+            || matches!(identity_field, "password" | "password_hash")
+        {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "'{identity_field}' is not a valid identity field name"
+            ))));
+        }
+    }
     for field in &input.schema {
         if !cratebase_core::field::is_valid_identifier(&field.name) {
             return Err(ApiError(AppError::BadRequest(format!(
@@ -55,8 +65,10 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
                 field.name
             ))));
         }
-        if cratebase_core::RESERVED_FIELD_NAMES.contains(&field.name.as_str())
-            || field.name == "email"
+        let reserved_for_auth = input.collection_type == CollectionType::Auth
+            && (field.name == input.auth_options.identity_field()
+                || matches!(field.name.as_str(), "password" | "password_hash"));
+        if cratebase_core::RESERVED_FIELD_NAMES.contains(&field.name.as_str()) || reserved_for_auth
         {
             return Err(ApiError(AppError::BadRequest(format!(
                 "'{}' is a reserved field name",

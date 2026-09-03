@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { FieldSchema, RecordModel } from "cratebase";
-import { FileIcon } from "lucide-react";
+import { FileIcon, Check, Copy } from "lucide-react";
 import { cb } from "@/lib/api";
-import { CopyButton } from "@/components/interior/copy-button";
+import { useCopyToClipboard } from "@/components/interior/copy-button";
 import { Lightbox } from "@/components/interior/lightbox";
 import { Badge } from "@/components/ui/badge";
 
@@ -15,10 +15,22 @@ function formatDate(value: string): string {
 }
 
 export function IdCell({ id }: { id: string }) {
+  const { copy, status } = useCopyToClipboard();
   return (
-    <div className="flex items-center gap-1 font-mono text-[12px] text-muted-foreground">
-      <span className="truncate">{id.slice(0, 8)}</span>
-      <CopyButton value={id} label="Copy id" />
+    <div className="group/id flex items-center gap-1.5 whitespace-nowrap font-mono text-[12px] text-muted-foreground">
+      <span>{id}</span>
+      <button
+        type="button"
+        aria-label="Copy id"
+        title={status === "copied" ? "Copied" : "Copy id"}
+        onClick={(e) => {
+          e.stopPropagation();
+          void copy(id);
+        }}
+        className="shrink-0 rounded p-0.5 opacity-0 outline-none transition-opacity hover:bg-accent focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-primary group-hover/id:opacity-100"
+      >
+        {status === "copied" ? <Check className="size-3" /> : <Copy className="size-3" />}
+      </button>
     </div>
   );
 }
