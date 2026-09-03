@@ -2,12 +2,11 @@ import { useEffect, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { MoreHorizontal, Plus, ShieldUser } from "lucide-react";
+import { MoreHorizontal, Plus, Settings as SettingsIcon, ShieldUser } from "lucide-react";
 import type { RecordModel } from "cratebase";
 import { cb } from "@/lib/api";
 import { appRoute } from "@/routes/app";
 import { useRecords, useRecordMutations } from "@/hooks/use-records";
-import { Tabs } from "@/components/interior/tabs";
 import { ExpandingSearch } from "@/components/interior/expanding-search";
 import { Pagination } from "@/components/interior/pagination";
 import type { SortState } from "@/components/interior/sortable-table";
@@ -25,6 +24,10 @@ type CollectionSearch = {
   sort?: string;
   q?: string;
   tab?: "records" | "settings";
+  /** Set by a relation-value popover's "Open record" link elsewhere in the
+   * dashboard — jumps straight to this collection and pops the record
+   * drawer open for the given id, then clears itself from the URL. */
+  openId?: string;
 };
 
 function parseSortParam(raw: string | undefined): SortState | null {
@@ -53,6 +56,31 @@ function CollectionPage() {
   const sort = parseSortParam(urlSearch.sort);
   const [editing, setEditing] = useState<RecordModel | null | undefined>(undefined);
   const [newSince, setNewSince] = useState(0);
+
+  // A relation-value popover elsewhere in the dashboard links here with
+  // `?openId=<id>` instead of a full record — fetch it once, pop the
+  // drawer open, then strip the param so a refresh/back-nav doesn't
+  // reopen it.
+  useEffect(() => {
+    const openId = urlSearch.openId;
+    if (!openId) return;
+    let cancelled = false;
+    cb.collection(name)
+      .getOne(openId)
+      .then((record) => {
+        if (!cancelled) setEditing(record);
+      })
+      .catch(() => {
+        if (!cancelled) toast.error("That record no longer exists.");
+      })
+      .finally(() => {
+        if (!cancelled) updateSearch({ openId: undefined });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSearch.openId, name]);
 
   const { data: collection } = useQuery({
     queryKey: ["collections", name],
@@ -169,29 +197,24 @@ function CollectionPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-6 py-4">
-        <div className="flex items-center gap-2">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-6 py-4">
+        <div className="flex shrink-0 items-center gap-2">
           {collection.type === "auth" ? <ShieldUser className="size-4 text-muted-foreground" /> : null}
           <h1 className="text-[15px] font-semibold tracking-tight">{collection.name}</h1>
+          <Button
+            variant={tab === "settings" ? "secondary" : "ghost"}
+            size="icon"
+            className="size-7"
+            aria-label="Collection settings"
+            aria-pressed={tab === "settings"}
+            onClick={() => updateSearch({ tab: tab === "settings" ? undefined : "settings" })}
+          >
+            <SettingsIcon className="size-4" />
+          </Button>
         </div>
-        <Tabs
-          items={[
-            { value: "records", label: "Records" },
-            { value: "settings", label: "Settings" },
-          ]}
-          value={tab}
-          onValueChange={(next) => updateSearch({ tab: next === "records" ? undefined : (next as "settings") })}
-          label="Collection view"
-        />
-      </header>
 
-      {tab === "settings" ? (
-        <div className="flex-1 overflow-y-auto">
-          <CollectionSettings collection={collection} />
-        </div>
-      ) : (
-        <>
-          <div className="flex items-center justify-between gap-3 px-6 py-3">
+        {tab === "records" ? (
+          <div className="flex items-center gap-3">
             <ExpandingSearch
               value={search}
               onChange={(next) => updateSearch({ q: next || undefined, page: undefined })}
@@ -207,7 +230,17 @@ function CollectionPage() {
               New record
             </Button>
           </div>
+        ) : (
+          <span className="text-[13px] text-muted-foreground">Settings</span>
+        )}
+      </header>
 
+      {tab === "settings" ? (
+        <div className="flex-1 overflow-y-auto">
+          <CollectionSettings collection={collection} />
+        </div>
+      ) : (
+        <>
           <div className="relative flex-1 overflow-y-auto">
             {newSince > 0 ? (
               <div className="sticky top-11 z-10 flex justify-center">
@@ -283,6 +316,7 @@ export const collectionRoute = createRoute({
     sort: typeof search.sort === "string" ? search.sort : undefined,
     q: typeof search.q === "string" ? search.q : undefined,
     tab: search.tab === "settings" ? "settings" : undefined,
+    openId: typeof search.openId === "string" ? search.openId : undefined,
   }),
   component: CollectionPage,
 });

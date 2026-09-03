@@ -8,6 +8,7 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "email", label: "Email" },
   { value: "url", label: "URL" },
   { value: "date", label: "Date" },
+  { value: "autodate", label: "Autodate" },
   { value: "select", label: "Select" },
   { value: "json", label: "JSON" },
   { value: "relation", label: "Relation" },

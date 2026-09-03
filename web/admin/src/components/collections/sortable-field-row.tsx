@@ -10,18 +10,37 @@ interface SortableFieldRowProps {
   onRemove: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  nameError?: string | null;
+  optionsError?: string | null;
 }
 
 /** Drag-and-drop wrapper around `SchemaFieldRow`. The grip handle is the
  * only draggable surface — every input/select/checkbox in the row stays
- * fully interactive instead of being swallowed by the drag gesture. */
-export function SortableFieldRow({ field, collections, onChange, onRemove, onMoveUp, onMoveDown }: SortableFieldRowProps) {
+ * fully interactive instead of being swallowed by the drag gesture. The
+ * dragged row is lifted (scaled + shadow, via `SchemaFieldRow`'s
+ * `isDragging` styling) and every other row leaves a gap where it would
+ * land, via dnd-kit's own transform — that gap is the drop indicator. */
+export function SortableFieldRow({
+  field,
+  collections,
+  onChange,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+  nameError,
+  optionsError,
+}: SortableFieldRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: field.id });
 
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition, zIndex: isDragging ? 10 : undefined }}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 10 : undefined,
+        opacity: isDragging ? 0.92 : 1,
+      }}
     >
       <SchemaFieldRow
         field={field}
@@ -33,6 +52,8 @@ export function SortableFieldRow({ field, collections, onChange, onRemove, onMov
         dragHandleAttributes={attributes}
         dragHandleListeners={listeners}
         isDragging={isDragging}
+        nameError={nameError}
+        optionsError={optionsError}
       />
     </div>
   );

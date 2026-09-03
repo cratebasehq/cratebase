@@ -35,6 +35,48 @@ function validateName(value: string): string | null {
   return null;
 }
 
+// Mirrors `cratebase_core::field::RESERVED_FIELD_NAMES` — these columns
+// are managed by the server and can't be redefined as schema fields.
+const RESERVED_FIELD_NAMES = ["id", "created", "updated", "collectionId", "collectionName", "expand"];
+
+/** Field name errors, shown inline next to the field's name input rather
+ * than as a form-wide toast. Mirrors the constraints
+ * `cratebase_core::field::is_valid_identifier` and `RESERVED_FIELD_NAMES`
+ * enforce server-side, so a bad name is caught before the save round-trip. */
+function validateFieldName(field: FieldSchema, schema: FieldSchema[]): string | null {
+  if (field.name.length === 0) return "Field name is required";
+  if (field.name.length > 64) return "Field name must be 64 characters or fewer";
+  if (!NAME_RE.test(field.name)) return "Letters, digits, underscore; can't start with a digit";
+  if (RESERVED_FIELD_NAMES.includes(field.name)) return `"${field.name}" is a reserved field name`;
+  if (schema.some((other) => other.id !== field.id && other.name === field.name)) {
+    return "Another field already uses this name";
+  }
+  return null;
+}
+
+/** Type-specific option errors, shown inline inside the offending field's
+ * options panel. Only checks constraints the API would otherwise reject
+ * on save (a missing relation target, an empty select, an inverted
+ * min/max range) — everything else is genuinely optional. */
+function validateFieldOptions(field: FieldSchema): string | null {
+  const options = field.options ?? {};
+  if (field.type === "relation" && !options.collectionId) return "Choose a target collection";
+  if (field.type === "select" && ((options.values as string[] | undefined)?.length ?? 0) === 0) {
+    return "Add at least one option value";
+  }
+  if (field.type === "autodate" && !options.onCreate && !options.onUpdate) {
+    return 'Enable "Set on create" or "Set on update"';
+  }
+  if (["text", "editor", "password", "number"].includes(field.type)) {
+    const min = options.min as number | undefined;
+    const max = options.max as number | undefined;
+    if (typeof min === "number" && typeof max === "number" && min > max) {
+      return field.type === "number" ? "Min value can't exceed max value" : "Min length can't exceed max length";
+    }
+  }
+  return null;
+}
+
 export function emptyCollectionForm(type: "base" | "auth" = "base"): CollectionFormValue {
   return {
     name: "",
@@ -113,30 +155,15 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-end gap-3">
-        <div className="flex-1">
-          <InlineValidation
-            label="Name"
-            value={value.name}
-            onChange={(name) => onChange({ ...value, name })}
-            validate={validateName}
-            placeholder="posts"
-            disabled={!isNew}
-            hint={isNew ? undefined : "Renaming an existing collection isn't supported yet"}
-          />
-        </div>
-        {!isNew ? (
-          <SegmentedControl
-            label="Collection type"
-            value={value.type}
-            onValueChange={() => {}}
-            options={[
-              { value: "base", label: "Base", disabled: true },
-              { value: "auth", label: "Auth", disabled: true },
-            ]}
-          />
-        ) : null}
-      </div>
+      <InlineValidation
+        label="Name"
+        value={value.name}
+        onChange={(name) => onChange({ ...value, name })}
+        validate={validateName}
+        placeholder="posts"
+        disabled={!isNew}
+        hint={isNew ? undefined : "Renaming an existing collection isn't supported yet"}
+      />
 
       {value.type === "auth" ? (
         <div>
@@ -193,6 +220,8 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
                   onRemove={() => removeField(index)}
                   onMoveUp={index > 0 ? () => moveField(index, -1) : undefined}
                   onMoveDown={index < value.schema.length - 1 ? () => moveField(index, 1) : undefined}
+                  nameError={field.name.length > 0 ? validateFieldName(field, value.schema) : null}
+                  optionsError={validateFieldOptions(field)}
                 />
               ))}
               {value.schema.length === 0 ? (
