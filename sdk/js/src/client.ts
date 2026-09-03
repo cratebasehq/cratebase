@@ -4,6 +4,8 @@ import { AdminService } from "./admin-service.js";
 import { RecordService } from "./record-service.js";
 import { SchemaService } from "./schema-service.js";
 import { RealtimeService } from "./realtime.js";
+import { FeatureFlagsService } from "./feature-flags-service.js";
+import { QueueService } from "./queue-service.js";
 
 export interface SendOptions extends Omit<RequestInit, "body" | "headers"> {
   body?: Record<string, unknown> | FormData;
@@ -29,6 +31,8 @@ export class Cratebase {
   readonly admins: AdminService;
   readonly collections: SchemaService;
   readonly realtime: RealtimeService;
+  readonly featureFlags: FeatureFlagsService;
+  readonly queue: QueueService;
 
   constructor(baseUrl = "/", authStore: AuthStore = new AuthStore()) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
@@ -36,6 +40,8 @@ export class Cratebase {
     this.admins = new AdminService(this);
     this.collections = new SchemaService(this);
     this.realtime = new RealtimeService(this);
+    this.featureFlags = new FeatureFlagsService(this);
+    this.queue = new QueueService(this);
   }
 
   /** Get a `RecordService` bound to one collection (by id or name). */

@@ -1,5 +1,5 @@
 import type { Cratebase } from "./client.js";
-import type { AuthResponse, ListOptions, ListResult, RecordModel } from "./types.js";
+import type { AuthMethodsResponse, AuthResponse, ListOptions, ListResult, RecordModel } from "./types.js";
 
 /**
  * CRUD + auth operations scoped to one collection. Auth-only methods
@@ -72,5 +72,79 @@ export class RecordService<T extends RecordModel = RecordModel> {
     });
     this.client.authStore.save(result.token, result.record);
     return result;
+  }
+
+  /** Lists available auth methods. Pass your app's OAuth2 redirect
+   * URI/deep link and each provider's `authUrl` comes back ready to
+   * `open()` directly. */
+  async listAuthMethods(redirectUri?: string): Promise<AuthMethodsResponse> {
+    return this.client.send<AuthMethodsResponse>(`/api/collections/${this.collectionIdOrName}/auth-methods`, {
+      method: "GET",
+      query: { redirectUri },
+    });
+  }
+
+  /** Completes an OAuth2 login: exchange the `code` your app received at
+   * `redirectUri` (the same one used to build the `authUrl` from
+   * `listAuthMethods`) for a session. */
+  async authWithOAuth2(provider: string, code: string, redirectUri: string): Promise<AuthResponse<T>> {
+    const result = await this.client.send<AuthResponse<T>>(`/api/collections/${this.collectionIdOrName}/auth-with-oauth2`, {
+      method: "POST",
+      body: { provider, code, redirectUri },
+    });
+    this.client.authStore.save(result.token, result.record);
+    return result;
+  }
+
+  /** Sends a verification email if `email` matches an account — always
+   * resolves regardless, so it can't be used to enumerate accounts. */
+  async requestVerification(email: string): Promise<void> {
+    await this.client.send<void>(`/api/collections/${this.collectionIdOrName}/request-verification`, {
+      method: "POST",
+      body: { email },
+    });
+  }
+
+  /** Confirms a verification token from the emailed link. */
+  async confirmVerification(token: string): Promise<void> {
+    await this.client.send<void>(`/api/collections/${this.collectionIdOrName}/confirm-verification`, {
+      method: "POST",
+      body: { token },
+    });
+  }
+
+  /** Sends a password reset email if `email` matches an account — always
+   * resolves regardless, so it can't be used to enumerate accounts. */
+  async requestPasswordReset(email: string): Promise<void> {
+    await this.client.send<void>(`/api/collections/${this.collectionIdOrName}/request-password-reset`, {
+      method: "POST",
+      body: { email },
+    });
+  }
+
+  /** Confirms a password reset token and sets a new password. */
+  async confirmPasswordReset(token: string, password: string, passwordConfirm: string): Promise<void> {
+    await this.client.send<void>(`/api/collections/${this.collectionIdOrName}/confirm-password-reset`, {
+      method: "POST",
+      body: { token, password, passwordConfirm },
+    });
+  }
+
+  /** Requires the current session's record to be authenticated. Sends a
+   * confirmation link to `newEmail` — the identity only changes once that
+   * link is confirmed, proving ownership of the new address. */
+  async requestEmailChange(newEmail: string): Promise<void> {
+    await this.client.send<void>(`/api/collections/${this.collectionIdOrName}/request-email-change`, {
+      method: "POST",
+      body: { newEmail },
+    });
+  }
+
+  /** Confirms an email-change token from the emailed link. */
+  async confirmEmailChange(token: string): Promise<void> {
+    await this.client.send<void>(`/api/collections/${this.collectionIdOrName}/confirm-email-change`, {
+      method: "POST",
+      body: { token },
+    });
   }
 }

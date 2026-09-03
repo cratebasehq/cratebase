@@ -8,9 +8,11 @@ export interface RecordModel {
   [key: string]: unknown;
 }
 
-/** A record from an `auth`-typed collection additionally exposes `email`. */
+/** A record from an `auth`-typed collection additionally exposes `email`
+ * and `verified`. */
 export interface AuthRecord extends RecordModel {
   email?: string;
+  verified?: boolean;
 }
 
 export interface AdminModel {
@@ -37,6 +39,7 @@ export type FieldType =
   | "email"
   | "url"
   | "date"
+  | "autodate"
   | "select"
   | "json"
   | "relation"
@@ -92,4 +95,17 @@ export interface AuthResponse<T> {
 export interface AdminAuthResponse {
   token: string;
   admin: AdminModel;
+}
+
+export interface OAuth2ProviderInfo {
+  name: string;
+  authUrl: string;
+}
+
+export interface AuthMethodsResponse {
+  password: boolean;
+  oauth2: {
+    enabled: boolean;
+    providers: OAuth2ProviderInfo[];
+  };
 }
