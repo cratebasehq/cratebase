@@ -10,7 +10,9 @@ use bytes::Bytes;
 use cratebase_auth::{issue_file_token, verify_token, TokenKind};
 use cratebase_core::AppError;
 use cratebase_db::records;
-use cratebase_db::resolver::{evaluate_rule, RequestContext, RuleOutcome};
+use cratebase_db::resolver::{
+    evaluate_rule, load_related_collections_for_rule, RequestContext, RuleOutcome,
+};
 use cratebase_db::{admins, collections, AuthContext};
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat};
@@ -67,7 +69,8 @@ async fn download(
     // A file is only downloadable if its owning record is currently
     // visible under the collection's viewRule — files piggyback on record
     // access control rather than having their own rule type.
-    let outcome = evaluate_rule(&collection.view_rule, &collection, app.db.backend, &ctx, 0)?;
+    let related = load_related_collections_for_rule(&app.db, &collection, &collection.view_rule).await?;
+    let outcome = evaluate_rule(&collection.view_rule, &collection, app.db.backend, &ctx, 0, &related)?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => {
             return Err(ApiError(AppError::Forbidden(

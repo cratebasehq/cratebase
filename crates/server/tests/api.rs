@@ -2181,3 +2181,123 @@ async fn request_otp_rate_limits_after_burst() {
          mail-bombing vector and must be throttled the same as request-verification/etc"
     );
 }
+
+#[tokio::test]
+async fn rules_support_relation_dot_notation() {
+    let state = test_state().await;
+    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
+    let token = admin_token(&state, &app).await;
+
+    let create_authors = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "rule_authors",
+                "type": "base",
+                "schema": [{"id": "f1", "name": "name", "type": "text", "required": true}],
+                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
+            }),
+        ))
+        .await
+        .unwrap();
+    let authors_id = json_body(create_authors).await["id"].as_str().unwrap().to_string();
+
+    // Saving a listRule using the exact dot-notation example the admin
+    // dashboard's rule-syntax-help popover advertises must succeed, not
+    // be falsely rejected by save-time validation.
+    let create_articles = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "rule_articles",
+                "type": "base",
+                "schema": [
+                    {"id": "f1", "name": "title", "type": "text", "required": true},
+                    {"id": "f2", "name": "author", "type": "relation", "options": {"collectionId": authors_id}}
+                ],
+                "listRule": "author.name = \"Ada\"",
+                "viewRule": "author.name = \"Ada\"",
+                "createRule": "", "updateRule": null, "deleteRule": null
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        create_articles.status(),
+        StatusCode::OK,
+        "a listRule/viewRule using relation dot-notation (the admin dashboard's own \
+         documented example) must be accepted, not rejected as an unknown field: {:?}",
+        json_body(create_articles).await
+    );
+
+    let ada = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/rule_authors/records",
+            None,
+            json!({"name": "Ada"}),
+        ))
+        .await
+        .unwrap();
+    let ada_id = json_body(ada).await["id"].as_str().unwrap().to_string();
+
+    let bob = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/rule_authors/records",
+            None,
+            json!({"name": "Bob"}),
+        ))
+        .await
+        .unwrap();
+    let bob_id = json_body(bob).await["id"].as_str().unwrap().to_string();
+
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/rule_articles/records",
+            None,
+            json!({"title": "By Ada", "author": ada_id}),
+        ))
+        .await
+        .unwrap();
+    let by_bob = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/rule_articles/records",
+            None,
+            json!({"title": "By Bob", "author": bob_id}),
+        ))
+        .await
+        .unwrap();
+    let by_bob_id = json_body(by_bob).await["id"].as_str().unwrap().to_string();
+
+    // listRule enforcement: only Ada's article is visible.
+    let list = app
+        .clone()
+        .oneshot(get_request("/api/collections/rule_articles/records", None))
+        .await
+        .unwrap();
+    let items = json_body(list).await["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1, "listRule should only admit Ada's article");
+    assert_eq!(items[0]["title"], "By Ada");
+
+    // viewRule enforcement: Bob's article is individually denied too.
+    let view_bob = app
+        .oneshot(get_request(
+            &format!("/api/collections/rule_articles/records/{by_bob_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(view_bob.status(), StatusCode::NOT_FOUND);
+}

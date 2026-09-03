@@ -217,6 +217,24 @@ pub async fn load_related_collections(
     Ok(related)
 }
 
+/// [`load_related_collections`] guarded for an `Option<String>` rule
+/// (`None`/empty are the common admin-only/public case, and skip the
+/// lex + any DB call entirely rather than paying for a `relation_idents`
+/// scan on an empty string every time). Shared by every rule-checking
+/// call site instead of each writing this same match arm.
+pub async fn load_related_collections_for_rule(
+    db: &crate::pool::Db,
+    collection: &Collection,
+    rule: &Option<String>,
+) -> crate::error::DbResult<HashMap<String, Collection>> {
+    match rule {
+        Some(expr) if !expr.trim().is_empty() => {
+            load_related_collections(db, collection, expr).await
+        }
+        _ => Ok(HashMap::new()),
+    }
+}
+
 /// A rule is satisfied unconditionally by superusers, denied for everyone
 /// when `None` (admin-only), always satisfied when `Some("")` (public), and
 /// otherwise evaluated as a filter expression against the target record.
@@ -229,12 +247,25 @@ pub enum RuleOutcome {
     Filtered(cratebase_filter::CompiledFilter),
 }
 
+/// `related` is caller-prefetched via [`load_related_collections`] — kept
+/// synchronous (no DB access) so it stays safely callable from inside a
+/// transaction (e.g. `/api/batch`'s update/delete rule checks) without
+/// risking a pool-acquire deadlock the way an internal prefetch here
+/// would (see `crates/db/src/pool.rs`'s doc comment on why a
+/// transaction-holding request can't also acquire a second pool
+/// connection). Callers with a real pool connection available (every
+/// non-transactional rule check) should prefetch with
+/// `load_related_collections` first; callers inside a transaction (only
+/// `/api/batch` today) pass an empty map, same as `createRule` already
+/// does there — dot-notation in a rule checked mid-batch-transaction
+/// isn't supported, consistent with that existing limitation.
 pub fn evaluate_rule(
     rule: &Option<String>,
     collection: &Collection,
     backend: Backend,
     ctx: &RequestContext,
     param_offset: usize,
+    related: &HashMap<String, Collection>,
 ) -> Result<RuleOutcome, FilterError> {
     if let Some(auth) = &ctx.auth {
         if auth.is_superuser {
@@ -250,7 +281,7 @@ pub fn evaluate_rule(
                 backend,
                 ctx,
                 use_data_for_fields: false,
-                related: HashMap::new(),
+                related: related.clone(),
             };
             let compiled = cratebase_filter::parse_and_compile(
                 expr,
@@ -274,6 +305,7 @@ async fn evaluate_bool_rule(
     rule: &Option<String>,
     collection: &Collection,
     ctx: &RequestContext,
+    related: &HashMap<String, Collection>,
 ) -> crate::error::DbResult<bool> {
     if let Some(auth) = &ctx.auth {
         if auth.is_superuser {
@@ -291,7 +323,7 @@ async fn evaluate_bool_rule(
         backend: db.backend,
         ctx,
         use_data_for_fields: true,
-        related: HashMap::new(),
+        related: related.clone(),
     };
     let compiled = cratebase_filter::parse_and_compile(expr, &resolver, db.backend.dialect(), 0)?;
 
@@ -363,13 +395,18 @@ pub async fn evaluate_create_rule_tx(
 /// Evaluate a `createRule` as a plain boolean, since there is no existing
 /// database row to attach a WHERE clause to. Bare field names resolve
 /// against the submitted `ctx.data` (see `CollectionResolver::use_data_for_fields`).
+/// Prefetches relation-dot-notation targets itself: this has exactly one
+/// call site (a record `create` handler, called once per request), so
+/// unlike [`evaluate_record_rule`] there's no hot loop for a caller to
+/// hoist a shared prefetch out of.
 pub async fn evaluate_create_rule(
     db: &crate::pool::Db,
     rule: &Option<String>,
     collection: &Collection,
     ctx: &RequestContext,
 ) -> crate::error::DbResult<bool> {
-    evaluate_bool_rule(db, rule, collection, ctx).await
+    let related = load_related_collections_for_rule(db, collection, rule).await?;
+    evaluate_bool_rule(db, rule, collection, ctx, &related).await
 }
 
 /// Evaluate `listRule`/`viewRule` against a record snapshot (`ctx.data`)
@@ -378,11 +415,21 @@ pub async fn evaluate_create_rule(
 /// filter against — the record's last known values are all that's left to
 /// evaluate the rule with, same mechanism `evaluate_create_rule` uses for
 /// a row that doesn't exist yet.
+///
+/// `related` is caller-prefetched, unlike [`evaluate_create_rule`]:
+/// `RealtimeHub::publish` calls this once per subscriber, and a naive
+/// per-call prefetch would turn one published event into N extra DB
+/// round-trips for N subscribers. Callers with only one evaluation to do
+/// (e.g. the feature-flags plugin) just prefetch immediately before
+/// calling; `publish` prefetches at most twice up front (`listRule`'s and
+/// `viewRule`'s targets — every subscriber checks one or the other) and
+/// reuses those two maps across every subscriber.
 pub async fn evaluate_record_rule(
     db: &crate::pool::Db,
     rule: &Option<String>,
     collection: &Collection,
     ctx: &RequestContext,
+    related: &HashMap<String, Collection>,
 ) -> crate::error::DbResult<bool> {
-    evaluate_bool_rule(db, rule, collection, ctx).await
+    evaluate_bool_rule(db, rule, collection, ctx, related).await
 }

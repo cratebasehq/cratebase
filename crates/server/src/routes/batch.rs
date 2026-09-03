@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -192,6 +194,13 @@ async fn create_in_tx(
     Ok((200, record, Some(effect)))
 }
 
+/// Relation dot-notation in `updateRule` isn't supported mid-batch: it
+/// needs a target-collection lookup, which — like every other read in
+/// this file — must go through `tx` rather than the pool to avoid
+/// re-acquiring a second connection while `tx` holds the only one (see
+/// `crates/db/src/pool.rs`). Passing an empty `related` map here means
+/// such a rule just resolves those idents as `UnknownField`, same as it
+/// already does for `createRule` above.
 async fn update_in_tx(
     app: &AppState,
     auth: &Option<AuthContext>,
@@ -210,6 +219,7 @@ async fn update_in_tx(
         app.db.backend,
         &ctx_check,
         0,
+        &HashMap::new(),
     )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
@@ -255,6 +265,7 @@ async fn delete_in_tx(
         app.db.backend,
         &ctx,
         0,
+        &HashMap::new(),
     )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),

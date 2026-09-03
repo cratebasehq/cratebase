@@ -5,7 +5,10 @@ use axum::{Json, Router};
 use cratebase_core::field::FieldType;
 use cratebase_core::{new_id, AppError, Collection};
 use cratebase_db::records::{self, ListParams};
-use cratebase_db::resolver::{evaluate_create_rule, evaluate_rule, RequestContext, RuleOutcome};
+use cratebase_db::resolver::{
+    evaluate_create_rule, evaluate_rule, load_related_collections_for_rule, RequestContext,
+    RuleOutcome,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -48,7 +51,8 @@ async fn list(
     let collection = load_collection(&app, &collection_name).await?;
     let ctx = RequestContext { auth, data: None };
 
-    let outcome = evaluate_rule(&collection.list_rule, &collection, app.db.backend, &ctx, 0)?;
+    let related = load_related_collections_for_rule(&app.db, &collection, &collection.list_rule).await?;
+    let outcome = evaluate_rule(&collection.list_rule, &collection, app.db.backend, &ctx, 0, &related)?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
         RuleOutcome::AllowAll => None,
@@ -86,7 +90,8 @@ async fn view(
     let collection = load_collection(&app, &collection_name).await?;
     let ctx = RequestContext { auth, data: None };
 
-    let outcome = evaluate_rule(&collection.view_rule, &collection, app.db.backend, &ctx, 0)?;
+    let related = load_related_collections_for_rule(&app.db, &collection, &collection.view_rule).await?;
+    let outcome = evaluate_rule(&collection.view_rule, &collection, app.db.backend, &ctx, 0, &related)?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
         RuleOutcome::AllowAll => None,
@@ -218,12 +223,14 @@ async fn update(
         auth: auth.clone(),
         data: None,
     };
+    let related = load_related_collections_for_rule(&app.db, &collection, &collection.update_rule).await?;
     let outcome = evaluate_rule(
         &collection.update_rule,
         &collection,
         app.db.backend,
         &ctx_check,
         0,
+        &related,
     )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
@@ -273,12 +280,14 @@ async fn remove(
 ) -> ApiResult<axum::http::StatusCode> {
     let collection = load_collection(&app, &collection_name).await?;
     let ctx = RequestContext { auth, data: None };
+    let related = load_related_collections_for_rule(&app.db, &collection, &collection.delete_rule).await?;
     let outcome = evaluate_rule(
         &collection.delete_rule,
         &collection,
         app.db.backend,
         &ctx,
         0,
+        &related,
     )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
