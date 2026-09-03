@@ -4,7 +4,9 @@ use axum::{Json, Router};
 use cratebase_core::field::Field;
 use cratebase_core::{new_id, now, AppError, AuthOptions, Collection, CollectionType};
 use cratebase_db::collections;
+use cratebase_db::resolver::{CollectionResolver, RequestContext};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::extract::RequireAdmin;
 use crate::helpers::load_collection;
@@ -99,6 +101,48 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
     Ok(())
 }
 
+/// Parses and compiles every non-empty rule expression against a
+/// draft `Collection` — the exact same resolver construction
+/// `cratebase_db::resolver::evaluate_rule`/`evaluate_create_rule` use at
+/// request time, run here with an empty [`RequestContext`] (auth/data
+/// are only *values* substituted during resolution — `@request.auth.*`
+/// and `@request.data.*` resolve structurally to `Value::Null` when
+/// absent, never an error, so this catches exactly the failures a real
+/// request would hit later: syntax errors and unknown field names).
+/// Without this, a typo'd rule saved silently and only surfaced as
+/// every request being denied with no indication why.
+fn validate_rules(collection: &Collection, backend: cratebase_db::Backend) -> ApiResult<()> {
+    let ctx = RequestContext::default();
+    let rules: [(&str, &Option<String>, bool); 5] = [
+        ("listRule", &collection.list_rule, false),
+        ("viewRule", &collection.view_rule, false),
+        ("createRule", &collection.create_rule, true),
+        ("updateRule", &collection.update_rule, false),
+        ("deleteRule", &collection.delete_rule, false),
+    ];
+    for (label, rule, use_data_for_fields) in rules {
+        let Some(expr) = rule else { continue };
+        if expr.trim().is_empty() {
+            continue;
+        }
+        let resolver = CollectionResolver {
+            collection,
+            backend,
+            ctx: &ctx,
+            use_data_for_fields,
+            related: HashMap::new(),
+        };
+        if let Err(e) =
+            cratebase_filter::parse_and_compile(expr, &resolver, backend.dialect(), 0)
+        {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "invalid {label}: {e}"
+            ))));
+        }
+    }
+    Ok(())
+}
+
 async fn list(
     State(app): State<AppState>,
     _admin: RequireAdmin,
@@ -141,6 +185,7 @@ async fn create(
         created: ts.clone(),
         updated: ts,
     };
+    validate_rules(&collection, app.db.backend)?;
     collections::create_collection(&app.db, &collection).await?;
     Ok(Json(collection))
 }
@@ -173,6 +218,7 @@ async fn update(
         created: previous.created.clone(),
         updated: now(),
     };
+    validate_rules(&updated, app.db.backend)?;
     collections::update_collection(&app.db, &previous, &updated).await?;
     Ok(Json(updated))
 }

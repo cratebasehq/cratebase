@@ -2077,3 +2077,72 @@ async fn backups_are_rejected_on_postgres() {
         "backups must be refused on a Postgres-backed server"
     );
 }
+
+#[tokio::test]
+async fn collection_save_rejects_unparseable_and_unknown_field_rules() {
+    let state = test_state().await;
+    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
+    let token = admin_token(&state, &app).await;
+
+    // Syntax error: dangling operator.
+    let bad_syntax = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "rule_syntax_error",
+                "type": "base",
+                "schema": [{"id": "f1", "name": "title", "type": "text"}],
+                "listRule": "title =",
+                "viewRule": "", "createRule": "", "updateRule": null, "deleteRule": null
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bad_syntax.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(bad_syntax).await;
+    assert!(
+        body["message"].as_str().unwrap().contains("listRule"),
+        "error should name which rule failed: {body:?}"
+    );
+
+    // Unknown field: typo'd column name.
+    let bad_field = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "rule_unknown_field",
+                "type": "base",
+                "schema": [{"id": "f1", "name": "title", "type": "text"}],
+                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "titel = \"x\"", "deleteRule": null
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bad_field.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(bad_field).await;
+    assert!(
+        body["message"].as_str().unwrap().contains("updateRule"),
+        "error should name which rule failed: {body:?}"
+    );
+
+    // Neither invalid collection was persisted.
+    let list = app
+        .oneshot(get_request("/api/collections", Some(&token)))
+        .await
+        .unwrap();
+    let names: Vec<String> = json_body(list)
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!names.contains(&"rule_syntax_error".to_string()));
+    assert!(!names.contains(&"rule_unknown_field".to_string()));
+}
