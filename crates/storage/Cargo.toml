@@ -6,3 +6,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+thiserror.workspace = true
+bytes.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+
+
+[dev-dependencies]
+tokio = { workspace = true }
+[dependencies.object_store]
+version = "0.11"
+features = ["aws"]
