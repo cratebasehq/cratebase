@@ -1,0 +1,80 @@
+# Cratebase
+
+> Cratebase is a self-hostable backend server, written in Rust: dynamic
+> data collections, authentication, file storage, and realtime
+> subscriptions over one REST API, backed by SQLite (default, zero config)
+> or PostgreSQL (same code, same API — set `DATABASE_URL`). It is a Rust
+> reimplementation of the ideas behind PocketBase, distributed as a single
+> executable that also serves an embedded admin dashboard.
+
+Use this file to quickly understand the project's shape before reading
+source. Everything referenced below is real and current, not aspirational.
+
+## Run it
+
+- `docker compose up` — sqlite + local disk storage, zero config.
+- `docker compose --profile postgres --profile s3 up` — + Postgres + RustFS
+  (S3-compatible storage), see [.env.example](./.env.example) for every
+  variable.
+- From source: `cargo build --release -p cratebase-server`, then
+  `cratebase superuser create you@example.com yourpassword` and
+  `cratebase serve`. Full dashboard requires `bun run admin:build` first
+  (see [ARCHITECTURE.md](./ARCHITECTURE.md#the-admin-dashboard-is-not-a-separate-deployment)).
+
+## Core concepts
+
+- **Collection** — a user-defined table with a JSON-described schema
+  (fields, types, required/unique) and five API rules
+  (list/view/create/update/delete). Two kinds: `base` (plain data) and
+  `auth` (gets `email`/`password` and login endpoints for free).
+- **Record** — one row in a collection. Every record has `id`, `created`,
+  `updated`, `collectionId`, `collectionName` plus its schema fields.
+- **API rule** — `null` = superusers only, `""` = public, or a filter
+  expression (`owner = @request.auth.id`) evaluated per request/row.
+- **Filter expression** — the same small language used for `?filter=`
+  query params and API rules: `field = "value" && (a > 1 || b ~ "text")`,
+  with `@request.auth.*` / `@request.data.*` context variables.
+
+## API shape (base path `/api`)
+
+- `GET /health`
+- `POST /admins/auth-with-password`, `POST /admins/auth-refresh`
+- `GET/POST /collections`, `GET/PATCH/DELETE /collections/{idOrName}`
+  (superuser only — this is schema management)
+- `GET/POST /collections/{idOrName}/records`,
+  `GET/PATCH/DELETE /collections/{idOrName}/records/{id}`
+  (list supports `?filter=`, `?sort=`, `?page=`, `?perPage=`; create/update
+  accept JSON or `multipart/form-data` when the collection has file fields)
+- `POST /collections/{idOrName}/auth-with-password`,
+  `POST /collections/{idOrName}/auth-refresh` (only for `auth`-type
+  collections; registration is just `POST .../records` with
+  `password`/`passwordConfirm`)
+- `GET /files/{collection}/{recordId}/{filename}`
+- `GET /realtime` (SSE; first event carries a `clientId`),
+  `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`
+
+Full machine-readable spec: [openapi.yaml](./openapi.yaml).
+Error bodies are always `{ "code": 400, "message": "...", "data": { field: reason } }`.
+
+## Client SDK
+
+`npm install cratebase` — a typed TS client (`sdk/js`) covering every
+endpoint above, with a persisted `authStore`, multipart file upload
+helpers, and realtime subscriptions. See [sdk/js/README.md](./sdk/js/README.md).
+
+## Source map
+
+- `crates/core` — domain types (`Collection`, `Field`), no I/O.
+- `crates/filter` — the filter expression parser + SQL compiler.
+- `crates/db` — the storage engine (SQLite/Postgres via sqlx `Any`,
+  collection<->table sync, record CRUD, rule enforcement).
+- `crates/storage` — file storage (local disk or any S3-compatible bucket).
+- `crates/auth` — password hashing + JWT sessions.
+- `crates/server` — the axum HTTP API, CLI, and embedded admin dashboard.
+- `web/admin` — the admin dashboard source (React + Vite + TanStack).
+
+Read [ARCHITECTURE.md](./ARCHITECTURE.md) for how these fit together and
+the specific, deliberate trade-offs (e.g. why booleans are stored as
+integers, why realtime is single-node). Read [ROADMAP.md](./ROADMAP.md) for
+what's intentionally not built yet (plugin system, OAuth providers, view
+collections, relation dot-notation in filters).
