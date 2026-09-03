@@ -14,7 +14,7 @@ pub mod payload;
 pub mod plugin;
 pub mod plugins;
 pub mod realtime;
-mod request_log;
+pub mod request_log;
 mod routes;
 pub mod state;
 
@@ -48,12 +48,19 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
         &config.mail_from_name,
     )?;
 
+    let request_logs = if config.log_requests {
+        request_log::RequestLogWriter::spawn(db.clone())
+    } else {
+        request_log::RequestLogWriter::disabled()
+    };
+
     Ok(AppState {
         db,
         storage,
         config: Arc::new(config),
         realtime: RealtimeHub::default(),
         mailer,
+        request_logs,
     })
 }
 

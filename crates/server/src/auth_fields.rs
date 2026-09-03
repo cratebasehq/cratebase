@@ -19,7 +19,7 @@ fn min_password_length(collection: &Collection) -> usize {
 /// Extract and hash the identity/`password` fields of a create request for
 /// an `Auth`-typed collection, leaving every other field untouched for the
 /// normal schema-driven validation path. No-op for non-auth collections.
-pub fn prepare_auth_create(
+pub async fn prepare_auth_create(
     collection: &Collection,
     mut fields: Map<String, Value>,
 ) -> Result<Map<String, Value>, ApiError> {
@@ -96,7 +96,8 @@ pub fn prepare_auth_create(
         return Err(ApiError(AppError::Validation(errors)));
     }
 
-    let password_hash = cratebase_auth::hash_password(&password.unwrap())
+    let password_hash = cratebase_auth::hash_password_async(&password.unwrap())
+        .await
         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
 
     fields.remove("password");
@@ -109,7 +110,7 @@ pub fn prepare_auth_create(
 /// Same as [`prepare_auth_create`] but every field is optional, matching
 /// PATCH semantics: omit `password` to leave it unchanged, omit the
 /// identity field to leave it unchanged.
-pub fn prepare_auth_update(
+pub async fn prepare_auth_update(
     collection: &Collection,
     mut fields: Map<String, Value>,
 ) -> Result<Map<String, Value>, ApiError> {
@@ -161,7 +162,8 @@ pub fn prepare_auth_update(
     }
 
     if let Some(password) = password {
-        let hash = cratebase_auth::hash_password(&password)
+        let hash = cratebase_auth::hash_password_async(&password)
+            .await
             .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
         fields.insert("password_hash".to_string(), Value::String(hash));
     }

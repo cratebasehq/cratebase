@@ -22,6 +22,10 @@ pub struct Config {
     /// operator running behind their own rate limiter (or a trusted
     /// internal-only deployment) can turn it off.
     pub auth_rate_limit_enabled: bool,
+    /// Persist every `/api/*` request to `_request_logs` for the
+    /// dashboard's Logs page. On by default; `LOG_REQUESTS=false` turns
+    /// the middleware into a no-op.
+    pub log_requests: bool,
     pub mailer: MailerConfig,
     pub mail_from_address: String,
     pub mail_from_name: String,
@@ -110,6 +114,7 @@ impl Config {
                 .collect(),
             data_dir,
             auth_rate_limit_enabled: env_or("AUTH_RATE_LIMIT_ENABLED", "true") == "true",
+            log_requests: env_or("LOG_REQUESTS", "true") == "true",
             mailer,
             mail_from_address: env_or("MAIL_FROM_ADDRESS", "no-reply@localhost"),
             mail_from_name: env_or("MAIL_FROM_NAME", "Cratebase"),

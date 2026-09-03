@@ -34,6 +34,9 @@ async fn list(
     _admin: RequireAdmin,
     Query(q): Query<ListQuery>,
 ) -> ApiResult<Json<Value>> {
+    // Entries are written in batches by a background task; make sure
+    // everything recorded so far is visible before reading.
+    app.request_logs.flush().await;
     let result = system::list_request_logs(
         &app.db,
         q.page.unwrap_or(1),

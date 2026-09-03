@@ -30,6 +30,53 @@ fn is_multiple(field: &cratebase_core::Field) -> bool {
     field.field_type.supports_multiple() && field.options.multiple.unwrap_or(false)
 }
 
+/// Build the JSON representation of a row we have just written, from the
+/// values we wrote, without reading it back. The insert path used to
+/// `INSERT` and then `SELECT` the row on a second connection — a second
+/// pool acquire and a second statement on the hottest write path, for a
+/// row the server already had every value of (no column has a DB-side
+/// default; `created`/`updated`/autodate are all computed here). Each
+/// schema value is passed through the same `ColumnValue` round trip the
+/// read path uses so the JSON shape is identical to a fetched row.
+fn written_record(
+    collection: &Collection,
+    id: &str,
+    ts: &str,
+    data: &Map<String, Value>,
+    normalized: &Map<String, Value>,
+    verified: bool,
+) -> Value {
+    let mut obj = Map::new();
+    obj.insert("id".into(), Value::String(id.to_string()));
+    obj.insert("created".into(), Value::String(ts.to_string()));
+    obj.insert("updated".into(), Value::String(ts.to_string()));
+    obj.insert("collectionId".into(), Value::String(collection.id.clone()));
+    obj.insert(
+        "collectionName".into(),
+        Value::String(collection.name.clone()),
+    );
+    if collection.is_auth() {
+        let identity = collection.auth_options.identity_field();
+        let value = data
+            .get(identity)
+            .and_then(Value::as_str)
+            .map(|s| Value::String(s.to_string()))
+            .unwrap_or(Value::Null);
+        obj.insert(identity.to_string(), value);
+        obj.insert("verified".into(), Value::Bool(verified));
+    }
+    for field in &collection.schema {
+        let value = normalized.get(&field.name).cloned().unwrap_or(Value::Null);
+        let multiple = is_multiple(field);
+        let column = ColumnValue::from_json(field.field_type, multiple, &value);
+        obj.insert(
+            field.name.clone(),
+            column.to_json(field.field_type, multiple),
+        );
+    }
+    Value::Object(obj)
+}
+
 fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
     let mut obj = Map::new();
     obj.insert("id".into(), Value::String(row.try_get("id")?));
@@ -381,7 +428,7 @@ pub async fn create_record_with_id(
     let mut args = AnyArguments::default();
     args.add(id.clone()).map_err(encode_err)?;
     args.add(ts.clone()).map_err(encode_err)?;
-    args.add(ts).map_err(encode_err)?;
+    args.add(ts.clone()).map_err(encode_err)?;
 
     // `email`/`password_hash` are physical columns on every Auth-typed
     // collection's table (see `collections::sync_table`) but are not part
@@ -433,7 +480,14 @@ pub async fn create_record_with_id(
         .await
         .map_err(map_unique_violation)?;
 
-    fetch_by_id(db, collection, &id).await
+    Ok(written_record(
+        collection,
+        &id,
+        &ts,
+        &data,
+        &normalized,
+        false,
+    ))
 }
 
 pub async fn update_record(
@@ -640,7 +694,7 @@ pub async fn create_record_with_id_tx(
     let mut args = AnyArguments::default();
     args.add(id.clone()).map_err(encode_err)?;
     args.add(ts.clone()).map_err(encode_err)?;
-    args.add(ts).map_err(encode_err)?;
+    args.add(ts.clone()).map_err(encode_err)?;
 
     if collection.is_auth() {
         let identity = collection.auth_options.identity_field();
@@ -683,7 +737,14 @@ pub async fn create_record_with_id_tx(
         .await
         .map_err(map_unique_violation)?;
 
-    fetch_by_id_tx(tx, backend, collection, &id).await
+    Ok(written_record(
+        collection,
+        &id,
+        &ts,
+        &data,
+        &normalized,
+        false,
+    ))
 }
 
 /// Transaction-scoped counterpart to [`update_record`] — see

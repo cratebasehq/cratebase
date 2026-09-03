@@ -186,7 +186,7 @@ async fn create_in_tx(
         return Err(forbidden());
     }
 
-    let fields = crate::auth_fields::prepare_auth_create(&collection, fields)?;
+    let fields = crate::auth_fields::prepare_auth_create(&collection, fields).await?;
     let normalized =
         validate::validate_and_normalize_tx(tx, app.db.backend, &collection, &fields, false)
             .await?;
@@ -242,7 +242,7 @@ async fn update_in_tx(
     records::get_record_tx(tx, app.db.backend, &collection, &id, rule_filter).await?;
 
     let fields = body_object(body)?;
-    let fields = crate::auth_fields::prepare_auth_update(&collection, fields)?;
+    let fields = crate::auth_fields::prepare_auth_update(&collection, fields).await?;
     let normalized =
         validate::validate_and_normalize_tx(tx, app.db.backend, &collection, &fields, true).await?;
 

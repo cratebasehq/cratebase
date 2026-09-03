@@ -219,7 +219,7 @@ async fn create(
     }
     merge_uploaded_filenames(&mut fields, &collection, &stored);
 
-    let fields = crate::auth_fields::prepare_auth_create(&collection, fields)?;
+    let fields = crate::auth_fields::prepare_auth_create(&collection, fields).await?;
 
     let record = records::create_record_with_id(&app.db, &collection, id, fields).await?;
     app.realtime
@@ -272,7 +272,7 @@ async fn update(
     let replaced_fields: Vec<String> = stored.iter().map(|(u, _)| u.field.clone()).collect();
     merge_uploaded_filenames(&mut fields, &collection, &stored);
 
-    let fields = crate::auth_fields::prepare_auth_update(&collection, fields)?;
+    let fields = crate::auth_fields::prepare_auth_update(&collection, fields).await?;
 
     let record = records::update_record(&app.db, &collection, &id, fields).await?;
 

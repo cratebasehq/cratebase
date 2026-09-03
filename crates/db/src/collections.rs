@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
 use cratebase_core::field::{Field, FieldType};
 use cratebase_core::{AuthOptions, Collection, CollectionType};
 use sqlx::any::AnyRow;
@@ -6,6 +9,66 @@ use sqlx::Row;
 use crate::backend::Backend;
 use crate::error::{DbError, DbResult};
 use crate::pool::Db;
+
+/// Process-wide cache of collection metadata, keyed both by id and by
+/// name. Every API request addresses a collection and needs its schema
+/// and rules; before this cache existed that was one `SELECT` plus two
+/// `serde_json::from_str` calls (schema, auth options) per request —
+/// measured in `benchmarks/` as a fixed ~200-400µs tax PocketBase (which
+/// keeps collections in memory) doesn't pay.
+///
+/// Populated lazily on first lookup, refreshed by [`create_collection`] /
+/// [`update_collection`] and evicted by [`delete_collection`]. The
+/// transaction-scoped `_tx` getters bypass it (they exist precisely to
+/// read uncommitted state). Two server processes sharing one SQLite file
+/// will not see each other's schema changes until restart — the same
+/// limitation PocketBase has, and a documented non-goal for now.
+#[derive(Default)]
+pub struct CollectionCache {
+    inner: RwLock<CacheInner>,
+}
+
+#[derive(Default)]
+struct CacheInner {
+    by_id: HashMap<String, Arc<Collection>>,
+    by_name: HashMap<String, Arc<Collection>>,
+}
+
+impl CollectionCache {
+    pub fn get_by_id(&self, id: &str) -> Option<Arc<Collection>> {
+        self.inner.read().unwrap().by_id.get(id).cloned()
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<Arc<Collection>> {
+        self.inner.read().unwrap().by_name.get(name).cloned()
+    }
+
+    /// Insert or replace. A rename is handled by evicting whatever entry
+    /// previously carried this id before inserting under the new name.
+    pub fn put(&self, collection: Collection) -> Arc<Collection> {
+        let arc = Arc::new(collection);
+        let mut inner = self.inner.write().unwrap();
+        if let Some(old) = inner.by_id.remove(&arc.id) {
+            inner.by_name.remove(&old.name);
+        }
+        inner.by_id.insert(arc.id.clone(), arc.clone());
+        inner.by_name.insert(arc.name.clone(), arc.clone());
+        arc
+    }
+
+    pub fn evict_id(&self, id: &str) {
+        let mut inner = self.inner.write().unwrap();
+        if let Some(old) = inner.by_id.remove(id) {
+            inner.by_name.remove(&old.name);
+        }
+    }
+
+    pub fn clear(&self) {
+        let mut inner = self.inner.write().unwrap();
+        inner.by_id.clear();
+        inner.by_name.clear();
+    }
+}
 
 fn row_to_collection(row: &AnyRow) -> DbResult<Collection> {
     let type_str: String = row.try_get("type")?;
@@ -46,21 +109,51 @@ pub async fn list_collections(db: &Db) -> DbResult<Vec<Collection>> {
 }
 
 pub async fn get_collection_by_id(db: &Db, id: &str) -> DbResult<Collection> {
+    if let Some(c) = db.collections.get_by_id(id) {
+        return Ok((*c).clone());
+    }
     let row = sqlx::query("SELECT * FROM _collections WHERE id = $1")
         .bind(id)
         .fetch_optional(&db.pool)
         .await?
         .ok_or(DbError::NotFound)?;
-    row_to_collection(&row)
+    let collection = row_to_collection(&row)?;
+    db.collections.put(collection.clone());
+    Ok(collection)
 }
 
 pub async fn get_collection_by_name(db: &Db, name: &str) -> DbResult<Collection> {
+    if let Some(c) = db.collections.get_by_name(name) {
+        return Ok((*c).clone());
+    }
     let row = sqlx::query("SELECT * FROM _collections WHERE name = $1")
         .bind(name)
         .fetch_optional(&db.pool)
         .await?
         .ok_or(DbError::NotFound)?;
-    row_to_collection(&row)
+    let collection = row_to_collection(&row)?;
+    db.collections.put(collection.clone());
+    Ok(collection)
+}
+
+/// Resolve a collection addressed by either its id or its name (every
+/// `:collection` path param accepts both) with at most one query.
+pub async fn get_collection_by_id_or_name(db: &Db, id_or_name: &str) -> DbResult<Collection> {
+    if let Some(c) = db
+        .collections
+        .get_by_name(id_or_name)
+        .or_else(|| db.collections.get_by_id(id_or_name))
+    {
+        return Ok((*c).clone());
+    }
+    let row = sqlx::query("SELECT * FROM _collections WHERE name = $1 OR id = $1")
+        .bind(id_or_name)
+        .fetch_optional(&db.pool)
+        .await?
+        .ok_or(DbError::NotFound)?;
+    let collection = row_to_collection(&row)?;
+    db.collections.put(collection.clone());
+    Ok(collection)
 }
 
 /// Transaction-scoped counterpart to [`get_collection_by_id`]. Reads
@@ -126,6 +219,7 @@ pub async fn create_collection(db: &Db, collection: &Collection) -> DbResult<()>
     .map_err(|e| map_unique_violation(e, "name"))?;
 
     sync_table(db, collection, None).await?;
+    db.collections.put(collection.clone());
     Ok(())
 }
 
@@ -165,11 +259,17 @@ pub async fn update_collection(
     .await
     .map_err(|e| map_unique_violation(e, "name"))?;
 
+    // Evict before the DDL rather than after: if `sync_table` fails
+    // half-way, the next lookup re-reads the persisted row instead of
+    // serving a stale schema.
+    db.collections.evict_id(&updated.id);
     sync_table(db, updated, Some(previous)).await?;
+    db.collections.put(updated.clone());
     Ok(())
 }
 
 pub async fn delete_collection(db: &Db, collection: &Collection) -> DbResult<()> {
+    db.collections.evict_id(&collection.id);
     sqlx::query("DELETE FROM _collections WHERE id = $1")
         .bind(&collection.id)
         .execute(&db.pool)
@@ -331,6 +431,17 @@ pub async fn sync_table(
             }
         }
     }
+
+    // Every list request defaults to `ORDER BY created DESC` (see
+    // `records::build_order_by`); without an index that is a full scan
+    // into a sorter per request, growing superlinearly with table size.
+    let created_idx = backend.quote_ident(&format!("idx_{}_created", collection.name))?;
+    let created_col = backend.quote_ident("created")?;
+    sqlx::query(&format!(
+        "CREATE INDEX IF NOT EXISTS {created_idx} ON {table} ({created_col} DESC)"
+    ))
+    .execute(&db.pool)
+    .await?;
 
     for f in &collection.schema {
         let idx_name = format!("idx_{}_{}", collection.name, f.name);

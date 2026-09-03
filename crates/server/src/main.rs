@@ -1,4 +1,12 @@
 use clap::{Parser, Subcommand};
+
+/// The record path is allocation-heavy (dynamic `serde_json::Value`
+/// records, a `String` per text cell); mimalloc's per-thread heaps beat
+/// glibc's arena malloc noticeably on that shape of workload across 16
+/// worker threads.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use cratebase_auth::hash_password;
 use cratebase_db::{admins, system, Db};
 use cratebase_server::config::Config;

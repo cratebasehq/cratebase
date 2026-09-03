@@ -7,18 +7,13 @@ use crate::state::AppState;
 /// Collections are addressed by id or by name in every route (`:collection`
 /// path param).
 pub async fn load_collection(app: &AppState, id_or_name: &str) -> Result<Collection, ApiError> {
-    let by_name = collections::get_collection_by_name(&app.db, id_or_name).await;
-    let collection = match by_name {
-        Ok(c) => c,
-        Err(_) => collections::get_collection_by_id(&app.db, id_or_name)
-            .await
-            .map_err(|_| {
-                ApiError(AppError::NotFound(format!(
-                    "collection '{id_or_name}' not found"
-                )))
-            })?,
-    };
-    Ok(collection)
+    collections::get_collection_by_id_or_name(&app.db, id_or_name)
+        .await
+        .map_err(|_| {
+            ApiError(AppError::NotFound(format!(
+                "collection '{id_or_name}' not found"
+            )))
+        })
 }
 
 /// Transaction-scoped counterpart to [`load_collection`], used by

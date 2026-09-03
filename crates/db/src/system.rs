@@ -126,6 +126,9 @@ pub struct RequestLogEntry {
     /// is `None` for a superuser (admins aren't records in a collection).
     pub auth_id: Option<String>,
     pub auth_collection_id: Option<String>,
+    /// RFC3339 timestamp captured when the response was produced, not
+    /// when the batch was flushed.
+    pub created: String,
 }
 
 pub struct RequestLogPage {
@@ -139,7 +142,9 @@ pub struct RequestLogPage {
 /// Bounded log of recent API requests, written by the logging middleware
 /// and read by the superuser-only `GET /api/logs` dashboard page. Kept
 /// separate from `_collections`-backed tables since it's server-internal
-/// bookkeeping, not user schema.
+/// bookkeeping, not user schema — and, on a file-backed SQLite database,
+/// in a separate database *file* (`Db::logs`) so that logging never
+/// contends with user traffic for the main file's writer lock.
 pub async fn ensure_request_logs_table(db: &Db) -> DbResult<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS _request_logs (
@@ -153,47 +158,86 @@ pub async fn ensure_request_logs_table(db: &Db) -> DbResult<()> {
             created TEXT NOT NULL
         )",
     )
-    .execute(&db.pool)
+    .execute(&db.logs)
     .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_request_logs_created ON _request_logs (created DESC)",
     )
-    .execute(&db.pool)
+    .execute(&db.logs)
     .await?;
     Ok(())
 }
 
-/// Records one request, pruning the table back down to
-/// [`REQUEST_LOG_CAP`] roughly every [`PRUNE_EVERY`] inserts (see its
-/// doc comment for why not on every insert).
-pub async fn insert_request_log(db: &Db, entry: RequestLogEntry) -> DbResult<()> {
-    sqlx::query(
-        "INSERT INTO _request_logs
-            (id, method, path, status, duration_ms, auth_id, auth_collection_id, created)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(new_id())
-    .bind(entry.method)
-    .bind(entry.path)
-    .bind(entry.status)
-    .bind(entry.duration_ms)
-    .bind(entry.auth_id)
-    .bind(entry.auth_collection_id)
-    .bind(now())
-    .execute(&db.pool)
-    .await?;
+/// Largest batch written in one statement. SQLite's default
+/// `SQLITE_MAX_VARIABLE_NUMBER` is 32766 (999 on very old builds); 8
+/// columns × 256 rows stays far under both.
+pub const REQUEST_LOG_BATCH_MAX: usize = 256;
 
-    if INSERT_COUNT
-        .fetch_add(1, Ordering::Relaxed)
-        .is_multiple_of(PRUNE_EVERY)
-    {
+/// Records one request. Kept for callers that log a single entry outside
+/// the batching writer (tests, CLI); the server's middleware goes through
+/// [`insert_request_logs`].
+pub async fn insert_request_log(db: &Db, entry: RequestLogEntry) -> DbResult<()> {
+    insert_request_logs(db, vec![entry]).await
+}
+
+/// Writes a batch of request-log rows in one multi-row `INSERT`, then
+/// prunes the table back down to [`REQUEST_LOG_CAP`] whenever the running
+/// insert count crosses a [`PRUNE_EVERY`] boundary (see its doc comment
+/// for why not on every insert). Batches longer than
+/// [`REQUEST_LOG_BATCH_MAX`] are split.
+pub async fn insert_request_logs(db: &Db, entries: Vec<RequestLogEntry>) -> DbResult<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let inserted = entries.len() as u64;
+    for chunk in entries.chunks(REQUEST_LOG_BATCH_MAX) {
+        let mut sql = String::from(
+            "INSERT INTO _request_logs \
+             (id, method, path, status, duration_ms, auth_id, auth_collection_id, created) VALUES ",
+        );
+        let mut query_args: Vec<(String, &RequestLogEntry)> = Vec::with_capacity(chunk.len());
+        for (i, entry) in chunk.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            let base = i * 8;
+            sql.push_str(&format!(
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                base + 1,
+                base + 2,
+                base + 3,
+                base + 4,
+                base + 5,
+                base + 6,
+                base + 7,
+                base + 8
+            ));
+            query_args.push((new_id(), entry));
+        }
+        let mut q = sqlx::query(&sql);
+        for (id, entry) in &query_args {
+            q = q
+                .bind(id.as_str())
+                .bind(entry.method.as_str())
+                .bind(entry.path.as_str())
+                .bind(entry.status)
+                .bind(entry.duration_ms)
+                .bind(entry.auth_id.as_deref())
+                .bind(entry.auth_collection_id.as_deref())
+                .bind(entry.created.as_str());
+        }
+        q.execute(&db.logs).await?;
+    }
+
+    let before = INSERT_COUNT.fetch_add(inserted, Ordering::Relaxed);
+    if before / PRUNE_EVERY != (before + inserted) / PRUNE_EVERY {
         sqlx::query(
             "DELETE FROM _request_logs WHERE id NOT IN (
                 SELECT id FROM _request_logs ORDER BY created DESC LIMIT $1
             )",
         )
         .bind(REQUEST_LOG_CAP)
-        .execute(&db.pool)
+        .execute(&db.logs)
         .await?;
     }
 
@@ -240,10 +284,10 @@ pub async fn list_request_logs(
     let total_items: i64 = if let Some(p) = &like_pattern {
         sqlx::query_scalar(&count_sql)
             .bind(p)
-            .fetch_one(&db.pool)
+            .fetch_one(&db.logs)
             .await?
     } else {
-        sqlx::query_scalar(&count_sql).fetch_one(&db.pool).await?
+        sqlx::query_scalar(&count_sql).fetch_one(&db.logs).await?
     };
 
     let list_sql = if filter.is_some() {
@@ -260,13 +304,13 @@ pub async fn list_request_logs(
             .bind(p)
             .bind(per_page)
             .bind(offset)
-            .fetch_all(&db.pool)
+            .fetch_all(&db.logs)
             .await?
     } else {
         sqlx::query(&list_sql)
             .bind(per_page)
             .bind(offset)
-            .fetch_all(&db.pool)
+            .fetch_all(&db.logs)
             .await?
     };
     let items = rows

@@ -4,8 +4,8 @@ use axum::extract::{Path, Query, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cratebase_auth::{
-    generate_otp, hash_otp, hash_password, issue_action_token, issue_token, verify_password,
-    verify_token, TokenKind,
+    generate_otp, hash_otp, hash_password_async, issue_action_token, issue_token,
+    verify_password_async, verify_token, TokenKind,
 };
 use cratebase_core::AppError;
 use cratebase_db::{admins, external_auths, otp, records};
@@ -124,7 +124,7 @@ async fn admin_login(
     let admin = admins::get_admin_by_email(&app.db, &body.email)
         .await
         .map_err(|_| invalid_credentials())?;
-    if !verify_password(&body.password, &admin.password_hash) {
+    if !verify_password_async(&body.password, &admin.password_hash).await {
         return Err(invalid_credentials());
     }
     let token = issue_token(
@@ -178,7 +178,7 @@ async fn record_login(
     else {
         return Err(invalid_credentials());
     };
-    if !verify_password(&body.password, &password_hash) {
+    if !verify_password_async(&body.password, &password_hash).await {
         return Err(invalid_credentials());
     }
     if collection
@@ -445,8 +445,9 @@ async fn confirm_password_reset(
             "passwords do not match".into(),
         )));
     }
-    let hash =
-        hash_password(&body.password).map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    let hash = hash_password_async(&body.password)
+        .await
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
     let mut data = serde_json::Map::new();
     data.insert("password_hash".into(), json!(hash));
     records::update_record(&app.db, &collection, &claims.sub, data).await?;
@@ -647,7 +648,8 @@ async fn auth_with_oauth2(
                 Some((id, _, _)) => id,
                 None => {
                     let random_password = cratebase_core::new_id();
-                    let hash = hash_password(&random_password)
+                    let hash = hash_password_async(&random_password)
+                        .await
                         .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
                     let mut fields = serde_json::Map::new();
                     fields.insert("email".into(), json!(email));
