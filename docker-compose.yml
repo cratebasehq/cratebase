@@ -1,0 +1,68 @@
+# Zero-config dev/production stack.
+#
+#   docker compose up                                   # sqlite + local disk storage (default)
+#   docker compose --profile postgres up                # + Postgres (set DATABASE_URL below)
+#   docker compose --profile s3 up                       # + RustFS S3-compatible storage (set STORAGE_DRIVER=s3)
+#   docker compose --profile postgres --profile s3 up    # both
+#
+# See .env.example for every variable these services read.
+services:
+  cratebase:
+    build: .
+    image: cratebase:local
+    ports:
+      - "${PORT:-8090}:8090"
+    environment:
+      PORT: 8090
+      HOST: 0.0.0.0
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///app/data/cratebase.db}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      STORAGE_LOCAL_DIR: /app/data/storage
+      S3_BUCKET: ${S3_BUCKET:-cratebase}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://rustfs:9000}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+    volumes:
+      - cratebase_data:/app/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: cratebase
+      POSTGRES_PASSWORD: cratebase
+      POSTGRES_DB: cratebase
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cratebase"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    profiles: ["s3"]
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - rustfs_data:/data
+    restart: unless-stopped
+
+volumes:
+  cratebase_data:
+  postgres_data:
+  rustfs_data:
