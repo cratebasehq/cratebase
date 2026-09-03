@@ -73,6 +73,23 @@ impl Storage {
         }
     }
 
+    /// Like [`Self::get`] but returns a chunked byte stream instead of
+    /// buffering the whole object in memory — used for serving file
+    /// downloads so a large upload doesn't cost a large allocation per
+    /// concurrent request.
+    pub async fn get_stream(
+        &self,
+        key: &str,
+    ) -> StorageResult<impl futures::Stream<Item = StorageResult<Bytes>> + Send + 'static> {
+        use futures::StreamExt;
+        match self.store.get(&ObjectPath::from(key)).await {
+            Ok(result) => Ok(result.into_stream().map(|chunk| chunk.map_err(StorageError::Backend))),
+            Err(object_store::Error::NotFound { .. }) => Err(StorageError::NotFound(key.to_string())),
+            Err(e) => Err(StorageError::Backend(e)),
+        }
+    }
+
+
     pub async fn delete(&self, key: &str) -> StorageResult<()> {
         match self.store.delete(&ObjectPath::from(key)).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),

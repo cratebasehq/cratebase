@@ -10,3 +10,28 @@ name = "cratebase"
 path = "src/main.rs"
 
 [dependencies]
+cratebase-core.workspace = true
+cratebase-filter.workspace = true
+cratebase-db.workspace = true
+cratebase-storage.workspace = true
+cratebase-auth.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+futures.workspace = true
+bytes.workspace = true
+
+axum = { version = "0.8", features = ["multipart"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tokio-stream = "0.1"
+dotenvy = "0.15"
+clap = { version = "4", features = ["derive"] }
+mime_guess = "2"
+rand.workspace = true
