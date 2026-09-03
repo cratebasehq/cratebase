@@ -1,0 +1,16 @@
+/target
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+/data
+node_modules/
+dist/
+.DS_Store
+*.log
+web/admin/dist
+web/admin/node_modules
+sdk/js/node_modules
+sdk/js/dist

@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/filter",
+    "crates/db",
+    "crates/storage",
+    "crates/auth",
+    "crates/server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/cratebase/cratebase"
+authors = ["Cratebase Contributors"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+bytes = "1"
+rand = "0.8"
+
+cratebase-core = { path = "crates/core" }
+cratebase-filter = { path = "crates/filter" }
+cratebase-db = { path = "crates/db" }
+cratebase-storage = { path = "crates/storage" }
+cratebase-auth = { path = "crates/auth" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
