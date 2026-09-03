@@ -36,7 +36,11 @@ pub struct Mailer {
 }
 
 impl Mailer {
-    pub fn connect(config: &MailerConfig, from_address: &str, from_name: &str) -> MailerResult<Self> {
+    pub fn connect(
+        config: &MailerConfig,
+        from_address: &str,
+        from_name: &str,
+    ) -> MailerResult<Self> {
         let backend = match config {
             MailerConfig::Resend { api_key } => Backend::Resend {
                 api_key: api_key.clone(),

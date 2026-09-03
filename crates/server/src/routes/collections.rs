@@ -64,7 +64,10 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
         }
     }
     if input.collection_type == CollectionType::View
-        && input.view_query.as_deref().is_none_or(|q| q.trim().is_empty())
+        && input
+            .view_query
+            .as_deref()
+            .is_none_or(|q| q.trim().is_empty())
     {
         return Err(ApiError(AppError::BadRequest(
             "view collections require a non-empty 'viewQuery'".into(),

@@ -157,12 +157,18 @@ impl<'a> CollectionResolver<'a> {
             return Err(unknown());
         }
 
-        let array_column = self.backend.quote_ident(relation_name).map_err(|_| unknown())?;
+        let array_column = self
+            .backend
+            .quote_ident(relation_name)
+            .map_err(|_| unknown())?;
         let target_table = self
             .backend
             .quote_ident(&target.table_name())
             .map_err(|_| unknown())?;
-        let target_column = self.backend.quote_ident(target_field).map_err(|_| unknown())?;
+        let target_column = self
+            .backend
+            .quote_ident(target_field)
+            .map_err(|_| unknown())?;
 
         if is_multiple(field) {
             Ok(Resolved::RelatedMulti {

@@ -36,10 +36,7 @@ use crate::state::AppState;
 /// within brute-forcing range without a per-IP throttle.
 pub fn router(rate_limit_enabled: bool) -> Router<AppState> {
     let router = Router::new()
-        .route(
-            "/collections/{collection}/request-otp",
-            post(request_otp),
-        )
+        .route("/collections/{collection}/request-otp", post(request_otp))
         .route(
             "/collections/{collection}/auth-with-otp",
             post(auth_with_otp),
@@ -167,7 +164,8 @@ async fn auth_with_otp(
     if !collection.is_auth() || !collection.auth_options.identity_is_email() {
         return Err(not_email_identity());
     }
-    let Some((id, _, _)) = records::find_auth_credentials(&app.db, &collection, &body.email).await?
+    let Some((id, _, _)) =
+        records::find_auth_credentials(&app.db, &collection, &body.email).await?
     else {
         return Err(invalid_otp());
     };
@@ -195,18 +193,12 @@ async fn mfa_confirm(
     Json(body): Json<MfaConfirm>,
 ) -> ApiResult<Json<Value>> {
     let collection = load_collection(&app, &collection_name).await?;
-    let claims =
-        verify_token(&body.mfa_id, &app.config.auth_secret).map_err(|_| invalid_otp())?;
+    let claims = verify_token(&body.mfa_id, &app.config.auth_secret).map_err(|_| invalid_otp())?;
     if claims.kind != TokenKind::Mfa || claims.collection_id != collection.id {
         return Err(invalid_otp());
     }
-    let matched = otp::verify_and_consume(
-        &app.db,
-        &collection.id,
-        &claims.sub,
-        &hash_otp(&body.otp),
-    )
-    .await?;
+    let matched =
+        otp::verify_and_consume(&app.db, &collection.id, &claims.sub, &hash_otp(&body.otp)).await?;
     if !matched {
         return Err(invalid_otp());
     }

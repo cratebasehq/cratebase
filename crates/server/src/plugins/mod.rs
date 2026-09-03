@@ -6,7 +6,6 @@ mod example;
 mod feature_flags;
 mod queue;
 
-
 use crate::plugin::PluginRegistry;
 
 /// The set of plugins compiled into this binary. Add your own module next

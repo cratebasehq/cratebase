@@ -18,7 +18,7 @@ use cratebase_core::field::{Field, FieldOptions, FieldType};
 use cratebase_core::{new_id, now, AuthOptions, Collection, CollectionType};
 use cratebase_db::records::{self, update_record, ListParams};
 use cratebase_db::resolver::{AuthContext, RequestContext};
-use cratebase_db::{collections, DbError, DbResult, Db};
+use cratebase_db::{collections, Db, DbError, DbResult};
 use croner::Cron;
 use serde_json::{json, Map, Value};
 

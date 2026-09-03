@@ -410,7 +410,10 @@ async fn view_collection_lists_filtered_rows_and_rejects_writes() {
         .iter()
         .map(|r| r["title"].as_str().unwrap())
         .collect();
-    assert!(!titles.contains(&"Bravo"), "unpublished row must be excluded");
+    assert!(
+        !titles.contains(&"Bravo"),
+        "unpublished row must be excluded"
+    );
 
     // `?filter=` composes with the view exactly like it does for a table.
     let filtered = app
@@ -798,7 +801,10 @@ async fn file_upload_rejects_disallowed_mime_and_oversized_file() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/collections/photos/records")
-        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .unwrap();
     let res = app.clone().oneshot(req).await.unwrap();
@@ -814,7 +820,10 @@ async fn file_upload_rejects_disallowed_mime_and_oversized_file() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/collections/photos/records")
-        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .unwrap();
     let res = app.oneshot(req).await.unwrap();
@@ -907,7 +916,11 @@ async fn login_endpoint_rate_limits_after_burst() {
     // Burst size is 8 (see routes/auth.rs): all 8 should reach the
     // handler (401, wrong credentials) rather than being rate-limited.
     for i in 0..8 {
-        let res = app.clone().oneshot(login_request("203.0.113.9")).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(login_request("203.0.113.9"))
+            .await
+            .unwrap();
         assert_eq!(
             res.status(),
             StatusCode::UNAUTHORIZED,
@@ -915,7 +928,11 @@ async fn login_endpoint_rate_limits_after_burst() {
         );
     }
     // The 9th immediate request from the same IP exceeds the burst.
-    let res = app.clone().oneshot(login_request("203.0.113.9")).await.unwrap();
+    let res = app
+        .clone()
+        .oneshot(login_request("203.0.113.9"))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
 
     // A different client IP has its own, unaffected bucket.
@@ -964,7 +981,10 @@ async fn email_verification_flow_gates_login_until_confirmed() {
     let register_body = json_body(register).await;
     let user_id = register_body["id"].as_str().unwrap().to_string();
     let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
-    assert_eq!(register_body["verified"], false, "new accounts start unverified");
+    assert_eq!(
+        register_body["verified"], false,
+        "new accounts start unverified"
+    );
 
     let blocked_login = app
         .clone()
@@ -996,7 +1016,15 @@ async fn email_verification_flow_gates_login_until_confirmed() {
 
     // Simulates the token a real user would receive by email — issued
     // with the same parameters `request-verification` uses internally.
-    let verify_token = issue_action_token(&user_id, TokenKind::VerifyEmail, &collection_id, None, "test-secret", 3600).unwrap();
+    let verify_token = issue_action_token(
+        &user_id,
+        TokenKind::VerifyEmail,
+        &collection_id,
+        None,
+        "test-secret",
+        3600,
+    )
+    .unwrap();
     let confirm = app
         .clone()
         .oneshot(json_request(
@@ -1018,7 +1046,11 @@ async fn email_verification_flow_gates_login_until_confirmed() {
         ))
         .await
         .unwrap();
-    assert_eq!(login.status(), StatusCode::OK, "login must succeed once verified");
+    assert_eq!(
+        login.status(),
+        StatusCode::OK,
+        "login must succeed once verified"
+    );
 }
 
 #[tokio::test]
@@ -1055,7 +1087,15 @@ async fn password_reset_flow_replaces_password() {
         .unwrap();
     assert_eq!(request.status(), StatusCode::NO_CONTENT);
 
-    let reset_token = issue_action_token(&user_id, TokenKind::ResetPassword, &collection_id, None, "test-secret", 3600).unwrap();
+    let reset_token = issue_action_token(
+        &user_id,
+        TokenKind::ResetPassword,
+        &collection_id,
+        None,
+        "test-secret",
+        3600,
+    )
+    .unwrap();
     let confirm = app
         .clone()
         .oneshot(json_request(
@@ -1078,7 +1118,11 @@ async fn password_reset_flow_replaces_password() {
         ))
         .await
         .unwrap();
-    assert_eq!(old_login.status(), StatusCode::UNAUTHORIZED, "old password must stop working");
+    assert_eq!(
+        old_login.status(),
+        StatusCode::UNAUTHORIZED,
+        "old password must stop working"
+    );
 
     let new_login = app
         .oneshot(json_request(
@@ -1124,7 +1168,10 @@ async fn email_change_flow_updates_identity_after_confirmation() {
     let login_body = json_body(login).await;
     let user_token = login_body["token"].as_str().unwrap().to_string();
     let user_id = login_body["record"]["id"].as_str().unwrap().to_string();
-    let collection_id = login_body["record"]["collectionId"].as_str().unwrap().to_string();
+    let collection_id = login_body["record"]["collectionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let request = app
         .clone()
@@ -1169,7 +1216,11 @@ async fn email_change_flow_updates_identity_after_confirmation() {
         ))
         .await
         .unwrap();
-    assert_eq!(old_login.status(), StatusCode::UNAUTHORIZED, "old email must stop working");
+    assert_eq!(
+        old_login.status(),
+        StatusCode::UNAUTHORIZED,
+        "old email must stop working"
+    );
 
     let new_login = app
         .oneshot(json_request(
@@ -1299,7 +1350,10 @@ async fn file_thumbnail_generates_resized_image_and_caches_derivative() {
     ));
     let mut png_bytes = Vec::new();
     source
-        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
         .unwrap();
 
     let boundary = "----cratebase-thumb-boundary";
@@ -1323,7 +1377,12 @@ async fn file_thumbnail_generates_resized_image_and_caches_derivative() {
         .body(Body::from(body))
         .unwrap();
     let created = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(created.status(), StatusCode::OK, "{:?}", json_body(created).await);
+    assert_eq!(
+        created.status(),
+        StatusCode::OK,
+        "{:?}",
+        json_body(created).await
+    );
     let record = json_body(created).await;
     let filename = record["image"].as_str().unwrap().to_string();
     let id = record["id"].as_str().unwrap().to_string();
@@ -1429,8 +1488,14 @@ async fn file_thumbnail_falls_back_to_original_for_non_image_mime() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    assert_eq!(&bytes[..], b"hello file", "non-raster mime must ignore ?thumb= and serve the original");
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        &bytes[..],
+        b"hello file",
+        "non-raster mime must ignore ?thumb= and serve the original"
+    );
 }
 
 #[tokio::test]
@@ -1483,7 +1548,12 @@ async fn protected_file_requires_auth_and_accepts_file_token() {
         .body(Body::from(body))
         .unwrap();
     let created = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(created.status(), StatusCode::OK, "{:?}", json_body(created).await);
+    assert_eq!(
+        created.status(),
+        StatusCode::OK,
+        "{:?}",
+        json_body(created).await
+    );
     let record = json_body(created).await;
     let filename = record["attachment"].as_str().unwrap().to_string();
     let id = record["id"].as_str().unwrap().to_string();
@@ -1514,7 +1584,12 @@ async fn protected_file_requires_auth_and_accepts_file_token() {
         ))
         .await
         .unwrap();
-    assert_eq!(signup.status(), StatusCode::OK, "{:?}", json_body(signup).await);
+    assert_eq!(
+        signup.status(),
+        StatusCode::OK,
+        "{:?}",
+        json_body(signup).await
+    );
 
     let login = app
         .clone()
@@ -1527,17 +1602,22 @@ async fn protected_file_requires_auth_and_accepts_file_token() {
         .await
         .unwrap();
     assert_eq!(login.status(), StatusCode::OK);
-    let user_token = json_body(login).await["token"].as_str().unwrap().to_string();
+    let user_token = json_body(login).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Mint a short-lived file token for the logged-in viewer.
     let mint = app
         .clone()
-        .oneshot(Request::builder()
-            .method("POST")
-            .uri("/api/files/token")
-            .header("authorization", format!("Bearer {user_token}"))
-            .body(Body::empty())
-            .unwrap())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/files/token")
+                .header("authorization", format!("Bearer {user_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(mint.status(), StatusCode::OK, "{:?}", json_body(mint).await);
@@ -1551,7 +1631,12 @@ async fn protected_file_requires_auth_and_accepts_file_token() {
         ))
         .await
         .unwrap();
-    assert_eq!(via_token.status(), StatusCode::OK, "{:?}", json_body(via_token).await);
+    assert_eq!(
+        via_token.status(),
+        StatusCode::OK,
+        "{:?}",
+        json_body(via_token).await
+    );
     let bytes = axum::body::to_bytes(via_token.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -1744,7 +1829,11 @@ async fn otp_login_fails_with_incorrect_code() {
         .unwrap();
 
     let real_code = find_otp_code(&state, &collection_id, &user_id).await;
-    let wrong_code = if real_code == "000000" { "111111" } else { "000000" };
+    let wrong_code = if real_code == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
 
     let login = app
         .oneshot(json_request(
@@ -1869,7 +1958,9 @@ async fn mfa_required_blocks_password_login_until_otp_confirmed() {
         .unwrap();
     assert_eq!(confirm.status(), StatusCode::OK);
     let confirm_body = json_body(confirm).await;
-    assert!(confirm_body["token"].as_str().is_some_and(|t| !t.is_empty()));
+    assert!(confirm_body["token"]
+        .as_str()
+        .is_some_and(|t| !t.is_empty()));
     assert_eq!(confirm_body["record"]["id"], user_id);
 }
 
@@ -1897,7 +1988,9 @@ async fn request_log_middleware_captures_requests() {
     let body = json_body(logs).await;
     let items = body["items"].as_array().unwrap();
     assert!(
-        items.iter().any(|e| e["path"] == "/api/health" && e["status"] == 200),
+        items
+            .iter()
+            .any(|e| e["path"] == "/api/health" && e["status"] == 200),
         "expected the /api/health request to show up in the request log: {items:?}"
     );
 }
@@ -1948,13 +2041,21 @@ async fn backups_round_trip_on_sqlite() {
 
     let create = app
         .clone()
-        .oneshot(json_request("POST", "/api/backups", Some(&token), json!({})))
+        .oneshot(json_request(
+            "POST",
+            "/api/backups",
+            Some(&token),
+            json!({}),
+        ))
         .await
         .unwrap();
     assert_eq!(create.status(), StatusCode::OK);
     let create_body = json_body(create).await;
     let name = create_body["name"].as_str().unwrap().to_string();
-    assert!(create_body["size"].as_u64().unwrap() > 0, "a real sqlite snapshot must have nonzero size");
+    assert!(
+        create_body["size"].as_u64().unwrap() > 0,
+        "a real sqlite snapshot must have nonzero size"
+    );
 
     let list = app
         .clone()
@@ -1963,16 +2064,28 @@ async fn backups_round_trip_on_sqlite() {
         .unwrap();
     assert_eq!(list.status(), StatusCode::OK);
     let list_body = json_body(list).await;
-    assert!(list_body.as_array().unwrap().iter().any(|b| b["name"] == name));
+    assert!(list_body
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["name"] == name));
 
     let download = app
         .clone()
-        .oneshot(get_request(&format!("/api/backups/{name}/download"), Some(&token)))
+        .oneshot(get_request(
+            &format!("/api/backups/{name}/download"),
+            Some(&token),
+        ))
         .await
         .unwrap();
     assert_eq!(download.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(download.into_body(), usize::MAX).await.unwrap();
-    assert!(!bytes.is_empty(), "downloaded backup must contain the sqlite snapshot bytes");
+    let bytes = axum::body::to_bytes(download.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        !bytes.is_empty(),
+        "downloaded backup must contain the sqlite snapshot bytes"
+    );
 
     let delete = app
         .clone()
@@ -1994,7 +2107,11 @@ async fn backups_round_trip_on_sqlite() {
         .unwrap();
     let list_after_body = json_body(list_after).await;
     assert!(
-        !list_after_body.as_array().unwrap().iter().any(|b| b["name"] == name),
+        !list_after_body
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["name"] == name),
         "deleted backup must no longer be listed"
     );
 }
@@ -2053,7 +2170,9 @@ async fn backups_are_rejected_on_postgres() {
     // sidesteps that instead of requiring one.
     let email = format!("backups-pg-test-{}@test.local", cratebase_core::new_id());
     let hash = cratebase_auth::hash_password("admin12345").unwrap();
-    cratebase_db::admins::create_admin(&state.db, &email, &hash).await.unwrap();
+    cratebase_db::admins::create_admin(&state.db, &email, &hash)
+        .await
+        .unwrap();
     let login = app
         .clone()
         .oneshot(json_request(
@@ -2065,10 +2184,18 @@ async fn backups_are_rejected_on_postgres() {
         .await
         .unwrap();
     assert_eq!(login.status(), StatusCode::OK);
-    let token = json_body(login).await["token"].as_str().unwrap().to_string();
+    let token = json_body(login).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let create = app
-        .oneshot(json_request("POST", "/api/backups", Some(&token), json!({})))
+        .oneshot(json_request(
+            "POST",
+            "/api/backups",
+            Some(&token),
+            json!({}),
+        ))
         .await
         .unwrap();
     assert_eq!(
@@ -2158,7 +2285,9 @@ async fn request_otp_rate_limits_after_burst() {
             .uri("/api/collections/users/request-otp")
             .header("content-type", "application/json")
             .header("x-forwarded-for", forwarded_for)
-            .body(Body::from(json!({"email": "nobody@test.local"}).to_string()))
+            .body(Body::from(
+                json!({"email": "nobody@test.local"}).to_string(),
+            ))
             .unwrap()
     }
 
@@ -2166,7 +2295,11 @@ async fn request_otp_rate_limits_after_burst() {
     // always answers 204 regardless of match (no-enumeration), so every
     // in-burst request should be 204, not 429.
     for i in 0..8 {
-        let res = app.clone().oneshot(otp_request("203.0.114.9")).await.unwrap();
+        let res = app
+            .clone()
+            .oneshot(otp_request("203.0.114.9"))
+            .await
+            .unwrap();
         assert_eq!(
             res.status(),
             StatusCode::NO_CONTENT,
@@ -2203,7 +2336,10 @@ async fn rules_support_relation_dot_notation() {
         ))
         .await
         .unwrap();
-    let authors_id = json_body(create_authors).await["id"].as_str().unwrap().to_string();
+    let authors_id = json_body(create_authors).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Saving a listRule using the exact dot-notation example the admin
     // dashboard's rule-syntax-help popover advertises must succeed, not

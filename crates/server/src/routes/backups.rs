@@ -59,8 +59,7 @@ fn validate_name(name: &str) -> ApiResult<()> {
         Ok(())
     } else {
         Err(ApiError(AppError::BadRequest(
-            "backup name must be alphanumeric (with '-', '_', '.') and not start with a dot"
-                .into(),
+            "backup name must be alphanumeric (with '-', '_', '.') and not start with a dot".into(),
         )))
     }
 }
@@ -107,11 +106,9 @@ async fn create(
         .await
         .map_err(|e| ApiError(AppError::Internal(format!("backup failed: {e}"))))?;
 
-    let bytes = tokio::fs::read(&tmp_path).await.map_err(|e| {
-        ApiError(AppError::Internal(format!(
-            "reading backup snapshot: {e}"
-        )))
-    })?;
+    let bytes = tokio::fs::read(&tmp_path)
+        .await
+        .map_err(|e| ApiError(AppError::Internal(format!("reading backup snapshot: {e}"))))?;
     tokio::fs::remove_file(&tmp_path).await.ok();
 
     let size = bytes.len() as u64;
@@ -153,13 +150,13 @@ async fn download(
     Path(name): Path<String>,
 ) -> ApiResult<Response> {
     validate_name(&name)?;
-    let stream = app.storage.get_stream(&format!("{BACKUP_PREFIX}{name}")).await?;
+    let stream = app
+        .storage
+        .get_stream(&format!("{BACKUP_PREFIX}{name}"))
+        .await?;
     let response = (
         [
-            (
-                header::CONTENT_TYPE,
-                "application/octet-stream".to_string(),
-            ),
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{name}\""),

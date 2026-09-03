@@ -173,11 +173,6 @@ async fn any_of_and_relation_dot_notation_filters() {
     assert_eq!(got, vec!["post-go", "post-rust-only"]);
 
     // Combine an any-of operator with dot-notation and boolean composition.
-    let got = titles(
-        &db,
-        &posts,
-        r#"author.name = "Bob" && tags ?= "go""#,
-    )
-    .await;
+    let got = titles(&db, &posts, r#"author.name = "Bob" && tags ?= "go""#).await;
     assert_eq!(got, vec!["post-go"]);
 }

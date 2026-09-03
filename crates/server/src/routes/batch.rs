@@ -87,7 +87,9 @@ impl Effect {
                 event,
                 record,
             } => {
-                app.realtime.publish(&app.db, &collection, event, &record).await;
+                app.realtime
+                    .publish(&app.db, &collection, event, &record)
+                    .await;
             }
             Effect::RecordDeleted {
                 collection,
@@ -103,7 +105,9 @@ impl Effect {
                         }
                     }
                 }
-                app.realtime.publish(&app.db, &collection, "delete", &record).await;
+                app.realtime
+                    .publish(&app.db, &collection, "delete", &record)
+                    .await;
             }
         }
     }
@@ -170,9 +174,14 @@ async fn create_in_tx(
         auth: auth.clone(),
         data: Some(fields.clone()),
     };
-    let allowed =
-        evaluate_create_rule_tx(tx, app.db.backend, &collection.create_rule, &collection, &ctx)
-            .await?;
+    let allowed = evaluate_create_rule_tx(
+        tx,
+        app.db.backend,
+        &collection.create_rule,
+        &collection,
+        &ctx,
+    )
+    .await?;
     if !allowed {
         return Err(forbidden());
     }
@@ -184,7 +193,8 @@ async fn create_in_tx(
 
     let id = new_id();
     let record =
-        records::create_record_with_id_tx(tx, app.db.backend, &collection, id, fields, normalized).await?;
+        records::create_record_with_id_tx(tx, app.db.backend, &collection, id, fields, normalized)
+            .await?;
 
     let effect = Effect::Publish {
         collection,
@@ -234,8 +244,7 @@ async fn update_in_tx(
     let fields = body_object(body)?;
     let fields = crate::auth_fields::prepare_auth_update(&collection, fields)?;
     let normalized =
-        validate::validate_and_normalize_tx(tx, app.db.backend, &collection, &fields, true)
-            .await?;
+        validate::validate_and_normalize_tx(tx, app.db.backend, &collection, &fields, true).await?;
 
     let record =
         records::update_record_tx(tx, app.db.backend, &collection, &id, fields, normalized).await?;
@@ -367,8 +376,8 @@ async fn batch(
                 // back every write made by earlier sub-requests in this
                 // batch (sqlx rolls back on drop).
                 let error_body = err.0.body();
-                let status =
-                    StatusCode::from_u16(error_body.code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+                let status = StatusCode::from_u16(error_body.code)
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 return Ok((
                     status,
                     Json(json!({ "failedIndex": index, "error": error_body })),

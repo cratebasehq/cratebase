@@ -35,7 +35,7 @@ use cratebase_core::field::{Field, FieldOptions, FieldType};
 use cratebase_core::{new_id, now, AppError, AuthOptions, Collection, CollectionType};
 use cratebase_db::records::{self, update_record, ListParams};
 use cratebase_db::resolver::{AuthContext, RequestContext};
-use cratebase_db::{collections, DbError, DbResult, Db};
+use cratebase_db::{collections, Db, DbError, DbResult};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -147,7 +147,9 @@ fn queue_jobs_collection() -> Collection {
 pub async fn ensure_queue_collection(db: &Db) -> DbResult<()> {
     match collections::get_collection_by_name(db, COLLECTION_NAME).await {
         Ok(_) => Ok(()),
-        Err(DbError::NotFound) => collections::create_collection(db, &queue_jobs_collection()).await,
+        Err(DbError::NotFound) => {
+            collections::create_collection(db, &queue_jobs_collection()).await
+        }
         Err(e) => Err(e),
     }
 }
@@ -204,7 +206,11 @@ async fn enqueue(
     }
     let collection = collections::get_collection_by_name(&state.db, COLLECTION_NAME)
         .await
-        .map_err(|_| ApiError(AppError::Internal("queue collection not provisioned".into())))?;
+        .map_err(|_| {
+            ApiError(AppError::Internal(
+                "queue collection not provisioned".into(),
+            ))
+        })?;
 
     let mut fields = Map::new();
     fields.insert("queue".into(), json!(body.queue));
@@ -247,7 +253,9 @@ fn tick(state: AppState) -> Pin<Box<dyn Future<Output = ()> + Send>> {
             &ctx,
             None,
             ListParams {
-                filter: Some(&format!("status = \"processing\" && updated <= \"{stale_cutoff}\"")),
+                filter: Some(&format!(
+                    "status = \"processing\" && updated <= \"{stale_cutoff}\""
+                )),
                 sort: None,
                 page: 1,
                 per_page: 50,
@@ -256,7 +264,9 @@ fn tick(state: AppState) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         .await
         {
             for job in &stuck.items {
-                let Some(id) = job["id"].as_str() else { continue };
+                let Some(id) = job["id"].as_str() else {
+                    continue;
+                };
                 let mut patch = Map::new();
                 patch.insert("status".into(), json!("pending"));
                 let _ = update_record(&state.db, &collection, id, patch).await;
@@ -271,7 +281,9 @@ fn tick(state: AppState) -> Pin<Box<dyn Future<Output = ()> + Send>> {
             &ctx,
             None,
             ListParams {
-                filter: Some(&format!("status = \"pending\" && availableAt <= \"{now_iso}\"")),
+                filter: Some(&format!(
+                    "status = \"pending\" && availableAt <= \"{now_iso}\""
+                )),
                 sort: Some("created"),
                 page: 1,
                 per_page: 1,
@@ -286,7 +298,10 @@ fn tick(state: AppState) -> Pin<Box<dyn Future<Output = ()> + Send>> {
 
         let mut claim = Map::new();
         claim.insert("status".into(), json!("processing"));
-        if update_record(&state.db, &collection, id, claim).await.is_err() {
+        if update_record(&state.db, &collection, id, claim)
+            .await
+            .is_err()
+        {
             return;
         }
 

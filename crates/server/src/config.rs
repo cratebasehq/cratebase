@@ -1,5 +1,5 @@
-use cratebase_mailer::MailerConfig;
 use crate::oauth2::ProviderConfig;
+use cratebase_mailer::MailerConfig;
 use cratebase_storage::StorageConfig;
 
 /// Runtime configuration, loaded from environment variables (optionally via
