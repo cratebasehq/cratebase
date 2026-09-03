@@ -82,20 +82,28 @@ export function RecordsGrid<T>({
           </tr>
         </thead>
         <tbody>
-          {ordered.map(({ id, row }) => (
-            <tr key={id} role="row" className="group hover:bg-accent/40">
-              {columns.map((column) => (
-                <td
-                  key={column.id}
-                  role="cell"
-                  style={{ width: column.width, minWidth: column.width }}
-                  className="border-b border-r border-border px-3 py-1.5 align-middle last:border-r-0"
-                >
-                  {column.cell(row)}
-                </td>
-              ))}
+          {rows.length === 0 ? (
+            <tr role="row">
+              <td colSpan={columns.length} className="px-3 py-16 text-center font-sans text-[13px] text-muted-foreground">
+                No records yet
+              </td>
             </tr>
-          ))}
+          ) : (
+            ordered.map(({ id, row }) => (
+              <tr key={id} role="row" className="group hover:bg-accent/40">
+                {columns.map((column) => (
+                  <td
+                    key={column.id}
+                    role="cell"
+                    style={{ width: column.width, minWidth: column.width }}
+                    className="border-b border-r border-border px-3 py-1.5 align-middle last:border-r-0"
+                  >
+                    {column.cell(row)}
+                  </td>
+                ))}
+              </tr>
+            ))
+          )}
         </tbody>
       </table>
     </div>

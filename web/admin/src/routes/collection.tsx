@@ -214,8 +214,9 @@ function CollectionPage() {
         </div>
 
         {tab === "records" ? (
-          <div className="flex items-center gap-3">
+          <div className="flex flex-1 items-center justify-end gap-3">
             <ExpandingSearch
+              className="max-w-sm flex-1"
               value={search}
               onChange={(next) => updateSearch({ q: next || undefined, page: undefined })}
               placeholder={`Search ${collection.name}…`}
@@ -224,7 +225,7 @@ function CollectionPage() {
             <Button
               size="sm"
               onClick={() => setEditing(null)}
-              className="gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
+              className="h-10 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
             >
               <Plus className="size-3.5" />
               New record
@@ -258,7 +259,7 @@ function CollectionPage() {
               <div className="px-6">
                 <TableSkeleton />
               </div>
-            ) : result.items.length > 0 ? (
+            ) : (
               <RecordsGrid
                 label={`${collection.name} records`}
                 rows={result.items}
@@ -267,11 +268,6 @@ function CollectionPage() {
                 sort={sort}
                 onSortChange={(next) => updateSearch({ sort: sortStateToParam(next), page: undefined })}
               />
-            ) : (
-              <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-                <p className="text-sm font-medium">No records yet</p>
-                <p className="text-sm text-muted-foreground">Create the first one to see it here.</p>
-              </div>
             )}
           </div>
 
