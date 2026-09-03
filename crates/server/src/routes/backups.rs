@@ -27,6 +27,36 @@ pub fn router() -> Router<AppState> {
         .route("/backups", get(list).post(create))
         .route("/backups/{name}", axum::routing::delete(remove))
         .route("/backups/{name}/download", get(download))
+        .route("/backups/storage-info", get(storage_info))
+}
+
+#[derive(Serialize)]
+struct StorageInfo {
+    /// "local" or "s3" — which `Storage` backend `STORAGE_DRIVER` selected.
+    driver: &'static str,
+    /// Where backups actually land under that backend: the local
+    /// directory, or `bucket[@endpoint]` for S3-compatible stores. Never
+    /// includes credentials.
+    location: String,
+}
+
+async fn storage_info(State(app): State<AppState>, _admin: RequireAdmin) -> Json<StorageInfo> {
+    let info = match &app.config.storage {
+        cratebase_storage::StorageConfig::Local { base_dir } => StorageInfo {
+            driver: "local",
+            location: base_dir.clone(),
+        },
+        cratebase_storage::StorageConfig::S3 {
+            bucket, endpoint, ..
+        } => StorageInfo {
+            driver: "s3",
+            location: match endpoint {
+                Some(url) => format!("{bucket}@{url}"),
+                None => bucket.clone(),
+            },
+        },
+    };
+    Json(info)
 }
 
 #[derive(Deserialize, Default)]
