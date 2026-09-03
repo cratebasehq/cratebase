@@ -14,7 +14,8 @@ import { SortableTable, type SortableColumn, type SortState } from "@/components
 import { NewItemsPill } from "@/components/interior/new-items-pill";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { IdCell, RecordValueCell } from "@/components/records/record-value-cell";
+import { IdCell } from "@/components/records/record-value-cell";
+import { InlineEditableCell } from "@/components/records/inline-cell";
 import { RecordDrawer } from "@/components/records/record-drawer";
 import { CollectionSettings } from "@/components/collections/collection-settings";
 
@@ -91,15 +92,7 @@ function CollectionPage() {
       sortable: !["json", "relation", "file"].includes(field.type),
       value: (row: RecordModel) => (typeof row[field.name] === "object" ? JSON.stringify(row[field.name]) : (row[field.name] as string | number)),
       cell: (row: RecordModel) => (
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => setEditing(row)}
-          onKeyDown={(e) => e.key === "Enter" && setEditing(row)}
-          className="block w-full cursor-pointer text-left"
-        >
-          <RecordValueCell record={row} field={field} />
-        </div>
+        <InlineEditableCell record={row} field={field} collectionName={collection.name} onOpenDrawer={() => setEditing(row)} />
       ),
     })),
     {
@@ -186,7 +179,7 @@ function CollectionPage() {
 
           <div className="relative flex-1 overflow-y-auto px-6">
             {newSince > 0 ? (
-              <div className="sticky top-2 z-10 flex justify-center">
+              <div className="sticky top-11 z-10 flex justify-center">
                 <NewItemsPill
                   count={newSince}
                   onJump={() => {

@@ -201,6 +201,46 @@ async fn full_record_lifecycle_with_public_rules() {
 }
 
 #[tokio::test]
+async fn email_field_name_only_reserved_on_auth_collections() {
+    let state = test_state().await;
+    let app = build_app(state.clone());
+    let token = admin_token(&state, &app).await;
+
+    // A base collection storing contacts should be able to name a field
+    // "email" — only auth collections reserve it for their own column.
+    let base = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "contacts", "type": "base",
+                "schema": [{"id": "f1", "name": "email", "type": "email"}],
+                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(base.status(), StatusCode::OK, "{:?}", json_body(base).await);
+
+    let auth = app
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "members", "type": "auth",
+                "schema": [{"id": "f1", "name": "email", "type": "text"}],
+                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(auth.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn locked_create_rule_rejects_anonymous_writes() {
     let state = test_state().await;
     let app = build_app(state.clone());

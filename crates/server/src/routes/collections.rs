@@ -55,9 +55,9 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
                 field.name
             ))));
         }
-        if cratebase_core::RESERVED_FIELD_NAMES.contains(&field.name.as_str())
-            || field.name == "email"
-        {
+        let reserved_for_auth =
+            input.collection_type == CollectionType::Auth && matches!(field.name.as_str(), "email" | "password" | "password_hash");
+        if cratebase_core::RESERVED_FIELD_NAMES.contains(&field.name.as_str()) || reserved_for_auth {
             return Err(ApiError(AppError::BadRequest(format!(
                 "'{}' is a reserved field name",
                 field.name
