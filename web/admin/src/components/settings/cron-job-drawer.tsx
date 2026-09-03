@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { RecordModel } from "cratebase";
 import { Drawer } from "@/components/interior/drawer";
 import { LoadingButton } from "@/components/interior/loading-button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useRecordMutations } from "@/hooks/use-records";
+import { cb } from "@/lib/api";
+
+type AvailableJob = { name: string; description: string };
 
 export type CronJobRecord = RecordModel & {
   name: string;
@@ -34,6 +39,12 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
   const [jobKey, setJobKey] = useState("");
   const [enabled, setEnabled] = useState(true);
   const { create, update } = useRecordMutations("_cron_jobs");
+  const { data: availableJobs = [] } = useQuery({
+    queryKey: ["cron-jobs", "available"],
+    queryFn: () => cb.send<{ jobs: AvailableJob[] }>("/api/plugins/cron-jobs/available").then((r) => r.jobs),
+    enabled: open,
+    staleTime: 5 * 60 * 1000,
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -83,15 +94,26 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
 
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="cron-job">Job</Label>
-          <Input
-            id="cron-job"
-            value={jobKey}
-            onChange={(e) => setJobKey(e.target.value)}
-            placeholder="log_stats"
-            className="font-mono"
-          />
+          <Select value={jobKey} onValueChange={setJobKey}>
+            <SelectTrigger id="cron-job" className="w-full font-mono">
+              <SelectValue placeholder="Select a job…" />
+            </SelectTrigger>
+            <SelectContent>
+              {availableJobs.map((j) => (
+                <SelectItem key={j.name} value={j.name} className="font-mono">
+                  {j.name}
+                </SelectItem>
+              ))}
+              {jobKey && !availableJobs.some((j) => j.name === jobKey) ? (
+                <SelectItem value={jobKey} className="font-mono">
+                  {jobKey} (not in the current binary's registry)
+                </SelectItem>
+              ) : null}
+            </SelectContent>
+          </Select>
           <p className="text-[12px] text-muted-foreground">
-            Name of a job body registered in the server binary's job registry.
+            {availableJobs.find((j) => j.name === jobKey)?.description ??
+              "Every job body registered in the running server binary — see crates/server/src/plugins/cron_jobs.rs to add one."}
           </p>
         </div>
 
