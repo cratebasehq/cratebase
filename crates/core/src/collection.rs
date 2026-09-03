@@ -18,10 +18,29 @@ pub enum CollectionType {
 #[serde(default, rename_all = "camelCase")]
 pub struct AuthOptions {
     pub min_password_length: Option<u32>,
-    pub allow_email_auth: Option<bool>,
-    pub allow_username_auth: Option<bool>,
+    /// The schema field that identifies an auth record for login, e.g.
+    /// `"email"` (default) or `"username"`. Cratebase auto-manages this
+    /// column (uniqueness, presence) the same way it always managed a
+    /// hardcoded `email` column; it just isn't hardcoded to that name
+    /// anymore.
+    pub identity_field: Option<String>,
     pub require_email_verification: Option<bool>,
     pub token_ttl_seconds: Option<i64>,
+}
+
+impl AuthOptions {
+    /// The configured identity field name, defaulting to `"email"` for
+    /// collections created before this option existed.
+    pub fn identity_field(&self) -> &str {
+        self.identity_field.as_deref().unwrap_or("email")
+    }
+
+    /// Whether the identity field should be validated/rendered as an email
+    /// address. Any other identity field name (e.g. `"username"`) is
+    /// treated as free-form text.
+    pub fn identity_is_email(&self) -> bool {
+        self.identity_field() == "email"
+    }
 }
 
 /// A dynamic, user-defined data collection. Persisted in the system

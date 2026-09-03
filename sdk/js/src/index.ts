@@ -16,6 +16,7 @@ export type {
   FieldSchema,
   CollectionType,
   CollectionModel,
+  AuthOptions,
   AuthResponse,
   AdminAuthResponse,
 } from "./types.js";

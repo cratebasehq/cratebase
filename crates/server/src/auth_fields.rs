@@ -16,10 +16,9 @@ fn min_password_length(collection: &Collection) -> usize {
     collection.auth_options.min_password_length.unwrap_or(8) as usize
 }
 
-/// Extract and hash the `password`/`passwordConfirm` fields of a create
-/// request for an `Auth`-typed collection, leaving every other field
-/// untouched for the normal schema-driven validation path. No-op for
-/// non-auth collections.
+/// Extract and hash the identity/`password` fields of a create request for
+/// an `Auth`-typed collection, leaving every other field untouched for the
+/// normal schema-driven validation path. No-op for non-auth collections.
 pub fn prepare_auth_create(
     collection: &Collection,
     mut fields: Map<String, Value>,
@@ -28,18 +27,25 @@ pub fn prepare_auth_create(
         return Ok(fields);
     }
     let mut errors = HashMap::new();
+    let identity_field = collection.auth_options.identity_field();
 
-    let email = fields
-        .get("email")
+    let identity = fields
+        .get(identity_field)
         .and_then(Value::as_str)
         .map(str::to_string);
-    match &email {
-        Some(e) if looks_like_email(e) => {}
-        Some(_) => {
-            errors.insert("email".to_string(), "not a valid email address".to_string());
+    match &identity {
+        Some(v) if collection.auth_options.identity_is_email() && !looks_like_email(v) => {
+            errors.insert(
+                identity_field.to_string(),
+                "not a valid email address".to_string(),
+            );
         }
+        Some(v) if v.trim().is_empty() => {
+            errors.insert(identity_field.to_string(), "value is required".to_string());
+        }
+        Some(_) => {}
         None => {
-            errors.insert("email".to_string(), "value is required".to_string());
+            errors.insert(identity_field.to_string(), "value is required".to_string());
         }
     }
 
@@ -47,6 +53,9 @@ pub fn prepare_auth_create(
         .get("password")
         .and_then(Value::as_str)
         .map(str::to_string);
+    // `passwordConfirm` is optional: when present it must match, but admins
+    // creating a record directly (unlike a public self-registration form)
+    // don't need to retype the password.
     let confirm = fields
         .get("passwordConfirm")
         .and_then(Value::as_str)
@@ -62,7 +71,7 @@ pub fn prepare_auth_create(
                 format!("must be at least {min_len} characters"),
             );
         }
-        Some(p) if confirm.as_deref() != Some(p.as_str()) => {
+        Some(p) if confirm.is_some() && confirm.as_deref() != Some(p.as_str()) => {
             errors.insert(
                 "passwordConfirm".to_string(),
                 "passwords do not match".to_string(),
@@ -80,14 +89,14 @@ pub fn prepare_auth_create(
 
     fields.remove("password");
     fields.remove("passwordConfirm");
-    fields.insert("email".to_string(), Value::String(email.unwrap()));
+    fields.insert(identity_field.to_string(), Value::String(identity.unwrap()));
     fields.insert("password_hash".to_string(), Value::String(password_hash));
     Ok(fields)
 }
 
 /// Same as [`prepare_auth_create`] but every field is optional, matching
-/// PATCH semantics: omit `password` to leave it unchanged, omit `email` to
-/// leave it unchanged.
+/// PATCH semantics: omit `password` to leave it unchanged, omit the
+/// identity field to leave it unchanged.
 pub fn prepare_auth_update(
     collection: &Collection,
     mut fields: Map<String, Value>,
@@ -96,10 +105,16 @@ pub fn prepare_auth_update(
         return Ok(fields);
     }
     let mut errors = HashMap::new();
+    let identity_field = collection.auth_options.identity_field();
 
-    if let Some(email) = fields.get("email").and_then(Value::as_str) {
-        if !looks_like_email(email) {
-            errors.insert("email".to_string(), "not a valid email address".to_string());
+    if let Some(value) = fields.get(identity_field).and_then(Value::as_str) {
+        if collection.auth_options.identity_is_email() && !looks_like_email(value) {
+            errors.insert(
+                identity_field.to_string(),
+                "not a valid email address".to_string(),
+            );
+        } else if value.trim().is_empty() {
+            errors.insert(identity_field.to_string(), "value is required".to_string());
         }
     }
 
@@ -115,7 +130,7 @@ pub fn prepare_auth_update(
                 "password".to_string(),
                 format!("must be at least {min_len} characters"),
             );
-        } else if confirm != Some(password.as_str()) {
+        } else if confirm.is_some() && confirm != Some(password.as_str()) {
             errors.insert(
                 "passwordConfirm".to_string(),
                 "passwords do not match".to_string(),

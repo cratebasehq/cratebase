@@ -311,7 +311,7 @@ async fn auth_collection_register_login_and_self_update() {
             "POST",
             "/api/collections/users/auth-with-password",
             None,
-            json!({"email": "alice@example.com", "password": "wrong"}),
+            json!({"identity": "alice@example.com", "password": "wrong"}),
         ))
         .await
         .unwrap();
@@ -323,7 +323,7 @@ async fn auth_collection_register_login_and_self_update() {
             "POST",
             "/api/collections/users/auth-with-password",
             None,
-            json!({"email": "alice@example.com", "password": "secret123"}),
+            json!({"identity": "alice@example.com", "password": "secret123"}),
         ))
         .await
         .unwrap();
@@ -368,6 +368,65 @@ async fn auth_collection_register_login_and_self_update() {
         .unwrap();
     assert_eq!(self_update.status(), StatusCode::OK);
     assert_eq!(json_body(self_update).await["displayName"], "Alice Updated");
+}
+
+#[tokio::test]
+async fn auth_collection_with_username_identity_field() {
+    let state = test_state().await;
+    let app = build_app(state.clone());
+    let token = admin_token(&state, &app).await;
+
+    // An auth collection can be configured to log in with something other
+    // than an email address, and admin-created records don't need
+    // `passwordConfirm` at all.
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "players", "type": "auth",
+                "authOptions": {"identityField": "username"},
+                "schema": [],
+                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
+            }),
+        ))
+        .await
+        .unwrap();
+
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/players/records",
+            Some(&token),
+            json!({"username": "neo", "password": "secret123"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        created.status(),
+        StatusCode::OK,
+        "{:?}",
+        json_body(created).await
+    );
+    let record = json_body(created).await;
+    assert_eq!(record["username"], "neo");
+    assert!(
+        record.get("email").is_none(),
+        "no email column on a username-identity collection"
+    );
+
+    let login = app
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/players/auth-with-password",
+            None,
+            json!({"identity": "neo", "password": "secret123"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
 }
 
 #[tokio::test]

@@ -27,8 +27,14 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Deserialize)]
-struct PasswordLogin {
+struct AdminPasswordLogin {
     email: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct RecordPasswordLogin {
+    identity: String,
     password: String,
 }
 
@@ -38,7 +44,7 @@ fn invalid_credentials() -> ApiError {
 
 async fn admin_login(
     State(app): State<AppState>,
-    Json(body): Json<PasswordLogin>,
+    Json(body): Json<AdminPasswordLogin>,
 ) -> ApiResult<Json<Value>> {
     let admin = admins::get_admin_by_email(&app.db, &body.email)
         .await
@@ -83,7 +89,7 @@ async fn admin_refresh(
 async fn record_login(
     State(app): State<AppState>,
     Path(collection_name): Path<String>,
-    Json(body): Json<PasswordLogin>,
+    Json(body): Json<RecordPasswordLogin>,
 ) -> ApiResult<Json<Value>> {
     let collection = load_collection(&app, &collection_name).await?;
     if !collection.is_auth() {
@@ -93,7 +99,7 @@ async fn record_login(
     }
 
     let Some((id, password_hash)) =
-        records::find_auth_credentials(&app.db, &collection, &body.email).await?
+        records::find_auth_credentials(&app.db, &collection, &body.identity).await?
     else {
         return Err(invalid_credentials());
     };
