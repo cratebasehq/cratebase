@@ -1,0 +1,110 @@
+import { useState } from "react";
+import { Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { Boxes, Database, LogOut, Moon, Plus, ShieldUser, Sun } from "lucide-react";
+import { useTheme } from "next-themes";
+import { toast } from "sonner";
+import { useCollections } from "@/hooks/use-collections";
+import { cb } from "@/lib/api";
+import { AppCommandPalette } from "@/components/app-command-palette";
+import { NewCollectionDialog } from "@/components/collections/new-collection-dialog";
+
+export function AppShell() {
+  const { data: collections } = useCollections();
+  const { resolvedTheme, setTheme } = useTheme();
+  const navigate = useNavigate();
+  const [newCollectionOpen, setNewCollectionOpen] = useState(false);
+
+  function logout() {
+    cb.authStore.clear();
+    toast.message("Signed out");
+    void navigate({ to: "/login" });
+  }
+
+  return (
+    <div className="flex h-svh overflow-hidden bg-background text-foreground">
+      <aside className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+        <div className="flex items-center gap-2 px-4 py-4">
+          <img src="/favicon.svg" alt="" className="size-6" />
+          <span className="text-sm font-semibold tracking-tight">Cratebase</span>
+        </div>
+
+        <div className="flex items-center justify-between px-4 pb-2">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Collections</span>
+          <button
+            type="button"
+            onClick={() => setNewCollectionOpen(true)}
+            className="grid size-5 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            aria-label="New collection"
+          >
+            <Plus className="size-3.5" />
+          </button>
+        </div>
+
+        <nav className="flex-1 overflow-y-auto px-2">
+          {collections?.map((collection) => (
+            <Link
+              key={collection.id}
+              to="/collections/$name"
+              params={{ name: collection.name }}
+              className="group flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              activeProps={{ className: "!bg-sidebar-accent !text-sidebar-accent-foreground font-medium" }}
+            >
+              {collection.type === "auth" ? (
+                <ShieldUser className="size-3.5 shrink-0 opacity-70" />
+              ) : (
+                <Database className="size-3.5 shrink-0 opacity-70" />
+              )}
+              <span className="truncate">{collection.name}</span>
+            </Link>
+          ))}
+          {collections?.length === 0 ? (
+            <p className="px-2.5 py-4 text-[12px] text-muted-foreground">
+              No collections yet. Create one to start storing data.
+            </p>
+          ) : null}
+        </nav>
+
+        <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-3">
+          <button
+            type="button"
+            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            aria-label="Toggle theme"
+          >
+            {resolvedTheme === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+          </button>
+          <button
+            type="button"
+            onClick={logout}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <LogOut className="size-3.5" />
+            Sign out
+          </button>
+        </div>
+      </aside>
+
+      <main className="flex min-w-0 flex-1 flex-col">
+        <Outlet />
+      </main>
+
+      <AppCommandPalette
+        collections={collections ?? []}
+        onNewCollection={() => setNewCollectionOpen(true)}
+      />
+      <NewCollectionDialog open={newCollectionOpen} onOpenChange={setNewCollectionOpen} />
+    </div>
+  );
+}
+
+export function EmptyDashboard() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+      <Boxes className="size-10 text-muted-foreground" />
+      <div>
+        <p className="text-sm font-medium">Select a collection</p>
+        <p className="text-sm text-muted-foreground">or create one from the sidebar to get started.</p>
+      </div>
+    </div>
+  );
+}
