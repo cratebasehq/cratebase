@@ -38,12 +38,17 @@ async fn test_state() -> AppState {
 }
 
 async fn json_body(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 fn json_request(method: &str, uri: &str, token: Option<&str>, body: Value) -> Request<Body> {
-    let mut builder = Request::builder().method(method).uri(uri).header("content-type", "application/json");
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
     if let Some(t) = token {
         builder = builder.header("authorization", format!("Bearer {t}"));
     }
@@ -64,7 +69,9 @@ fn get_request(uri: &str, token: Option<&str>) -> Request<Body> {
 /// over HTTP like a real client to get a bearer token.
 async fn admin_token(state: &AppState, app: &axum::Router) -> String {
     let hash = cratebase_auth::hash_password("admin12345").unwrap();
-    cratebase_db::admins::create_admin(&state.db, "admin@test.local", &hash).await.unwrap();
+    cratebase_db::admins::create_admin(&state.db, "admin@test.local", &hash)
+        .await
+        .unwrap();
 
     let login = app
         .clone()
@@ -77,7 +84,10 @@ async fn admin_token(state: &AppState, app: &axum::Router) -> String {
         .await
         .unwrap();
     assert_eq!(login.status(), StatusCode::OK);
-    json_body(login).await["token"].as_str().unwrap().to_string()
+    json_body(login).await["token"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 #[tokio::test]
@@ -146,7 +156,10 @@ async fn full_record_lifecycle_with_public_rules() {
 
     let listed = app
         .clone()
-        .oneshot(get_request("/api/collections/posts/records?filter=published%20%3D%20true", None))
+        .oneshot(get_request(
+            "/api/collections/posts/records?filter=published%20%3D%20true",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(json_body(listed).await["totalItems"], 1);
@@ -177,7 +190,13 @@ async fn full_record_lifecycle_with_public_rules() {
         .unwrap();
     assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 
-    let missing = app.oneshot(get_request(&format!("/api/collections/posts/records/{id}"), None)).await.unwrap();
+    let missing = app
+        .oneshot(get_request(
+            &format!("/api/collections/posts/records/{id}"),
+            None,
+        ))
+        .await
+        .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
@@ -202,7 +221,12 @@ async fn locked_create_rule_rejects_anonymous_writes() {
         .unwrap();
 
     let res = app
-        .oneshot(json_request("POST", "/api/collections/secrets/records", None, json!({"value": "x"})))
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/secrets/records",
+            None,
+            json!({"value": "x"}),
+        ))
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -267,14 +291,28 @@ async fn auth_collection_register_login_and_self_update() {
     let login_body = json_body(login).await;
     let user_token = login_body["token"].as_str().unwrap().to_string();
     let user_id = login_body["record"]["id"].as_str().unwrap().to_string();
-    assert!(login_body["record"].get("password_hash").is_none(), "password hash must never be exposed");
+    assert!(
+        login_body["record"].get("password_hash").is_none(),
+        "password hash must never be exposed"
+    );
 
-    let anon_list = app.clone().oneshot(get_request("/api/collections/users/records", None)).await.unwrap();
-    assert_eq!(json_body(anon_list).await["totalItems"], 0, "anonymous must not see auth records");
+    let anon_list = app
+        .clone()
+        .oneshot(get_request("/api/collections/users/records", None))
+        .await
+        .unwrap();
+    assert_eq!(
+        json_body(anon_list).await["totalItems"],
+        0,
+        "anonymous must not see auth records"
+    );
 
     let auth_list = app
         .clone()
-        .oneshot(get_request("/api/collections/users/records", Some(&user_token)))
+        .oneshot(get_request(
+            "/api/collections/users/records",
+            Some(&user_token),
+        ))
         .await
         .unwrap();
     assert_eq!(json_body(auth_list).await["totalItems"], 1);
@@ -321,7 +359,10 @@ async fn file_upload_and_download_round_trip() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/collections/docs/records")
-        .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
         .body(Body::from(body))
         .unwrap();
     let created = app.clone().oneshot(req).await.unwrap();
@@ -331,10 +372,15 @@ async fn file_upload_and_download_round_trip() {
     let id = record["id"].as_str().unwrap().to_string();
 
     let download = app
-        .oneshot(get_request(&format!("/api/files/docs/{id}/{filename}"), None))
+        .oneshot(get_request(
+            &format!("/api/files/docs/{id}/{filename}"),
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(download.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(download.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(download.into_body(), usize::MAX)
+        .await
+        .unwrap();
     assert_eq!(&bytes[..], b"hello file");
 }

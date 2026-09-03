@@ -36,10 +36,16 @@ fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
     obj.insert("created".into(), Value::String(row.try_get("created")?));
     obj.insert("updated".into(), Value::String(row.try_get("updated")?));
     obj.insert("collectionId".into(), Value::String(collection.id.clone()));
-    obj.insert("collectionName".into(), Value::String(collection.name.clone()));
+    obj.insert(
+        "collectionName".into(),
+        Value::String(collection.name.clone()),
+    );
     if collection.is_auth() {
         let email: Option<String> = row.try_get("email")?;
-        obj.insert("email".into(), email.map(Value::String).unwrap_or(Value::Null));
+        obj.insert(
+            "email".into(),
+            email.map(Value::String).unwrap_or(Value::Null),
+        );
     }
 
     for field in &collection.schema {
@@ -63,7 +69,10 @@ fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
                 }
             }
         };
-        obj.insert(field.name.clone(), column.to_json(field.field_type, multiple));
+        obj.insert(
+            field.name.clone(),
+            column.to_json(field.field_type, multiple),
+        );
     }
 
     Ok(Value::Object(obj))
@@ -71,7 +80,11 @@ fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
 
 /// Parse `sort=-created,name` into an `ORDER BY` clause. Unknown fields are
 /// rejected rather than silently ignored so typos surface immediately.
-fn build_order_by(collection: &Collection, backend: Backend, sort: Option<&str>) -> DbResult<String> {
+fn build_order_by(
+    collection: &Collection,
+    backend: Backend,
+    sort: Option<&str>,
+) -> DbResult<String> {
     let sort = sort.unwrap_or("-created");
     let mut parts = Vec::new();
     for token in sort.split(',').map(str::trim).filter(|t| !t.is_empty()) {
@@ -79,8 +92,14 @@ fn build_order_by(collection: &Collection, backend: Backend, sort: Option<&str>)
             Some(rest) => (rest, true),
             None => (token, false),
         };
-        if name != "id" && name != "created" && name != "updated" && collection.field(name).is_none() {
-            return Err(DbError::InvalidIdentifier(format!("unknown sort field '{name}'")));
+        if name != "id"
+            && name != "created"
+            && name != "updated"
+            && collection.field(name).is_none()
+        {
+            return Err(DbError::InvalidIdentifier(format!(
+                "unknown sort field '{name}'"
+            )));
         }
         let quoted = backend.quote_ident(name)?;
         parts.push(format!("{quoted} {}", if desc { "DESC" } else { "ASC" }));
@@ -193,7 +212,9 @@ pub async fn list_records(
     list_args.add(per_page).map_err(encode_err)?;
     list_args.add(offset).map_err(encode_err)?;
 
-    let rows = sqlx::query_with(&list_sql, list_args).fetch_all(&db.pool).await?;
+    let rows = sqlx::query_with(&list_sql, list_args)
+        .fetch_all(&db.pool)
+        .await?;
     let items = rows
         .iter()
         .map(|r| row_to_record(r, collection))
@@ -232,16 +253,25 @@ pub async fn get_record(
     args.add(id.to_string()).map_err(encode_err)?;
 
     let extra_clause = extra_sql.map(|s| format!(" AND {s}")).unwrap_or_default();
-    let sql = format!("SELECT * FROM {table} WHERE {id_col} = ${}{extra_clause}", n + 1);
+    let sql = format!(
+        "SELECT * FROM {table} WHERE {id_col} = ${}{extra_clause}",
+        n + 1
+    );
 
-    let row = sqlx::query_with(&sql, args).fetch_optional(&db.pool).await?;
+    let row = sqlx::query_with(&sql, args)
+        .fetch_optional(&db.pool)
+        .await?;
     match row {
         Some(r) => row_to_record(&r, collection),
         None => Err(DbError::NotFound),
     }
 }
 
-pub async fn create_record(db: &Db, collection: &Collection, data: Map<String, Value>) -> DbResult<Value> {
+pub async fn create_record(
+    db: &Db,
+    collection: &Collection,
+    data: Map<String, Value>,
+) -> DbResult<Value> {
     create_record_with_id(db, collection, new_id(), data).await
 }
 
@@ -261,7 +291,11 @@ pub async fn create_record_with_id(
     let ts = now();
     let table = db.backend.quote_ident(&collection.table_name())?;
 
-    let mut columns = vec!["id".to_string(), "created".to_string(), "updated".to_string()];
+    let mut columns = vec![
+        "id".to_string(),
+        "created".to_string(),
+        "updated".to_string(),
+    ];
     let mut args = AnyArguments::default();
     args.add(id.clone()).map_err(encode_err)?;
     args.add(ts.clone()).map_err(encode_err)?;
@@ -276,11 +310,15 @@ pub async fn create_record_with_id(
     if collection.is_auth() {
         if let Some(email) = data.get("email").and_then(Value::as_str) {
             columns.push("email".to_string());
-            ColumnValue::Text(Some(email.to_string())).bind(&mut args).map_err(encode_err)?;
+            ColumnValue::Text(Some(email.to_string()))
+                .bind(&mut args)
+                .map_err(encode_err)?;
         }
         if let Some(hash) = data.get("password_hash").and_then(Value::as_str) {
             columns.push("password_hash".to_string());
-            ColumnValue::Text(Some(hash.to_string())).bind(&mut args).map_err(encode_err)?;
+            ColumnValue::Text(Some(hash.to_string()))
+                .bind(&mut args)
+                .map_err(encode_err)?;
         }
     }
 
@@ -292,7 +330,8 @@ pub async fn create_record_with_id(
         column.bind(&mut args).map_err(encode_err)?;
     }
 
-    let quoted_cols: DbResult<Vec<String>> = columns.iter().map(|c| db.backend.quote_ident(c)).collect();
+    let quoted_cols: DbResult<Vec<String>> =
+        columns.iter().map(|c| db.backend.quote_ident(c)).collect();
     let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
     let sql = format!(
         "INSERT INTO {table} ({}) VALUES ({})",
@@ -314,7 +353,11 @@ pub async fn update_record(
     data: Map<String, Value>,
 ) -> DbResult<Value> {
     let normalized = crate::validate::validate_and_normalize(db, collection, &data, true).await?;
-    let auth_email = if collection.is_auth() { data.get("email").and_then(Value::as_str) } else { None };
+    let auth_email = if collection.is_auth() {
+        data.get("email").and_then(Value::as_str)
+    } else {
+        None
+    };
     let auth_password_hash = if collection.is_auth() {
         data.get("password_hash").and_then(Value::as_str)
     } else {
@@ -337,7 +380,10 @@ pub async fn update_record(
         idx += 1;
     }
     if let Some(hash) = auth_password_hash {
-        sets.push(format!("{} = ${idx}", db.backend.quote_ident("password_hash")?));
+        sets.push(format!(
+            "{} = ${idx}",
+            db.backend.quote_ident("password_hash")?
+        ));
         args.add(hash.to_string()).map_err(encode_err)?;
         idx += 1;
     }
@@ -370,7 +416,10 @@ pub async fn update_record(
 
 pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResult<()> {
     let table = db.backend.quote_ident(&collection.table_name())?;
-    let sql = format!("DELETE FROM {table} WHERE {} = $1", db.backend.quote_ident("id")?);
+    let sql = format!(
+        "DELETE FROM {table} WHERE {} = $1",
+        db.backend.quote_ident("id")?
+    );
     let result = sqlx::query(&sql).bind(id).execute(&db.pool).await?;
     if result.rows_affected() == 0 {
         Err(DbError::NotFound)
@@ -382,7 +431,11 @@ pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResu
 /// Look up an auth-record's id and password hash by email, for the
 /// password login endpoint. One query instead of an id lookup followed by
 /// a separate hash lookup.
-pub async fn find_auth_credentials(db: &Db, collection: &Collection, email: &str) -> DbResult<Option<(String, String)>> {
+pub async fn find_auth_credentials(
+    db: &Db,
+    collection: &Collection,
+    email: &str,
+) -> DbResult<Option<(String, String)>> {
     let table = db.backend.quote_ident(&collection.table_name())?;
     let sql = format!(
         "SELECT {}, {} FROM {table} WHERE {} = $1",
@@ -390,7 +443,10 @@ pub async fn find_auth_credentials(db: &Db, collection: &Collection, email: &str
         db.backend.quote_ident("password_hash")?,
         db.backend.quote_ident("email")?,
     );
-    let row = sqlx::query(&sql).bind(email).fetch_optional(&db.pool).await?;
+    let row = sqlx::query(&sql)
+        .bind(email)
+        .fetch_optional(&db.pool)
+        .await?;
     Ok(match row {
         Some(r) => Some((r.try_get("id")?, r.try_get("password_hash")?)),
         None => None,

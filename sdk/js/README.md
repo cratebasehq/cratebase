@@ -33,4 +33,4 @@ const unsubscribe = await cb.realtime.subscribe("posts", (e) => {
 
 Works in browsers, Node.js (18+), and React Native/Expo. Realtime subscriptions need a global `EventSource` — present in every browser and in Expo; on plain Node.js install the `eventsource` package and assign it to `globalThis.EventSource` before using `cb.realtime`.
 
-See the [API reference](../../docs/API.md) for the full request/response shapes this client wraps.
+See the [API reference](../../openapi.yaml) for the full request/response shapes this client wraps.

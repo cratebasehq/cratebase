@@ -11,8 +11,10 @@ async fn s3_round_trip() {
         return;
     };
     let bucket = std::env::var("TEST_S3_BUCKET").unwrap_or_else(|_| "cratebase-test".into());
-    let access_key_id = std::env::var("TEST_S3_ACCESS_KEY").unwrap_or_else(|_| "rustfsadmin".into());
-    let secret_access_key = std::env::var("TEST_S3_SECRET_KEY").unwrap_or_else(|_| "rustfsadmin".into());
+    let access_key_id =
+        std::env::var("TEST_S3_ACCESS_KEY").unwrap_or_else(|_| "rustfsadmin".into());
+    let secret_access_key =
+        std::env::var("TEST_S3_SECRET_KEY").unwrap_or_else(|_| "rustfsadmin".into());
 
     let storage = Storage::connect(&StorageConfig::S3 {
         bucket,
@@ -27,7 +29,10 @@ async fn s3_round_trip() {
     let key = format!("cratebase-test/{}.txt", uuid_like());
     assert!(!storage.exists(&key).await.unwrap());
 
-    storage.put(&key, Bytes::from_static(b"hello from rustfs")).await.unwrap();
+    storage
+        .put(&key, Bytes::from_static(b"hello from rustfs"))
+        .await
+        .unwrap();
     assert!(storage.exists(&key).await.unwrap());
 
     let data = storage.get(&key).await.unwrap();
@@ -39,5 +44,11 @@ async fn s3_round_trip() {
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    format!("{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos())
+    format!(
+        "{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
 }

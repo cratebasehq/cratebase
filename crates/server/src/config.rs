@@ -23,10 +23,7 @@ impl Config {
         let data_dir = env_or("CRATEBASE_DATA_DIR", "./data");
         std::fs::create_dir_all(&data_dir).ok();
 
-        let database_url = env_or(
-            "DATABASE_URL",
-            &format!("sqlite://{data_dir}/cratebase.db"),
-        );
+        let database_url = env_or("DATABASE_URL", &format!("sqlite://{data_dir}/cratebase.db"));
 
         let storage = match std::env::var("STORAGE_DRIVER").as_deref() {
             Ok("s3") => StorageConfig::S3 {
@@ -42,7 +39,8 @@ impl Config {
             },
         };
 
-        let auth_secret = std::env::var("AUTH_SECRET").unwrap_or_else(|_| load_or_create_secret(&data_dir));
+        let auth_secret =
+            std::env::var("AUTH_SECRET").unwrap_or_else(|_| load_or_create_secret(&data_dir));
 
         Config {
             database_url,
@@ -50,7 +48,9 @@ impl Config {
             auth_secret,
             host: env_or("HOST", "0.0.0.0"),
             port: env_or("PORT", "8090").parse().unwrap_or(8090),
-            admin_token_ttl_seconds: env_or("ADMIN_TOKEN_TTL_SECONDS", "604800").parse().unwrap_or(604_800),
+            admin_token_ttl_seconds: env_or("ADMIN_TOKEN_TTL_SECONDS", "604800")
+                .parse()
+                .unwrap_or(604_800),
             auth_token_ttl_seconds: env_or("AUTH_TOKEN_TTL_SECONDS", "1209600")
                 .parse()
                 .unwrap_or(1_209_600),

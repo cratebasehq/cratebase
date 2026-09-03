@@ -11,7 +11,9 @@ async fn create_rule_uses_submitted_data_for_bare_fields() {
 
     let mut col = common::posts_collection("posts_create_rule");
     col.create_rule = Some("published = true".to_string());
-    cratebase_db::collections::create_collection(&db, &col).await.unwrap();
+    cratebase_db::collections::create_collection(&db, &col)
+        .await
+        .unwrap();
 
     let mut data = serde_json::Map::new();
     data.insert("title".into(), json!("draft"));
@@ -20,7 +22,9 @@ async fn create_rule_uses_submitted_data_for_bare_fields() {
         auth: None,
         data: Some(data),
     };
-    let allowed = evaluate_create_rule(&db, &col.create_rule, &col, &ctx).await.unwrap();
+    let allowed = evaluate_create_rule(&db, &col.create_rule, &col, &ctx)
+        .await
+        .unwrap();
     assert!(!allowed, "published=false should fail the create rule");
 
     let mut data = serde_json::Map::new();
@@ -30,7 +34,9 @@ async fn create_rule_uses_submitted_data_for_bare_fields() {
         auth: None,
         data: Some(data),
     };
-    let allowed = evaluate_create_rule(&db, &col.create_rule, &col, &ctx).await.unwrap();
+    let allowed = evaluate_create_rule(&db, &col.create_rule, &col, &ctx)
+        .await
+        .unwrap();
     assert!(allowed, "published=true should pass the create rule");
 }
 
@@ -41,7 +47,9 @@ async fn superuser_bypasses_create_rule() {
 
     let mut col = common::posts_collection("posts_admin_bypass");
     col.create_rule = None; // locked to admins only
-    cratebase_db::collections::create_collection(&db, &col).await.unwrap();
+    cratebase_db::collections::create_collection(&db, &col)
+        .await
+        .unwrap();
 
     let ctx = RequestContext {
         auth: Some(AuthContext {
@@ -52,6 +60,8 @@ async fn superuser_bypasses_create_rule() {
         }),
         data: None,
     };
-    let allowed = evaluate_create_rule(&db, &col.create_rule, &col, &ctx).await.unwrap();
+    let allowed = evaluate_create_rule(&db, &col.create_rule, &col, &ctx)
+        .await
+        .unwrap();
     assert!(allowed);
 }

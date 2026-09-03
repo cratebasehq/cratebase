@@ -1,0 +1,153 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Cratebase identity: "rust on ink" — a warm near-black surface with a
+ * single ember/amber accent (literal nod to Rust the language and the
+ * metal). Geist Sans for UI text, Geist Mono for anything tabular or
+ * identifier-shaped (record ids, timestamps, field types, JSON).
+ */
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+
+    /* Emil Kowalski-style punchy easing curves — the built-in CSS easings
+       read as sluggish for UI-scale (sub-300ms) interactions. */
+    --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out-strong: cubic-bezier(0.77, 0, 0.175, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root {
+    --background: #fbf9f6;
+    --foreground: #211d19;
+    --card: #ffffff;
+    --card-foreground: #211d19;
+    --popover: #ffffff;
+    --popover-foreground: #211d19;
+    --primary: #d9530f;
+    --primary-foreground: #fef6ef;
+    --secondary: #f0ebe3;
+    --secondary-foreground: #211d19;
+    --muted: #f0ebe3;
+    --muted-foreground: #756a5d;
+    --accent: #f5e2d3;
+    --accent-foreground: #7c2d05;
+    --destructive: #c4351f;
+    --border: #e4dcd0;
+    --input: #e4dcd0;
+    --ring: #d9530f;
+    --chart-1: #d9530f;
+    --chart-2: #b9762f;
+    --chart-3: #8a8578;
+    --chart-4: #5f5a4e;
+    --chart-5: #3a362d;
+    --radius: 0.625rem;
+    --sidebar: #f5f1ea;
+    --sidebar-foreground: #211d19;
+    --sidebar-primary: #d9530f;
+    --sidebar-primary-foreground: #fef6ef;
+    --sidebar-accent: #ecdfcd;
+    --sidebar-accent-foreground: #7c2d05;
+    --sidebar-border: #e4dcd0;
+    --sidebar-ring: #d9530f;
+}
+
+.dark {
+    --background: #121110;
+    --foreground: #f2ece4;
+    --card: #1b1917;
+    --card-foreground: #f2ece4;
+    --popover: #1b1917;
+    --popover-foreground: #f2ece4;
+    --primary: #ef7d3e;
+    --primary-foreground: #1b0f06;
+    --secondary: #242220;
+    --secondary-foreground: #f2ece4;
+    --muted: #242220;
+    --muted-foreground: #a89b8c;
+    --accent: #2e2118;
+    --accent-foreground: #ffab74;
+    --destructive: #e5533a;
+    --border: #ffffff14;
+    --input: #ffffff1f;
+    --ring: #ef7d3e;
+    --chart-1: #ef7d3e;
+    --chart-2: #c99354;
+    --chart-3: #8f8778;
+    --chart-4: #625c4d;
+    --chart-5: #3a362d;
+    --sidebar: #171513;
+    --sidebar-foreground: #f2ece4;
+    --sidebar-primary: #ef7d3e;
+    --sidebar-primary-foreground: #1b0f06;
+    --sidebar-accent: #2e2118;
+    --sidebar-accent-foreground: #ffab74;
+    --sidebar-border: #ffffff14;
+    --sidebar-ring: #ef7d3e;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 30%, transparent);
+    }
+}
+
+@layer utilities {
+  .font-tabular {
+    font-variant-numeric: tabular-nums;
+    }
+}

@@ -7,10 +7,15 @@
 !.env.example
 /data
 node_modules/
-dist/
 .DS_Store
 *.log
-web/admin/dist
+
+# Built frontend output isn't committed — run `bun run admin:build` /
+# `bun run sdk:build` to produce it locally, or let the Dockerfile do it.
+# `.gitkeep` keeps the directory present so `cargo build`'s rust-embed
+# `#[folder = "web/admin/dist"]` has somewhere to point at on a fresh clone.
+web/admin/dist/*
+!web/admin/dist/.gitkeep
 web/admin/node_modules
 sdk/js/node_modules
 sdk/js/dist

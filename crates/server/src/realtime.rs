@@ -73,7 +73,9 @@ impl RealtimeHub {
                     .as_ref()
                     .is_some_and(|t| client.subscriptions.contains(t));
             if matches {
-                let _ = client.tx.send(Event::default().event("message").data(payload.clone()));
+                let _ = client
+                    .tx
+                    .send(Event::default().event("message").data(payload.clone()));
             }
         }
     }

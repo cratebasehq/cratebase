@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cratebase
+          POSTGRES_PASSWORD: cratebase
+          POSTGRES_DB: cratebase_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U cratebase"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # rust-embed needs `web/admin/dist` to exist even for a non-dashboard
+      # build/test run (see crates/server/src/dashboard.rs).
+      - run: mkdir -p web/admin/dist && touch web/admin/dist/.gitkeep
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+        env:
+          TEST_POSTGRES_URL: postgres://cratebase:cratebase@localhost:5432/cratebase_test
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+        working-directory: sdk/js
+      - run: bun run typecheck
+        working-directory: sdk/js
+      - run: bun run build
+        working-directory: sdk/js
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+        working-directory: sdk/js
+      - run: bun run build
+        working-directory: sdk/js
+      - run: bun install
+        working-directory: web/admin
+      - run: bunx tsc -b
+        working-directory: web/admin
+      - run: bun run build
+        working-directory: web/admin
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [rust, sdk, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: cratebase:ci

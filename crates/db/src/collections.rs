@@ -98,7 +98,11 @@ pub async fn create_collection(db: &Db, collection: &Collection) -> DbResult<()>
     Ok(())
 }
 
-pub async fn update_collection(db: &Db, previous: &Collection, updated: &Collection) -> DbResult<()> {
+pub async fn update_collection(
+    db: &Db,
+    previous: &Collection,
+    updated: &Collection,
+) -> DbResult<()> {
     let type_str = match updated.collection_type {
         CollectionType::Base => "base",
         CollectionType::Auth => "auth",
@@ -188,7 +192,11 @@ fn sql_type_for(backend: Backend, field: &Field) -> &'static str {
 /// dropped and re-added (data loss on that column only — schema changes to
 /// a field's type or multiplicity are inherently destructive without a full
 /// migration/backfill system, which is out of scope for v1).
-pub async fn sync_table(db: &Db, collection: &Collection, previous: Option<&Collection>) -> DbResult<()> {
+pub async fn sync_table(
+    db: &Db,
+    collection: &Collection,
+    previous: Option<&Collection>,
+) -> DbResult<()> {
     let backend = db.backend;
     let table = backend.quote_ident(&collection.table_name())?;
 
@@ -201,7 +209,10 @@ pub async fn sync_table(db: &Db, collection: &Collection, previous: Option<&Coll
             ];
             if collection.is_auth() {
                 cols.push(format!("{} TEXT NOT NULL", backend.quote_ident("email")?));
-                cols.push(format!("{} TEXT NOT NULL", backend.quote_ident("password_hash")?));
+                cols.push(format!(
+                    "{} TEXT NOT NULL",
+                    backend.quote_ident("password_hash")?
+                ));
             }
             for f in &collection.schema {
                 cols.push(format!(
@@ -215,9 +226,11 @@ pub async fn sync_table(db: &Db, collection: &Collection, previous: Option<&Coll
             if collection.is_auth() {
                 let idx = backend.quote_ident(&format!("idx_{}_email", collection.name))?;
                 let email_col = backend.quote_ident("email")?;
-                sqlx::query(&format!("CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} ({email_col})"))
-                    .execute(&db.pool)
-                    .await?;
+                sqlx::query(&format!(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} ({email_col})"
+                ))
+                .execute(&db.pool)
+                .await?;
             }
         }
         Some(prev) => {

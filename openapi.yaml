@@ -1,0 +1,409 @@
+openapi: 3.0.3
+info:
+  title: Cratebase API
+  version: "0.1.0"
+  description: >
+    Dynamic collections, auth, file storage, and realtime over one REST API.
+    Error responses always use the shape in `ErrorBody`. Bearer tokens
+    (admin or auth-collection) go in `Authorization: Bearer <token>`.
+servers:
+  - url: /api
+security:
+  - bearerAuth: []
+  - {}
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { status: { type: string, example: ok } }
+
+  /admins/auth-with-password:
+    post:
+      summary: Superuser login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  admin: { $ref: "#/components/schemas/Admin" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /admins/auth-refresh:
+    post:
+      summary: Refresh a superuser token
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  admin: { $ref: "#/components/schemas/Admin" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections:
+    get:
+      summary: List collections (superuser only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Collection" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a collection (superuser only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionInput" }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collection" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get a collection (superuser only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collection" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Update a collection's schema/rules (superuser only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionInput" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collection" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete a collection and every record in it (superuser only)
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/records:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: List/search records
+      parameters:
+        - name: filter
+          in: query
+          schema: { type: string }
+          description: 'Filter expression, e.g. `published = true && title ~ "hello"`'
+        - name: sort
+          in: query
+          schema: { type: string }
+          description: Comma-separated fields, `-` prefix for descending (default `-created`)
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: perPage
+          in: query
+          schema: { type: integer, default: 30, maximum: 500 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  perPage: { type: integer }
+                  totalItems: { type: integer }
+                  totalPages: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Record" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a record (JSON, or multipart/form-data when the collection has file fields)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+          multipart/form-data:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/records/{id}:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: View one record
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Update a record (JSON, or multipart/form-data for file fields)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+          multipart/form-data:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete a record
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/auth-with-password:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Log in to an auth collection
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  record: { $ref: "#/components/schemas/Record" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/auth-refresh:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Refresh an auth-collection token
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  record: { $ref: "#/components/schemas/Record" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /files/{collection}/{recordId}/{filename}:
+    parameters:
+      - name: collection
+        in: path
+        required: true
+        schema: { type: string }
+      - name: recordId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: filename
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Download a file (gated by the collection's viewRule)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /realtime:
+    get:
+      summary: Open an SSE stream of record change events
+      description: >
+        The first event (`PB_CONNECT`) carries `{"clientId": "..."}`. Send
+        that id to `POST /realtime` to declare subscriptions. Subsequent
+        `message` events carry `{"action": "create"|"update"|"delete", "record": {...}}`.
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream: { schema: { type: string } }
+    post:
+      summary: Set a client's realtime subscriptions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId, subscriptions]
+              properties:
+                clientId: { type: string }
+                subscriptions:
+                  type: array
+                  items: { type: string }
+                  description: Bare collection name (all changes) or `collection/recordId` (one record)
+      responses:
+        "204": { description: OK }
+        "404": { description: Unknown clientId (connection already closed) }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+  schemas:
+    ErrorBody:
+      type: object
+      properties:
+        code: { type: integer }
+        message: { type: string }
+        data:
+          type: object
+          additionalProperties: { type: string }
+          description: Per-field validation errors, present when code is 400
+    Admin:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        created: { type: string }
+        updated: { type: string }
+    Record:
+      type: object
+      description: Every record has these plus its collection's own schema fields.
+      properties:
+        id: { type: string }
+        created: { type: string }
+        updated: { type: string }
+        collectionId: { type: string }
+        collectionName: { type: string }
+      additionalProperties: true
+    FieldSchema:
+      type: object
+      required: [id, name, type]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type:
+          type: string
+          enum: [text, editor, number, bool, email, url, date, select, json, relation, file, password]
+        required: { type: boolean }
+        unique: { type: boolean }
+        options: { type: object, additionalProperties: true }
+    CollectionInput:
+      type: object
+      required: [name, type, schema]
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [base, auth, view] }
+        schema:
+          type: array
+          items: { $ref: "#/components/schemas/FieldSchema" }
+        listRule: { type: string, nullable: true }
+        viewRule: { type: string, nullable: true }
+        createRule: { type: string, nullable: true }
+        updateRule: { type: string, nullable: true }
+        deleteRule: { type: string, nullable: true }
+        authOptions: { type: object, additionalProperties: true }
+    Collection:
+      allOf:
+        - $ref: "#/components/schemas/CollectionInput"
+        - type: object
+          properties:
+            id: { type: string }
+            created: { type: string }
+            updated: { type: string }

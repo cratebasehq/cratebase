@@ -12,7 +12,11 @@ pub async fn load_collection(app: &AppState, id_or_name: &str) -> Result<Collect
         Ok(c) => c,
         Err(_) => collections::get_collection_by_id(&app.db, id_or_name)
             .await
-            .map_err(|_| ApiError(AppError::NotFound(format!("collection '{id_or_name}' not found"))))?,
+            .map_err(|_| {
+                ApiError(AppError::NotFound(format!(
+                    "collection '{id_or_name}' not found"
+                )))
+            })?,
     };
     Ok(collection)
 }

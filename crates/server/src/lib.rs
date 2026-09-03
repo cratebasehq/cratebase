@@ -4,6 +4,7 @@
 
 pub mod auth_fields;
 pub mod config;
+mod dashboard;
 pub mod extract;
 pub mod helpers;
 pub mod http_error;
@@ -54,6 +55,7 @@ pub fn build_app(state: AppState) -> Router {
 
     Router::new()
         .nest("/api", routes::router())
+        .merge(dashboard::router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
@@ -62,7 +64,13 @@ pub fn build_app(state: AppState) -> Router {
 
 fn build_cors(allowed: &[String]) -> CorsLayer {
     let layer = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers(tower_http::cors::Any);
 
     if allowed.iter().any(|o| o == "*") {

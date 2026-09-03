@@ -48,7 +48,9 @@ fn literal_to_json(lit: &Literal) -> Value {
 
 fn wrap_like(v: Value) -> Value {
     match v {
-        Value::String(s) => Value::String(format!("%{}%", s.replace('%', "\\%").replace('_', "\\_"))),
+        Value::String(s) => {
+            Value::String(format!("%{}%", s.replace('%', "\\%").replace('_', "\\_")))
+        }
         other => other,
     }
 }
