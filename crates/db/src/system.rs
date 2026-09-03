@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use cratebase_core::{new_id, now, AuthOptions, Collection, CollectionType};
 use sqlx::any::AnyRow;
 use sqlx::Row;
@@ -6,12 +8,25 @@ use crate::collections;
 use crate::error::{DbError, DbResult};
 use crate::pool::Db;
 
-/// Most recent request-log rows kept around. Pruned back to this count on
-/// every insert rather than left to grow unbounded — a request log is a
-/// debugging aid, not a permanent audit trail, so trimming lossy history
-/// is the right trade-off (mirrors PocketBase's own capped `_requests`
-/// table).
+/// Most recent request-log rows kept around. Pruned back to this count
+/// periodically (see [`insert_request_log`]) rather than left to grow
+/// unbounded - a request log is a debugging aid, not a permanent audit
+/// trail, so trimming lossy history is the right trade-off (mirrors
+/// PocketBase's own capped `_requests` table).
 const REQUEST_LOG_CAP: i64 = 5000;
+
+/// How many inserts between prune passes. The prune query is a full
+/// table scan (`... WHERE id NOT IN (SELECT ... ORDER BY created DESC
+/// LIMIT N)`) plus a second write statement holding SQLite's one
+/// writer lock right after the insert - cheap once, but running it on
+/// *every* request logged doubled the write-lock hold time (and wall
+/// clock cost) of every single API call, measured as a genuine
+/// throughput regression in `benchmarks/`. The table can grow up to
+/// `REQUEST_LOG_CAP + PRUNE_EVERY` rows between passes, which is a
+/// fine trade for a debugging aid.
+const PRUNE_EVERY: u64 = 256;
+
+static INSERT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Create the two fixed system tables Cratebase needs before any
 /// user-defined collection exists: collection metadata and admin accounts.
@@ -146,11 +161,9 @@ pub async fn ensure_request_logs_table(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
-/// Records one request and prunes the table back down to
-/// [`REQUEST_LOG_CAP`] rows. The prune runs on every insert rather than on
-/// a timer: the table is capped small enough (5k rows) that the `NOT IN`
-/// scan is cheap, and this way there's no background task to wire up or
-/// forget to start.
+/// Records one request, pruning the table back down to
+/// [`REQUEST_LOG_CAP`] roughly every [`PRUNE_EVERY`] inserts (see its
+/// doc comment for why not on every insert).
 pub async fn insert_request_log(db: &Db, entry: RequestLogEntry) -> DbResult<()> {
     sqlx::query(
         "INSERT INTO _request_logs
@@ -168,14 +181,16 @@ pub async fn insert_request_log(db: &Db, entry: RequestLogEntry) -> DbResult<()>
     .execute(&db.pool)
     .await?;
 
-    sqlx::query(
-        "DELETE FROM _request_logs WHERE id NOT IN (
-            SELECT id FROM _request_logs ORDER BY created DESC LIMIT $1
-        )",
-    )
-    .bind(REQUEST_LOG_CAP)
-    .execute(&db.pool)
-    .await?;
+    if INSERT_COUNT.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY == 0 {
+        sqlx::query(
+            "DELETE FROM _request_logs WHERE id NOT IN (
+                SELECT id FROM _request_logs ORDER BY created DESC LIMIT $1
+            )",
+        )
+        .bind(REQUEST_LOG_CAP)
+        .execute(&db.pool)
+        .await?;
+    }
 
     Ok(())
 }

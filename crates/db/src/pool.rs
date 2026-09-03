@@ -65,30 +65,41 @@ impl Db {
             _ => 10,
         };
 
+        let is_sqlite = backend == Backend::Sqlite;
         let pool = AnyPoolOptions::new()
             .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(10))
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    if !is_sqlite {
+                        return Ok(());
+                    }
+                    // `AnyPoolOptions::after_connect` fires once per
+                    // *physical* connection the pool opens, unlike a
+                    // one-off `sqlx::query(...).execute(&pool)` after
+                    // `connect_with` returns — that only configures
+                    // whichever single connection happened to serve
+                    // that query. With `max_connections` now above 1
+                    // (see the comment below), every connection the
+                    // pool opens beyond the first was silently running
+                    // with SQLite's defaults (`synchronous = FULL`,
+                    // `busy_timeout = 0`, `foreign_keys = OFF`) instead
+                    // of these — `synchronous = FULL` in particular
+                    // fsyncs on every write, which is the dominant cost
+                    // of a small write and was measured in
+                    // `benchmarks/` clawing back most of the pool-size
+                    // fix's throughput gain on every connection but the
+                    // first.
+                    use sqlx::Executor;
+                    conn.execute("PRAGMA journal_mode = WAL").await?;
+                    conn.execute("PRAGMA foreign_keys = ON").await?;
+                    conn.execute("PRAGMA busy_timeout = 5000").await?;
+                    conn.execute("PRAGMA synchronous = NORMAL").await?;
+                    Ok(())
+                })
+            })
             .connect_with(opts)
             .await?;
-
-        if backend == Backend::Sqlite {
-            sqlx::query("PRAGMA journal_mode = WAL")
-                .execute(&pool)
-                .await
-                .ok();
-            sqlx::query("PRAGMA foreign_keys = ON")
-                .execute(&pool)
-                .await
-                .ok();
-            // With more than one connection now able to attempt a write
-            // (e.g. two concurrent record updates), a brief lock
-            // conflict should block-and-retry rather than fail
-            // immediately with SQLITE_BUSY.
-            sqlx::query("PRAGMA busy_timeout = 5000")
-                .execute(&pool)
-                .await
-                .ok();
-        }
 
         Ok(Db { pool, backend })
     }

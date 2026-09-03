@@ -44,21 +44,15 @@ land.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
-- **View collections.** The `Collection::View` type and `view_query` field
-  already exist in the schema, but nothing executes the backing SQL yet —
-  `list_records`/`get_record` assume a real physical table. Needs: safe
-  view-query validation, read-only enforcement, and dashboard UI.
-- **Relation dot-notation in filters** (`author.name = "..."`) — currently
-  filters only see the record's own columns.
-- **"Any of" filter operators** (`?=`, `?!=`, ...) for multi-value fields.
-- **Batch API** (`POST /api/batch`) — transactional multi-record
-  create/update/upsert/delete in one request.
 - File field constraints in the dashboard UI (`mimeTypes`, `maxSize` are
   already schema fields but have no editor).
-- File thumbnails (`?thumb=WxH`) and protected-file access tokens (today
-  every file download is already gated by the owning record's `viewRule`
-  — see `routes/files.rs` — so this is about convenience/perf, not a
-  security gap).
+- **`search` pagination cost.** `list_records` runs a `SELECT COUNT(*)`
+  alongside the paginated `SELECT` on every call to populate
+  `totalItems`/`totalPages` — measured in `benchmarks/` as the main
+  remaining gap vs PocketBase on read-heavy workloads (roughly 3x slower
+  at both concurrency 1 and 20). Worth an estimated/cached count, or
+  skipping the count query entirely when a caller doesn't need pagination
+  metadata, before chasing anything else performance-related.
 
 ## Shipped
 
@@ -104,6 +98,28 @@ collection has no address to send them to.
   abstraction — the two providers' userinfo shapes already differ enough
   (GitHub's email is a separate scoped call) that a generic trait would
   just wrap a `match`.
+- **OTP (passwordless) login and MFA.** `POST
+  /collections/{c}/request-otp` / `auth-with-otp` for a code-only login;
+  `authOptions.mfaRequired` gates a successful password login behind the
+  same emailed one-time code (`POST /collections/{c}/mfa/confirm`) via a
+  new `_otp_codes` table.
+- **Batch API.** `POST /api/batch` — transactional multi-record
+  create/update/delete in one request, sharing one SQL transaction with
+  the same rule/validation logic the individual record routes use.
+- **View collections.** `Collection::View`'s `view_query` now backs a
+  real SQL `VIEW` (recreated on update); writes are rejected with 400.
+- **Relation dot-notation** (`author.name = "..."`) and **"any of"
+  filter operators** (`?=`, `?!=`, ...) for multi-value fields — both in
+  `crates/filter` + `crates/db/resolver.rs`.
+- **File thumbnails** (`?thumb=WxH`/`WxHf`/`WxHt`/`WxHb`, generated on
+  first request and cached to the storage backend) and **protected-file
+  access tokens** (`POST /api/files/token`, `?token=`) for embedding a
+  gated file where an `Authorization` header can't be sent.
+- **Admin dashboard: Settings area** (request logs, backups, cron jobs),
+  **design system pass** (light/dark contrast), **sidebar
+  system-collection grouping**, **type-aware records table**, and
+  **field-editor UX polish** (per-type option panels, inline validation,
+  a syntax-help popover on every rule input).
 
 ## Later
 
