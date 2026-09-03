@@ -7,6 +7,8 @@
 //! MFA second factor *is* an OTP login, just gated behind a password
 //! first.
 
+use std::sync::Arc;
+
 use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{Json, Router};
@@ -15,14 +17,25 @@ use cratebase_core::AppError;
 use cratebase_db::{otp, records};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tower_governor::governor::GovernorConfigBuilder;
+use tower_governor::key_extractor::SmartIpKeyExtractor;
+use tower_governor::GovernorLayer;
 
 use crate::helpers::load_collection;
 use crate::http_error::{ApiError, ApiResult};
 use crate::mail::send_template;
 use crate::state::AppState;
 
-pub fn router() -> Router<AppState> {
-    Router::new()
+/// `rate_limit_enabled` mirrors `routes::auth::router`'s own flag and
+/// gates every route here — unlike that module, there's no unlimited
+/// half to split off. `request-otp` is a mail-bombing vector exactly
+/// like `routes::auth::request_verification` et al.; `auth-with-otp`
+/// and `mfa/confirm` both consume a 6-digit code (1e6 possibilities),
+/// which — unlike the long random JWTs `confirm-password-reset`/
+/// `confirm-verification`/`confirm-email-change` consume — is well
+/// within brute-forcing range without a per-IP throttle.
+pub fn router(rate_limit_enabled: bool) -> Router<AppState> {
+    let router = Router::new()
         .route(
             "/collections/{collection}/request-otp",
             post(request_otp),
@@ -31,7 +44,18 @@ pub fn router() -> Router<AppState> {
             "/collections/{collection}/auth-with-otp",
             post(auth_with_otp),
         )
-        .route("/collections/{collection}/mfa/confirm", post(mfa_confirm))
+        .route("/collections/{collection}/mfa/confirm", post(mfa_confirm));
+    if rate_limit_enabled {
+        let governor_conf = GovernorConfigBuilder::default()
+            .key_extractor(SmartIpKeyExtractor)
+            .per_second(3)
+            .burst_size(8)
+            .finish()
+            .expect("static rate limit config is always valid");
+        router.layer(GovernorLayer::new(Arc::new(governor_conf)))
+    } else {
+        router
+    }
 }
 
 fn not_email_identity() -> ApiError {

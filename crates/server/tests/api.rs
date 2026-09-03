@@ -2146,3 +2146,38 @@ async fn collection_save_rejects_unparseable_and_unknown_field_rules() {
     assert!(!names.contains(&"rule_syntax_error".to_string()));
     assert!(!names.contains(&"rule_unknown_field".to_string()));
 }
+
+#[tokio::test]
+async fn request_otp_rate_limits_after_burst() {
+    let state = test_state_with_rate_limit(true).await;
+    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
+
+    fn otp_request(forwarded_for: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/api/collections/users/request-otp")
+            .header("content-type", "application/json")
+            .header("x-forwarded-for", forwarded_for)
+            .body(Body::from(json!({"email": "nobody@test.local"}).to_string()))
+            .unwrap()
+    }
+
+    // Same burst=8 governor config as routes::auth::router. request-otp
+    // always answers 204 regardless of match (no-enumeration), so every
+    // in-burst request should be 204, not 429.
+    for i in 0..8 {
+        let res = app.clone().oneshot(otp_request("203.0.114.9")).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NO_CONTENT,
+            "request {i} within burst should reach the handler, not be rate-limited"
+        );
+    }
+    let res = app.oneshot(otp_request("203.0.114.9")).await.unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the 9th immediate request from the same IP must exceed the burst — request-otp is a \
+         mail-bombing vector and must be throttled the same as request-verification/etc"
+    );
+}
