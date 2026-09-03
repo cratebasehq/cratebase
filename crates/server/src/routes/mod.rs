@@ -21,7 +21,7 @@ pub fn router(auth_rate_limit_enabled: bool) -> Router<AppState> {
         .merge(collections::router())
         .merge(records::router())
         .merge(auth::router(auth_rate_limit_enabled))
-        .merge(otp_auth::router())
+        .merge(otp_auth::router(auth_rate_limit_enabled))
         .merge(files::router())
         .merge(realtime::router())
         .merge(batch::router())

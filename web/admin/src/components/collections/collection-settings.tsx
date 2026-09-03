@@ -68,21 +68,34 @@ export function CollectionSettings({ collection }: { collection: CollectionModel
         </LoadingButton>
       </div>
 
-      <div className="rounded-xl border border-destructive/30 bg-destructive/[0.03] p-4">
-        <p className="text-[13px] font-medium text-destructive">Danger zone</p>
-        <p className="mt-1 text-[12.5px] text-muted-foreground">
-          Deleting a collection permanently removes it and every record in it. This cannot be undone.
-        </p>
-        <div className="mt-3">
-          <HoldToConfirm
-            onConfirm={() => remove.mutate()}
-            confirmLabel="Deleted"
-            className="!border-destructive/40 !text-destructive"
-          >
-            Hold to delete collection
-          </HoldToConfirm>
+      {collection.name === "users" ? (
+        <div className="rounded-xl border border-border bg-secondary/30 p-4">
+          <p className="text-[13px] font-medium text-foreground">Protected collection</p>
+          <p className="mt-1 text-[12.5px] text-muted-foreground">
+            <code className="font-mono">users</code> is provisioned automatically on first boot as the
+            default auth collection every project needs a working sign-in table for. Deleting it here
+            wouldn't recreate itself until the server restarts, breaking sign-in in the meantime — it
+            can't be removed from the dashboard. Renaming the identity field or field schema is still
+            fine above; only deletion is blocked.
+          </p>
         </div>
-      </div>
+      ) : (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/[0.03] p-4">
+          <p className="text-[13px] font-medium text-destructive">Danger zone</p>
+          <p className="mt-1 text-[12.5px] text-muted-foreground">
+            Deleting a collection permanently removes it and every record in it. This cannot be undone.
+          </p>
+          <div className="mt-3">
+            <HoldToConfirm
+              onConfirm={() => remove.mutate()}
+              confirmLabel="Deleted"
+              className="!border-destructive/40 !text-destructive"
+            >
+              Hold to delete collection
+            </HoldToConfirm>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

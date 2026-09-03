@@ -3,8 +3,10 @@ use std::sync::Arc;
 
 use axum::response::sse::Event;
 use cratebase_core::Collection;
+use cratebase_db::resolver::{
+    evaluate_record_rule, load_related_collections_for_rule, AuthContext, RequestContext,
+};
 use cratebase_db::Db;
-use cratebase_db::resolver::{evaluate_record_rule, AuthContext, RequestContext};
 use serde_json::Value;
 use tokio::sync::{mpsc, RwLock};
 
@@ -38,7 +40,10 @@ impl RealtimeHub {
     /// SSE request carried (a bearer token, if the client's transport can
     /// set one on a GET request); anonymous is fine, `subscribe` can
     /// upgrade it later.
-    pub async fn connect(&self, auth: Option<AuthContext>) -> (String, mpsc::UnboundedReceiver<Event>) {
+    pub async fn connect(
+        &self,
+        auth: Option<AuthContext>,
+    ) -> (String, mpsc::UnboundedReceiver<Event>) {
         let id = cratebase_core::new_id();
         let (tx, rx) = mpsc::unbounded_channel();
         self.clients.write().await.insert(
@@ -69,7 +74,12 @@ impl RealtimeHub {
     /// record write path (`records::create_record`/`update_record`/
     /// `delete_record`), and those reject writes against view collections
     /// before reaching it. No special-casing needed either way.
-    pub async fn subscribe(&self, client_id: &str, topics: Vec<String>, auth: Option<AuthContext>) -> bool {
+    pub async fn subscribe(
+        &self,
+        client_id: &str,
+        topics: Vec<String>,
+        auth: Option<AuthContext>,
+    ) -> bool {
         let mut clients = self.clients.write().await;
         match clients.get_mut(client_id) {
             Some(client) => {
@@ -127,17 +137,30 @@ impl RealtimeHub {
 
         let payload = serde_json::json!({ "action": action, "record": record }).to_string();
 
+        // At most two distinct rules ever apply here (listRule for
+        // collection-topic subscribers, viewRule for record-topic ones),
+        // so prefetch each rule's relation-dot-notation targets once and
+        // reuse across every subscriber — evaluating per-subscriber
+        // inside the loop would turn one published event into N extra DB
+        // round-trips for N subscribers.
+        let list_related = load_related_collections_for_rule(db, collection, &collection.list_rule)
+            .await
+            .unwrap_or_default();
+        let view_related = load_related_collections_for_rule(db, collection, &collection.view_rule)
+            .await
+            .unwrap_or_default();
+
         for (tx, auth, via_collection) in candidates {
-            let rule = if via_collection {
-                &collection.list_rule
+            let (rule, related) = if via_collection {
+                (&collection.list_rule, &list_related)
             } else {
-                &collection.view_rule
+                (&collection.view_rule, &view_related)
             };
             let ctx = RequestContext {
                 auth,
                 data: Some(record_data.clone()),
             };
-            let allowed = evaluate_record_rule(db, rule, collection, &ctx)
+            let allowed = evaluate_record_rule(db, rule, collection, &ctx, related)
                 .await
                 .unwrap_or(false);
             if allowed {

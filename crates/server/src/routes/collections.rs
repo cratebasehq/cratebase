@@ -4,6 +4,7 @@ use axum::{Json, Router};
 use cratebase_core::field::Field;
 use cratebase_core::{new_id, now, AppError, AuthOptions, Collection, CollectionType};
 use cratebase_db::collections;
+use cratebase_db::resolver::{CollectionResolver, RequestContext};
 use serde::Deserialize;
 
 use crate::extract::RequireAdmin;
@@ -63,7 +64,10 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
         }
     }
     if input.collection_type == CollectionType::View
-        && input.view_query.as_deref().is_none_or(|q| q.trim().is_empty())
+        && input
+            .view_query
+            .as_deref()
+            .is_none_or(|q| q.trim().is_empty())
     {
         return Err(ApiError(AppError::BadRequest(
             "view collections require a non-empty 'viewQuery'".into(),
@@ -93,6 +97,53 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
             return Err(ApiError(AppError::BadRequest(format!(
                 "'{}' is an autodate field but sets neither onCreate nor onUpdate",
                 field.name
+            ))));
+        }
+    }
+    Ok(())
+}
+
+/// Parses and compiles every non-empty rule expression against a
+/// draft `Collection` — the exact same resolver construction
+/// `cratebase_db::resolver::evaluate_rule`/`evaluate_create_rule` use at
+/// request time (including prefetching relation dot-notation targets via
+/// `load_related_collections`, so a rule referencing `author.name` is
+/// validated exactly as strictly as it will be enforced), run here with
+/// an empty [`RequestContext`] (auth/data are only *values* substituted
+/// during resolution — `@request.auth.*` and `@request.data.*` resolve
+/// structurally to `Value::Null` when absent, never an error, so this
+/// catches exactly the failures a real request would hit later: syntax
+/// errors, unknown field names, and unknown/non-relation dot-notation
+/// targets). Without this, a typo'd rule saved silently and only
+/// surfaced as every request being denied with no indication why.
+async fn validate_rules(collection: &Collection, db: &cratebase_db::Db) -> ApiResult<()> {
+    let ctx = RequestContext::default();
+    let rules: [(&str, &Option<String>, bool); 5] = [
+        ("listRule", &collection.list_rule, false),
+        ("viewRule", &collection.view_rule, false),
+        ("createRule", &collection.create_rule, true),
+        ("updateRule", &collection.update_rule, false),
+        ("deleteRule", &collection.delete_rule, false),
+    ];
+    for (label, rule, use_data_for_fields) in rules {
+        let Some(expr) = rule else { continue };
+        if expr.trim().is_empty() {
+            continue;
+        }
+        let related =
+            cratebase_db::resolver::load_related_collections(db, collection, expr).await?;
+        let resolver = CollectionResolver {
+            collection,
+            backend: db.backend,
+            ctx: &ctx,
+            use_data_for_fields,
+            related,
+        };
+        if let Err(e) =
+            cratebase_filter::parse_and_compile(expr, &resolver, db.backend.dialect(), 0)
+        {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "invalid {label}: {e}"
             ))));
         }
     }
@@ -141,6 +192,7 @@ async fn create(
         created: ts.clone(),
         updated: ts,
     };
+    validate_rules(&collection, &app.db).await?;
     collections::create_collection(&app.db, &collection).await?;
     Ok(Json(collection))
 }
@@ -173,16 +225,29 @@ async fn update(
         created: previous.created.clone(),
         updated: now(),
     };
+    validate_rules(&updated, &app.db).await?;
     collections::update_collection(&app.db, &previous, &updated).await?;
     Ok(Json(updated))
 }
 
+/// Deletes the collection unless it's the `users` auth collection
+/// `cratebase_db::system::ensure_default_collections` auto-provisions on
+/// first boot — that only runs when `users` is *missing*, so deleting it
+/// mid-run breaks sign-in until the next server restart recreates it.
+/// The dashboard already hides this action for `users`
+/// (`CollectionSettings`); guarded here too since the dashboard isn't
+/// the only way to call this endpoint.
 async fn remove(
     State(app): State<AppState>,
     _admin: RequireAdmin,
     Path(id): Path<String>,
 ) -> ApiResult<axum::http::StatusCode> {
     let collection = load_collection(&app, &id).await?;
+    if collection.name == "users" {
+        return Err(ApiError(AppError::BadRequest(
+            "the built-in 'users' collection can't be deleted".into(),
+        )));
+    }
     collections::delete_collection(&app.db, &collection).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

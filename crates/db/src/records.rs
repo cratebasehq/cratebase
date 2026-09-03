@@ -726,7 +726,10 @@ pub async fn update_record_tx(
         idx += 1;
     }
     if let Some(hash) = auth_password_hash {
-        sets.push(format!("{} = ${idx}", backend.quote_ident("password_hash")?));
+        sets.push(format!(
+            "{} = ${idx}",
+            backend.quote_ident("password_hash")?
+        ));
         args.add(hash.to_string()).map_err(encode_err)?;
         idx += 1;
     }

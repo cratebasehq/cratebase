@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 const EASE = [0.23, 1, 0.32, 1] as const;
@@ -319,58 +320,63 @@ export function Popover({
       >
         {trigger}
       </button>
-      <AnimatePresence>
-        {open ? (
-          <div
-            key="popover"
-            ref={floatingRef}
-            className="fixed left-0 top-0 z-50"
-            onBlurCapture={(event) => {
-              const next = event.relatedTarget as Node | null;
-              if (!next) return;
-              if (panelRef.current?.contains(next) || anchorRef.current?.contains(next)) return;
-              setOpen(false);
-            }}
-          >
-            <motion.div
-              ref={panelRef}
-              id={id}
-              role="dialog"
-              aria-label={label}
-              tabIndex={-1}
-              initial={
-                reduced ? { opacity: 0 } : { opacity: 0, scale: 0.95, ...FROM[at] }
-              }
-              animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
-              exit={
-                reduced
-                  ? { opacity: 0, transition: { duration: 0.1 } }
-                  : {
-                      opacity: 0,
-                      scale: 0.97,
-                      transition: { duration: 0.13, ease: EASE },
+      {typeof document !== "undefined"
+        ? createPortal(
+            <AnimatePresence>
+              {open ? (
+                <div
+                  key="popover"
+                  ref={floatingRef}
+                  className="fixed left-0 top-0 z-50"
+                  onBlurCapture={(event) => {
+                    const next = event.relatedTarget as Node | null;
+                    if (!next) return;
+                    if (panelRef.current?.contains(next) || anchorRef.current?.contains(next)) return;
+                    setOpen(false);
+                  }}
+                >
+                  <motion.div
+                    ref={panelRef}
+                    id={id}
+                    role="dialog"
+                    aria-label={label}
+                    tabIndex={-1}
+                    initial={
+                      reduced ? { opacity: 0 } : { opacity: 0, scale: 0.95, ...FROM[at] }
                     }
-              }
-              transition={
-                reduced
-                  ? { duration: 0 }
-                  : { ...CROSSFADE, opacity: { duration: 0.14, ease: EASE } }
-              }
-              className={`relative rounded-[11px] border border-stone-200 bg-white p-3 shadow-[0_18px_40px_-24px_rgba(28,25,23,0.5)] focus-visible:outline-none dark:border-white/[0.16] dark:bg-[#1D1D1A] dark:shadow-[0_18px_40px_-24px_rgba(0,0,0,0.9)] ${className}`}
-            >
-              <span
-                ref={arrowRef}
-                aria-hidden
-                style={{ width: arrowSize, height: arrowSize, transform: "rotate(45deg)" }}
-                className={`absolute block bg-white dark:bg-[#1D1D1A] border-stone-200 dark:border-white/[0.16] ${ARROW_EDGE[at]}`}
-              />
-              <div ref={contentRef} className="relative overflow-y-auto overscroll-contain">
-                {children}
-              </div>
-            </motion.div>
-          </div>
-        ) : null}
-      </AnimatePresence>
+                    animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
+                    exit={
+                      reduced
+                        ? { opacity: 0, transition: { duration: 0.1 } }
+                        : {
+                            opacity: 0,
+                            scale: 0.97,
+                            transition: { duration: 0.13, ease: EASE },
+                          }
+                    }
+                    transition={
+                      reduced
+                        ? { duration: 0 }
+                        : { ...CROSSFADE, opacity: { duration: 0.14, ease: EASE } }
+                    }
+                    className={`relative rounded-[11px] border border-stone-200 bg-white p-3 shadow-[0_18px_40px_-24px_rgba(28,25,23,0.5)] focus-visible:outline-none dark:border-white/[0.16] dark:bg-[#1D1D1A] dark:shadow-[0_18px_40px_-24px_rgba(0,0,0,0.9)] ${className}`}
+                  >
+                    <span
+                      ref={arrowRef}
+                      aria-hidden
+                      style={{ width: arrowSize, height: arrowSize, transform: "rotate(45deg)" }}
+                      className={`absolute block bg-white dark:bg-[#1D1D1A] border-stone-200 dark:border-white/[0.16] ${ARROW_EDGE[at]}`}
+                    />
+                    <div ref={contentRef} className="relative overflow-y-auto overscroll-contain">
+                      {children}
+                    </div>
+                  </motion.div>
+                </div>
+              ) : null}
+            </AnimatePresence>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

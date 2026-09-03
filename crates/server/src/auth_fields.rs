@@ -77,7 +77,10 @@ pub fn prepare_auth_create(
         Some(p) if p.chars().count() < min_len => {
             errors.insert(
                 "password".to_string(),
-                FieldError::new("value_too_short", format!("must be at least {min_len} characters")),
+                FieldError::new(
+                    "value_too_short",
+                    format!("must be at least {min_len} characters"),
+                ),
             );
         }
         Some(p) if confirm.is_some() && confirm.as_deref() != Some(p.as_str()) => {
@@ -140,7 +143,10 @@ pub fn prepare_auth_update(
         if password.chars().count() < min_len {
             errors.insert(
                 "password".to_string(),
-                FieldError::new("value_too_short", format!("must be at least {min_len} characters")),
+                FieldError::new(
+                    "value_too_short",
+                    format!("must be at least {min_len} characters"),
+                ),
             );
         } else if confirm.is_some() && confirm != Some(password.as_str()) {
             errors.insert(

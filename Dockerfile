@@ -5,10 +5,11 @@
 # embedded straight into the Rust binary in the next stage (rust-embed).
 FROM oven/bun:1-slim AS frontend
 WORKDIR /app
-COPY package.json ./
+COPY package.json bun.lock ./
 COPY sdk/js sdk/js
 COPY web/admin web/admin
-RUN bun install && bun run sdk:build && bun run admin:build
+COPY web/email web/email
+RUN bun install && bun run sdk:build && bun run admin:build && bun run email:build
 
 # ---- deps cache layer -------------------------------------------------
 # Copies only the manifests first so `cargo build` for dependencies is
@@ -24,10 +25,20 @@ COPY crates/filter/Cargo.toml crates/filter/Cargo.toml
 COPY crates/db/Cargo.toml crates/db/Cargo.toml
 COPY crates/storage/Cargo.toml crates/storage/Cargo.toml
 COPY crates/auth/Cargo.toml crates/auth/Cargo.toml
+COPY crates/mailer/Cargo.toml crates/mailer/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
-COPY web/admin/dist/.gitkeep web/admin/dist/.gitkeep
-RUN mkdir -p crates/core/src crates/filter/src crates/db/src crates/storage/src crates/auth/src crates/server/src \
-    && for c in core filter db storage auth; do echo "fn _stub() {}" > crates/$c/src/lib.rs; done \
+# rust-embed's `#[folder = "web/admin/dist"]` and `#[folder = "web/email/dist"]` just
+# need the directories to exist at compile time for this dependency-only
+# stub build - not real content, not even a `.gitkeep` placeholder that
+# keeps a directory present in git. Depending on such a file via COPY
+# was fragile: `bun run admin:build` (run by the `frontend` stage right
+# above, or by any local dev build) deletes it from the working tree
+# before writing real output, so a `docker compose build` run right
+# after a local build - which reads the host filesystem, not git
+# history - failed here even though the placeholder was fine in the
+# actual commit.
+RUN mkdir -p crates/core/src crates/filter/src crates/db/src crates/storage/src crates/auth/src crates/mailer/src crates/server/src web/admin/dist web/email/dist \
+    && for c in core filter db storage auth mailer; do echo "fn _stub() {}" > crates/$c/src/lib.rs; done \
     && echo "fn main() {}" > crates/server/src/main.rs \
     && cargo build --release --workspace 2>/dev/null || true
 
@@ -36,6 +47,7 @@ FROM planner AS builder
 COPY crates crates
 COPY Cargo.toml Cargo.lock ./
 COPY --from=frontend /app/web/admin/dist web/admin/dist
+COPY --from=frontend /app/web/email/dist web/email/dist
 # Touch sources so cargo doesn't skip the real build using the stub mtimes.
 RUN find crates -name '*.rs' -exec touch {} + \
     && cargo build --release -p cratebase-server

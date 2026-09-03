@@ -27,6 +27,36 @@ pub fn router() -> Router<AppState> {
         .route("/backups", get(list).post(create))
         .route("/backups/{name}", axum::routing::delete(remove))
         .route("/backups/{name}/download", get(download))
+        .route("/backups/storage-info", get(storage_info))
+}
+
+#[derive(Serialize)]
+struct StorageInfo {
+    /// "local" or "s3" — which `Storage` backend `STORAGE_DRIVER` selected.
+    driver: &'static str,
+    /// Where backups actually land under that backend: the local
+    /// directory, or `bucket[@endpoint]` for S3-compatible stores. Never
+    /// includes credentials.
+    location: String,
+}
+
+async fn storage_info(State(app): State<AppState>, _admin: RequireAdmin) -> Json<StorageInfo> {
+    let info = match &app.config.storage {
+        cratebase_storage::StorageConfig::Local { base_dir } => StorageInfo {
+            driver: "local",
+            location: base_dir.clone(),
+        },
+        cratebase_storage::StorageConfig::S3 {
+            bucket, endpoint, ..
+        } => StorageInfo {
+            driver: "s3",
+            location: match endpoint {
+                Some(url) => format!("{bucket}@{url}"),
+                None => bucket.clone(),
+            },
+        },
+    };
+    Json(info)
 }
 
 #[derive(Deserialize, Default)]
@@ -59,8 +89,7 @@ fn validate_name(name: &str) -> ApiResult<()> {
         Ok(())
     } else {
         Err(ApiError(AppError::BadRequest(
-            "backup name must be alphanumeric (with '-', '_', '.') and not start with a dot"
-                .into(),
+            "backup name must be alphanumeric (with '-', '_', '.') and not start with a dot".into(),
         )))
     }
 }
@@ -107,11 +136,9 @@ async fn create(
         .await
         .map_err(|e| ApiError(AppError::Internal(format!("backup failed: {e}"))))?;
 
-    let bytes = tokio::fs::read(&tmp_path).await.map_err(|e| {
-        ApiError(AppError::Internal(format!(
-            "reading backup snapshot: {e}"
-        )))
-    })?;
+    let bytes = tokio::fs::read(&tmp_path)
+        .await
+        .map_err(|e| ApiError(AppError::Internal(format!("reading backup snapshot: {e}"))))?;
     tokio::fs::remove_file(&tmp_path).await.ok();
 
     let size = bytes.len() as u64;
@@ -153,13 +180,13 @@ async fn download(
     Path(name): Path<String>,
 ) -> ApiResult<Response> {
     validate_name(&name)?;
-    let stream = app.storage.get_stream(&format!("{BACKUP_PREFIX}{name}")).await?;
+    let stream = app
+        .storage
+        .get_stream(&format!("{BACKUP_PREFIX}{name}"))
+        .await?;
     let response = (
         [
-            (
-                header::CONTENT_TYPE,
-                "application/octet-stream".to_string(),
-            ),
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (
                 header::CONTENT_DISPOSITION,
                 format!("attachment; filename=\"{name}\""),

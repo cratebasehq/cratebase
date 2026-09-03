@@ -119,15 +119,33 @@ crates/core     domain types (Collection, Field, AppError) — no I/O
 crates/filter   filter expression parser + SQL compiler
 crates/db       storage engine: sqlx over sqlite/postgres, collection<->table sync
 crates/storage  file storage: local disk or any S3-compatible bucket
-crates/auth     Argon2id password hashing + JWT sessions
-crates/server   axum HTTP API, CLI, embedded admin dashboard
+crates/auth     Argon2id password hashing + JWT sessions, OAuth2, OTP/MFA
+crates/mailer   pluggable mail backend (Resend API, SMTP, or log-only for dev)
+crates/server   axum HTTP API, CLI, plugin system, embedded admin dashboard
 sdk/js          official TypeScript client ("cratebase" on npm)
+sdk/dart        Dart client
+sdk/go          Go client
+sdk/python      Python client
 web/admin       admin dashboard source (React + Vite + TanStack + shadcn/ui)
 ```
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together
 and the trade-offs behind them, and [ROADMAP.md](./ROADMAP.md) for what's
-coming next (a plugin system, background jobs, OAuth providers, and more).
+shipped and what's still ahead.
+
+### Plugins
+
+Extend the server without forking it: implement the `Plugin` trait
+(`crates/server/src/plugin.rs`) for one-time setup, extra HTTP routes
+under `/api/plugins/<name>`, and fixed-interval background jobs, then
+register it in a `PluginRegistry` — including from a downstream binary
+that depends on `cratebase-server` as a library, not just this repo's own
+`cratebase` binary. Three real examples ship in
+`crates/server/src/plugins/`: `cron_jobs.rs` (calendar cron via
+`croner`, reading a `_cron_jobs` collection), `feature_flags.rs` (a
+`_feature_flags` collection + the existing rule engine), and
+`queue.rs` (a durable job queue with retry/reclaim) — `example.rs` is
+the minimal reference to copy from.
 
 ## Development
 

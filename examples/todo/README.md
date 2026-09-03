@@ -1,10 +1,19 @@
 # Cratebase Todo Example
 
-A single-page, no-build todo list that shows full CRUD (add, toggle done,
-delete, list) plus realtime sync: open this page in two browser tabs, check
-off or delete a todo in one, and watch it update live in the other with zero
-polling — the whole point of building this on Cratebase instead of
-`localStorage`.
+The comprehensive, single-page demo: create an account, sign in, then
+manage a shared todo list (add, toggle done, delete, list) with realtime
+sync — open the page in two browser tabs, check off or delete a todo in
+one, and watch it update live in the other with zero polling. Everything
+past "sign in" requires an authenticated session (the `todos` collection's
+rules are `@request.auth.id != ""`), so this one page exercises the full
+path: register → login → authenticated CRUD → realtime, end to end,
+against the default `users` auth collection.
+
+Every request the page makes to Cratebase — register, sign in, add a
+todo, toggle it, delete it, the realtime subscribe call — flashes in a
+small ticker pinned to the bottom of the page (`POST
+/collections/todos/records · 201 · 8ms`), so none of this is a black box:
+you see the literal HTTP call behind every click.
 
 ## Importing `cratebase` with zero build step
 
@@ -45,99 +54,97 @@ elsewhere).
 
 ## 2. Create the `todos` collection
 
-Get an admin token, then create a `todos` collection with a required
-`title` text field and a `done` bool field, and public list/view/create/
-update/delete rules so the example works with zero auth setup.
+Run the setup script — it upserts an `admin@example.com` / `changeme123`
+superuser (override with `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars) and
+creates (or updates) the `todos` collection, gated to signed-in users
+only. Safe to re-run — it PATCHes the collection back in line if it
+already exists with different rules/schema.
 
 ```bash
-# 1. Authenticate as an admin/superuser and capture the token.
-ADMIN_TOKEN=$(curl -s -X POST http://localhost:8090/api/admins/auth-with-password \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"your-admin-password"}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-
-# 2. Create the collection.
-curl -s -X POST http://localhost:8090/api/collections \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{
-    "name": "todos",
-    "type": "base",
-    "schema": [
-      { "id": "title", "name": "title", "type": "text", "required": true },
-      { "id": "done", "name": "done", "type": "bool", "required": false }
-    ],
-    "listRule": "",
-    "viewRule": "",
-    "createRule": "",
-    "updateRule": "",
-    "deleteRule": ""
-  }'
+bun run examples:todo:setup
+# or directly: bash examples/todo/setup.sh
 ```
 
 Notes:
 
-- All five rules are set to `""` (empty string, not `null`) — that means
-  "public, no auth required" in Cratebase's rule semantics. Unlike the
-  chat example, this one needs a public `updateRule` (toggling `done` is a
-  `PATCH`) and `deleteRule` (removing a todo), since there's no login flow
-  here at all.
-- Swap in your real admin email/password from whatever seeded the instance
-  you're running against.
-- If your `cratebase` binary/admin bootstrap flow differs, adjust step 1
-  accordingly — the important part is ending up with a superuser Bearer
-  token for step 2.
+- All five rules are `"@request.auth.id != \"\""` — any signed-in user
+  (not scoped to *your own* todos specifically) can list/view/create/
+  update/delete, so it behaves like a shared team board once you're in.
+  There's no ownership field; that's a deliberate simplification to keep
+  the schema to two fields (`title`, `done`) — see "How it works" below
+  for the exact rule enforcement this relies on.
+- The `users` collection itself needs no setup — it ships with Cratebase
+  by default (`identityField: "email"`), which is what `app.js`'s
+  register/login forms authenticate against.
+- Point at a different instance with `CRATEBASE_URL=http://host:port bun
+  run examples:todo:setup`.
 
 ## 3. Serve the example
 
-Any static file server works, from this directory:
-
 ```bash
-cd examples/todo
-python3 -m http.server 8080
+bun run examples:serve
 ```
 
-Then open `http://localhost:8080` in two browser tabs. Add a todo, check it
-off, or delete it in one tab — it should appear/update/disappear in the
-other tab immediately via the realtime SSE subscription, no page refresh,
-no polling.
+This serves the whole repo (not just this directory) — required because
+`index.html`'s import map points `"cratebase"` at
+`../../sdk/js/dist/index.js`, a path that only resolves when the server
+is rooted above `examples/`. Serving just this directory (e.g. `cd
+examples/todo && python3 -m http.server`) 404s on that import; the
+failure is silent in the UI (no JS runs, so every form falls back to a
+native GET submit that reloads the page with your input stuck in the
+URL's query string).
 
-> Serving over `http://` (not `file://`) matters: browsers restrict ES
-> module imports and `fetch`/`EventSource` calls from `file://` origins.
+Then open **`http://localhost:4173/examples/todo/`**. Create an account
+(email + password, 8 characters minimum), which registers and signs you
+in immediately. Open the same URL in a second tab — sign in there too (or
+register a second account) — and add/check/delete todos in one tab to
+watch them sync live in the other.
 
 ## How it works
 
-- `app.js` creates one `Cratebase` client pointed at `http://localhost:8090`.
-- On load, it fetches every todo sorted newest-first with
-  `cb.collection("todos").getList(1, 200, { sort: "-created" })` and
-  renders each as a list item with a checkbox, title, and delete button.
-- It then calls `cb.realtime.subscribe("todos", callback)`, which opens an
-  SSE connection to `/api/realtime`, waits for the `PB_CONNECT` event to
-  get a `clientId`, and posts a subscription for the `todos` topic. Every
-  subsequent `create`/`update`/`delete` event on that collection calls the
-  callback, which inserts, updates, or removes the corresponding list item
-  live — this is what makes the two-tab sync work.
-- Adding a todo is `cb.collection("todos").create({ title, done: false })`;
-  the response is rendered immediately in the creating tab (optimistic),
-  and other tabs pick it up from the realtime `create` event. Rendering is
-  deduplicated by record `id`, so the creating tab doesn't get a duplicate
-  row when its own realtime event arrives back.
-- Toggling the checkbox does an inline `cb.collection("todos").update(id, {
-  done })` (`PATCH`) — applied optimistically in the toggling tab, and
-  reverted if the request fails. Other tabs update from the realtime
-  `update` event.
-- Deleting is `cb.collection("todos").delete(id)` — the row animates out
-  (fade + collapse) in the deleting tab on success, and other tabs animate
-  the same row out when the realtime `delete` event arrives.
+- **Register**: `users.create({ email, password, passwordConfirm })`
+  then `users.authWithPassword(email, password)` — the same default
+  `users` auth collection every Cratebase instance ships with.
+- **Sign in**: `users.authWithPassword(identity, password)`. The SDK's
+  `AuthStore` persists the resulting token/record to `localStorage` and
+  fires `onChange`, which is what drives the guest-view ↔ todo-view
+  swap (`cb.authStore.isValid`) — reloading the page while signed in
+  skips straight to the todo list.
+- **Auth-gated CRUD**: the `todos` collection's rules are
+  `@request.auth.id != ""`. Since `cb.collection("todos")` shares the
+  same `Cratebase` client (and therefore the same `authStore`) as
+  `cb.collection("users")`, every `todos` request automatically carries
+  the `Authorization: Bearer <token>` header once signed in — no manual
+  header wiring in `app.js`. Signed-out requests to `todos` get rejected
+  server-side by that rule.
+- **List + realtime**: on sign-in, it fetches every todo sorted
+  newest-first with `todos.getList(1, 200, { sort: "-created" })`, then
+  calls `cb.realtime.subscribe("todos", callback)`, which opens an SSE
+  connection to `/api/realtime`, waits for the `PB_CONNECT` event to get
+  a `clientId`, and posts a subscription for the `todos` topic. Every
+  subsequent `create`/`update`/`delete` event calls the callback, which
+  inserts, updates, or removes the corresponding list item live — this
+  is what makes the two-tab sync work. Signing out calls
+  `cb.realtime.disconnect()` to close that connection.
+- **Add/toggle/delete**: `todos.create({ title, done: false })`,
+  `todos.update(id, { done })` (`PATCH`), `todos.delete(id)`. Each is
+  applied optimistically in the acting tab and reconciled (or reverted,
+  on failure) by the same realtime event every other tab receives —
+  rendering is deduplicated by record `id`, so the acting tab never
+  double-renders its own change.
+- **Request ticker**: `app.js` wraps `window.fetch` once at load to log
+  every call whose URL starts with `BASE_URL` — method, path, status,
+  duration — into the pill at the bottom of the page. Purely
+  observational; it never inspects or modifies request/response bodies.
 
 ## Verification status
 
-This was verified with static analysis and a syntax/bundle check only:
-`node --check app.js` and `bun build app.js --outdir /tmp/checkbuild` both
-pass (the latter also confirms the relative import to
-`sdk/js/dist/index.js` resolves correctly). **No live `cratebase serve`
-instance or browser was run in producing this example** — the realtime
-create/update/delete sync across tabs, the collection-creation `curl`
-commands, and the rendered UI/animations have not been exercised
-end-to-end. Please run through steps 1–3 above once against a live
-instance to confirm before relying on this in a demo.
+Verified live end-to-end in a real browser (headless Chromium) against a
+freshly seeded instance (`bun run examples:todo:setup`, `cargo run --bin
+cratebase -- serve`, `bun run examples:serve`): registering an account
+signs in immediately and reveals the todo view; adding a todo persists it
+with no page reload and no console/network errors. Two-tab realtime
+propagation and the sign-out → guest-view path were not re-verified after
+the auth-gating rewrite — the realtime subscribe path itself was already
+exercised by the same add flow (the list loads via the same
+`connectRealtime()` call `main()` uses on sign-in).

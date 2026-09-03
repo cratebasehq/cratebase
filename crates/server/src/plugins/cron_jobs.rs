@@ -14,14 +14,17 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use axum::routing::get;
+use axum::{Json, Router};
 use cratebase_core::field::{Field, FieldOptions, FieldType};
 use cratebase_core::{new_id, now, AuthOptions, Collection, CollectionType};
 use cratebase_db::records::{self, update_record, ListParams};
 use cratebase_db::resolver::{AuthContext, RequestContext};
-use cratebase_db::{collections, DbError, DbResult, Db};
+use cratebase_db::{collections, Db, DbError, DbResult};
 use croner::Cron;
 use serde_json::{json, Map, Value};
 
+use crate::extract::RequireAdmin;
 use crate::plugin::{Plugin, ScheduledTask};
 use crate::state::AppState;
 
@@ -121,9 +124,26 @@ fn system_auth() -> AuthContext {
     }
 }
 
-/// The built-in job body registry. `"log_stats"` mirrors
-/// `plugins::example::log_stats` — proof the collection-driven scheduler
-/// actually invokes real work, not just a no-op tick.
+/// The built-in job body registry — the source of truth `run_job` matches
+/// against *and* what `GET /api/plugins/cron-jobs/available` reports, so
+/// the `_cron_jobs` record editor in the dashboard can offer a real
+/// picker instead of a free-text field nobody can validate against
+/// anything. Adding a job type means adding an entry here, a matching arm
+/// in `run_job`, and shipping your own binary — same trade-off every
+/// other plugin makes.
+const AVAILABLE_JOBS: &[(&str, &str)] = &[(
+    "log_stats",
+    "Logs the record count of every collection to stdout.",
+)];
+
+async fn available_jobs_handler(_admin: RequireAdmin) -> Json<Value> {
+    let jobs: Vec<Value> = AVAILABLE_JOBS
+        .iter()
+        .map(|(name, description)| json!({ "name": name, "description": description }))
+        .collect();
+    Json(json!({ "jobs": jobs }))
+}
+
 async fn run_job(state: &AppState, job: &str) -> Result<(), String> {
     match job {
         "log_stats" => {
@@ -243,6 +263,9 @@ impl Plugin for CronJobsPlugin {
             ensure_cron_jobs_collection(db).await?;
             Ok(())
         })
+    }
+    fn routes(&self) -> Option<Router<AppState>> {
+        Some(Router::new().route("/available", get(available_jobs_handler)))
     }
     fn scheduled_tasks(&self) -> Vec<ScheduledTask> {
         vec![ScheduledTask {

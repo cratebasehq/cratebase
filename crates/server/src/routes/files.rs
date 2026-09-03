@@ -10,7 +10,9 @@ use bytes::Bytes;
 use cratebase_auth::{issue_file_token, verify_token, TokenKind};
 use cratebase_core::AppError;
 use cratebase_db::records;
-use cratebase_db::resolver::{evaluate_rule, RequestContext, RuleOutcome};
+use cratebase_db::resolver::{
+    evaluate_rule, load_related_collections_for_rule, RequestContext, RuleOutcome,
+};
 use cratebase_db::{admins, collections, AuthContext};
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat};
@@ -67,7 +69,16 @@ async fn download(
     // A file is only downloadable if its owning record is currently
     // visible under the collection's viewRule — files piggyback on record
     // access control rather than having their own rule type.
-    let outcome = evaluate_rule(&collection.view_rule, &collection, app.db.backend, &ctx, 0)?;
+    let related =
+        load_related_collections_for_rule(&app.db, &collection, &collection.view_rule).await?;
+    let outcome = evaluate_rule(
+        &collection.view_rule,
+        &collection,
+        app.db.backend,
+        &ctx,
+        0,
+        &related,
+    )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => {
             return Err(ApiError(AppError::Forbidden(
@@ -114,9 +125,8 @@ async fn issue_file_token_route(
     State(app): State<AppState>,
     CurrentAuth(auth): CurrentAuth,
 ) -> ApiResult<Json<Value>> {
-    let ctx = auth.ok_or_else(|| {
-        ApiError(AppError::Unauthorized("missing or invalid token".into()))
-    })?;
+    let ctx =
+        auth.ok_or_else(|| ApiError(AppError::Unauthorized("missing or invalid token".into())))?;
     let token = issue_file_token(
         &ctx.id,
         &ctx.collection_id,
@@ -246,7 +256,12 @@ fn render_thumbnail(img: &DynamicImage, spec: &ThumbSpec) -> DynamicImage {
 /// Scales the image to cover `width`x`height` (same as `resize_to_fill`)
 /// but crops the overflow from one edge only, anchoring the opposite edge
 /// instead of centering — PocketBase's `t`/`b` thumb suffixes.
-fn resize_crop_anchored(img: &DynamicImage, width: u32, height: u32, anchor_top: bool) -> DynamicImage {
+fn resize_crop_anchored(
+    img: &DynamicImage,
+    width: u32,
+    height: u32,
+    anchor_top: bool,
+) -> DynamicImage {
     let (src_w, src_h) = (img.width().max(1) as f64, img.height().max(1) as f64);
     let scale = (width as f64 / src_w).max(height as f64 / src_h);
     let scaled_w = ((src_w * scale).round() as u32).max(width);
@@ -280,7 +295,11 @@ async fn serve_thumbnail(
         let mut buf = Vec::new();
         resized
             .write_to(&mut Cursor::new(&mut buf), format)
-            .map_err(|e| ApiError(AppError::Internal(format!("failed to encode thumbnail: {e}"))))?;
+            .map_err(|e| {
+                ApiError(AppError::Internal(format!(
+                    "failed to encode thumbnail: {e}"
+                )))
+            })?;
         app.storage.put(thumb_key, Bytes::from(buf)).await?;
     }
 

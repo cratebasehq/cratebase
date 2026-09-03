@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { cb } from "@/lib/api";
+import { settingsLogsRoute } from "@/routes/settings-logs";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/interior/pagination";
@@ -40,9 +41,15 @@ function callerLabel(entry: RequestLogEntry): string {
  * `request_log` middleware writes on every `/api/*` call. Read-only —
  * there's nothing to edit here, just something to search. */
 export function RequestLogsPage() {
-  const [page, setPage] = useState(1);
-  const [filterInput, setFilterInput] = useState("");
-  const [filter, setFilter] = useState("");
+  const urlSearch = settingsLogsRoute.useSearch();
+  const navigate = settingsLogsRoute.useNavigate();
+  const page = urlSearch.page ?? 1;
+  const filter = urlSearch.filter ?? "";
+  const [filterInput, setFilterInput] = useState(filter);
+
+  useEffect(() => {
+    setFilterInput(filter);
+  }, [filter]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["request-logs", page, filter],
@@ -56,8 +63,7 @@ export function RequestLogsPage() {
 
   function submitFilter(e: React.FormEvent) {
     e.preventDefault();
-    setPage(1);
-    setFilter(filterInput.trim());
+    void navigate({ search: { page: undefined, filter: filterInput.trim() || undefined }, replace: true });
   }
 
   return (
@@ -109,7 +115,14 @@ export function RequestLogsPage() {
 
       {data && data.totalPages > 1 ? (
         <div className="flex justify-center py-2">
-          <Pagination count={data.totalPages} page={page} onPageChange={setPage} label="Request log pages" />
+          <Pagination
+            count={data.totalPages}
+            page={page}
+            onPageChange={(next) =>
+              void navigate({ search: (prev) => ({ ...prev, page: next > 1 ? next : undefined }), replace: true })
+            }
+            label="Request log pages"
+          />
         </div>
       ) : null}
     </div>

@@ -155,9 +155,11 @@ pub async fn ensure_request_logs_table(db: &Db) -> DbResult<()> {
     )
     .execute(&db.pool)
     .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_request_logs_created ON _request_logs (created DESC)")
-        .execute(&db.pool)
-        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_request_logs_created ON _request_logs (created DESC)",
+    )
+    .execute(&db.pool)
+    .await?;
     Ok(())
 }
 
@@ -181,7 +183,10 @@ pub async fn insert_request_log(db: &Db, entry: RequestLogEntry) -> DbResult<()>
     .execute(&db.pool)
     .await?;
 
-    if INSERT_COUNT.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY == 0 {
+    if INSERT_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(PRUNE_EVERY)
+    {
         sqlx::query(
             "DELETE FROM _request_logs WHERE id NOT IN (
                 SELECT id FROM _request_logs ORDER BY created DESC LIMIT $1
@@ -224,20 +229,31 @@ pub async fn list_request_logs(
     let per_page = per_page.clamp(1, 500);
     let offset = (page - 1) * per_page;
 
-    let where_clause = if filter.is_some() { " WHERE path LIKE $1" } else { "" };
+    let where_clause = if filter.is_some() {
+        " WHERE path LIKE $1"
+    } else {
+        ""
+    };
     let like_pattern = filter.map(|f| format!("%{f}%"));
 
     let count_sql = format!("SELECT COUNT(*) FROM _request_logs{where_clause}");
     let total_items: i64 = if let Some(p) = &like_pattern {
-        sqlx::query_scalar(&count_sql).bind(p).fetch_one(&db.pool).await?
+        sqlx::query_scalar(&count_sql)
+            .bind(p)
+            .fetch_one(&db.pool)
+            .await?
     } else {
         sqlx::query_scalar(&count_sql).fetch_one(&db.pool).await?
     };
 
     let list_sql = if filter.is_some() {
-        format!("SELECT * FROM _request_logs{where_clause} ORDER BY created DESC LIMIT $2 OFFSET $3")
+        format!(
+            "SELECT * FROM _request_logs{where_clause} ORDER BY created DESC LIMIT $2 OFFSET $3"
+        )
     } else {
-        format!("SELECT * FROM _request_logs{where_clause} ORDER BY created DESC LIMIT $1 OFFSET $2")
+        format!(
+            "SELECT * FROM _request_logs{where_clause} ORDER BY created DESC LIMIT $1 OFFSET $2"
+        )
     };
     let rows = if let Some(p) = &like_pattern {
         sqlx::query(&list_sql)

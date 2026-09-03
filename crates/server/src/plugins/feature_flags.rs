@@ -20,8 +20,8 @@ use axum::{Json, Router};
 use cratebase_core::field::{Field, FieldOptions, FieldType};
 use cratebase_core::{new_id, now, AuthOptions, Collection, CollectionType};
 use cratebase_db::records::{self, ListParams};
-use cratebase_db::resolver::{evaluate_record_rule, RequestContext};
-use cratebase_db::{collections, DbError, DbResult, Db};
+use cratebase_db::resolver::{evaluate_record_rule, load_related_collections, RequestContext};
+use cratebase_db::{collections, Db, DbError, DbResult};
 use serde_json::{json, Value};
 
 use crate::extract::CurrentAuth;
@@ -145,9 +145,18 @@ async fn check_flag(
                 auth: ctx.auth.clone(),
                 data: Some(flag_data),
             };
-            evaluate_record_rule(&state.db, &Some(expr.to_string()), &collection, &eval_ctx)
+            let related = load_related_collections(&state.db, &collection, expr)
                 .await
-                .unwrap_or(false)
+                .unwrap_or_default();
+            evaluate_record_rule(
+                &state.db,
+                &Some(expr.to_string()),
+                &collection,
+                &eval_ctx,
+                &related,
+            )
+            .await
+            .unwrap_or(false)
         }
     };
 

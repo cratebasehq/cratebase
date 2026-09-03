@@ -81,7 +81,10 @@ async fn view_collection_lists_filtered_rows_and_rejects_writes() {
         .collect();
     assert!(titles.contains(&"One"));
     assert!(titles.contains(&"Three"));
-    assert!(!titles.contains(&"Two"), "unpublished post must be excluded");
+    assert!(
+        !titles.contains(&"Two"),
+        "unpublished post must be excluded"
+    );
 
     // Writes against a view collection are rejected, not routed to a
     // nonexistent physical table.

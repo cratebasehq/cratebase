@@ -29,9 +29,18 @@ export interface CollectionFormValue {
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
-function validateName(value: string): string | null {
+/// Mirrors `_collections.name TEXT NOT NULL UNIQUE` (case-sensitive,
+/// SQLite's default BINARY collation — "Posts" and "posts" do NOT
+/// collide server-side, so this check doesn't lowercase-normalize
+/// either). Without this, a colliding name only surfaced as a raw
+/// "value for 'name' must be unique" toast after the save round-trip
+/// instead of inline, right where the name is typed.
+function validateName(value: string, otherCollections: CollectionModel[]): string | null {
   if (value.length === 0) return "Name is required";
   if (!NAME_RE.test(value)) return "Letters, digits, underscore; can't start with a digit";
+  if (otherCollections.some((c) => c.name === value)) {
+    return "Another collection already uses this name";
+  }
   return null;
 }
 
@@ -159,7 +168,7 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
         label="Name"
         value={value.name}
         onChange={(name) => onChange({ ...value, name })}
-        validate={validateName}
+        validate={(name) => validateName(name, otherCollections)}
         placeholder="posts"
         disabled={!isNew}
         hint={isNew ? undefined : "Renaming an existing collection isn't supported yet"}

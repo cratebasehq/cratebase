@@ -46,6 +46,16 @@ land.
     rather than speculatively.
 - File field constraints in the dashboard UI (`mimeTypes`, `maxSize` are
   already schema fields but have no editor).
+- **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
+  entire `VACUUM INTO` snapshot into a `Vec<u8>` (`tokio::fs::read`)
+  before a single `Storage::put`, unlike `download`, which streams
+  (`Storage::get_stream`). Fine for a small/medium SQLite file; holds
+  the whole database in memory for a multi-GB one, risking an OOM on a
+  self-hosted box with limited RAM. Needs a streaming `put` on the
+  `Storage` trait (both the local-disk and S3 multipart-upload impls
+  support it) before this is safe at scale — file uploads have the same
+  shape today (bounded by upload size limits) but a backup has no such
+  cap.
 - **`search` pagination cost.** `list_records` runs a `SELECT COUNT(*)`
   alongside the paginated `SELECT` on every call to populate
   `totalItems`/`totalPages` — measured in `benchmarks/` as the main

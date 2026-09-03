@@ -79,10 +79,7 @@ pub fn router(rate_limit_enabled: bool) -> Router<AppState> {
     };
 
     let unlimited_router = Router::new()
-        .route(
-            "/collections/{collection}/auth-methods",
-            get(auth_methods),
-        )
+        .route("/collections/{collection}/auth-methods", get(auth_methods))
         .route("/admins/auth-refresh", post(admin_refresh))
         .route(
             "/collections/{collection}/auth-refresh",
@@ -184,7 +181,12 @@ async fn record_login(
     if !verify_password(&body.password, &password_hash) {
         return Err(invalid_credentials());
     }
-    if collection.auth_options.require_email_verification.unwrap_or(false) && !verified {
+    if collection
+        .auth_options
+        .require_email_verification
+        .unwrap_or(false)
+        && !verified
+    {
         return Err(ApiError(AppError::Forbidden(
             "please verify your email before signing in".into(),
         )));
@@ -199,8 +201,14 @@ async fn record_login(
         let ttl = app.config.otp_token_ttl_seconds;
         let code = generate_otp();
         otp::create(&app.db, &collection.id, &id, &hash_otp(&code), ttl).await?;
-        let mfa_id = issue_token(&id, TokenKind::Mfa, &collection.id, &app.config.auth_secret, ttl)
-            .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+        let mfa_id = issue_token(
+            &id,
+            TokenKind::Mfa,
+            &collection.id,
+            &app.config.auth_secret,
+            ttl,
+        )
+        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
         if collection.auth_options.identity_is_email() {
             let _ = send_template(
                 &app,
@@ -437,7 +445,8 @@ async fn confirm_password_reset(
             "passwords do not match".into(),
         )));
     }
-    let hash = hash_password(&body.password).map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
+    let hash =
+        hash_password(&body.password).map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
     let mut data = serde_json::Map::new();
     data.insert("password_hash".into(), json!(hash));
     records::update_record(&app.db, &collection, &claims.sub, data).await?;
@@ -481,7 +490,10 @@ async fn request_email_change(
         ttl,
     )
     .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    let action_url = format!("{}/confirm-email-change?token={token}", app.config.public_app_url);
+    let action_url = format!(
+        "{}/confirm-email-change?token={token}",
+        app.config.public_app_url
+    );
     let _ = send_template(
         &app,
         &body.new_email,
@@ -610,7 +622,11 @@ async fn auth_with_oauth2(
         .map_err(|e| ApiError(AppError::BadRequest(format!("oauth2 exchange failed: {e}"))))?;
     let external_user = crate::oauth2::fetch_user(provider, &access_token)
         .await
-        .map_err(|e| ApiError(AppError::BadRequest(format!("oauth2 profile lookup failed: {e}"))))?;
+        .map_err(|e| {
+            ApiError(AppError::BadRequest(format!(
+                "oauth2 profile lookup failed: {e}"
+            )))
+        })?;
 
     let record_id = match external_auths::find_linked_record(
         &app.db,
@@ -622,9 +638,11 @@ async fn auth_with_oauth2(
     {
         Some(id) => id,
         None => {
-            let email = external_user
-                .email
-                .ok_or_else(|| ApiError(AppError::BadRequest("provider account has no email address".into())))?;
+            let email = external_user.email.ok_or_else(|| {
+                ApiError(AppError::BadRequest(
+                    "provider account has no email address".into(),
+                ))
+            })?;
             let id = match records::find_auth_credentials(&app.db, &collection, &email).await? {
                 Some((id, _, _)) => id,
                 None => {
@@ -644,7 +662,14 @@ async fn auth_with_oauth2(
                     new_id
                 }
             };
-            external_auths::link(&app.db, &collection.id, &id, provider.name, &external_user.provider_user_id).await?;
+            external_auths::link(
+                &app.db,
+                &collection.id,
+                &id,
+                provider.name,
+                &external_user.provider_user_id,
+            )
+            .await?;
             id
         }
     };

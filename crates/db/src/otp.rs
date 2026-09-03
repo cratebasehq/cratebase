@@ -68,7 +68,10 @@ pub async fn verify_and_consume(
     .bind(&now)
     .fetch_optional(&db.pool)
     .await?;
-    let matched = row.map(|r| r.try_get::<String, _>("id")).transpose()?.is_some();
+    let matched = row
+        .map(|r| r.try_get::<String, _>("id"))
+        .transpose()?
+        .is_some();
 
     sqlx::query("DELETE FROM _otp_codes WHERE collection_id = $1 AND record_id = $2")
         .bind(collection_id)

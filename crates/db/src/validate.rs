@@ -64,12 +64,18 @@ fn validate_field(field: &Field, value: &Value) -> Result<(), FieldError> {
             }
             if let Some(min) = field.options.min {
                 if n < min {
-                    return Err(FieldError::new("value_too_small", format!("must be >= {min}")));
+                    return Err(FieldError::new(
+                        "value_too_small",
+                        format!("must be >= {min}"),
+                    ));
                 }
             }
             if let Some(max) = field.options.max {
                 if n > max {
-                    return Err(FieldError::new("value_too_large", format!("must be <= {max}")));
+                    return Err(FieldError::new(
+                        "value_too_large",
+                        format!("must be <= {max}"),
+                    ));
                 }
             }
         }
@@ -82,7 +88,10 @@ fn validate_field(field: &Field, value: &Value) -> Result<(), FieldError> {
         FieldType::Email => {
             let s = value.as_str().ok_or_else(not_a_string)?;
             if !looks_like_email(s) {
-                return Err(FieldError::new("invalid_email", "not a valid email address"));
+                return Err(FieldError::new(
+                    "invalid_email",
+                    "not a valid email address",
+                ));
             }
         }
         FieldType::Url => {
@@ -124,7 +133,10 @@ fn validate_field(field: &Field, value: &Value) -> Result<(), FieldError> {
             }
             if let Some(pattern) = &field.options.pattern {
                 let re = regex::Regex::new(pattern).map_err(|e| {
-                    FieldError::new("invalid_pattern_definition", format!("invalid pattern: {e}"))
+                    FieldError::new(
+                        "invalid_pattern_definition",
+                        format!("invalid pattern: {e}"),
+                    )
                 })?;
                 if !re.is_match(s) {
                     return Err(FieldError::new(
@@ -135,8 +147,9 @@ fn validate_field(field: &Field, value: &Value) -> Result<(), FieldError> {
             }
         }
         FieldType::Select => {
-            let values = as_string_list(value, multiple)
-                .ok_or_else(|| FieldError::new("invalid_type", "expected a string or array of strings"))?;
+            let values = as_string_list(value, multiple).ok_or_else(|| {
+                FieldError::new("invalid_type", "expected a string or array of strings")
+            })?;
             let allowed = field.options.values.clone().unwrap_or_default();
             for v in &values {
                 if !allowed.contains(v) {
@@ -158,8 +171,9 @@ fn validate_field(field: &Field, value: &Value) -> Result<(), FieldError> {
             }
         }
         FieldType::Relation | FieldType::File => {
-            as_string_list(value, multiple)
-                .ok_or_else(|| FieldError::new("invalid_type", "expected a string or array of strings"))?;
+            as_string_list(value, multiple).ok_or_else(|| {
+                FieldError::new("invalid_type", "expected a string or array of strings")
+            })?;
         }
     }
     Ok(())
