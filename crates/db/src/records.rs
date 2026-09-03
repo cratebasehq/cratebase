@@ -140,6 +140,7 @@ pub async fn list_records(
                 collection,
                 backend: db.backend,
                 ctx,
+                use_data_for_fields: false,
             };
             Some(cratebase_filter::parse_and_compile(
                 expr,
