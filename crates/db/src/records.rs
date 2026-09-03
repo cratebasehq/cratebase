@@ -378,3 +378,21 @@ pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResu
         Ok(())
     }
 }
+
+/// Look up an auth-record's id and password hash by email, for the
+/// password login endpoint. One query instead of an id lookup followed by
+/// a separate hash lookup.
+pub async fn find_auth_credentials(db: &Db, collection: &Collection, email: &str) -> DbResult<Option<(String, String)>> {
+    let table = db.backend.quote_ident(&collection.table_name())?;
+    let sql = format!(
+        "SELECT {}, {} FROM {table} WHERE {} = $1",
+        db.backend.quote_ident("id")?,
+        db.backend.quote_ident("password_hash")?,
+        db.backend.quote_ident("email")?,
+    );
+    let row = sqlx::query(&sql).bind(email).fetch_optional(&db.pool).await?;
+    Ok(match row {
+        Some(r) => Some((r.try_get("id")?, r.try_get("password_hash")?)),
+        None => None,
+    })
+}

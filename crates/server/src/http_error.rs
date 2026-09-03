@@ -19,6 +19,12 @@ impl From<cratebase_db::DbError> for ApiError {
     }
 }
 
+impl From<cratebase_filter::FilterError> for ApiError {
+    fn from(e: cratebase_filter::FilterError) -> Self {
+        ApiError(AppError::BadRequest(e.to_string()))
+    }
+}
+
 impl From<cratebase_storage::StorageError> for ApiError {
     fn from(e: cratebase_storage::StorageError) -> Self {
         let app_err = match e {

@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::{Multipart, Request};
+use axum::extract::{FromRequest, Multipart, Request};
 use bytes::Bytes;
 use cratebase_core::field::FieldType;
 use cratebase_core::{AppError, Collection};
