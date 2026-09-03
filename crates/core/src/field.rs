@@ -12,6 +12,7 @@ pub enum FieldType {
     Email,
     Url,
     Date,
+    Autodate,
     Select,
     Json,
     Relation,
@@ -29,6 +30,7 @@ impl FieldType {
             FieldType::Email => "email",
             FieldType::Url => "url",
             FieldType::Date => "date",
+            FieldType::Autodate => "autodate",
             FieldType::Select => "select",
             FieldType::Json => "json",
             FieldType::Relation => "relation",
@@ -67,6 +69,12 @@ pub struct FieldOptions {
     pub max_size: Option<u64>,
     // number
     pub only_int: Option<bool>,
+    // autodate: set the stored value to the current time on record
+    // create/update. At least one must be `true`; enforced by
+    // `cratebase-server`'s collection input validation, not here (this
+    // struct has no error path of its own).
+    pub on_create: Option<bool>,
+    pub on_update: Option<bool>,
 }
 
 /// A single field (column) definition inside a [`crate::Collection`] schema.

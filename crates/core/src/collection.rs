@@ -26,6 +26,12 @@ pub struct AuthOptions {
     pub identity_field: Option<String>,
     pub require_email_verification: Option<bool>,
     pub token_ttl_seconds: Option<i64>,
+    /// When `true`, a successful password login (`auth-with-password`)
+    /// doesn't issue a session token directly — it emails a one-time code
+    /// (the same mechanism as `request-otp`/`auth-with-otp`) and returns a
+    /// short-lived pending marker instead, which `/mfa/confirm` exchanges
+    /// for the real session token once the code is presented back.
+    pub mfa_required: Option<bool>,
 }
 
 impl AuthOptions {
@@ -40,6 +46,12 @@ impl AuthOptions {
     /// treated as free-form text.
     pub fn identity_is_email(&self) -> bool {
         self.identity_field() == "email"
+    }
+
+    /// Whether password logins for this collection require a second-factor
+    /// OTP confirmation before a session token is issued.
+    pub fn mfa_required(&self) -> bool {
+        self.mfa_required.unwrap_or(false)
     }
 }
 
@@ -83,6 +95,10 @@ impl Collection {
 
     pub fn is_auth(&self) -> bool {
         matches!(self.collection_type, CollectionType::Auth)
+    }
+
+    pub fn is_view(&self) -> bool {
+        matches!(self.collection_type, CollectionType::View)
     }
 
     pub fn field(&self, name: &str) -> Option<&Field> {

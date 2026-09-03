@@ -4,9 +4,11 @@
 //! enforcement pushed down into SQL.
 
 pub mod admins;
+pub mod external_auths;
 pub mod backend;
 pub mod collections;
 pub mod error;
+pub mod otp;
 pub mod pool;
 pub mod records;
 pub mod resolver;

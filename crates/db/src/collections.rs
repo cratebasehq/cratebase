@@ -63,6 +63,37 @@ pub async fn get_collection_by_name(db: &Db, name: &str) -> DbResult<Collection>
     row_to_collection(&row)
 }
 
+/// Transaction-scoped counterpart to [`get_collection_by_id`]. Reads
+/// through `tx` rather than the pool so a caller already holding the
+/// pool's only checked-out connection (e.g. `/api/batch`, whose SQLite
+/// test pool is sized 1) doesn't self-deadlock waiting to acquire a
+/// second one.
+pub async fn get_collection_by_id_tx(
+    tx: &mut crate::records::RecordTx,
+    id: &str,
+) -> DbResult<Collection> {
+    let row = sqlx::query("SELECT * FROM _collections WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(DbError::NotFound)?;
+    row_to_collection(&row)
+}
+
+/// Transaction-scoped counterpart to [`get_collection_by_name`]. See
+/// [`get_collection_by_id_tx`] for why this exists.
+pub async fn get_collection_by_name_tx(
+    tx: &mut crate::records::RecordTx,
+    name: &str,
+) -> DbResult<Collection> {
+    let row = sqlx::query("SELECT * FROM _collections WHERE name = $1")
+        .bind(name)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or(DbError::NotFound)?;
+    row_to_collection(&row)
+}
+
 pub async fn create_collection(db: &Db, collection: &Collection) -> DbResult<()> {
     let type_str = match collection.collection_type {
         CollectionType::Base => "base",
@@ -134,9 +165,7 @@ pub async fn update_collection(
     .await
     .map_err(|e| map_unique_violation(e, "name"))?;
 
-    if updated.collection_type != CollectionType::View {
-        sync_table(db, updated, Some(previous)).await?;
-    }
+    sync_table(db, updated, Some(previous)).await?;
     Ok(())
 }
 
@@ -145,12 +174,13 @@ pub async fn delete_collection(db: &Db, collection: &Collection) -> DbResult<()>
         .bind(&collection.id)
         .execute(&db.pool)
         .await?;
-    if collection.collection_type != CollectionType::View {
-        let table = db.backend.quote_ident(&collection.table_name())?;
-        sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
-            .execute(&db.pool)
-            .await?;
-    }
+    let table = db.backend.quote_ident(&collection.table_name())?;
+    let drop_sql = if collection.collection_type == CollectionType::View {
+        format!("DROP VIEW IF EXISTS {table}")
+    } else {
+        format!("DROP TABLE IF EXISTS {table}")
+    };
+    sqlx::query(&drop_sql).execute(&db.pool).await?;
     Ok(())
 }
 
@@ -192,6 +222,14 @@ fn sql_type_for(backend: Backend, field: &Field) -> &'static str {
 /// dropped and re-added (data loss on that column only — schema changes to
 /// a field's type or multiplicity are inherently destructive without a full
 /// migration/backfill system, which is out of scope for v1).
+///
+/// `View` collections take a different path entirely: instead of a table,
+/// `cb_<name>` is created as a real SQL `VIEW` over `collection.view_query`.
+/// Every list/filter/sort/pagination code path in `records::list_records`/
+/// `get_record` runs unmodified against it — a view is queryable exactly
+/// like a table for `SELECT`. Recreated unconditionally (DROP + CREATE) on
+/// every call since `view_query` may have changed and there's no portable
+/// `CREATE OR REPLACE VIEW` across backends (SQLite has no such syntax).
 pub async fn sync_table(
     db: &Db,
     collection: &Collection,
@@ -199,6 +237,19 @@ pub async fn sync_table(
 ) -> DbResult<()> {
     let backend = db.backend;
     let table = backend.quote_ident(&collection.table_name())?;
+
+    if collection.collection_type == CollectionType::View {
+        let query = collection.view_query.as_deref().ok_or_else(|| {
+            DbError::InvalidIdentifier("view collection is missing 'view_query'".into())
+        })?;
+        sqlx::query(&format!("DROP VIEW IF EXISTS {table}"))
+            .execute(&db.pool)
+            .await?;
+        sqlx::query(&format!("CREATE VIEW {table} AS {query}"))
+            .execute(&db.pool)
+            .await?;
+        return Ok(());
+    }
 
     match previous {
         None => {
@@ -215,6 +266,11 @@ pub async fn sync_table(
                 cols.push(format!(
                     "{} TEXT NOT NULL",
                     backend.quote_ident("password_hash")?
+                ));
+                cols.push(format!(
+                    "{} {} NOT NULL",
+                    backend.quote_ident("verified")?,
+                    backend.bool_type()
                 ));
             }
             for f in &collection.schema {

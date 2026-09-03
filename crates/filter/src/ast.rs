@@ -29,6 +29,12 @@ pub enum Expr {
     Compare {
         left: Operand,
         op: CompareOp,
+        /// Set for the `?=`, `?!=`, `?>`, ... "any of" operators: the
+        /// comparison is satisfied if *any* element of a multi-valued
+        /// operand (a JSON-array column, or the rows reached through
+        /// relation dot-notation) matches, instead of requiring every
+        /// element/related row to match.
+        any_of: bool,
         right: Operand,
     },
     And(Box<Expr>, Box<Expr>),

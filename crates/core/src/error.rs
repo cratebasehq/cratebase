@@ -3,9 +3,29 @@ use std::collections::HashMap;
 use serde::Serialize;
 use thiserror::Error;
 
+/// A single field's validation failure: a stable machine-readable `code`
+/// (e.g. `"value_too_short"`) alongside a human-readable `message`. Callers
+/// that only render text can ignore `code`; callers that branch on the
+/// failure kind (an SDK, a form library) don't have to string-match
+/// `message`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldError {
+    pub code: String,
+    pub message: String,
+}
+
+impl FieldError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
 /// Top-level application error. Carries enough structure for the HTTP layer
-/// to render PocketBase-style JSON error bodies:
-/// `{ "code": 400, "message": "...", "data": { field: reason } }`.
+/// to render structured JSON error bodies:
+/// `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("not found")]
@@ -15,8 +35,7 @@ pub enum AppError {
     BadRequest(String),
 
     #[error("validation failed")]
-    Validation(HashMap<String, String>),
-
+    Validation(HashMap<String, FieldError>),
     #[error("unauthorized")]
     Unauthorized(String),
 
@@ -64,7 +83,7 @@ impl AppError {
 pub struct ErrorBody {
     pub code: u16,
     pub message: String,
-    pub data: HashMap<String, String>,
+    pub data: HashMap<String, FieldError>,
 }
 
 pub type AppResult<T> = Result<T, AppError>;

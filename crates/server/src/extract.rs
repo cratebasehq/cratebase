@@ -39,6 +39,13 @@ where
         let Ok(claims) = verify_token(token, &app.config.auth_secret) else {
             return Ok(CurrentAuth(None));
         };
+        if !claims.kind.is_session_kind() {
+            // A verify-email/reset-password/change-email link token is
+            // single-purpose; it must never authenticate an ordinary
+            // request, only its own `confirm-*` endpoint (which decodes
+            // it directly, bypassing this extractor).
+            return Ok(CurrentAuth(None));
+        }
 
         match claims.kind {
             TokenKind::Admin => {
@@ -73,6 +80,12 @@ where
                     Err(_) => Ok(CurrentAuth(None)),
                 }
             }
+            // Filtered out above by `is_session_kind()`.
+            TokenKind::VerifyEmail
+            | TokenKind::ResetPassword
+            | TokenKind::ChangeEmail
+            | TokenKind::Mfa
+            | TokenKind::FileToken => Ok(CurrentAuth(None)),
         }
     }
 }

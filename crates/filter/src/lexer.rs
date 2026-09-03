@@ -14,6 +14,15 @@ pub enum Token {
     Lte,
     Like,
     NotLike,
+    /// `?=` — "any of" variant of `Eq`.
+    QEq,
+    QNotEq,
+    QGt,
+    QGte,
+    QLt,
+    QLte,
+    QLike,
+    QNotLike,
     And,
     Or,
     LParen,
@@ -122,6 +131,44 @@ impl<'a> Lexer<'a> {
                 b'<' => {
                     self.bump();
                     out.push(Token::Lt);
+                }
+                b'?' => {
+                    self.bump();
+                    match self.peek() {
+                        Some(b'=') => {
+                            self.bump();
+                            out.push(Token::QEq);
+                        }
+                        Some(b'!') if self.peek_at(1) == Some(b'=') => {
+                            self.pos += 2;
+                            out.push(Token::QNotEq);
+                        }
+                        Some(b'!') if self.peek_at(1) == Some(b'~') => {
+                            self.pos += 2;
+                            out.push(Token::QNotLike);
+                        }
+                        Some(b'>') if self.peek_at(1) == Some(b'=') => {
+                            self.pos += 2;
+                            out.push(Token::QGte);
+                        }
+                        Some(b'>') => {
+                            self.bump();
+                            out.push(Token::QGt);
+                        }
+                        Some(b'<') if self.peek_at(1) == Some(b'=') => {
+                            self.pos += 2;
+                            out.push(Token::QLte);
+                        }
+                        Some(b'<') => {
+                            self.bump();
+                            out.push(Token::QLt);
+                        }
+                        Some(b'~') => {
+                            self.bump();
+                            out.push(Token::QLike);
+                        }
+                        _ => return Err(LexError('?', self.pos)),
+                    }
                 }
                 b'"' | b'\'' => {
                     let quote = c;

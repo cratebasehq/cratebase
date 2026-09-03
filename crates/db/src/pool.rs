@@ -48,8 +48,25 @@ impl Db {
 
         let opts = AnyConnectOptions::from_str(&database_url)?;
 
+        // sqlx pools each connection independently; a `:memory:` SQLite
+        // connection is a fresh, isolated database per connection unless
+        // using a shared-cache URI, so a pool size above 1 for `:memory:`
+        // would silently scatter data across disconnected in-memory DBs
+        // (this is exactly what the test harness relies on staying at 1).
+        // A real file-backed database has no such constraint: WAL mode
+        // (enabled below) lets many readers run alongside one writer, so
+        // capping it at 1 the same way serializes every request on a
+        // single connection for no reason — measured in `benchmarks/` as
+        // throughput that doesn't scale with concurrency at all.
+        let is_sqlite_memory = backend == Backend::Sqlite && database_url.contains(":memory:");
+        let max_connections = match backend {
+            Backend::Sqlite if is_sqlite_memory => 1,
+            Backend::Sqlite => 5,
+            _ => 10,
+        };
+
         let pool = AnyPoolOptions::new()
-            .max_connections(if backend == Backend::Sqlite { 1 } else { 10 })
+            .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(10))
             .connect_with(opts)
             .await?;
@@ -60,6 +77,14 @@ impl Db {
                 .await
                 .ok();
             sqlx::query("PRAGMA foreign_keys = ON")
+                .execute(&pool)
+                .await
+                .ok();
+            // With more than one connection now able to attempt a write
+            // (e.g. two concurrent record updates), a brief lock
+            // conflict should block-and-retry rather than fail
+            // immediately with SQLITE_BUSY.
+            sqlx::query("PRAGMA busy_timeout = 5000")
                 .execute(&pool)
                 .await
                 .ok();

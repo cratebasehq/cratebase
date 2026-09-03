@@ -1,8 +1,8 @@
 //! Serves the built admin dashboard (`web/admin/dist`) straight out of the
-//! compiled binary, the same trick PocketBase uses to ship its Svelte admin
-//! UI as part of a single Go executable. Run `bun run admin:build` (repo
-//! root) before `cargo build` to embed the real dashboard instead of the
-//! placeholder checked into `web/admin/dist`.
+//! compiled binary, so the whole deployment is one executable with no
+//! separate frontend to host. Run `bun run admin:build` (repo root) before
+//! `cargo build` to embed the real dashboard instead of the placeholder
+//! checked into `web/admin/dist`.
 
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};

@@ -47,6 +47,11 @@ fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
             identity.to_string(),
             value.map(Value::String).unwrap_or(Value::Null),
         );
+        let verified: Option<i64> = row.try_get("verified")?;
+        obj.insert(
+            "verified".into(),
+            Value::Bool(verified.map(|n| n != 0).unwrap_or(false)),
+        );
     }
 
     for field in &collection.schema {
@@ -170,11 +175,13 @@ pub async fn list_records(
 
     let user_filter = match params.filter {
         Some(expr) if !expr.trim().is_empty() => {
+            let related = crate::resolver::load_related_collections(db, collection, expr).await?;
             let resolver = CollectionResolver {
                 collection,
                 backend: db.backend,
                 ctx,
                 use_data_for_fields: false,
+                related,
             };
             Some(cratebase_filter::parse_and_compile(
                 expr,
@@ -278,12 +285,71 @@ pub async fn get_record(
     }
 }
 
+/// Transaction-scoped counterpart to [`get_record`]. Reads through `tx`
+/// rather than the pool — see [`crate::collections::get_collection_by_id_tx`]
+/// for why this exists.
+pub async fn get_record_tx(
+    tx: &mut RecordTx,
+    backend: Backend,
+    collection: &Collection,
+    id: &str,
+    rule_filter: Option<CompiledFilter>,
+) -> DbResult<Value> {
+    let table = backend.quote_ident(&collection.table_name())?;
+    let id_col = backend.quote_ident("id")?;
+
+    let n = rule_filter.as_ref().map(|f| f.params.len()).unwrap_or(0);
+    let extra_sql = rule_filter.as_ref().map(|f| f.sql.clone());
+    let mut args = bind_all(rule_filter.map(|f| f.params).unwrap_or_default()).await?;
+    args.add(id.to_string()).map_err(encode_err)?;
+
+    let extra_clause = extra_sql.map(|s| format!(" AND {s}")).unwrap_or_default();
+    let sql = format!(
+        "SELECT * FROM {table} WHERE {id_col} = ${}{extra_clause}",
+        n + 1
+    );
+
+    let row = sqlx::query_with(&sql, args)
+        .fetch_optional(&mut **tx)
+        .await?;
+    match row {
+        Some(r) => row_to_record(&r, collection),
+        None => Err(DbError::NotFound),
+    }
+}
+
 pub async fn create_record(
     db: &Db,
     collection: &Collection,
     data: Map<String, Value>,
 ) -> DbResult<Value> {
     create_record_with_id(db, collection, new_id(), data).await
+}
+
+/// Set every `Autodate` field's stored value to `ts`, for the fields
+/// configured to fire on this lifecycle event (`onCreate` or `onUpdate`).
+/// Runs after `validate::validate_and_normalize`, which never lets a
+/// client-supplied value reach `normalized` for this field type — the
+/// value here is always server-computed.
+fn apply_autodate_fields(
+    collection: &Collection,
+    normalized: &mut Map<String, Value>,
+    ts: &str,
+    on_create: bool,
+) {
+    for field in &collection.schema {
+        if field.field_type != FieldType::Autodate {
+            continue;
+        }
+        let fires = if on_create {
+            field.options.on_create.unwrap_or(false)
+        } else {
+            field.options.on_update.unwrap_or(false)
+        };
+        if fires {
+            normalized.insert(field.name.clone(), Value::String(ts.to_string()));
+        }
+    }
 }
 
 /// Like [`create_record`] but with a caller-chosen id. Used when the id
@@ -297,9 +363,14 @@ pub async fn create_record_with_id(
     id: String,
     data: Map<String, Value>,
 ) -> DbResult<Value> {
-    let normalized = crate::validate::validate_and_normalize(db, collection, &data, false).await?;
+    if collection.is_view() {
+        return Err(DbError::ViewReadOnly);
+    }
+    let mut normalized =
+        crate::validate::validate_and_normalize(db, collection, &data, false).await?;
 
     let ts = now();
+    apply_autodate_fields(collection, &mut normalized, &ts, true);
     let table = db.backend.quote_ident(&collection.table_name())?;
 
     let mut columns = vec![
@@ -332,6 +403,13 @@ pub async fn create_record_with_id(
                 .bind(&mut args)
                 .map_err(encode_err)?;
         }
+        // New accounts always start unverified — never client-settable —
+        // regardless of whether `requireEmailVerification` currently
+        // gates login, so flipping that setting later needs no backfill.
+        columns.push("verified".to_string());
+        ColumnValue::Bool(Some(false))
+            .bind(&mut args)
+            .map_err(encode_err)?;
     }
 
     for field in &collection.schema {
@@ -364,7 +442,14 @@ pub async fn update_record(
     id: &str,
     data: Map<String, Value>,
 ) -> DbResult<Value> {
-    let normalized = crate::validate::validate_and_normalize(db, collection, &data, true).await?;
+    if collection.is_view() {
+        return Err(DbError::ViewReadOnly);
+    }
+    let mut normalized =
+        crate::validate::validate_and_normalize(db, collection, &data, true).await?;
+    let ts = now();
+    apply_autodate_fields(collection, &mut normalized, &ts, false);
+
     let identity = collection.auth_options.identity_field();
     let auth_identity = if collection.is_auth() {
         data.get(identity).and_then(Value::as_str)
@@ -381,7 +466,6 @@ pub async fn update_record(
     }
 
     let table = db.backend.quote_ident(&collection.table_name())?;
-    let ts = now();
     let mut sets = vec![format!("{} = $1", db.backend.quote_ident("updated")?)];
     let mut args = AnyArguments::default();
     args.add(ts).map_err(encode_err)?;
@@ -428,6 +512,9 @@ pub async fn update_record(
 }
 
 pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResult<()> {
+    if collection.is_view() {
+        return Err(DbError::ViewReadOnly);
+    }
     let table = db.backend.quote_ident(&collection.table_name())?;
     let sql = format!(
         "DELETE FROM {table} WHERE {} = $1",
@@ -441,19 +528,21 @@ pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResu
     }
 }
 
-/// Look up an auth-record's id and password hash by its identity field
-/// (e.g. email or username), for the password login endpoint. One query
-/// instead of an id lookup followed by a separate hash lookup.
+/// Look up an auth-record's id, password hash, and verified status by its
+/// identity field (e.g. email or username), for the password login
+/// endpoint. One query instead of an id lookup followed by separate field
+/// lookups.
 pub async fn find_auth_credentials(
     db: &Db,
     collection: &Collection,
     identity_value: &str,
-) -> DbResult<Option<(String, String)>> {
+) -> DbResult<Option<(String, String, bool)>> {
     let table = db.backend.quote_ident(&collection.table_name())?;
     let sql = format!(
-        "SELECT {}, {} FROM {table} WHERE {} = $1",
+        "SELECT {}, {}, {} FROM {table} WHERE {} = $1",
         db.backend.quote_ident("id")?,
         db.backend.quote_ident("password_hash")?,
+        db.backend.quote_ident("verified")?,
         db.backend
             .quote_ident(collection.auth_options.identity_field())?,
     );
@@ -462,7 +551,228 @@ pub async fn find_auth_credentials(
         .fetch_optional(&db.pool)
         .await?;
     Ok(match row {
-        Some(r) => Some((r.try_get("id")?, r.try_get("password_hash")?)),
+        Some(r) => {
+            let verified: i64 = r.try_get("verified")?;
+            Some((r.try_get("id")?, r.try_get("password_hash")?, verified != 0))
+        }
         None => None,
     })
+}
+
+/// Flips an auth record's `verified` column to `true`. Not a `schema`
+/// field (same reason `password_hash` isn't), so it bypasses
+/// `update_record`'s normal validated-fields path — used only by the
+/// `confirm-verification` endpoint after checking a `VerifyEmail` token.
+pub async fn set_verified(db: &Db, collection: &Collection, id: &str) -> DbResult<()> {
+    let table = db.backend.quote_ident(&collection.table_name())?;
+    let sql = format!(
+        "UPDATE {table} SET {} = $1 WHERE {} = $2",
+        db.backend.quote_ident("verified")?,
+        db.backend.quote_ident("id")?
+    );
+    let mut args = AnyArguments::default();
+    ColumnValue::Bool(Some(true))
+        .bind(&mut args)
+        .map_err(encode_err)?;
+    args.add(id.to_string()).map_err(encode_err)?;
+    let result = sqlx::query_with(&sql, args).execute(&db.pool).await?;
+    if result.rows_affected() == 0 {
+        Err(DbError::NotFound)
+    } else {
+        Ok(())
+    }
+}
+
+/// A [`sqlx::Any`] transaction obtained from [`crate::pool::Db::pool`].
+/// `AnyPool::begin()` yields `'static` because the transaction owns its
+/// pooled connection outright, so this alias needs no lifetime parameter.
+pub type RecordTx = sqlx::Transaction<'static, sqlx::Any>;
+
+/// Transaction-scoped counterpart to [`fetch_by_id`]. Reads through `tx`
+/// rather than the pool so a caller can read back a row it just wrote in
+/// the same uncommitted transaction (e.g. the `/api/batch` endpoint).
+async fn fetch_by_id_tx(
+    tx: &mut RecordTx,
+    backend: Backend,
+    collection: &Collection,
+    id: &str,
+) -> DbResult<Value> {
+    let table = backend.quote_ident(&collection.table_name())?;
+    let id_col = backend.quote_ident("id")?;
+    let sql = format!("SELECT * FROM {table} WHERE {id_col} = $1");
+    let row = sqlx::query(&sql).bind(id).fetch_optional(&mut **tx).await?;
+    match row {
+        Some(r) => row_to_record(&r, collection),
+        None => Err(DbError::NotFound),
+    }
+}
+
+/// Transaction-scoped counterpart to [`create_record_with_id`], used by the
+/// `/api/batch` endpoint so every sub-request's write lands on the same
+/// connection inside one SQL transaction: if a later sub-request fails,
+/// dropping `tx` without committing undoes this insert along with every
+/// other write already made through it in the batch.
+///
+/// Unlike [`create_record_with_id`], this does not call
+/// `validate::validate_and_normalize` itself — the caller runs that (and
+/// rule evaluation) against the pool *before* opening the transaction, so
+/// only the actual row mutation is transactional. `data` is the raw
+/// (auth-prepared) payload, needed for the `email`/`password_hash`
+/// physical columns exactly as in `create_record_with_id`; `normalized` is
+/// its already-validated schema-field subset.
+pub async fn create_record_with_id_tx(
+    tx: &mut RecordTx,
+    backend: Backend,
+    collection: &Collection,
+    id: String,
+    data: Map<String, Value>,
+    mut normalized: Map<String, Value>,
+) -> DbResult<Value> {
+    let ts = now();
+    apply_autodate_fields(collection, &mut normalized, &ts, true);
+    let table = backend.quote_ident(&collection.table_name())?;
+
+    let mut columns = vec![
+        "id".to_string(),
+        "created".to_string(),
+        "updated".to_string(),
+    ];
+    let mut args = AnyArguments::default();
+    args.add(id.clone()).map_err(encode_err)?;
+    args.add(ts.clone()).map_err(encode_err)?;
+    args.add(ts).map_err(encode_err)?;
+
+    if collection.is_auth() {
+        let identity = collection.auth_options.identity_field();
+        if let Some(value) = data.get(identity).and_then(Value::as_str) {
+            columns.push(identity.to_string());
+            ColumnValue::Text(Some(value.to_string()))
+                .bind(&mut args)
+                .map_err(encode_err)?;
+        }
+        if let Some(hash) = data.get("password_hash").and_then(Value::as_str) {
+            columns.push("password_hash".to_string());
+            ColumnValue::Text(Some(hash.to_string()))
+                .bind(&mut args)
+                .map_err(encode_err)?;
+        }
+        columns.push("verified".to_string());
+        ColumnValue::Bool(Some(false))
+            .bind(&mut args)
+            .map_err(encode_err)?;
+    }
+
+    for field in &collection.schema {
+        let value = normalized.get(&field.name).cloned().unwrap_or(Value::Null);
+        let multiple = is_multiple(field);
+        let column = ColumnValue::from_json(field.field_type, multiple, &value);
+        columns.push(field.name.clone());
+        column.bind(&mut args).map_err(encode_err)?;
+    }
+
+    let quoted_cols: DbResult<Vec<String>> =
+        columns.iter().map(|c| backend.quote_ident(c)).collect();
+    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({})",
+        quoted_cols?.join(", "),
+        placeholders.join(", ")
+    );
+    sqlx::query_with(&sql, args)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_unique_violation)?;
+
+    fetch_by_id_tx(tx, backend, collection, &id).await
+}
+
+/// Transaction-scoped counterpart to [`update_record`] — see
+/// [`create_record_with_id_tx`] for why validation happens outside `tx`.
+pub async fn update_record_tx(
+    tx: &mut RecordTx,
+    backend: Backend,
+    collection: &Collection,
+    id: &str,
+    data: Map<String, Value>,
+    mut normalized: Map<String, Value>,
+) -> DbResult<Value> {
+    let ts = now();
+    apply_autodate_fields(collection, &mut normalized, &ts, false);
+
+    let identity = collection.auth_options.identity_field();
+    let auth_identity = if collection.is_auth() {
+        data.get(identity).and_then(Value::as_str)
+    } else {
+        None
+    };
+    let auth_password_hash = if collection.is_auth() {
+        data.get("password_hash").and_then(Value::as_str)
+    } else {
+        None
+    };
+    if normalized.is_empty() && auth_identity.is_none() && auth_password_hash.is_none() {
+        return fetch_by_id_tx(tx, backend, collection, id).await;
+    }
+
+    let table = backend.quote_ident(&collection.table_name())?;
+    let mut sets = vec![format!("{} = $1", backend.quote_ident("updated")?)];
+    let mut args = AnyArguments::default();
+    args.add(ts).map_err(encode_err)?;
+
+    let mut idx = 2;
+    if let Some(value) = auth_identity {
+        sets.push(format!("{} = ${idx}", backend.quote_ident(identity)?));
+        args.add(value.to_string()).map_err(encode_err)?;
+        idx += 1;
+    }
+    if let Some(hash) = auth_password_hash {
+        sets.push(format!("{} = ${idx}", backend.quote_ident("password_hash")?));
+        args.add(hash.to_string()).map_err(encode_err)?;
+        idx += 1;
+    }
+    for field in &collection.schema {
+        if let Some(value) = normalized.get(&field.name) {
+            let multiple = is_multiple(field);
+            let column = ColumnValue::from_json(field.field_type, multiple, value);
+            sets.push(format!("{} = ${idx}", backend.quote_ident(&field.name)?));
+            column.bind(&mut args).map_err(encode_err)?;
+            idx += 1;
+        }
+    }
+    args.add(id.to_string()).map_err(encode_err)?;
+
+    let sql = format!(
+        "UPDATE {table} SET {} WHERE {} = ${idx}",
+        sets.join(", "),
+        backend.quote_ident("id")?
+    );
+    let result = sqlx::query_with(&sql, args)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_unique_violation)?;
+    if result.rows_affected() == 0 {
+        return Err(DbError::NotFound);
+    }
+
+    fetch_by_id_tx(tx, backend, collection, id).await
+}
+
+/// Transaction-scoped counterpart to [`delete_record`].
+pub async fn delete_record_tx(
+    tx: &mut RecordTx,
+    backend: Backend,
+    collection: &Collection,
+    id: &str,
+) -> DbResult<()> {
+    let table = backend.quote_ident(&collection.table_name())?;
+    let sql = format!(
+        "DELETE FROM {table} WHERE {} = $1",
+        backend.quote_ident("id")?
+    );
+    let result = sqlx::query(&sql).bind(id).execute(&mut **tx).await?;
+    if result.rows_affected() == 0 {
+        Err(DbError::NotFound)
+    } else {
+        Ok(())
+    }
 }

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cratebase_core::AppError;
+use cratebase_core::{AppError, FieldError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -10,8 +10,10 @@ pub enum DbError {
     UniqueViolation(String),
     #[error("invalid identifier: {0}")]
     InvalidIdentifier(String),
+    #[error("cannot write to a view collection")]
+    ViewReadOnly,
     #[error("validation failed")]
-    Validation(HashMap<String, String>),
+    Validation(HashMap<String, FieldError>),
     #[error(transparent)]
     Filter(#[from] cratebase_filter::FilterError),
     #[error(transparent)]
@@ -26,6 +28,9 @@ impl From<DbError> for AppError {
                 AppError::Conflict(format!("value for '{field}' must be unique"))
             }
             DbError::InvalidIdentifier(msg) => AppError::BadRequest(msg),
+            DbError::ViewReadOnly => {
+                AppError::BadRequest("cannot write to a view collection".into())
+            }
             DbError::Validation(fields) => AppError::Validation(fields),
             DbError::Filter(e) => AppError::BadRequest(e.to_string()),
             DbError::Sqlx(e) => AppError::Internal(e.to_string()),

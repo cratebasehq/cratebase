@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use axum::body::Body;
 use axum::extract::{FromRequest, Multipart, Request};
 use bytes::Bytes;
 use cratebase_core::field::FieldType;
-use cratebase_core::{AppError, Collection};
+use cratebase_core::{AppError, Collection, FieldError};
 use serde_json::{Map, Value};
 
 use crate::http_error::ApiError;
@@ -12,6 +14,7 @@ use crate::state::AppState;
 pub struct Upload {
     pub field: String,
     pub filename: String,
+    pub content_type: Option<String>,
     pub bytes: Bytes,
 }
 
@@ -22,10 +25,10 @@ pub struct ParsedPayload {
 
 /// Parse a record create/update body. Collections with no `file` fields
 /// typically send plain JSON; collections with file fields send
-/// `multipart/form-data` (exactly how every PocketBase SDK — and by
-/// extension anything already written against it — behaves), with
-/// non-file fields submitted as individual form values. Both are accepted
-/// unconditionally based on `Content-Type` so either style always works.
+/// `multipart/form-data` (the conventional way to mix file uploads with
+/// regular fields in one request), with non-file fields submitted as
+/// individual form values. Both are accepted unconditionally based on
+/// `Content-Type` so either style always works.
 pub async fn parse_payload(
     collection: &Collection,
     app: &AppState,
@@ -81,6 +84,7 @@ async fn parse_multipart(
             continue;
         };
         if let Some(filename) = field.file_name().map(str::to_string) {
+            let content_type = field.content_type().map(str::to_string);
             let bytes = field
                 .bytes()
                 .await
@@ -88,6 +92,7 @@ async fn parse_multipart(
             uploads.push(Upload {
                 field: name,
                 filename,
+                content_type,
                 bytes,
             });
             continue;
@@ -130,4 +135,54 @@ async fn parse_multipart(
     }
 
     Ok(ParsedPayload { fields, uploads })
+}
+
+/// Check every uploaded file part against its target field's `mimeTypes`
+/// and `maxSize` constraints (the two `FieldOptions` a `file` field can set
+/// that a plain JSON value can't express on its own — everything else
+/// routes through `cratebase_db::validate`). Runs before any upload is
+/// written to storage so a rejected file never needs cleanup.
+pub fn validate_uploads(collection: &Collection, uploads: &[Upload]) -> Result<(), ApiError> {
+    let mut errors = HashMap::new();
+
+    for upload in uploads {
+        let Some(field) = collection.field(&upload.field) else {
+            continue;
+        };
+        if field.field_type != FieldType::File {
+            continue;
+        }
+        if let Some(allowed) = &field.options.mime_types {
+            if !allowed.is_empty() {
+                let mime = upload.content_type.as_deref().unwrap_or("");
+                if !allowed.iter().any(|m| m == mime) {
+                    errors.insert(
+                        field.name.clone(),
+                        FieldError::new(
+                            "invalid_mime_type",
+                            format!("file type '{mime}' is not allowed"),
+                        ),
+                    );
+                    continue;
+                }
+            }
+        }
+        if let Some(max_size) = field.options.max_size {
+            if upload.bytes.len() as u64 > max_size {
+                errors.insert(
+                    field.name.clone(),
+                    FieldError::new(
+                        "file_too_large",
+                        format!("file exceeds the maximum size of {max_size} bytes"),
+                    ),
+                );
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError(AppError::Validation(errors)))
+    }
 }
