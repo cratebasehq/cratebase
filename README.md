@@ -16,10 +16,9 @@ collection's shape, get a full CRUD REST API, auth, file uploads, and
 realtime subscriptions for it immediately — from your web app, an Expo app,
 or a coding agent that just needs a backend.
 
-It's a Rust reimplementation of the ideas behind [PocketBase](https://pocketbase.io/):
-same shape (dynamic collections, API rules, one binary, embedded admin
-dashboard), rebuilt so **Postgres is a first-class, zero-code-change option**
-for when SQLite stops being enough.
+Same shape end to end — dynamic collections, API rules enforced in SQL,
+one binary, embedded admin dashboard — plus **Postgres as a first-class,
+zero-code-change option** for when SQLite stops being enough.
 
 ## Features
 
@@ -41,8 +40,7 @@ for when SQLite stops being enough.
 - **Realtime** — subscribe to a collection or a single record over SSE;
   get `create`/`update`/`delete` events as they happen.
 - **One binary** — the admin dashboard is embedded at compile time
-  (`rust-embed`), the same trick PocketBase uses. `cratebase serve` is the
-  whole deployment.
+  (`rust-embed`). `cratebase serve` is the whole deployment.
 - **Official TypeScript SDK** — `npm install cratebase`.
 
 ## Quickstart

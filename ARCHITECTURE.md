@@ -1,16 +1,16 @@
 # Architecture
 
-Cratebase is a Rust rewrite of the PocketBase idea: one process that gives a
-frontend (web, mobile, or another service) a full backend — dynamic
-collections, auth, file storage, and realtime — over a REST API, backed by
-either SQLite or Postgres with **no code changes** between the two.
+Cratebase is a single Rust process that gives a frontend (web, mobile, or
+another service) a full backend — dynamic collections, auth, file
+storage, and realtime — over a REST API, backed by either SQLite or
+Postgres with **no code changes** between the two.
 
 ## Crate map
 
 ```
 crates/
   core     — domain types only (Collection, Field, AppError). Zero I/O.
-  filter   — PocketBase-style filter expression parser + SQL compiler.
+  filter   — filter expression parser + SQL compiler.
   db       — the storage engine: sqlx `Any` pool, collection<->table sync,
              record CRUD, API-rule enforcement, admin accounts.
   storage  — file storage: local disk or any S3-compatible bucket
@@ -37,10 +37,10 @@ Every user-defined collection is:
 
 Creating/editing a collection (`collections::sync_table`) diffs the new
 schema against the old one and runs `ALTER TABLE ADD/DROP COLUMN` — no
-separate migration DSL, no codegen. This is deliberately the same trade-off
-PocketBase makes: schema changes are live DDL, and changing a field's type
-or single/multi cardinality drops and recreates that column (data loss on
-that column only, not the whole table).
+separate migration DSL, no codegen. This is a deliberate trade-off: schema
+changes are live DDL, and changing a field's type or single/multi
+cardinality drops and recreates that column (data loss on that column
+only, not the whole table).
 
 ### Why sqlx's `Any` driver
 
@@ -90,7 +90,7 @@ evaluated in-process. The same compiler backs three things:
   a second, JSON-only evaluator.
 
 Not supported (by design, for now): relation dot-notation (`author.name`),
-and the `?=`/`?!=`/... "any of" operators PocketBase uses for array fields.
+and `?=`/`?!=`/... "any of" operators for array fields.
 
 ## Auth model
 
@@ -113,9 +113,9 @@ a deliberate simplicity trade-off, not an oversight.
 connect to `GET /api/realtime`, get a `clientId`, then `POST /api/realtime`
 to declare which collections/records they want (`"posts"` or
 `"posts/<id>"`). Record mutations publish to matching subscribers. This is
-single-node by design (no external broker) — the same trade-off PocketBase
-makes. Horizontal scale-out needs a shared broker (Postgres
-`LISTEN/NOTIFY`, or a queue) and is tracked in [ROADMAP.md](./ROADMAP.md).
+single-node by design (no external broker) — a deliberate scope decision.
+Horizontal scale-out needs a shared broker (Postgres `LISTEN/NOTIFY`, or a
+queue) and is tracked in [ROADMAP.md](./ROADMAP.md).
 
 ## File storage
 
@@ -131,7 +131,7 @@ against a real RustFS container. Downloads stream from the backend
 `web/admin` is a normal Vite/React app during development (`bun run dev`,
 proxying `/api` to a local `cratebase serve`). For production, its build
 output (`web/admin/dist`) is embedded into the `cratebase` binary at
-**compile time** via `rust-embed` (`crates/server/src/dashboard.rs`) — the
-same trick PocketBase uses for its Svelte admin UI in a single Go binary.
+**compile time** via `rust-embed` (`crates/server/src/dashboard.rs`).
 `cargo build --release` produces one executable that serves the API and the
-dashboard; no Node runtime in production.
+dashboard; no Node runtime, and no separate frontend to host, in
+production.

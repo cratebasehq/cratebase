@@ -19,3 +19,12 @@ web/admin/dist/*
 web/admin/node_modules
 sdk/js/node_modules
 sdk/js/dist
+web/email/dist/*
+!web/email/dist/.gitkeep
+web/email/node_modules
+
+# Agent skills installed via `npx skills add` — local dev aids, not
+# part of the shipped product; keep them out of the open-source repo.
+.claude/skills/
+.agents/skills/
+skills-lock.json
