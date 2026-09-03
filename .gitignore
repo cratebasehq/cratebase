@@ -28,3 +28,6 @@ web/email/node_modules
 .claude/skills/
 .agents/skills/
 skills-lock.json
+
+# Claude Code worktrees
+.claude/worktrees/
