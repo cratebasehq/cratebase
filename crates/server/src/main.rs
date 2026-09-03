@@ -5,7 +5,11 @@ use cratebase_server::config::Config;
 use cratebase_server::{build_app, build_state};
 
 #[derive(Parser)]
-#[command(name = "cratebase", version, about = "A fast, self-hostable backend: dynamic collections, auth, files, and realtime over SQLite or Postgres.")]
+#[command(
+    name = "cratebase",
+    version,
+    about = "A fast, self-hostable backend: dynamic collections, auth, files, and realtime over SQLite or Postgres."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -35,7 +39,10 @@ enum SuperuserAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("cratebase_server=info".parse()?))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive("cratebase_server=info".parse()?),
+        )
         .init();
 
     let cli = Cli::parse();

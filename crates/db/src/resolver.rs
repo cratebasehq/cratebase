@@ -63,7 +63,10 @@ impl<'a> Resolver for CollectionResolver<'a> {
             ));
         }
 
-        if ident == "id" || ident == "created" || ident == "updated" || self.collection.field(ident).is_some()
+        if ident == "id"
+            || ident == "created"
+            || ident == "updated"
+            || self.collection.field(ident).is_some()
         {
             if self.use_data_for_fields {
                 return Ok(Resolved::Value(
@@ -119,8 +122,12 @@ pub fn evaluate_rule(
                 ctx,
                 use_data_for_fields: false,
             };
-            let compiled =
-                cratebase_filter::parse_and_compile(expr, &resolver, backend.dialect(), param_offset)?;
+            let compiled = cratebase_filter::parse_and_compile(
+                expr,
+                &resolver,
+                backend.dialect(),
+                param_offset,
+            )?;
             Ok(RuleOutcome::Filtered(compiled))
         }
     }
@@ -163,6 +170,8 @@ pub async fn evaluate_create_rule(
             .map_err(|e| crate::error::DbError::Sqlx(sqlx::Error::Encode(e)))?;
     }
     let sql = format!("SELECT 1 WHERE {}", compiled.sql);
-    let row = sqlx::query_with(&sql, args).fetch_optional(&db.pool).await?;
+    let row = sqlx::query_with(&sql, args)
+        .fetch_optional(&db.pool)
+        .await?;
     Ok(row.is_some())
 }

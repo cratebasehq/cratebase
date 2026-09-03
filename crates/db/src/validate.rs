@@ -108,7 +108,8 @@ fn validate_field(field: &Field, value: &Value) -> Result<(), String> {
             }
         }
         FieldType::Select => {
-            let values = as_string_list(value, multiple).ok_or("expected a string or array of strings")?;
+            let values =
+                as_string_list(value, multiple).ok_or("expected a string or array of strings")?;
             let allowed = field.options.values.clone().unwrap_or_default();
             for v in &values {
                 if !allowed.contains(v) {
@@ -172,7 +173,11 @@ pub async fn validate_and_normalize(
     Ok(normalized)
 }
 
-async fn validate_relations(db: &Db, collection: &Collection, data: &Map<String, Value>) -> DbResult<()> {
+async fn validate_relations(
+    db: &Db,
+    collection: &Collection,
+    data: &Map<String, Value>,
+) -> DbResult<()> {
     let mut errors = HashMap::new();
 
     for field in &collection.schema {
@@ -200,7 +205,10 @@ async fn validate_relations(db: &Db, collection: &Collection, data: &Map<String,
         let target = match get_collection_by_id(db, target_id).await {
             Ok(c) => c,
             Err(_) => {
-                errors.insert(field.name.clone(), "relation target collection no longer exists".into());
+                errors.insert(
+                    field.name.clone(),
+                    "relation target collection no longer exists".into(),
+                );
                 continue;
             }
         };

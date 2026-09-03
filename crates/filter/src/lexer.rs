@@ -168,9 +168,7 @@ impl<'a> Lexer<'a> {
                         }
                     }
                     let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
-                    let n: f64 = text
-                        .parse()
-                        .map_err(|_| LexError('-', start))?;
+                    let n: f64 = text.parse().map_err(|_| LexError('-', start))?;
                     out.push(Token::Num(n));
                 }
                 b'@' | b'_' | b'a'..=b'z' | b'A'..=b'Z' => {

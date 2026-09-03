@@ -34,10 +34,15 @@ async fn auth_record_stores_email_and_hides_password_hash() {
     data.insert("email".into(), json!("alice@example.com"));
     data.insert("password_hash".into(), json!("hashed-secret"));
     let id = new_id();
-    let record = create_record_with_id(&db, &col, id.clone(), data).await.unwrap();
+    let record = create_record_with_id(&db, &col, id.clone(), data)
+        .await
+        .unwrap();
 
     assert_eq!(record["email"], json!("alice@example.com"));
-    assert!(record.get("password_hash").is_none(), "password hash must never be exposed");
+    assert!(
+        record.get("password_hash").is_none(),
+        "password hash must never be exposed"
+    );
     assert!(record.get("password").is_none());
 
     let fetched = get_record(&db, &col, &id, None).await.unwrap();
@@ -54,8 +59,12 @@ async fn duplicate_email_is_rejected() {
     let mut data = Map::new();
     data.insert("email".into(), json!("dup@example.com"));
     data.insert("password_hash".into(), json!("h1"));
-    create_record_with_id(&db, &col, new_id(), data.clone()).await.unwrap();
+    create_record_with_id(&db, &col, new_id(), data.clone())
+        .await
+        .unwrap();
 
-    let err = create_record_with_id(&db, &col, new_id(), data).await.unwrap_err();
+    let err = create_record_with_id(&db, &col, new_id(), data)
+        .await
+        .unwrap_err();
     assert!(matches!(err, cratebase_db::DbError::UniqueViolation(_)));
 }

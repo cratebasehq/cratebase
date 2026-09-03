@@ -45,17 +45,25 @@ pub fn issue_token(
         iat: now,
         exp: now + ttl_seconds,
     };
-    encode(&Header::new(Algorithm::HS256), &claims, &EncodingKey::from_secret(secret.as_bytes()))
-        .map_err(|_| AuthError::InvalidToken)
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|_| AuthError::InvalidToken)
 }
 
 pub fn verify_token(token: &str, secret: &str) -> AuthResult<TokenClaims> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
     validation.leeway = 5;
-    decode::<TokenClaims>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
-        .map(|data| data.claims)
-        .map_err(|_| AuthError::InvalidToken)
+    decode::<TokenClaims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map(|data| data.claims)
+    .map_err(|_| AuthError::InvalidToken)
 }
 
 fn chrono_now() -> i64 {

@@ -1,6 +1,10 @@
+#![allow(dead_code)] // shared across test binaries; each uses a subset
+
 use cratebase_core::field::{Field, FieldOptions, FieldType};
 use cratebase_core::{new_id, now, AuthOptions, Collection, CollectionType};
-use cratebase_db::records::{create_record, delete_record, get_record, list_records, update_record, ListParams};
+use cratebase_db::records::{
+    create_record, delete_record, get_record, list_records, update_record, ListParams,
+};
 use cratebase_db::resolver::RequestContext;
 use cratebase_db::{collections, Db};
 use serde_json::{json, Map};
@@ -90,7 +94,9 @@ pub async fn full_suite(db: Db) {
     // unique constraint
     let mut unique_col = posts_collection("posts_unique");
     unique_col.schema[0].unique = true;
-    collections::create_collection(&db, &unique_col).await.unwrap();
+    collections::create_collection(&db, &unique_col)
+        .await
+        .unwrap();
     let mut dup = Map::new();
     dup.insert("title".into(), json!("dup"));
     create_record(&db, &unique_col, dup.clone()).await.unwrap();
@@ -99,7 +105,9 @@ pub async fn full_suite(db: Db) {
 
     // list: filter, sort, paginate
     let list_col = posts_collection("posts_list");
-    collections::create_collection(&db, &list_col).await.unwrap();
+    collections::create_collection(&db, &list_col)
+        .await
+        .unwrap();
     for i in 0..5 {
         let mut d = Map::new();
         d.insert("title".into(), json!(format!("post-{i}")));
@@ -123,7 +131,11 @@ pub async fn full_suite(db: Db) {
     .await
     .unwrap();
     assert_eq!(result.total_items, 3);
-    let views: Vec<f64> = result.items.iter().map(|r| r["views"].as_f64().unwrap()).collect();
+    let views: Vec<f64> = result
+        .items
+        .iter()
+        .map(|r| r["views"].as_f64().unwrap())
+        .collect();
     assert_eq!(views, vec![0.0, 2.0, 4.0]);
 
     let page1 = list_records(
@@ -160,7 +172,9 @@ pub async fn full_suite(db: Db) {
         options: FieldOptions::default(),
     });
     mig_col.schema.retain(|f| f.name != "published");
-    collections::update_collection(&db, &previous, &mig_col).await.unwrap();
+    collections::update_collection(&db, &previous, &mig_col)
+        .await
+        .unwrap();
     let result = list_records(
         &db,
         &mig_col,
