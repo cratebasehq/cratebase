@@ -17,8 +17,8 @@ function formatDate(value: string): string {
 export function IdCell({ id }: { id: string }) {
   const { copy, status } = useCopyToClipboard();
   return (
-    <div className="group/id flex items-center gap-1 font-mono text-[12px] text-muted-foreground">
-      <span className="truncate">{id.slice(0, 8)}</span>
+    <div className="group/id flex items-center gap-1.5 whitespace-nowrap font-mono text-[12px] text-muted-foreground">
+      <span>{id}</span>
       <button
         type="button"
         aria-label="Copy id"
