@@ -7,13 +7,30 @@ roughly in the order it's likely to land.
 
 ## Next up
 
-- **Plugin system.** A way to install optional server-side extensions
-  without forking Cratebase — the mechanism that turns collections/rules/
-  storage into a platform instead of a fixed feature set, and (eventually)
-  a way for plugin authors to charge for their work. First candidate
-  plugin: **feature flags** (a self-contained collection + evaluation rule
-  + tiny SDK helper) — small enough to validate the plugin architecture
-  before bigger ones.
+- **Plugin system.** Shipped as of `crates/server/src/plugin.rs`: a
+  `Plugin` trait with two extension points — `routes()` to mount extra
+  HTTP endpoints under `/api/plugins/<name>`, and `scheduled_tasks()` to
+  run fixed-interval background jobs (Cratebase's answer to PocketBase's
+  cron, minus calendar expressions — see the trait doc comment for why).
+  This is a compile-time Rust trait, not a dynamically loaded/scripted
+  plugin format: "installing a plugin" means implementing `Plugin` in
+  `crates/server/src/plugins/`, registering it in `plugins::registry()`,
+  and shipping your own binary. `plugins/example.rs` is a working
+  reference (a `/stats` route + a 5-minute logging job) to copy from.
+  **Not yet built on this foundation, but now unblocked:**
+  - **Cron jobs as a plugin** — a `Plugin` whose `scheduled_tasks()` reads
+    job definitions from a `_cron_jobs` collection instead of being
+    hardcoded, with a run-history table and a dashboard "Jobs" tab.
+  - **Team management as a plugin** — multiple admins with roles is a
+    real data-model change (today there is one `_admins` table, no
+    roles); once record-lifecycle hooks exist on `Plugin` this can enforce
+    role checks without touching the core auth crate.
+  - **Feature flags** — a self-contained collection + evaluation rule +
+    tiny SDK helper, still the smallest candidate to validate a plugin
+    that also needs its own collection/schema, not just routes+jobs.
+  - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
+    on the trait yet — add them when the first plugin actually needs one,
+    rather than speculatively.
 - **Background jobs / queues.** Durable job processing, `pg_boss`-style
   when running on Postgres (SQLite deployments would need a different
   backend — this needs design work, not just wiring `pg_boss` in).

@@ -99,6 +99,43 @@ async fn health_check() {
 }
 
 #[tokio::test]
+async fn plugin_stats_route_reports_record_counts() {
+    let state = test_state().await;
+    let app = build_app(state.clone());
+    let token = admin_token(&state, &app).await;
+
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections",
+            Some(&token),
+            json!({
+                "name": "widgets", "type": "base",
+                "schema": [{"id": "f1", "name": "name", "type": "text"}],
+                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
+            }),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/collections/widgets/records",
+            None,
+            json!({"name": "gizmo"}),
+        ))
+        .await
+        .unwrap();
+
+    let stats = app
+        .oneshot(get_request("/api/plugins/example/stats", None))
+        .await
+        .unwrap();
+    assert_eq!(stats.status(), StatusCode::OK);
+    assert_eq!(json_body(stats).await["recordCounts"]["widgets"], 1);
+}
+
+#[tokio::test]
 async fn collection_management_requires_admin() {
     let app = build_app(test_state().await);
     let res = app

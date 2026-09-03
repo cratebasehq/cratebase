@@ -148,6 +148,16 @@ async fn fetch_by_id(db: &Db, collection: &Collection, id: &str) -> DbResult<Val
     }
 }
 
+/// Total row count for a collection's table, no filter/pagination. Used by
+/// the stats/metrics extension point rather than the paginated list path.
+pub async fn count_records(db: &Db, collection: &Collection) -> DbResult<i64> {
+    let table = db.backend.quote_ident(&collection.table_name())?;
+    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+        .fetch_one(&db.pool)
+        .await?;
+    Ok(count)
+}
+
 pub async fn list_records(
     db: &Db,
     collection: &Collection,

@@ -9,6 +9,8 @@ pub mod extract;
 pub mod helpers;
 pub mod http_error;
 pub mod payload;
+pub mod plugin;
+pub mod plugins;
 pub mod realtime;
 mod routes;
 pub mod state;
@@ -56,6 +58,7 @@ pub fn build_app(state: AppState) -> Router {
     Router::new()
         .nest("/api", routes::router())
         .merge(dashboard::router())
+        .merge(plugins::registry().router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
