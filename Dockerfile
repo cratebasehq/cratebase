@@ -1,5 +1,15 @@
 # syntax=docker/dockerfile:1
 
+# ---- frontend build -----------------------------------------------------
+# Builds the JS SDK and the admin dashboard's static assets, which get
+# embedded straight into the Rust binary in the next stage (rust-embed).
+FROM oven/bun:1-slim AS frontend
+WORKDIR /app
+COPY package.json ./
+COPY sdk/js sdk/js
+COPY web/admin web/admin
+RUN bun install && bun run sdk:build && bun run admin:build
+
 # ---- deps cache layer -------------------------------------------------
 # Copies only the manifests first so `cargo build` for dependencies is
 # cached across rebuilds that only touch application source.
@@ -15,6 +25,7 @@ COPY crates/db/Cargo.toml crates/db/Cargo.toml
 COPY crates/storage/Cargo.toml crates/storage/Cargo.toml
 COPY crates/auth/Cargo.toml crates/auth/Cargo.toml
 COPY crates/server/Cargo.toml crates/server/Cargo.toml
+COPY web/admin/dist/.gitkeep web/admin/dist/.gitkeep
 RUN mkdir -p crates/core/src crates/filter/src crates/db/src crates/storage/src crates/auth/src crates/server/src \
     && for c in core filter db storage auth; do echo "fn _stub() {}" > crates/$c/src/lib.rs; done \
     && echo "fn main() {}" > crates/server/src/main.rs \
@@ -24,6 +35,7 @@ RUN mkdir -p crates/core/src crates/filter/src crates/db/src crates/storage/src 
 FROM planner AS builder
 COPY crates crates
 COPY Cargo.toml Cargo.lock ./
+COPY --from=frontend /app/web/admin/dist web/admin/dist
 # Touch sources so cargo doesn't skip the real build using the stub mtimes.
 RUN find crates -name '*.rs' -exec touch {} + \
     && cargo build --release -p cratebase-server

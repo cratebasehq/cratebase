@@ -1,0 +1,11 @@
+target
+data
+**/node_modules
+**/dist
+!web/admin/dist/.gitkeep
+**/bun.lock
+.git
+.env
+*.db
+*.db-shm
+*.db-wal
