@@ -230,12 +230,24 @@ async fn update(
     Ok(Json(updated))
 }
 
+/// Deletes the collection unless it's the `users` auth collection
+/// `cratebase_db::system::ensure_default_collections` auto-provisions on
+/// first boot — that only runs when `users` is *missing*, so deleting it
+/// mid-run breaks sign-in until the next server restart recreates it.
+/// The dashboard already hides this action for `users`
+/// (`CollectionSettings`); guarded here too since the dashboard isn't
+/// the only way to call this endpoint.
 async fn remove(
     State(app): State<AppState>,
     _admin: RequireAdmin,
     Path(id): Path<String>,
 ) -> ApiResult<axum::http::StatusCode> {
     let collection = load_collection(&app, &id).await?;
+    if collection.name == "users" {
+        return Err(ApiError(AppError::BadRequest(
+            "the built-in 'users' collection can't be deleted".into(),
+        )));
+    }
     collections::delete_collection(&app.db, &collection).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
