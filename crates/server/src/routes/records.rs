@@ -34,7 +34,9 @@ pub struct ListQuery {
 }
 
 fn forbidden() -> ApiError {
-    ApiError(AppError::Forbidden("you are not allowed to perform this action".into()))
+    ApiError(AppError::Forbidden(
+        "you are not allowed to perform this action".into(),
+    ))
 }
 
 async fn list(
@@ -98,10 +100,18 @@ async fn view(
 /// Merge uploaded file parts into the fields map, respecting each field's
 /// single/multiple cardinality. Replaces (does not append to) any existing
 /// value — see `payload.rs` module docs for the tradeoff.
-fn merge_uploaded_filenames(fields: &mut Map<String, Value>, collection: &Collection, uploads: &[(Upload, String)]) {
-    let mut by_field: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+fn merge_uploaded_filenames(
+    fields: &mut Map<String, Value>,
+    collection: &Collection,
+    uploads: &[(Upload, String)],
+) {
+    let mut by_field: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for (upload, stored_name) in uploads {
-        by_field.entry(upload.field.clone()).or_default().push(stored_name.clone());
+        by_field
+            .entry(upload.field.clone())
+            .or_default()
+            .push(stored_name.clone());
     }
     for (field_name, names) in by_field {
         let multiple = collection
@@ -109,7 +119,10 @@ fn merge_uploaded_filenames(fields: &mut Map<String, Value>, collection: &Collec
             .map(|f| f.field_type.supports_multiple() && f.options.multiple.unwrap_or(false))
             .unwrap_or(false);
         if multiple {
-            fields.insert(field_name, Value::Array(names.into_iter().map(Value::String).collect()));
+            fields.insert(
+                field_name,
+                Value::Array(names.into_iter().map(Value::String).collect()),
+            );
         } else {
             fields.insert(field_name, Value::String(names.into_iter().last().unwrap()));
         }
@@ -128,7 +141,10 @@ fn file_field_values(collection: &Collection, record: &Value) -> Vec<(String, Ve
             let value = record.get(&f.name)?;
             let names: Vec<String> = match value {
                 Value::String(s) => vec![s.clone()],
-                Value::Array(items) => items.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                Value::Array(items) => items
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect(),
                 _ => return None,
             };
             Some((f.name.clone(), names))
@@ -136,7 +152,12 @@ fn file_field_values(collection: &Collection, record: &Value) -> Vec<(String, Ve
         .collect()
 }
 
-async fn delete_stored_files(app: &AppState, collection: &Collection, record_id: &str, files: Vec<(String, Vec<String>)>) {
+async fn delete_stored_files(
+    app: &AppState,
+    collection: &Collection,
+    record_id: &str,
+    files: Vec<(String, Vec<String>)>,
+) {
     for (_, names) in files {
         for name in names {
             let key = file_key(&collection.id, record_id, &name);
@@ -179,7 +200,9 @@ async fn create(
     let fields = crate::auth_fields::prepare_auth_create(&collection, fields)?;
 
     let record = records::create_record_with_id(&app.db, &collection, id, fields).await?;
-    app.realtime.publish(&collection.name, "create", &record).await;
+    app.realtime
+        .publish(&collection.name, "create", &record)
+        .await;
     Ok(Json(record))
 }
 
@@ -190,8 +213,17 @@ async fn update(
     req: Request<Body>,
 ) -> ApiResult<Json<Value>> {
     let collection = load_collection(&app, &collection_name).await?;
-    let ctx_check = RequestContext { auth: auth.clone(), data: None };
-    let outcome = evaluate_rule(&collection.update_rule, &collection, app.db.backend, &ctx_check, 0)?;
+    let ctx_check = RequestContext {
+        auth: auth.clone(),
+        data: None,
+    };
+    let outcome = evaluate_rule(
+        &collection.update_rule,
+        &collection,
+        app.db.backend,
+        &ctx_check,
+        0,
+    )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
         RuleOutcome::AllowAll => None,
@@ -226,7 +258,9 @@ async fn update(
         delete_stored_files(&app, &collection, &id, old_files).await;
     }
 
-    app.realtime.publish(&collection.name, "update", &record).await;
+    app.realtime
+        .publish(&collection.name, "update", &record)
+        .await;
     Ok(Json(record))
 }
 
@@ -237,7 +271,13 @@ async fn remove(
 ) -> ApiResult<axum::http::StatusCode> {
     let collection = load_collection(&app, &collection_name).await?;
     let ctx = RequestContext { auth, data: None };
-    let outcome = evaluate_rule(&collection.delete_rule, &collection, app.db.backend, &ctx, 0)?;
+    let outcome = evaluate_rule(
+        &collection.delete_rule,
+        &collection,
+        app.db.backend,
+        &ctx,
+        0,
+    )?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => return Err(forbidden()),
         RuleOutcome::AllowAll => None,
@@ -250,6 +290,8 @@ async fn remove(
     let files = file_field_values(&collection, &record);
     delete_stored_files(&app, &collection, &id, files).await;
 
-    app.realtime.publish(&collection.name, "delete", &record).await;
+    app.realtime
+        .publish(&collection.name, "delete", &record)
+        .await;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

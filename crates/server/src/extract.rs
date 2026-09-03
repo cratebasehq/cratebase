@@ -54,7 +54,10 @@ where
                 }
             }
             TokenKind::Auth => {
-                let Ok(collection) = cratebase_db::collections::get_collection_by_id(&app.db, &claims.collection_id).await else {
+                let Ok(collection) =
+                    cratebase_db::collections::get_collection_by_id(&app.db, &claims.collection_id)
+                        .await
+                else {
                     return Ok(CurrentAuth(None));
                 };
                 match records::get_record(&app.db, &collection, &claims.sub, None).await {

@@ -51,9 +51,13 @@ impl<S> Drop for ClientStream<S> {
 /// connection's `clientId`, which the client then posts back to
 /// `/api/realtime` to declare which collections/records it wants updates
 /// for — the same handshake PocketBase's realtime clients use.
-async fn connect(State(app): State<AppState>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn connect(
+    State(app): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let (client_id, rx) = app.realtime.connect().await;
-    let hello = Event::default().event("PB_CONNECT").data(format!(r#"{{"clientId":"{client_id}"}}"#));
+    let hello = Event::default()
+        .event("PB_CONNECT")
+        .data(format!(r#"{{"clientId":"{client_id}"}}"#));
 
     let inner = tokio_stream::once(Ok(hello)).chain(UnboundedReceiverStream::new(rx).map(Ok));
     let stream = ClientStream {
@@ -62,7 +66,11 @@ async fn connect(State(app): State<AppState>) -> Sse<impl Stream<Item = Result<E
         client_id,
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(25)).text("ping"))
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(25))
+            .text("ping"),
+    )
 }
 
 #[derive(Deserialize)]
@@ -77,7 +85,10 @@ async fn set_subscriptions(
     State(app): State<AppState>,
     Json(body): Json<SubscriptionUpdate>,
 ) -> ApiResult<axum::http::StatusCode> {
-    let ok = app.realtime.subscribe(&body.client_id, body.subscriptions).await;
+    let ok = app
+        .realtime
+        .subscribe(&body.client_id, body.subscriptions)
+        .await;
     Ok(if ok {
         axum::http::StatusCode::NO_CONTENT
     } else {

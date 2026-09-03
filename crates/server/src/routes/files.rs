@@ -34,7 +34,9 @@ async fn download(
     let outcome = evaluate_rule(&collection.view_rule, &collection, app.db.backend, &ctx, 0)?;
     let rule_filter = match outcome {
         RuleOutcome::DenyAll => {
-            return Err(ApiError(AppError::Forbidden("you are not allowed to access this file".into())))
+            return Err(ApiError(AppError::Forbidden(
+                "you are not allowed to access this file".into(),
+            )))
         }
         RuleOutcome::AllowAll => None,
         RuleOutcome::Filtered(f) => Some(f),

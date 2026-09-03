@@ -26,8 +26,9 @@ impl Storage {
     pub fn connect(config: &StorageConfig) -> StorageResult<Self> {
         let store: Arc<dyn ObjectStore> = match config {
             StorageConfig::Local { base_dir } => {
-                std::fs::create_dir_all(base_dir)
-                    .map_err(|e| StorageError::Config(format!("cannot create '{base_dir}': {e}")))?;
+                std::fs::create_dir_all(base_dir).map_err(|e| {
+                    StorageError::Config(format!("cannot create '{base_dir}': {e}"))
+                })?;
                 Arc::new(
                     LocalFileSystem::new_with_prefix(base_dir)
                         .map_err(|e| StorageError::Config(e.to_string()))?,
@@ -68,7 +69,9 @@ impl Storage {
     pub async fn get(&self, key: &str) -> StorageResult<Bytes> {
         match self.store.get(&ObjectPath::from(key)).await {
             Ok(result) => Ok(result.bytes().await?),
-            Err(object_store::Error::NotFound { .. }) => Err(StorageError::NotFound(key.to_string())),
+            Err(object_store::Error::NotFound { .. }) => {
+                Err(StorageError::NotFound(key.to_string()))
+            }
             Err(e) => Err(StorageError::Backend(e)),
         }
     }
@@ -83,12 +86,15 @@ impl Storage {
     ) -> StorageResult<impl futures::Stream<Item = StorageResult<Bytes>> + Send + 'static> {
         use futures::StreamExt;
         match self.store.get(&ObjectPath::from(key)).await {
-            Ok(result) => Ok(result.into_stream().map(|chunk| chunk.map_err(StorageError::Backend))),
-            Err(object_store::Error::NotFound { .. }) => Err(StorageError::NotFound(key.to_string())),
+            Ok(result) => Ok(result
+                .into_stream()
+                .map(|chunk| chunk.map_err(StorageError::Backend))),
+            Err(object_store::Error::NotFound { .. }) => {
+                Err(StorageError::NotFound(key.to_string()))
+            }
             Err(e) => Err(StorageError::Backend(e)),
         }
     }
-
 
     pub async fn delete(&self, key: &str) -> StorageResult<()> {
         match self.store.delete(&ObjectPath::from(key)).await {
@@ -112,7 +118,10 @@ mod tests {
 
     fn temp_dir() -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         std::env::temp_dir().join(format!("cratebase-storage-test-{nanos}"))
     }
 
@@ -125,7 +134,10 @@ mod tests {
         .unwrap();
 
         assert!(!storage.exists("a/b.txt").await.unwrap());
-        storage.put("a/b.txt", Bytes::from_static(b"hello")).await.unwrap();
+        storage
+            .put("a/b.txt", Bytes::from_static(b"hello"))
+            .await
+            .unwrap();
         assert!(storage.exists("a/b.txt").await.unwrap());
         let data = storage.get("a/b.txt").await.unwrap();
         assert_eq!(&data[..], b"hello");

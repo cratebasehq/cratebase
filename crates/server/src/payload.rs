@@ -52,7 +52,9 @@ pub async fn parse_payload(
             serde_json::from_slice::<Value>(&bytes)
                 .ok()
                 .and_then(|v| v.as_object().cloned())
-                .ok_or_else(|| ApiError(AppError::BadRequest("body must be a JSON object".into())))?
+                .ok_or_else(|| {
+                    ApiError(AppError::BadRequest("body must be a JSON object".into()))
+                })?
         };
         Ok(ParsedPayload {
             fields,
@@ -61,9 +63,13 @@ pub async fn parse_payload(
     }
 }
 
-async fn parse_multipart(collection: &Collection, mut multipart: Multipart) -> Result<ParsedPayload, ApiError> {
+async fn parse_multipart(
+    collection: &Collection,
+    mut multipart: Multipart,
+) -> Result<ParsedPayload, ApiError> {
     let mut fields = Map::new();
-    let mut multi_text: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut multi_text: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let mut uploads = Vec::new();
 
     while let Some(field) = multipart
@@ -117,7 +123,10 @@ async fn parse_multipart(collection: &Collection, mut multipart: Multipart) -> R
     }
 
     for (name, values) in multi_text {
-        fields.insert(name, Value::Array(values.into_iter().map(Value::String).collect()));
+        fields.insert(
+            name,
+            Value::Array(values.into_iter().map(Value::String).collect()),
+        );
     }
 
     Ok(ParsedPayload { fields, uploads })

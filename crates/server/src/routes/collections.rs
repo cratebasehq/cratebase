@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use cratebase_core::field::Field;
-use cratebase_core::{now, new_id, AppError, AuthOptions, Collection, CollectionType};
+use cratebase_core::{new_id, now, AppError, AuthOptions, Collection, CollectionType};
 use cratebase_db::collections;
 use serde::Deserialize;
 
@@ -55,7 +55,9 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
                 field.name
             ))));
         }
-        if cratebase_core::RESERVED_FIELD_NAMES.contains(&field.name.as_str()) || field.name == "email" {
+        if cratebase_core::RESERVED_FIELD_NAMES.contains(&field.name.as_str())
+            || field.name == "email"
+        {
             return Err(ApiError(AppError::BadRequest(format!(
                 "'{}' is a reserved field name",
                 field.name
@@ -65,11 +67,18 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
     Ok(())
 }
 
-async fn list(State(app): State<AppState>, _admin: RequireAdmin) -> ApiResult<Json<Vec<Collection>>> {
+async fn list(
+    State(app): State<AppState>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<Vec<Collection>>> {
     Ok(Json(collections::list_collections(&app.db).await?))
 }
 
-async fn view(State(app): State<AppState>, _admin: RequireAdmin, Path(id): Path<String>) -> ApiResult<Json<Collection>> {
+async fn view(
+    State(app): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Collection>> {
     Ok(Json(load_collection(&app, &id).await?))
 }
 
