@@ -5,7 +5,6 @@ sdk/js/dist
 web/email/dist
 web/admin/dist/*
 !web/admin/dist/.gitkeep
-**/bun.lock
 .git
 .env
 *.db

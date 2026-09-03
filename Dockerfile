@@ -5,7 +5,7 @@
 # embedded straight into the Rust binary in the next stage (rust-embed).
 FROM oven/bun:1-slim AS frontend
 WORKDIR /app
-COPY package.json ./
+COPY package.json bun.lock ./
 COPY sdk/js sdk/js
 COPY web/admin web/admin
 COPY web/email web/email
