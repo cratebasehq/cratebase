@@ -79,10 +79,18 @@ export class RealtimeService {
       es.addEventListener("PB_CONNECT", (event) => {
         const messageEvent = event as MessageEvent;
         const parsed: unknown = JSON.parse(messageEvent.data);
-        if (isConnectPayload(parsed)) {
-          this.clientId = parsed.clientId;
-          resolve();
-        }
+        if (!isConnectPayload(parsed)) return;
+        // The browser's EventSource auto-reconnects on transient drops
+        // (network blip, server restart) and the server issues a fresh
+        // clientId on every reconnect. The server-side subscription list
+        // is keyed by clientId, so without re-syncing here a reconnected
+        // client goes silently deaf: the SSE stream looks "connected" but
+        // never receives another event for topics it was already
+        // subscribed to.
+        const isReconnect = this.clientId !== "" && this.clientId !== parsed.clientId;
+        this.clientId = parsed.clientId;
+        if (isReconnect) void this.syncSubscriptions();
+        resolve();
       });
 
       es.addEventListener("message", (event) => {
@@ -97,9 +105,10 @@ export class RealtimeService {
 
       es.onerror = () => {
         if (!this.clientId) reject(new Error("failed to connect to /api/realtime"));
-        // The browser's EventSource auto-reconnects on transient errors;
-        // `PB_CONNECT` will fire again with a fresh clientId, and the next
-        // subscribe()/unsubscribe() call re-syncs subscriptions for it.
+        // The browser's EventSource auto-reconnects on transient errors on
+        // its own; the PB_CONNECT handler above resyncs subscriptions once
+        // the fresh clientId arrives, so there's nothing to do here beyond
+        // rejecting a first-connect failure.
       };
     });
   }
