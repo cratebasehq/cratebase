@@ -60,8 +60,13 @@ function CollectionPage() {
   });
 
   const sortParam = urlSearch.sort ?? "-created";
+  const identityField = (collection?.authOptions?.identityField as string | undefined) ?? "email";
   const filter = collection
-    ? buildSearchFilter(search, collection.schema.filter((f) => ["text", "email", "url"].includes(f.type)))
+    ? buildSearchFilter(
+        search,
+        collection.schema.filter((f) => ["text", "email", "url"].includes(f.type)),
+        collection.type === "auth" ? identityField : undefined,
+      )
     : "";
   const { data: result } = useRecords(name, page, filter, sortParam);
   const { remove } = useRecordMutations(name);
@@ -99,11 +104,11 @@ function CollectionPage() {
     ...(collection.type === "auth"
       ? [
           {
-            id: "email",
-            header: "email",
+            id: identityField,
+            header: identityField,
             sortable: true,
-            value: (row: RecordModel) => String(row.email ?? ""),
-            cell: (row: RecordModel) => <span className="text-[13px]">{String(row.email ?? "")}</span>,
+            value: (row: RecordModel) => String(row[identityField] ?? ""),
+            cell: (row: RecordModel) => <span className="text-[13px]">{String(row[identityField] ?? "")}</span>,
           },
         ]
       : []),
@@ -262,11 +267,12 @@ function TableSkeleton() {
   );
 }
 
-function buildSearchFilter(search: string, textFields: { name: string }[]): string {
+function buildSearchFilter(search: string, textFields: { name: string }[], identityField?: string): string {
   const q = search.trim();
-  if (!q || textFields.length === 0) return "";
+  const names = identityField ? [identityField, ...textFields.map((f) => f.name)] : textFields.map((f) => f.name);
+  if (!q || names.length === 0) return "";
   const escaped = q.replace(/"/g, '\\"');
-  return textFields.map((f) => `${f.name} ~ "${escaped}"`).join(" || ");
+  return names.map((name) => `${name} ~ "${escaped}"`).join(" || ");
 }
 
 export const collectionRoute = createRoute({

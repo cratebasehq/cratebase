@@ -18,6 +18,7 @@ import { RuleField } from "@/components/collections/rule-field";
 export interface CollectionFormValue {
   name: string;
   type: "base" | "auth";
+  identityField: string;
   schema: FieldSchema[];
   listRule: string | null;
   viewRule: string | null;
@@ -34,10 +35,11 @@ function validateName(value: string): string | null {
   return null;
 }
 
-export function emptyCollectionForm(): CollectionFormValue {
+export function emptyCollectionForm(type: "base" | "auth" = "base"): CollectionFormValue {
   return {
     name: "",
-    type: "base",
+    type,
+    identityField: "email",
     schema: [],
     listRule: null,
     viewRule: null,
@@ -51,6 +53,7 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
   return {
     name: collection.name,
     type: collection.type === "auth" ? "auth" : "base",
+    identityField: (collection.authOptions?.identityField as string | undefined) ?? "email",
     schema: collection.schema,
     listRule: collection.listRule,
     viewRule: collection.viewRule,
@@ -122,16 +125,44 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
             hint={isNew ? undefined : "Renaming an existing collection isn't supported yet"}
           />
         </div>
-        <SegmentedControl
-          label="Collection type"
-          value={value.type}
-          onValueChange={(type) => onChange({ ...value, type: type as "base" | "auth" })}
-          options={[
-            { value: "base", label: "Base", disabled: !isNew },
-            { value: "auth", label: "Auth", disabled: !isNew },
-          ]}
-        />
+        {!isNew ? (
+          <SegmentedControl
+            label="Collection type"
+            value={value.type}
+            onValueChange={() => {}}
+            options={[
+              { value: "base", label: "Base", disabled: true },
+              { value: "auth", label: "Auth", disabled: true },
+            ]}
+          />
+        ) : null}
       </div>
+
+      {value.type === "auth" ? (
+        <div>
+          {isNew ? (
+            <SegmentedControl
+              label="Log in with"
+              value={value.identityField}
+              onValueChange={(identityField) => onChange({ ...value, identityField })}
+              options={[
+                { value: "email", label: "Email" },
+                { value: "username", label: "Username" },
+              ]}
+            />
+          ) : (
+            <SegmentedControl
+              label="Log in with"
+              value={value.identityField}
+              onValueChange={() => {}}
+              options={[{ value: value.identityField, label: value.identityField, disabled: true }]}
+            />
+          )}
+          {!isNew ? (
+            <p className="mt-1.5 text-[11.5px] text-muted-foreground">Changing the identity field after creation isn't supported yet.</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div>
         <div className="mb-2 flex items-center justify-between">
@@ -147,7 +178,7 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
         </div>
         {value.type === "auth" ? (
           <p className="mb-2 text-[11.5px] text-muted-foreground">
-            <code className="font-mono">email</code> and <code className="font-mono">password</code> are managed automatically for auth collections.
+            <code className="font-mono">{value.identityField}</code> and <code className="font-mono">password</code> are managed automatically for auth collections.
           </p>
         ) : null}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>

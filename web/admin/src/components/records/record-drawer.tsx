@@ -19,6 +19,7 @@ type FileFieldState = Record<string, File[]>;
 
 export function RecordDrawer({ collection, record, open, onOpenChange }: RecordDrawerProps) {
   const isNew = record === null;
+  const identityField = (collection.authOptions?.identityField as string | undefined) ?? "email";
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [files, setFiles] = useState<FileFieldState>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -29,7 +30,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     const initial: Record<string, unknown> = {};
     for (const field of collection.schema) initial[field.name] = existingRecordValue(record, field);
     if (collection.type === "auth") {
-      initial.email = record?.email ?? "";
+      initial[identityField] = (record?.[identityField] as string | undefined) ?? "";
     }
     setValues(initial);
     setFiles({});
@@ -89,46 +90,32 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
       <div className="flex flex-col gap-4">
         {collection.type === "auth" ? (
           <div className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground">Email</label>
+            <label className="text-[13px] font-medium text-foreground capitalize">{identityField}</label>
             <input
-              type="email"
-              value={(values.email as string) ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
+              type={identityField === "email" ? "email" : "text"}
+              value={(values[identityField] as string) ?? ""}
+              onChange={(e) => setValues((v) => ({ ...v, [identityField]: e.target.value }))}
               className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                errors.email ? "border-destructive" : "border-border focus:border-primary"
+                errors[identityField] ? "border-destructive" : "border-border focus:border-primary"
               }`}
             />
-            {errors.email ? <p className="text-[11.5px] text-destructive">{errors.email}</p> : null}
+            {errors[identityField] ? <p className="text-[11.5px] text-destructive">{errors[identityField]}</p> : null}
           </div>
         ) : null}
 
         {collection.type === "auth" ? (
-          <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[13px] font-medium text-foreground">{isNew ? "Password" : "New password"}</label>
-              <input
-                type="password"
-                value={(values.password as string) ?? ""}
-                onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
-                placeholder={isNew ? undefined : "Leave blank to keep current"}
-                className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                  errors.password ? "border-destructive" : "border-border focus:border-primary"
-                }`}
-              />
-              {errors.password ? <p className="text-[11.5px] text-destructive">{errors.password}</p> : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[13px] font-medium text-foreground">Confirm</label>
-              <input
-                type="password"
-                value={(values.passwordConfirm as string) ?? ""}
-                onChange={(e) => setValues((v) => ({ ...v, passwordConfirm: e.target.value }))}
-                className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                  errors.passwordConfirm ? "border-destructive" : "border-border focus:border-primary"
-                }`}
-              />
-              {errors.passwordConfirm ? <p className="text-[11.5px] text-destructive">{errors.passwordConfirm}</p> : null}
-            </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[13px] font-medium text-foreground">{isNew ? "Password" : "New password"}</label>
+            <input
+              type="password"
+              value={(values.password as string) ?? ""}
+              onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
+              placeholder={isNew ? undefined : "Leave blank to keep current"}
+              className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
+                errors.password ? "border-destructive" : "border-border focus:border-primary"
+              }`}
+            />
+            {errors.password ? <p className="text-[11.5px] text-destructive">{errors.password}</p> : null}
           </div>
         ) : null}
 
