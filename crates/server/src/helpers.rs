@@ -5,12 +5,35 @@ use crate::http_error::ApiError;
 use crate::state::AppState;
 
 /// Collections are addressed by id or by name in every route (`:collection`
-/// path param), matching PocketBase's API ergonomics.
+/// path param).
 pub async fn load_collection(app: &AppState, id_or_name: &str) -> Result<Collection, ApiError> {
     let by_name = collections::get_collection_by_name(&app.db, id_or_name).await;
     let collection = match by_name {
         Ok(c) => c,
         Err(_) => collections::get_collection_by_id(&app.db, id_or_name)
+            .await
+            .map_err(|_| {
+                ApiError(AppError::NotFound(format!(
+                    "collection '{id_or_name}' not found"
+                )))
+            })?,
+    };
+    Ok(collection)
+}
+
+/// Transaction-scoped counterpart to [`load_collection`], used by
+/// `/api/batch` so the collection lookup runs on the same connection as
+/// the rest of the batch's work instead of acquiring a second one from
+/// the pool — see `cratebase_db::collections::get_collection_by_id_tx`
+/// for why a second acquisition would self-deadlock there.
+pub async fn load_collection_tx(
+    tx: &mut cratebase_db::records::RecordTx,
+    id_or_name: &str,
+) -> Result<Collection, ApiError> {
+    let by_name = collections::get_collection_by_name_tx(tx, id_or_name).await;
+    let collection = match by_name {
+        Ok(c) => c,
+        Err(_) => collections::get_collection_by_id_tx(tx, id_or_name)
             .await
             .map_err(|_| {
                 ApiError(AppError::NotFound(format!(

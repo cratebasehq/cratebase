@@ -1,17 +1,180 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { FieldSchema, RecordModel } from "cratebase";
-import { FileIcon, Check, Copy } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import {
+  Check,
+  X,
+  ChevronDown,
+  ExternalLink,
+  FileIcon,
+  FileText,
+  FileArchive,
+  FileAudio,
+  FileVideo,
+  Copy,
+} from "lucide-react";
 import { cb } from "@/lib/api";
 import { useCopyToClipboard } from "@/components/interior/copy-button";
 import { Lightbox } from "@/components/interior/lightbox";
+import { Popover } from "@/components/interior/popover";
 import { Badge } from "@/components/ui/badge";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
+const DOC_EXT = /\.pdf$/i;
+const ARCHIVE_EXT = /\.(zip|tar|gz|tgz|rar|7z)$/i;
+const AUDIO_EXT = /\.(mp3|wav|ogg|flac|m4a)$/i;
+const VIDEO_EXT = /\.(mp4|mov|webm|mkv|avi)$/i;
+
+/** Chip colors cycle through a fixed, hash-stable palette so the same select
+ * option always renders the same color across rows without needing the
+ * schema to declare one. */
+const CHIP_PALETTE = [
+  "!bg-blue-500/15 !text-blue-700 dark:!text-blue-300",
+  "!bg-emerald-500/15 !text-emerald-700 dark:!text-emerald-300",
+  "!bg-amber-500/15 !text-amber-700 dark:!text-amber-300",
+  "!bg-violet-500/15 !text-violet-700 dark:!text-violet-300",
+  "!bg-rose-500/15 !text-rose-700 dark:!text-rose-300",
+  "!bg-cyan-500/15 !text-cyan-700 dark:!text-cyan-300",
+  "!bg-orange-500/15 !text-orange-700 dark:!text-orange-300",
+  "!bg-fuchsia-500/15 !text-fuchsia-700 dark:!text-fuchsia-300",
+];
+
+function chipColor(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  return CHIP_PALETTE[Math.abs(hash) % CHIP_PALETTE.length];
+}
+
+function fileIconFor(filename: string) {
+  if (DOC_EXT.test(filename)) return FileText;
+  if (ARCHIVE_EXT.test(filename)) return FileArchive;
+  if (AUDIO_EXT.test(filename)) return FileAudio;
+  if (VIDEO_EXT.test(filename)) return FileVideo;
+  return FileIcon;
+}
 
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function formatDateTitle(value: string): string | undefined {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return `${date.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })} · ${date.toISOString()}`;
+}
+
+/** Resolves relation ids to the target collection's first text field so the
+ * grid shows something a human recognizes instead of a bare id, and keeps
+ * the target collection's name/schema around for the reference popover
+ * ("Open record" link + which fields to preview). One query per (field,
+ * page) shared across every row via the react-query cache. */
+function useRelationLabels(collectionId?: string) {
+  return useQuery({
+    queryKey: ["relation-value-labels", collectionId],
+    queryFn: async () => {
+      const target = await cb.collections.getOne(collectionId!);
+      const displayField = target.schema.find((f) => f.type === "text")?.name;
+      const list = await cb.collection(collectionId!).getList(1, 200);
+      const labels = new Map<string, string>();
+      const records = new Map<string, RecordModel>();
+      for (const item of list.items) {
+        labels.set(item.id, displayField ? String(item[displayField] ?? item.id) : item.id);
+        records.set(item.id, item);
+      }
+      return { collectionName: target.name, schema: target.schema, labels, records };
+    },
+    enabled: Boolean(collectionId),
+    staleTime: 60_000,
+  });
+}
+
+/** One relation badge: click it to preview the referenced record (its
+ * first few fields, resolved from the same cache `useRelationLabels`
+ * already fetched) with a link to jump straight to it and pop its own
+ * drawer open — a lightweight, in-place version of "click a foreign key
+ * to see what it points to" (à la Drizzle Studio's relation references),
+ * instead of dumping the caller into an unlabeled 8-char id. */
+function RelationRefValue({
+  id,
+  label,
+  collectionName,
+  schema,
+  record,
+}: {
+  id: string;
+  label: string | undefined;
+  collectionName: string | undefined;
+  schema: FieldSchema[] | undefined;
+  record: RecordModel | undefined;
+}) {
+  const navigate = useNavigate();
+  const previewFields = (schema ?? [])
+    .filter((f) => !["relation", "file", "json", "editor", "password"].includes(f.type))
+    .slice(0, 4);
+
+  return (
+    <Popover
+      label={`Preview referenced record ${id}`}
+      side="bottom"
+      align="start"
+      triggerClassName="!h-auto !w-auto !justify-start !border-0 !bg-transparent !p-0"
+      className="!w-72 !p-0"
+      trigger={
+        <Badge
+          variant="outline"
+          className="max-w-32 cursor-pointer font-normal transition-colors hover:border-primary hover:bg-primary/5"
+          title={id}
+        >
+          <span className="truncate">{label ?? id}</span>
+        </Badge>
+      }
+    >
+      <div className="flex flex-col gap-2 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            {collectionName ?? "Related record"}
+          </span>
+          <span className="truncate font-mono text-[10.5px] text-muted-foreground/70">{id}</span>
+        </div>
+        {record ? (
+          <dl className="flex flex-col gap-1.5 border-t border-border pt-2">
+            {previewFields.map((f) => (
+              <div key={f.name} className="flex items-center justify-between gap-3 text-[12.5px]">
+                <dt className="shrink-0 text-muted-foreground">{f.name}</dt>
+                <dd className="truncate text-right text-foreground">{String(record[f.name] ?? "—")}</dd>
+              </div>
+            ))}
+            {previewFields.length === 0 && (
+              <p className="text-[12px] text-muted-foreground">No previewable fields on this collection.</p>
+            )}
+          </dl>
+        ) : (
+          <p className="border-t border-border pt-2 text-[12px] text-muted-foreground">
+            Record not found in the last 200 — open it directly instead.
+          </p>
+        )}
+        {collectionName ? (
+          <button
+            type="button"
+            onClick={() => {
+              void navigate({
+                to: "/collections/$name",
+                params: { name: collectionName },
+                search: { openId: id },
+              });
+            }}
+            className="mt-1 flex items-center justify-center gap-1.5 rounded-md border border-border bg-secondary/60 py-1.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-secondary"
+          >
+            Open record
+            <ExternalLink className="size-3" />
+          </button>
+        ) : null}
+      </div>
+    </Popover>
+  );
 }
 
 export function IdCell({ id }: { id: string }) {
@@ -41,15 +204,17 @@ function FileValue({ record, field, filename }: { record: RecordModel; field: Fi
   const isImage = IMAGE_EXT.test(filename);
 
   if (!isImage) {
+    const Icon = fileIconFor(filename);
     return (
       <a
         href={url}
         target="_blank"
         rel="noreferrer"
         onClick={(e) => e.stopPropagation()}
+        title={filename}
         className="flex items-center gap-1 text-[12.5px] text-primary hover:underline"
       >
-        <FileIcon className="size-3.5" />
+        <Icon className="size-3.5 shrink-0" />
         <span className="max-w-32 truncate">{filename}</span>
       </a>
     );
@@ -80,6 +245,9 @@ function FileValue({ record, field, filename }: { record: RecordModel; field: Fi
 
 export function RecordValueCell({ record, field }: { record: RecordModel; field: FieldSchema }) {
   const value = record[field.name];
+  const relationCollectionId =
+    field.type === "relation" ? (field.options?.collectionId as string | undefined) : undefined;
+  const relationInfo = useRelationLabels(relationCollectionId).data;
 
   if (value === null || value === undefined || value === "") {
     return <span className="text-muted-foreground/60">—</span>;
@@ -88,36 +256,80 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
   switch (field.type) {
     case "bool":
       return (
-        <Badge variant={value ? "default" : "secondary"} className="font-normal">
+        <Badge variant={value ? "default" : "secondary"} className="gap-1 font-normal">
+          {value ? <Check className="size-3" /> : <X className="size-3" />}
           {value ? "true" : "false"}
         </Badge>
       );
     case "date":
-      return <span className="font-mono text-[12px] tabular-nums">{formatDate(String(value))}</span>;
+      return (
+        <span className="font-mono text-[12px] tabular-nums" title={formatDateTitle(String(value))}>
+          {formatDate(String(value))}
+        </span>
+      );
     case "number":
       return <span className="font-mono text-[12.5px] tabular-nums">{String(value)}</span>;
-    case "json":
-      return <code className="font-mono text-[12px] text-muted-foreground">{JSON.stringify(value)}</code>;
+    case "json": {
+      const inline = JSON.stringify(value);
+      const pretty = JSON.stringify(value, null, 2);
+      const truncated = inline.length > 48;
+      return (
+        <div onClick={(e) => e.stopPropagation()}>
+          <Popover
+            label={`${field.name} JSON value`}
+            side="bottom"
+            align="start"
+            triggerClassName="!h-auto !w-auto !justify-start !gap-1 !border-0 !bg-transparent !p-0 !font-mono !text-[12px] !text-muted-foreground hover:!text-foreground"
+            className="!w-auto !max-w-[420px] !p-0"
+            trigger={
+              <>
+                <code className="max-w-56 truncate">{truncated ? `${inline.slice(0, 48)}…` : inline}</code>
+                {truncated && <ChevronDown className="size-3 shrink-0" />}
+              </>
+            }
+          >
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[12px] text-foreground">
+              {pretty}
+            </pre>
+          </Popover>
+        </div>
+      );
+    }
     case "select":
       return Array.isArray(value) ? (
         <div className="flex flex-wrap gap-1">
           {value.map((v) => (
-            <Badge key={String(v)} variant="outline" className="font-normal">
+            <Badge key={String(v)} variant="outline" className={`font-normal ${chipColor(String(v))}`}>
               {String(v)}
             </Badge>
           ))}
         </div>
       ) : (
-        <Badge variant="outline" className="font-normal">
+        <Badge variant="outline" className={`font-normal ${chipColor(String(value))}`}>
           {String(value)}
         </Badge>
       );
-    case "relation":
-      return Array.isArray(value) ? (
-        <span className="font-mono text-[12px] text-muted-foreground">{value.length} linked</span>
-      ) : (
-        <span className="font-mono text-[12px] text-muted-foreground">{String(value).slice(0, 8)}</span>
+    case "relation": {
+      const ids = Array.isArray(value) ? (value as string[]) : [String(value)];
+      const shown = ids.slice(0, 3);
+      return (
+        <div className="flex flex-wrap items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          {shown.map((id) => (
+            <RelationRefValue
+              key={id}
+              id={id}
+              label={relationInfo?.labels.get(id)}
+              collectionName={relationInfo?.collectionName}
+              schema={relationInfo?.schema}
+              record={relationInfo?.records.get(id)}
+            />
+          ))}
+          {ids.length > shown.length && (
+            <span className="font-mono text-[11px] text-muted-foreground">+{ids.length - shown.length}</span>
+          )}
+        </div>
       );
+    }
     case "file": {
       const filenames = Array.isArray(value) ? (value as string[]) : [String(value)];
       return (
@@ -128,6 +340,29 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
         </div>
       );
     }
+    case "email":
+      return (
+        <a
+          href={`mailto:${value}`}
+          onClick={(e) => e.stopPropagation()}
+          className="block truncate text-[13px] text-primary hover:underline"
+        >
+          {String(value)}
+        </a>
+      );
+    case "url":
+      return (
+        <a
+          href={String(value)}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="flex min-w-0 items-center gap-1 text-[13px] text-primary hover:underline"
+        >
+          <span className="truncate">{String(value)}</span>
+          <ExternalLink className="size-3 shrink-0" />
+        </a>
+      );
     default:
       return <span className="truncate text-[13px]">{String(value)}</span>;
   }

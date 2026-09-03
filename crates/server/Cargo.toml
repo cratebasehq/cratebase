@@ -15,6 +15,7 @@ cratebase-filter.workspace = true
 cratebase-db.workspace = true
 cratebase-storage.workspace = true
 cratebase-auth.workspace = true
+cratebase-mailer.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -36,3 +37,13 @@ clap = { version = "4", features = ["derive"] }
 mime_guess = "2"
 rand.workspace = true
 rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path"] }
+croner = { version = "4.0.0", features = ["chrono"] }
+tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+urlencoding = "2.1.3"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies.sqlx]
+version = "0.8"
+default-features = false
+features = ["any", "sqlite", "runtime-tokio-rustls", "tls-rustls"]

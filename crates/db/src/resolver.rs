@@ -1,4 +1,6 @@
-use cratebase_core::Collection;
+use std::collections::HashMap;
+
+use cratebase_core::{Collection, Field, FieldType};
 use cratebase_filter::{FilterError, Resolved, Resolver};
 use serde_json::{Map, Value};
 
@@ -34,8 +36,21 @@ pub struct CollectionResolver<'a> {
     pub ctx: &'a RequestContext,
     /// When `true` (create rules only — there is no existing DB row yet),
     /// bare field identifiers resolve against `ctx.data` instead of a SQL
-    /// column, matching PocketBase's create-rule semantics.
+    /// column, since there is no row to resolve them against yet.
     pub use_data_for_fields: bool,
+    /// Target collections for relation dot-notation (`author.name`),
+    /// keyed by the relation field's name on `collection`. `resolve` is
+    /// synchronous and can't fetch another collection's schema on demand,
+    /// so callers that support dot-notation prefetch it via
+    /// [`load_related_collections`] first. Idents naming a relation field
+    /// missing from this map fail with `UnknownField`.
+    pub related: HashMap<String, Collection>,
+}
+
+/// Whether a field stores more than one value (a JSON array in a TEXT
+/// column) rather than a plain scalar.
+fn is_multiple(field: &Field) -> bool {
+    field.field_type.supports_multiple() && field.options.multiple.unwrap_or(false)
 }
 
 impl<'a> Resolver for CollectionResolver<'a> {
@@ -63,29 +78,143 @@ impl<'a> Resolver for CollectionResolver<'a> {
             ));
         }
 
-        if ident == "id"
-            || ident == "created"
-            || ident == "updated"
-            || self.collection.field(ident).is_some()
-        {
+        // Relation dot-notation (`author.name`): traverse `author` as a
+        // relation field on this collection into the target collection's
+        // schema. Not a context variable, so anything past the first dot
+        // that isn't `@request.*` lands here.
+        if !ident.starts_with('@') {
+            if let Some((relation_name, target_field)) = ident.split_once('.') {
+                return self.resolve_relation(ident, relation_name, target_field);
+            }
+        }
+
+        if ident == "id" || ident == "created" || ident == "updated" {
+            return self.resolve_scalar(ident, ident);
+        }
+        if let Some(field) = self.collection.field(ident) {
             if self.use_data_for_fields {
-                return Ok(Resolved::Value(
-                    self.ctx
-                        .data
-                        .as_ref()
-                        .and_then(|d| d.get(ident).cloned())
-                        .unwrap_or(Value::Null),
-                ));
+                return self.resolve_scalar(ident, ident);
             }
             let quoted = self
                 .backend
                 .quote_ident(ident)
                 .map_err(|_| FilterError::UnknownField(ident.to_string()))?;
-            return Ok(Resolved::Column(quoted));
+            return Ok(if is_multiple(field) {
+                Resolved::MultiColumn(quoted)
+            } else {
+                Resolved::Column(quoted)
+            });
         }
 
         Err(FilterError::UnknownField(ident.to_string()))
     }
+}
+
+impl<'a> CollectionResolver<'a> {
+    /// Resolve a builtin (`id`/`created`/`updated`) or `use_data_for_fields`
+    /// scalar identifier: a plain SQL column, or a value pulled from the
+    /// submitted payload when there is no table row to resolve it against
+    /// yet (create rules).
+    fn resolve_scalar(&self, ident: &str, field_name: &str) -> Result<Resolved, FilterError> {
+        if self.use_data_for_fields {
+            return Ok(Resolved::Value(
+                self.ctx
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get(field_name).cloned())
+                    .unwrap_or(Value::Null),
+            ));
+        }
+        let quoted = self
+            .backend
+            .quote_ident(field_name)
+            .map_err(|_| FilterError::UnknownField(ident.to_string()))?;
+        Ok(Resolved::Column(quoted))
+    }
+
+    /// Resolve `<relation_name>.<target_field>` through a relation field on
+    /// this collection into the prefetched target collection's schema.
+    fn resolve_relation(
+        &self,
+        ident: &str,
+        relation_name: &str,
+        target_field: &str,
+    ) -> Result<Resolved, FilterError> {
+        let unknown = || FilterError::UnknownField(ident.to_string());
+
+        let field = self
+            .collection
+            .field(relation_name)
+            .filter(|f| f.field_type == FieldType::Relation)
+            .ok_or_else(unknown)?;
+        let target = self.related.get(relation_name).ok_or_else(unknown)?;
+
+        let target_field_exists = target_field == "id"
+            || target_field == "created"
+            || target_field == "updated"
+            || target.field(target_field).is_some();
+        if !target_field_exists {
+            return Err(unknown());
+        }
+
+        let array_column = self.backend.quote_ident(relation_name).map_err(|_| unknown())?;
+        let target_table = self
+            .backend
+            .quote_ident(&target.table_name())
+            .map_err(|_| unknown())?;
+        let target_column = self.backend.quote_ident(target_field).map_err(|_| unknown())?;
+
+        if is_multiple(field) {
+            Ok(Resolved::RelatedMulti {
+                array_column,
+                target_table,
+                target_column,
+            })
+        } else {
+            // A single-valued relation: the related row's field, reached
+            // via a scalar correlated subquery, behaves like any other
+            // column in a comparison.
+            Ok(Resolved::Column(format!(
+                "(SELECT {target_column} FROM {target_table} WHERE \"id\" = {array_column})"
+            )))
+        }
+    }
+}
+
+/// Prefetch the target collections referenced by relation dot-notation
+/// (`author.name`) in a filter expression, keyed by relation field name —
+/// the shape [`CollectionResolver::related`] expects. `resolve` is
+/// synchronous and can't load another collection's schema on demand, so
+/// callers that accept a user-authored filter (list/view queries) call
+/// this first.
+///
+/// Idents that don't actually name a relation field are silently skipped:
+/// `resolve` reports those as `UnknownField` at compile time instead of
+/// failing prefetch outright.
+pub async fn load_related_collections(
+    db: &crate::pool::Db,
+    collection: &Collection,
+    filter: &str,
+) -> crate::error::DbResult<HashMap<String, Collection>> {
+    let mut related = HashMap::new();
+    let Ok(names) = cratebase_filter::relation_idents(filter) else {
+        return Ok(related);
+    };
+    for name in names {
+        let Some(field) = collection.field(&name) else {
+            continue;
+        };
+        if field.field_type != FieldType::Relation {
+            continue;
+        }
+        let Some(target_id) = field.options.collection_id.as_deref() else {
+            continue;
+        };
+        if let Ok(target) = crate::collections::get_collection_by_id(db, target_id).await {
+            related.insert(name, target);
+        }
+    }
+    Ok(related)
 }
 
 /// A rule is satisfied unconditionally by superusers, denied for everyone
@@ -121,6 +250,7 @@ pub fn evaluate_rule(
                 backend,
                 ctx,
                 use_data_for_fields: false,
+                related: HashMap::new(),
             };
             let compiled = cratebase_filter::parse_and_compile(
                 expr,
@@ -133,13 +263,13 @@ pub fn evaluate_rule(
     }
 }
 
-/// Evaluate a `createRule` as a plain boolean, since there is no existing
-/// database row to attach a WHERE clause to. Bare field names resolve
-/// against the submitted `ctx.data` (see `CollectionResolver::use_data_for_fields`).
-/// Both supported backends accept a FROM-less `SELECT ... WHERE <expr>`, so
-/// this reuses the exact same parser/compiler as every other rule instead
-/// of maintaining a second, JSON-only expression evaluator.
-pub async fn evaluate_create_rule(
+/// Evaluate a rule as a plain boolean against a fully materialized set of
+/// field values (a submitted payload, or a record snapshot) rather than
+/// the live table, via a FROM-less `SELECT ... WHERE <expr>`. Both
+/// supported backends accept this, so it reuses the exact same
+/// parser/compiler as every other rule instead of maintaining a second,
+/// JSON-only expression evaluator.
+async fn evaluate_bool_rule(
     db: &crate::pool::Db,
     rule: &Option<String>,
     collection: &Collection,
@@ -161,6 +291,7 @@ pub async fn evaluate_create_rule(
         backend: db.backend,
         ctx,
         use_data_for_fields: true,
+        related: HashMap::new(),
     };
     let compiled = cratebase_filter::parse_and_compile(expr, &resolver, db.backend.dialect(), 0)?;
 
@@ -174,4 +305,84 @@ pub async fn evaluate_create_rule(
         .fetch_optional(&db.pool)
         .await?;
     Ok(row.is_some())
+}
+
+/// Transaction-scoped counterpart to [`evaluate_bool_rule`]. See
+/// [`crate::collections::get_collection_by_id_tx`] for why this exists.
+async fn evaluate_bool_rule_tx(
+    tx: &mut crate::records::RecordTx,
+    backend: Backend,
+    rule: &Option<String>,
+    collection: &Collection,
+    ctx: &RequestContext,
+) -> crate::error::DbResult<bool> {
+    if let Some(auth) = &ctx.auth {
+        if auth.is_superuser {
+            return Ok(true);
+        }
+    }
+    let expr = match rule {
+        None => return Ok(false),
+        Some(expr) if expr.trim().is_empty() => return Ok(true),
+        Some(expr) => expr,
+    };
+
+    let resolver = CollectionResolver {
+        collection,
+        backend,
+        ctx,
+        use_data_for_fields: true,
+        related: HashMap::new(),
+    };
+    let compiled = cratebase_filter::parse_and_compile(expr, &resolver, backend.dialect(), 0)?;
+
+    let mut args = sqlx::any::AnyArguments::default();
+    for p in compiled.params {
+        crate::value::bind_filter_value(&mut args, p)
+            .map_err(|e| crate::error::DbError::Sqlx(sqlx::Error::Encode(e)))?;
+    }
+    let sql = format!("SELECT 1 WHERE {}", compiled.sql);
+    let row = sqlx::query_with(&sql, args)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.is_some())
+}
+
+/// Transaction-scoped counterpart to [`evaluate_create_rule`]. See
+/// [`crate::collections::get_collection_by_id_tx`] for why this exists.
+pub async fn evaluate_create_rule_tx(
+    tx: &mut crate::records::RecordTx,
+    backend: Backend,
+    rule: &Option<String>,
+    collection: &Collection,
+    ctx: &RequestContext,
+) -> crate::error::DbResult<bool> {
+    evaluate_bool_rule_tx(tx, backend, rule, collection, ctx).await
+}
+
+/// Evaluate a `createRule` as a plain boolean, since there is no existing
+/// database row to attach a WHERE clause to. Bare field names resolve
+/// against the submitted `ctx.data` (see `CollectionResolver::use_data_for_fields`).
+pub async fn evaluate_create_rule(
+    db: &crate::pool::Db,
+    rule: &Option<String>,
+    collection: &Collection,
+    ctx: &RequestContext,
+) -> crate::error::DbResult<bool> {
+    evaluate_bool_rule(db, rule, collection, ctx).await
+}
+
+/// Evaluate `listRule`/`viewRule` against a record snapshot (`ctx.data`)
+/// instead of the live table. Used by realtime delivery: a `delete` event
+/// fires after the row is already gone, so there is no table row left to
+/// filter against — the record's last known values are all that's left to
+/// evaluate the rule with, same mechanism `evaluate_create_rule` uses for
+/// a row that doesn't exist yet.
+pub async fn evaluate_record_rule(
+    db: &crate::pool::Db,
+    rule: &Option<String>,
+    collection: &Collection,
+    ctx: &RequestContext,
+) -> crate::error::DbResult<bool> {
+    evaluate_bool_rule(db, rule, collection, ctx).await
 }

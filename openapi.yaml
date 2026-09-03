@@ -353,7 +353,11 @@ components:
         message: { type: string }
         data:
           type: object
-          additionalProperties: { type: string }
+          additionalProperties:
+            type: object
+            properties:
+              code: { type: string }
+              message: { type: string }
           description: Per-field validation errors, present when code is 400
     Admin:
       type: object

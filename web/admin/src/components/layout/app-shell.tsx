@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { CollectionModel } from "cratebase";
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
-import { Boxes, Database, LogOut, Moon, Plus, ShieldUser, Sun } from "lucide-react";
+import { Boxes, ChevronRight, Database, LogOut, Moon, Plus, Settings, ShieldUser, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { useCollections } from "@/hooks/use-collections";
 import { cb } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import { AppCommandPalette } from "@/components/app-command-palette";
 import { NewCollectionDialog } from "@/components/collections/new-collection-dialog";
 
@@ -13,6 +15,19 @@ export function AppShell() {
   const { resolvedTheme, setTheme } = useTheme();
   const navigate = useNavigate();
   const [newCollectionOpen, setNewCollectionOpen] = useState(false);
+  const [systemOpen, setSystemOpen] = useState(false);
+
+  // Collections named with a leading `_` are Cratebase-managed system
+  // collections (auth admins, cron jobs, feature flags, …); the sidebar
+  // groups them behind a collapsed section so it stays focused on the
+  // collections a developer actually created, matching PocketBase's convention.
+  const { userCollections, systemCollections } = useMemo(() => {
+    const all = collections ?? [];
+    return {
+      userCollections: all.filter((c) => !c.name.startsWith("_")),
+      systemCollections: all.filter((c) => c.name.startsWith("_")),
+    };
+  }, [collections]);
 
   function logout() {
     cb.authStore.clear();
@@ -41,30 +56,36 @@ export function AppShell() {
         </div>
 
         <nav className="flex-1 overflow-y-auto px-2">
-          {collections?.map((collection) => (
-            <Link
-              key={collection.id}
-              to="/collections/$name"
-              params={{ name: collection.name }}
-              className="group flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              activeProps={{ className: "!bg-sidebar-accent !text-sidebar-accent-foreground font-medium" }}
-            >
-              {collection.type === "auth" ? (
-                <ShieldUser className="size-3.5 shrink-0 opacity-70" />
-              ) : (
-                <Database className="size-3.5 shrink-0 opacity-70" />
-              )}
-              <span className="truncate">{collection.name}</span>
-            </Link>
+          {userCollections.map((collection) => (
+            <CollectionLink key={collection.id} collection={collection} />
           ))}
           {collections?.length === 0 ? (
             <p className="px-2.5 py-4 text-[12px] text-muted-foreground">
               No collections yet. Create one to start storing data.
             </p>
           ) : null}
+
+          {systemCollections.length > 0 ? (
+            <div className="mt-2 border-t border-sidebar-border pt-2">
+              <button
+                type="button"
+                onClick={() => setSystemOpen((open) => !open)}
+                className="flex w-full items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-sidebar-foreground"
+                aria-expanded={systemOpen}
+              >
+                <ChevronRight className={cn("size-3 shrink-0 transition-transform", systemOpen && "rotate-90")} />
+                System
+              </button>
+              {systemOpen
+                ? systemCollections.map((collection) => (
+                    <CollectionLink key={collection.id} collection={collection} muted />
+                  ))
+                : null}
+            </div>
+          ) : null}
         </nav>
 
-        <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-3">
+        <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-2">
           <button
             type="button"
             onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
@@ -73,6 +94,16 @@ export function AppShell() {
           >
             {resolvedTheme === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
           </button>
+          <Link
+            to="/settings/logs"
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            activeProps={{ className: "!bg-sidebar-accent !text-sidebar-accent-foreground" }}
+          >
+            <Settings className="size-3.5" />
+            Settings
+          </Link>
+        </div>
+        <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-3">
           <button
             type="button"
             onClick={logout}
@@ -94,6 +125,27 @@ export function AppShell() {
       />
       <NewCollectionDialog open={newCollectionOpen} onOpenChange={setNewCollectionOpen} />
     </div>
+  );
+}
+
+function CollectionLink({ collection, muted }: { collection: CollectionModel; muted?: boolean }) {
+  return (
+    <Link
+      to="/collections/$name"
+      params={{ name: collection.name }}
+      className={cn(
+        "group flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        muted && "text-sidebar-foreground/60"
+      )}
+      activeProps={{ className: "!bg-sidebar-accent !text-sidebar-accent-foreground font-medium" }}
+    >
+      {collection.type === "auth" ? (
+        <ShieldUser className="size-3.5 shrink-0 opacity-70" />
+      ) : (
+        <Database className="size-3.5 shrink-0 opacity-70" />
+      )}
+      <span className="truncate">{collection.name}</span>
+    </Link>
   );
 }
 

@@ -176,6 +176,7 @@ async fn create(
 ) -> ApiResult<Json<Value>> {
     let collection = load_collection(&app, &collection_name).await?;
     let payload = parse_payload(&collection, &app, req).await?;
+    crate::payload::validate_uploads(&collection, &payload.uploads)?;
     let mut fields = payload.fields;
 
     let ctx = RequestContext {
@@ -201,7 +202,7 @@ async fn create(
 
     let record = records::create_record_with_id(&app.db, &collection, id, fields).await?;
     app.realtime
-        .publish(&collection.name, "create", &record)
+        .publish(&app.db, &collection, "create", &record)
         .await;
     Ok(Json(record))
 }
@@ -234,6 +235,7 @@ async fn update(
     let previous = records::get_record(&app.db, &collection, &id, rule_filter).await?;
 
     let payload = parse_payload(&collection, &app, req).await?;
+    crate::payload::validate_uploads(&collection, &payload.uploads)?;
     let mut fields = payload.fields;
 
     let mut stored = Vec::new();
@@ -259,7 +261,7 @@ async fn update(
     }
 
     app.realtime
-        .publish(&collection.name, "update", &record)
+        .publish(&app.db, &collection, "update", &record)
         .await;
     Ok(Json(record))
 }
@@ -291,7 +293,7 @@ async fn remove(
     delete_stored_files(&app, &collection, &id, files).await;
 
     app.realtime
-        .publish(&collection.name, "delete", &record)
+        .publish(&app.db, &collection, "delete", &record)
         .await;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

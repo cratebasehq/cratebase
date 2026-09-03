@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use cratebase_core::{AppError, Collection};
+use cratebase_core::{AppError, Collection, FieldError};
 use serde_json::{Map, Value};
 
 use crate::http_error::ApiError;
@@ -37,15 +37,21 @@ pub fn prepare_auth_create(
         Some(v) if collection.auth_options.identity_is_email() && !looks_like_email(v) => {
             errors.insert(
                 identity_field.to_string(),
-                "not a valid email address".to_string(),
+                FieldError::new("invalid_email", "not a valid email address"),
             );
         }
         Some(v) if v.trim().is_empty() => {
-            errors.insert(identity_field.to_string(), "value is required".to_string());
+            errors.insert(
+                identity_field.to_string(),
+                FieldError::new("value_required", "value is required"),
+            );
         }
         Some(_) => {}
         None => {
-            errors.insert(identity_field.to_string(), "value is required".to_string());
+            errors.insert(
+                identity_field.to_string(),
+                FieldError::new("value_required", "value is required"),
+            );
         }
     }
 
@@ -63,18 +69,21 @@ pub fn prepare_auth_create(
     let min_len = min_password_length(collection);
     match &password {
         None => {
-            errors.insert("password".to_string(), "value is required".to_string());
+            errors.insert(
+                "password".to_string(),
+                FieldError::new("value_required", "value is required"),
+            );
         }
         Some(p) if p.chars().count() < min_len => {
             errors.insert(
                 "password".to_string(),
-                format!("must be at least {min_len} characters"),
+                FieldError::new("value_too_short", format!("must be at least {min_len} characters")),
             );
         }
         Some(p) if confirm.is_some() && confirm.as_deref() != Some(p.as_str()) => {
             errors.insert(
                 "passwordConfirm".to_string(),
-                "passwords do not match".to_string(),
+                FieldError::new("password_mismatch", "passwords do not match"),
             );
         }
         Some(_) => {}
@@ -111,10 +120,13 @@ pub fn prepare_auth_update(
         if collection.auth_options.identity_is_email() && !looks_like_email(value) {
             errors.insert(
                 identity_field.to_string(),
-                "not a valid email address".to_string(),
+                FieldError::new("invalid_email", "not a valid email address"),
             );
         } else if value.trim().is_empty() {
-            errors.insert(identity_field.to_string(), "value is required".to_string());
+            errors.insert(
+                identity_field.to_string(),
+                FieldError::new("value_required", "value is required"),
+            );
         }
     }
 
@@ -128,12 +140,12 @@ pub fn prepare_auth_update(
         if password.chars().count() < min_len {
             errors.insert(
                 "password".to_string(),
-                format!("must be at least {min_len} characters"),
+                FieldError::new("value_too_short", format!("must be at least {min_len} characters")),
             );
         } else if confirm.is_some() && confirm != Some(password.as_str()) {
             errors.insert(
                 "passwordConfirm".to_string(),
-                "passwords do not match".to_string(),
+                FieldError::new("password_mismatch", "passwords do not match"),
             );
         }
     }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use cratebase_db::Db;
+use cratebase_mailer::Mailer;
 use cratebase_storage::Storage;
 
 use crate::config::Config;
@@ -12,4 +13,5 @@ pub struct AppState {
     pub storage: Storage,
     pub config: Arc<Config>,
     pub realtime: RealtimeHub,
+    pub mailer: Mailer,
 }

@@ -6,6 +6,7 @@ members = [
     "crates/db",
     "crates/storage",
     "crates/auth",
+    "crates/mailer",
     "crates/server",
 ]
 
@@ -37,6 +38,7 @@ cratebase-filter = { path = "crates/filter" }
 cratebase-db = { path = "crates/db" }
 cratebase-storage = { path = "crates/storage" }
 cratebase-auth = { path = "crates/auth" }
+cratebase-mailer = { path = "crates/mailer" }
 
 [profile.release]
 opt-level = 3

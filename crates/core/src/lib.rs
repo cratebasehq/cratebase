@@ -8,7 +8,7 @@ pub mod error;
 pub mod field;
 
 pub use collection::{AuthOptions, Collection, CollectionType};
-pub use error::{AppError, AppResult, ErrorBody};
+pub use error::{AppError, AppResult, ErrorBody, FieldError};
 pub use field::{Field, FieldOptions, FieldType, RESERVED_FIELD_NAMES};
 
 use uuid::Uuid;

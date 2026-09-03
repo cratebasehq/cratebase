@@ -1,0 +1,129 @@
+{
+  "label": "Cratebase",
+  "baseUrl": "http://127.0.0.1:8091",
+  "ranAt": "2026-09-03T10:41:38.636Z",
+  "params": {
+    "collection": "posts",
+    "createN": 500,
+    "authN": 200,
+    "searchN": 300,
+    "concurrency": [
+      1,
+      20
+    ]
+  },
+  "results": [
+    {
+      "category": "create",
+      "concurrency": 1,
+      "n": 500,
+      "errors": 0,
+      "wallClockMs": 155,
+      "requestsPerSec": 3226.8,
+      "p50Ms": 0.2,
+      "p95Ms": 0.3,
+      "p99Ms": 1.3,
+      "minMs": 0.2,
+      "maxMs": 13.8,
+      "meanMs": 0.3
+    },
+    {
+      "category": "create",
+      "concurrency": 20,
+      "n": 500,
+      "errors": 0,
+      "wallClockMs": 110,
+      "requestsPerSec": 4530.7,
+      "p50Ms": 3.8,
+      "p95Ms": 6.9,
+      "p99Ms": 11.8,
+      "minMs": 0.9,
+      "maxMs": 36.6,
+      "meanMs": 4.2
+    },
+    {
+      "category": "auth",
+      "concurrency": 1,
+      "n": 200,
+      "errors": 0,
+      "wallClockMs": 2432,
+      "requestsPerSec": 82.2,
+      "p50Ms": 12,
+      "p95Ms": 13.2,
+      "p99Ms": 18.2,
+      "minMs": 10.8,
+      "maxMs": 20.7,
+      "meanMs": 12.1
+    },
+    {
+      "category": "auth",
+      "concurrency": 20,
+      "n": 200,
+      "errors": 0,
+      "wallClockMs": 754,
+      "requestsPerSec": 265.1,
+      "p50Ms": 73.6,
+      "p95Ms": 81.2,
+      "p99Ms": 84.6,
+      "minMs": 18.3,
+      "maxMs": 88.7,
+      "meanMs": 72.1
+    },
+    {
+      "category": "search",
+      "concurrency": 1,
+      "n": 300,
+      "errors": 0,
+      "wallClockMs": 437,
+      "requestsPerSec": 686.6,
+      "p50Ms": 1.3,
+      "p95Ms": 2.1,
+      "p99Ms": 2.4,
+      "minMs": 0.8,
+      "maxMs": 2.9,
+      "meanMs": 1.5
+    },
+    {
+      "category": "search",
+      "concurrency": 20,
+      "n": 300,
+      "errors": 0,
+      "wallClockMs": 225,
+      "requestsPerSec": 1330.7,
+      "p50Ms": 14.9,
+      "p95Ms": 16.4,
+      "p99Ms": 17,
+      "minMs": 2.6,
+      "maxMs": 17.8,
+      "meanMs": 14.6
+    },
+    {
+      "category": "delete",
+      "concurrency": 1,
+      "n": 500,
+      "errors": 0,
+      "wallClockMs": 215,
+      "requestsPerSec": 2324.9,
+      "p50Ms": 0.3,
+      "p95Ms": 0.5,
+      "p99Ms": 8.9,
+      "minMs": 0.2,
+      "maxMs": 9.6,
+      "meanMs": 0.4
+    },
+    {
+      "category": "delete",
+      "concurrency": 20,
+      "n": 500,
+      "errors": 0,
+      "wallClockMs": 118,
+      "requestsPerSec": 4230.5,
+      "p50Ms": 4.2,
+      "p95Ms": 7.3,
+      "p99Ms": 11.6,
+      "minMs": 0.9,
+      "maxMs": 23.3,
+      "meanMs": 4.5
+    }
+  ]
+}

@@ -48,22 +48,58 @@ impl Db {
 
         let opts = AnyConnectOptions::from_str(&database_url)?;
 
+        // sqlx pools each connection independently; a `:memory:` SQLite
+        // connection is a fresh, isolated database per connection unless
+        // using a shared-cache URI, so a pool size above 1 for `:memory:`
+        // would silently scatter data across disconnected in-memory DBs
+        // (this is exactly what the test harness relies on staying at 1).
+        // A real file-backed database has no such constraint: WAL mode
+        // (enabled below) lets many readers run alongside one writer, so
+        // capping it at 1 the same way serializes every request on a
+        // single connection for no reason — measured in `benchmarks/` as
+        // throughput that doesn't scale with concurrency at all.
+        let is_sqlite_memory = backend == Backend::Sqlite && database_url.contains(":memory:");
+        let max_connections = match backend {
+            Backend::Sqlite if is_sqlite_memory => 1,
+            Backend::Sqlite => 5,
+            _ => 10,
+        };
+
+        let is_sqlite = backend == Backend::Sqlite;
         let pool = AnyPoolOptions::new()
-            .max_connections(if backend == Backend::Sqlite { 1 } else { 10 })
+            .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(10))
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    if !is_sqlite {
+                        return Ok(());
+                    }
+                    // `AnyPoolOptions::after_connect` fires once per
+                    // *physical* connection the pool opens, unlike a
+                    // one-off `sqlx::query(...).execute(&pool)` after
+                    // `connect_with` returns — that only configures
+                    // whichever single connection happened to serve
+                    // that query. With `max_connections` now above 1
+                    // (see the comment below), every connection the
+                    // pool opens beyond the first was silently running
+                    // with SQLite's defaults (`synchronous = FULL`,
+                    // `busy_timeout = 0`, `foreign_keys = OFF`) instead
+                    // of these — `synchronous = FULL` in particular
+                    // fsyncs on every write, which is the dominant cost
+                    // of a small write and was measured in
+                    // `benchmarks/` clawing back most of the pool-size
+                    // fix's throughput gain on every connection but the
+                    // first.
+                    use sqlx::Executor;
+                    conn.execute("PRAGMA journal_mode = WAL").await?;
+                    conn.execute("PRAGMA foreign_keys = ON").await?;
+                    conn.execute("PRAGMA busy_timeout = 5000").await?;
+                    conn.execute("PRAGMA synchronous = NORMAL").await?;
+                    Ok(())
+                })
+            })
             .connect_with(opts)
             .await?;
-
-        if backend == Backend::Sqlite {
-            sqlx::query("PRAGMA journal_mode = WAL")
-                .execute(&pool)
-                .await
-                .ok();
-            sqlx::query("PRAGMA foreign_keys = ON")
-                .execute(&pool)
-                .await
-                .ok();
-        }
 
         Ok(Db { pool, backend })
     }

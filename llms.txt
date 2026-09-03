@@ -3,9 +3,8 @@
 > Cratebase is a self-hostable backend server, written in Rust: dynamic
 > data collections, authentication, file storage, and realtime
 > subscriptions over one REST API, backed by SQLite (default, zero config)
-> or PostgreSQL (same code, same API — set `DATABASE_URL`). It is a Rust
-> reimplementation of the ideas behind PocketBase, distributed as a single
-> executable that also serves an embedded admin dashboard.
+> or PostgreSQL (same code, same API — set `DATABASE_URL`), distributed as
+> a single executable that also serves an embedded admin dashboard.
 
 Use this file to quickly understand the project's shape before reading
 source. Everything referenced below is real and current, not aspirational.
@@ -54,7 +53,7 @@ source. Everything referenced below is real and current, not aspirational.
   `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
-Error bodies are always `{ "code": 400, "message": "...", "data": { field: reason } }`.
+Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.
 
 ## Client SDK
 

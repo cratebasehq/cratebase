@@ -12,6 +12,7 @@ use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 
+use crate::extract::CurrentAuth;
 use crate::http_error::ApiResult;
 use crate::realtime::RealtimeHub;
 use crate::state::AppState;
@@ -50,11 +51,14 @@ impl<S> Drop for ClientStream<S> {
 /// Opens a Server-Sent Events stream. The first event carries the
 /// connection's `clientId`, which the client then posts back to
 /// `/api/realtime` to declare which collections/records it wants updates
-/// for — the same handshake PocketBase's realtime clients use.
+/// for. If the initial request carries a bearer token (not every SSE
+/// transport can set one on a GET), that identity governs
+/// `listRule`/`viewRule` checks until `set_subscriptions` refreshes it.
 async fn connect(
     State(app): State<AppState>,
+    CurrentAuth(auth): CurrentAuth,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let (client_id, rx) = app.realtime.connect().await;
+    let (client_id, rx) = app.realtime.connect(auth).await;
     let hello = Event::default()
         .event("PB_CONNECT")
         .data(format!(r#"{{"clientId":"{client_id}"}}"#));
@@ -83,11 +87,12 @@ struct SubscriptionUpdate {
 
 async fn set_subscriptions(
     State(app): State<AppState>,
+    CurrentAuth(auth): CurrentAuth,
     Json(body): Json<SubscriptionUpdate>,
 ) -> ApiResult<axum::http::StatusCode> {
     let ok = app
         .realtime
-        .subscribe(&body.client_id, body.subscriptions)
+        .subscribe(&body.client_id, body.subscriptions, auth)
         .await;
     Ok(if ok {
         axum::http::StatusCode::NO_CONTENT

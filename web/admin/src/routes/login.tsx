@@ -35,7 +35,7 @@ function LoginPage() {
   return (
     <div className="flex min-h-svh items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
+        <div className="mb-6 flex flex-col items-center gap-2 text-center">
           <img src="/favicon.svg" alt="" className="size-10" />
           <div>
             <h1 className="text-lg font-semibold tracking-tight">Cratebase</h1>
@@ -44,7 +44,7 @@ function LoginPage() {
         </div>
 
         <form
-          className="flex flex-col gap-4 rounded-2xl border border-border bg-card p-6 shadow-sm"
+          className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-6 shadow-sm"
           onSubmit={(e) => e.preventDefault()}
         >
           <InlineValidation

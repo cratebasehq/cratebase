@@ -69,7 +69,9 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
       onOpenChange(false);
     } catch (error) {
       if (error instanceof ClientResponseError && error.status === 400) {
-        setErrors(error.data);
+        setErrors(
+          Object.fromEntries(Object.entries(error.data).map(([field, err]) => [field, err.message])),
+        );
         toast.error("Fix the highlighted fields");
       } else {
         toast.error(error instanceof Error ? error.message : "Something went wrong");

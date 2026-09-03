@@ -1,0 +1,9 @@
+# Local benchmark scratch space — the PocketBase comparison binary and its
+# data directories are never checked in. Fetch it fresh with the commands
+# in README.md if you want to reproduce the run.
+pb-bin/
+*-data/
+*.sqlite
+*.db
+*.db-wal
+*.db-shm

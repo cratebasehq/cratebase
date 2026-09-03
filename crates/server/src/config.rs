@@ -1,3 +1,5 @@
+use cratebase_mailer::MailerConfig;
+use crate::oauth2::ProviderConfig;
 use cratebase_storage::StorageConfig;
 
 /// Runtime configuration, loaded from environment variables (optionally via
@@ -14,6 +16,37 @@ pub struct Config {
     pub auth_token_ttl_seconds: i64,
     pub cors_allow_origins: Vec<String>,
     pub data_dir: String,
+    /// Rate-limits `/admins/auth-with-password` and
+    /// `/collections/{c}/auth-with-password` per client IP to blunt
+    /// credential-stuffing/brute-force attempts. On by default; an
+    /// operator running behind their own rate limiter (or a trusted
+    /// internal-only deployment) can turn it off.
+    pub auth_rate_limit_enabled: bool,
+    pub mailer: MailerConfig,
+    pub mail_from_address: String,
+    pub mail_from_name: String,
+    /// Base URL the verification/reset/email-change links in emails point
+    /// to — your own web page or a mobile deep-link handler that reads
+    /// `?token=` and calls the matching `confirm-*` endpoint. Cratebase
+    /// has no frontend of its own for this (it doesn't know if you're
+    /// building a web app, a Flutter app, or something else).
+    pub public_app_url: String,
+    pub verification_token_ttl_seconds: i64,
+    pub password_reset_token_ttl_seconds: i64,
+    pub email_change_token_ttl_seconds: i64,
+    /// TTL for the short-lived, single-purpose file token minted by
+    /// `POST /api/files/token` (used to authenticate a protected file
+    /// download from a context that can't send an `Authorization`
+    /// header, e.g. an `<img src>` tag). Deliberately much shorter than
+    /// every other token kind — it exists only long enough for the
+    /// browser to fetch the image right after minting it.
+    pub file_token_ttl_seconds: i64,
+    /// TTL for a one-time OTP code (`request-otp`/`auth-with-otp`, and
+    /// the MFA second factor on `auth-with-password`) and for the
+    /// matching `TokenKind::Mfa` pending marker — both are minted
+    /// together and meant to expire together.
+    pub otp_token_ttl_seconds: i64,
+    pub oauth_providers: Vec<ProviderConfig>,
 }
 
 impl Config {
@@ -39,6 +72,23 @@ impl Config {
             },
         };
 
+        let mailer = match std::env::var("MAIL_DRIVER").as_deref() {
+            Ok("resend") => MailerConfig::Resend {
+                api_key: must_env("RESEND_API_KEY"),
+            },
+            Ok("smtp") => MailerConfig::Smtp {
+                host: must_env("SMTP_HOST"),
+                port: env_or("SMTP_PORT", "587").parse().unwrap_or(587),
+                username: must_env("SMTP_USERNAME"),
+                password: must_env("SMTP_PASSWORD"),
+                implicit_tls: env_or("SMTP_IMPLICIT_TLS", "false") == "true",
+            },
+            // Unset (local dev, or an operator who hasn't configured a
+            // provider yet) or an unrecognized value both fall back to
+            // logging instead of a hard failure at startup.
+            _ => MailerConfig::Log,
+        };
+
         let auth_secret =
             std::env::var("AUTH_SECRET").unwrap_or_else(|_| load_or_create_secret(&data_dir));
 
@@ -59,6 +109,27 @@ impl Config {
                 .map(|s| s.trim().to_string())
                 .collect(),
             data_dir,
+            auth_rate_limit_enabled: env_or("AUTH_RATE_LIMIT_ENABLED", "true") == "true",
+            mailer,
+            mail_from_address: env_or("MAIL_FROM_ADDRESS", "no-reply@localhost"),
+            mail_from_name: env_or("MAIL_FROM_NAME", "Cratebase"),
+            public_app_url: env_or("PUBLIC_APP_URL", "http://localhost:8090"),
+            verification_token_ttl_seconds: env_or("VERIFICATION_TOKEN_TTL_SECONDS", "86400")
+                .parse()
+                .unwrap_or(86_400),
+            password_reset_token_ttl_seconds: env_or("PASSWORD_RESET_TOKEN_TTL_SECONDS", "3600")
+                .parse()
+                .unwrap_or(3_600),
+            email_change_token_ttl_seconds: env_or("EMAIL_CHANGE_TOKEN_TTL_SECONDS", "3600")
+                .parse()
+                .unwrap_or(3_600),
+            file_token_ttl_seconds: env_or("FILE_TOKEN_TTL_SECONDS", "120")
+                .parse()
+                .unwrap_or(120),
+            otp_token_ttl_seconds: env_or("OTP_TOKEN_TTL_SECONDS", "300")
+                .parse()
+                .unwrap_or(300),
+            oauth_providers: crate::oauth2::providers_from_env(),
         }
     }
 }

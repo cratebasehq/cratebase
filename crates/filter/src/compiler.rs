@@ -12,8 +12,25 @@ pub enum Dialect {
 
 /// What a filter identifier resolves to.
 pub enum Resolved {
-    /// A raw, already-safely-quoted SQL column/expression fragment.
+    /// A raw, already-safely-quoted SQL column/expression fragment
+    /// holding a single scalar value.
     Column(String),
+    /// Like [`Resolved::Column`], but the expression is a JSON array
+    /// stored as TEXT (a multi-valued select/relation/file field). "Any
+    /// of" operators (`?=`, `?!=`, ...) test each decoded element; bare
+    /// operators require every element to satisfy the comparison.
+    MultiColumn(String),
+    /// Relation dot-notation (`author.name`) reached through a
+    /// *multi-valued* relation field: `array_column` is the JSON array of
+    /// related ids on the current table; `target_table`/`target_column`
+    /// name the related row's field being compared. Compiled as an
+    /// `EXISTS`/`NOT EXISTS` join, with the same any-of/all semantics as
+    /// [`Resolved::MultiColumn`].
+    RelatedMulti {
+        array_column: String,
+        target_table: String,
+        target_column: String,
+    },
     /// A literal value supplied out-of-band (e.g. `@request.auth.id`),
     /// bound as a query parameter rather than interpolated.
     Value(Value),
@@ -92,10 +109,77 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// FROM-fragment + qualified value-column reference for enumerating a
+    /// JSON array expression's decoded elements. `array_expr` may be a
+    /// plain column reference or an arbitrary SQL expression (e.g. a
+    /// relation subquery).
+    fn array_elements(&self, array_expr: &str) -> (String, String) {
+        let value = "__elem.value".to_string();
+        let from = match self.dialect {
+            Dialect::Sqlite => format!("json_each(COALESCE({array_expr}, '[]')) AS __elem"),
+            Dialect::Postgres => format!(
+                "jsonb_array_elements_text(COALESCE({array_expr}, '[]')::jsonb) AS __elem(value)"
+            ),
+        };
+        (from, value)
+    }
+
+    /// Compile a multi-valued column compared to a literal: `?=` and its
+    /// siblings test whether *any* decoded array element satisfies the
+    /// comparison; the bare operators require *every* element to (a
+    /// vacuously true, hence satisfied, condition for an empty array).
+    fn compile_array_compare(
+        &mut self,
+        array_expr: &str,
+        op: CompareOp,
+        any_of: bool,
+        value: Value,
+        is_like: bool,
+    ) -> String {
+        let (from, elem) = self.array_elements(array_expr);
+        let value = if is_like { wrap_like(value) } else { value };
+        let param = self.push_param(value);
+        let sql_op = self.sql_op(op);
+        if any_of {
+            format!("EXISTS (SELECT 1 FROM {from} WHERE {elem} {sql_op} {param})")
+        } else {
+            format!("NOT EXISTS (SELECT 1 FROM {from} WHERE NOT ({elem} {sql_op} {param}))")
+        }
+    }
+
+    /// Same as [`Compiler::compile_array_compare`], but the compared value
+    /// comes from joining each related id to `target_table` and reading
+    /// `target_column` off it (relation dot-notation through a
+    /// multi-valued relation field).
+    #[allow(clippy::too_many_arguments)]
+    fn compile_related_multi_compare(
+        &mut self,
+        array_column: &str,
+        target_table: &str,
+        target_column: &str,
+        op: CompareOp,
+        any_of: bool,
+        value: Value,
+        is_like: bool,
+    ) -> String {
+        let (from, elem) = self.array_elements(array_column);
+        let join = format!("{from} JOIN {target_table} AS __rel ON __rel.\"id\" = {elem}");
+        let value = if is_like { wrap_like(value) } else { value };
+        let param = self.push_param(value);
+        let sql_op = self.sql_op(op);
+        let target = format!("__rel.{target_column}");
+        if any_of {
+            format!("EXISTS (SELECT 1 FROM {join} WHERE {target} {sql_op} {param})")
+        } else {
+            format!("NOT EXISTS (SELECT 1 FROM {join} WHERE NOT ({target} {sql_op} {param}))")
+        }
+    }
+
     fn compile_compare(
         &mut self,
         left: &Operand,
         op: CompareOp,
+        any_of: bool,
         right: &Operand,
     ) -> Result<String, FilterError> {
         let l = self.resolve_operand(left)?;
@@ -111,10 +195,12 @@ impl<'a> Compiler<'a> {
                 }
             };
             match (&l, &r) {
-                (Resolved::Column(c), Resolved::Value(Value::Null)) => {
+                (Resolved::Column(c), Resolved::Value(Value::Null))
+                | (Resolved::MultiColumn(c), Resolved::Value(Value::Null)) => {
                     return Ok(null_check(c, matches!(op, CompareOp::Eq)))
                 }
-                (Resolved::Value(Value::Null), Resolved::Column(c)) => {
+                (Resolved::Value(Value::Null), Resolved::Column(c))
+                | (Resolved::Value(Value::Null), Resolved::MultiColumn(c)) => {
                     return Ok(null_check(c, matches!(op, CompareOp::Eq)))
                 }
                 _ => {}
@@ -122,10 +208,53 @@ impl<'a> Compiler<'a> {
         }
 
         let is_like = matches!(op, CompareOp::Like | CompareOp::NotLike);
+
+        // A multi-valued operand compared against a literal compiles to an
+        // EXISTS/NOT EXISTS test over its decoded elements rather than a
+        // plain scalar comparison.
+        match (&l, &r) {
+            (Resolved::MultiColumn(col), Resolved::Value(v)) => {
+                return Ok(self.compile_array_compare(col, op, any_of, v.clone(), is_like));
+            }
+            (Resolved::Value(v), Resolved::MultiColumn(col)) => {
+                return Ok(self.compile_array_compare(col, op, any_of, v.clone(), is_like));
+            }
+            (
+                Resolved::RelatedMulti {
+                    array_column,
+                    target_table,
+                    target_column,
+                },
+                Resolved::Value(v),
+            )
+            | (
+                Resolved::Value(v),
+                Resolved::RelatedMulti {
+                    array_column,
+                    target_table,
+                    target_column,
+                },
+            ) => {
+                return Ok(self.compile_related_multi_compare(
+                    array_column,
+                    target_table,
+                    target_column,
+                    op,
+                    any_of,
+                    v.clone(),
+                    is_like,
+                ));
+            }
+            _ => {}
+        }
+
         let sql_op = self.sql_op(op);
 
         let (l_sql, r_sql) = match (l, r) {
             (Resolved::Column(lc), Resolved::Column(rc)) => (lc, rc),
+            (Resolved::MultiColumn(lc), Resolved::Column(rc)) => (lc, rc),
+            (Resolved::Column(lc), Resolved::MultiColumn(rc)) => (lc, rc),
+            (Resolved::MultiColumn(lc), Resolved::MultiColumn(rc)) => (lc, rc),
             (Resolved::Column(lc), Resolved::Value(v)) => {
                 let v = if is_like { wrap_like(v) } else { v };
                 (lc, self.push_param(v))
@@ -137,6 +266,17 @@ impl<'a> Compiler<'a> {
             (Resolved::Value(a), Resolved::Value(b)) => {
                 let a = if is_like { wrap_like(a) } else { a };
                 (self.push_param(a), self.push_param(b))
+            }
+            (Resolved::MultiColumn(_), Resolved::Value(_))
+            | (Resolved::Value(_), Resolved::MultiColumn(_)) => {
+                unreachable!("MultiColumn/Value combos are handled earlier in compile_compare")
+            }
+            (Resolved::RelatedMulti { .. }, _) | (_, Resolved::RelatedMulti { .. }) => {
+                return Err(FilterError::Parse(
+                    "relation dot-notation through a multi-valued field can only be \
+                     compared to a literal value"
+                        .to_string(),
+                ));
             }
         };
         Ok(format!("{l_sql} {sql_op} {r_sql}"))
@@ -154,7 +294,12 @@ impl<'a> Compiler<'a> {
                 let r = self.compile_expr(r)?;
                 Ok(format!("({l} OR {r})"))
             }
-            Expr::Compare { left, op, right } => self.compile_compare(left, *op, right),
+            Expr::Compare {
+                left,
+                op,
+                any_of,
+                right,
+            } => self.compile_compare(left, *op, *any_of, right),
         }
     }
 }

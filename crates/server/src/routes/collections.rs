@@ -39,6 +39,10 @@ pub struct CollectionInput {
     pub delete_rule: Option<String>,
     #[serde(default)]
     pub auth_options: AuthOptions,
+    /// Raw SELECT statement backing a `View` collection. Required (and
+    /// only meaningful) when `type` is `"view"`; ignored otherwise.
+    #[serde(default)]
+    pub view_query: Option<String>,
 }
 
 fn validate_input(input: &CollectionInput) -> ApiResult<()> {
@@ -58,6 +62,13 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
             ))));
         }
     }
+    if input.collection_type == CollectionType::View
+        && input.view_query.as_deref().is_none_or(|q| q.trim().is_empty())
+    {
+        return Err(ApiError(AppError::BadRequest(
+            "view collections require a non-empty 'viewQuery'".into(),
+        )));
+    }
     for field in &input.schema {
         if !cratebase_core::field::is_valid_identifier(&field.name) {
             return Err(ApiError(AppError::BadRequest(format!(
@@ -72,6 +83,15 @@ fn validate_input(input: &CollectionInput) -> ApiResult<()> {
         {
             return Err(ApiError(AppError::BadRequest(format!(
                 "'{}' is a reserved field name",
+                field.name
+            ))));
+        }
+        if field.field_type == cratebase_core::field::FieldType::Autodate
+            && !field.options.on_create.unwrap_or(false)
+            && !field.options.on_update.unwrap_or(false)
+        {
+            return Err(ApiError(AppError::BadRequest(format!(
+                "'{}' is an autodate field but sets neither onCreate nor onUpdate",
                 field.name
             ))));
         }
@@ -101,6 +121,11 @@ async fn create(
 ) -> ApiResult<Json<Collection>> {
     validate_input(&input)?;
     let ts = now();
+    let view_query = if input.collection_type == CollectionType::View {
+        input.view_query.clone()
+    } else {
+        None
+    };
     let collection = Collection {
         id: new_id(),
         name: input.name,
@@ -112,7 +137,7 @@ async fn create(
         update_rule: input.update_rule,
         delete_rule: input.delete_rule,
         auth_options: input.auth_options,
-        view_query: None,
+        view_query,
         created: ts.clone(),
         updated: ts,
     };
@@ -128,6 +153,11 @@ async fn update(
 ) -> ApiResult<Json<Collection>> {
     validate_input(&input)?;
     let previous = load_collection(&app, &id).await?;
+    let view_query = if previous.collection_type == CollectionType::View {
+        input.view_query.clone()
+    } else {
+        None
+    };
     let updated = Collection {
         id: previous.id.clone(),
         name: input.name,
@@ -139,7 +169,7 @@ async fn update(
         update_rule: input.update_rule,
         delete_rule: input.delete_rule,
         auth_options: input.auth_options,
-        view_query: previous.view_query.clone(),
+        view_query,
         created: previous.created.clone(),
         updated: now(),
     };

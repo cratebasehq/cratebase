@@ -70,6 +70,18 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
         />
       );
 
+    case "autodate":
+      return (
+        <input
+          type="text"
+          value={typeof value === "string" && value ? new Date(value).toLocaleString() : "Set automatically"}
+          disabled
+          readOnly
+          title="Autodate fields are set by the server and can't be edited here"
+          className={`${inputClass} cursor-not-allowed text-muted-foreground`}
+        />
+      );
+
     case "editor":
       return (
         <Textarea

@@ -1,4 +1,4 @@
-//! PocketBase-style filter expression language: parses strings like
+//! A small filter expression language: parses strings like
 //! `status = "active" && (owner = @request.auth.id || public = true)` and
 //! compiles them into parameterized SQL usable against both SQLite and
 //! Postgres. Shared by record list/view queries and API access rules.
@@ -13,6 +13,33 @@ pub use ast::{CompareOp, Expr, Literal, Operand};
 pub use compiler::{compile, parse_and_compile, CompiledFilter, Dialect, Resolved, Resolver};
 pub use error::FilterError;
 pub use parser::Parser;
+
+/// Scan a filter expression for relation dot-notation (`author.name`),
+/// returning the distinct relation field names referenced (the segment
+/// before the first dot), in first-seen order. `@request.*` context
+/// variables are excluded since they are not relation fields.
+///
+/// `Resolver::resolve` is synchronous, so a relation identifier can't load
+/// its target collection's schema on demand — callers that support
+/// relation dot-notation use this first to prefetch every referenced
+/// relation's target collection before compiling.
+pub fn relation_idents(src: &str) -> Result<Vec<String>, FilterError> {
+    let tokens = lexer::Lexer::new(src).tokenize()?;
+    let mut out = Vec::new();
+    for token in tokens {
+        if let lexer::Token::Ident(name) = token {
+            if name.starts_with('@') {
+                continue;
+            }
+            if let Some((head, rest)) = name.split_once('.') {
+                if !rest.is_empty() && !out.iter().any(|h: &String| h == head) {
+                    out.push(head.to_string());
+                }
+            }
+        }
+    }
+    Ok(out)
+}
 
 #[cfg(test)]
 mod tests {

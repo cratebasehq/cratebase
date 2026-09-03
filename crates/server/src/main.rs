@@ -57,18 +57,25 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(config: Config) -> anyhow::Result<()> {
     let addr = format!("{}:{}", config.host, config.port);
     let state = build_state(config).await?;
-    cratebase_server::plugins::registry().spawn_tasks(&state);
-    let app = build_app(state);
+    let plugins = cratebase_server::plugins::registry();
+    plugins.setup_all(&state.db).await?;
+    plugins.spawn_tasks(&state);
+    let app = build_app(state, &plugins);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(address = %addr, "cratebase listening");
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
 async fn superuser(config: Config, action: SuperuserAction) -> anyhow::Result<()> {
     let db = Db::connect(&config.database_url).await?;
     system::ensure_system_tables(&db).await?;
+    system::ensure_default_collections(&db).await?;
 
     match action {
         SuperuserAction::Create { email, password } => {

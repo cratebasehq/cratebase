@@ -8,10 +8,13 @@ mod dashboard;
 pub mod extract;
 pub mod helpers;
 pub mod http_error;
+pub mod mail;
+pub mod oauth2;
 pub mod payload;
 pub mod plugin;
 pub mod plugins;
 pub mod realtime;
+mod request_log;
 mod routes;
 pub mod state;
 
@@ -36,13 +39,21 @@ use state::AppState;
 pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
     let db = Db::connect(&config.database_url).await?;
     system::ensure_system_tables(&db).await?;
+    system::ensure_request_logs_table(&db).await?;
+    system::ensure_default_collections(&db).await?;
     let storage = Storage::connect(&config.storage)?;
+    let mailer = cratebase_mailer::Mailer::connect(
+        &config.mailer,
+        &config.mail_from_address,
+        &config.mail_from_name,
+    )?;
 
     Ok(AppState {
         db,
         storage,
         config: Arc::new(config),
         realtime: RealtimeHub::default(),
+        mailer,
     })
 }
 
@@ -52,13 +63,25 @@ pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
 /// per in-flight request.
 const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 
-pub fn build_app(state: AppState) -> Router {
+/// Assembles the HTTP router. `plugins` is injected rather than hardcoded
+/// to `plugins::registry()` so a downstream Rust binary can depend on this
+/// crate as a library and register its own [`plugin::Plugin`]s, instead of
+/// only being able to add plugins by editing
+/// `crates/server/src/plugins/mod.rs` in this repo directly (see
+/// `plugin`'s module doc for the full pattern). Pass `&plugins::registry()`
+/// to keep every built-in plugin, or `&PluginRegistry::new().register(YourPlugin)`
+/// for a binary that ships only your own.
+pub fn build_app(state: AppState, plugins: &plugin::PluginRegistry) -> Router {
     let cors = build_cors(&state.config.cors_allow_origins);
 
+    let api = routes::router(state.config.auth_rate_limit_enabled).layer(
+        axum::middleware::from_fn_with_state(state.clone(), request_log::log_requests),
+    );
+
     Router::new()
-        .nest("/api", routes::router())
+        .nest("/api", api)
         .merge(dashboard::router())
-        .merge(plugins::registry().router())
+        .merge(plugins.router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))

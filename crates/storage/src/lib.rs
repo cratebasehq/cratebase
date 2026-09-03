@@ -12,6 +12,7 @@ pub use error::{StorageError, StorageResult};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
@@ -20,6 +21,13 @@ use object_store::{ObjectStore, PutPayload};
 #[derive(Clone)]
 pub struct Storage {
     store: Arc<dyn ObjectStore>,
+}
+
+/// One object as seen by [`Storage::list`].
+pub struct ObjectInfo {
+    pub key: String,
+    pub size: u64,
+    pub last_modified: DateTime<Utc>,
 }
 
 impl Storage {
@@ -109,6 +117,29 @@ impl Storage {
             Err(object_store::Error::NotFound { .. }) => Ok(false),
             Err(e) => Err(StorageError::Backend(e)),
         }
+    }
+
+    /// Objects whose key starts with `prefix`, used by the backups feature
+    /// to enumerate what's under `backups/` without the caller needing to
+    /// track an index anywhere else — the object store itself is the
+    /// source of truth for what backups exist.
+    pub async fn list(&self, prefix: &str) -> StorageResult<Vec<ObjectInfo>> {
+        use futures::TryStreamExt;
+        let prefix_path = ObjectPath::from(prefix);
+        let metas = self
+            .store
+            .list(Some(&prefix_path))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(StorageError::Backend)?;
+        Ok(metas
+            .into_iter()
+            .map(|m| ObjectInfo {
+                key: m.location.to_string(),
+                size: m.size as u64,
+                last_modified: m.last_modified,
+            })
+            .collect())
     }
 }
 

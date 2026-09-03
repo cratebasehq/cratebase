@@ -80,15 +80,23 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> Result<Expr, FilterError> {
         let left = self.parse_operand()?;
-        let op = match self.bump() {
-            Token::Eq => CompareOp::Eq,
-            Token::NotEq => CompareOp::NotEq,
-            Token::Gt => CompareOp::Gt,
-            Token::Gte => CompareOp::Gte,
-            Token::Lt => CompareOp::Lt,
-            Token::Lte => CompareOp::Lte,
-            Token::Like => CompareOp::Like,
-            Token::NotLike => CompareOp::NotLike,
+        let (op, any_of) = match self.bump() {
+            Token::Eq => (CompareOp::Eq, false),
+            Token::NotEq => (CompareOp::NotEq, false),
+            Token::Gt => (CompareOp::Gt, false),
+            Token::Gte => (CompareOp::Gte, false),
+            Token::Lt => (CompareOp::Lt, false),
+            Token::Lte => (CompareOp::Lte, false),
+            Token::Like => (CompareOp::Like, false),
+            Token::NotLike => (CompareOp::NotLike, false),
+            Token::QEq => (CompareOp::Eq, true),
+            Token::QNotEq => (CompareOp::NotEq, true),
+            Token::QGt => (CompareOp::Gt, true),
+            Token::QGte => (CompareOp::Gte, true),
+            Token::QLt => (CompareOp::Lt, true),
+            Token::QLte => (CompareOp::Lte, true),
+            Token::QLike => (CompareOp::Like, true),
+            Token::QNotLike => (CompareOp::NotLike, true),
             other => {
                 return Err(FilterError::Parse(format!(
                     "expected comparison operator but found {:?}",
@@ -97,7 +105,12 @@ impl Parser {
             }
         };
         let right = self.parse_operand()?;
-        Ok(Expr::Compare { left, op, right })
+        Ok(Expr::Compare {
+            left,
+            op,
+            any_of,
+            right,
+        })
     }
 
     fn parse_operand(&mut self) -> Result<Operand, FilterError> {
