@@ -207,14 +207,19 @@ impl Record {
             if f.field_type() == FieldType::Password && !opts.with_hidden {
                 continue;
             }
-            let mut value = self.data.get(&f.name).cloned().unwrap_or(Value::Null);
+            // An email the viewer may not see is omitted entirely rather
+            // than blanked — PocketBase drops the key, and a client that
+            // checks `"email" in record` would otherwise see a field that
+            // looks present but empty. Measured in
+            // tests/conformance/KNOWN_DIVERGENCES.md #20.
             if self.collection.is_auth()
                 && f.name == "email"
                 && !opts.show_email
                 && !self.email_visibility()
             {
-                value = Value::String(String::new());
+                continue;
             }
+            let value = self.data.get(&f.name).cloned().unwrap_or(Value::Null);
             m.insert(f.name.clone(), value);
         }
         m.insert("collectionId".into(), Value::String(self.collection.id.clone()));
@@ -480,7 +485,7 @@ mod tests {
         let users = Arc::new(Collection::default_users());
         let r = Record::new(users);
         let v = r.to_json(SerializeOptions::default());
-        assert_eq!(v["email"], "");
+        assert!(v.get("email").is_none());
         assert_eq!(v["verified"], false);
         assert!(v.get("password").is_none());
         assert!(v.get("tokenKey").is_none());
@@ -493,13 +498,19 @@ mod tests {
     }
 
     #[test]
-    fn email_is_masked_unless_visible_or_allowed() {
+    fn hidden_email_is_omitted_not_blanked() {
         let users = Arc::new(Collection::default_users());
         let mut r = Record::new(users);
         r.set("email", Value::String("a@b.co".into()));
-        assert_eq!(r.to_json(SerializeOptions::default())["email"], "");
+        // Not visible: the key is absent entirely, as PocketBase does.
+        let v = r.to_json(SerializeOptions::default());
+        assert!(v.get("email").is_none());
+        assert!(v.get("emailVisibility").is_some());
+
         r.set("emailVisibility", Value::Bool(true));
         assert_eq!(r.to_json(SerializeOptions::default())["email"], "a@b.co");
+
+        // Self / superuser / manageRule sees it even when hidden.
         r.set("emailVisibility", Value::Bool(false));
         let opts = SerializeOptions {
             show_email: true,
