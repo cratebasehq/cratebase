@@ -373,6 +373,17 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
           <ExternalLink className="size-3 shrink-0" />
         </a>
       );
+    case "geoPoint": {
+      const point = value && typeof value === "object" ? (value as { lon?: number; lat?: number }) : {};
+      if (typeof point.lat !== "number" || typeof point.lon !== "number") {
+        return <span className="text-muted-foreground/60">—</span>;
+      }
+      return (
+        <span className="font-mono text-sm tabular-nums" title={`${point.lat}, ${point.lon}`}>
+          {point.lat.toFixed(4)}, {point.lon.toFixed(4)}
+        </span>
+      );
+    }
     default:
       return <span className="truncate text-sm">{String(value)}</span>;
   }

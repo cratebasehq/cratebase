@@ -16,16 +16,20 @@ source. Everything referenced below is real and current, not aspirational.
   (S3-compatible storage), see [.env.example](./.env.example) for every
   variable.
 - From source: `cargo build --release -p cratebase-server`, then
-  `cratebase superuser create you@example.com yourpassword` and
-  `cratebase serve`. Full dashboard requires `bun run admin:build` first
+  `cratebase serve`. A fresh instance with no superuser yet shows an
+  inline setup form at `http://localhost:8090` (`GET /api/setup/status`,
+  `POST /api/setup`) — no CLI required. `cratebase superuser create
+  you@example.com yourpassword` still works for scripted setup. Full
+  dashboard requires `bun run admin:build` first
   (see [ARCHITECTURE.md](./ARCHITECTURE.md#the-admin-dashboard-is-not-a-separate-deployment)).
 
 ## Core concepts
 
 - **Collection** — a user-defined table with a JSON-described schema
   (fields, types, required/unique) and five API rules
-  (list/view/create/update/delete). Two kinds: `base` (plain data) and
-  `auth` (gets `email`/`password` and login endpoints for free).
+  (list/view/create/update/delete). Three kinds: `base` (plain data),
+  `auth` (gets `email`/`password` and the auth endpoints below for free),
+  and `view` (backed by a `SELECT`, read-only).
 - **Record** — one row in a collection. Every record has `id`, `created`,
   `updated`, `collectionId`, `collectionName` plus its schema fields.
 - **API rule** — `null` = superusers only, `""` = public, or a filter
@@ -37,20 +41,35 @@ source. Everything referenced below is real and current, not aspirational.
 ## API shape (base path `/api`)
 
 - `GET /health`
-- `POST /admins/auth-with-password`, `POST /admins/auth-refresh`
+- `GET /setup/status`, `POST /setup` — first-run superuser creation; closed
+  once any superuser exists.
 - `GET/POST /collections`, `GET/PATCH/DELETE /collections/{idOrName}`
   (superuser only — this is schema management)
 - `GET/POST /collections/{idOrName}/records`,
   `GET/PATCH/DELETE /collections/{idOrName}/records/{id}`
   (list supports `?filter=`, `?sort=`, `?page=`, `?perPage=`; create/update
   accept JSON or `multipart/form-data` when the collection has file fields)
-- `POST /collections/{idOrName}/auth-with-password`,
-  `POST /collections/{idOrName}/auth-refresh` (only for `auth`-type
-  collections; registration is just `POST .../records` with
-  `password`/`passwordConfirm`)
+- `POST /batch` — several record create/update/upsert/delete calls (JSON
+  or multipart, for file fields) in one HTTP round trip and one SQL
+  transaction.
+- Auth, on `auth`-type collections (registration is just `POST
+  .../records` with `password`/`passwordConfirm`; superusers are the
+  built-in `_superusers` auth collection, so superuser login is `POST
+  /collections/_superusers/auth-with-password`, not a separate endpoint):
+  - `POST /collections/{c}/auth-with-password`, `POST /collections/{c}/auth-refresh`,
+    `GET /collections/{c}/auth-methods`
+  - `POST /collections/{c}/request-verification`, `POST /collections/{c}/confirm-verification`
+  - `POST /collections/{c}/request-password-reset`, `POST /collections/{c}/confirm-password-reset`
+  - `POST /collections/{c}/request-email-change`, `POST /collections/{c}/confirm-email-change`
+  - `POST /collections/{c}/request-otp`, `POST /collections/{c}/auth-with-otp`
+  - `POST /collections/{c}/impersonate/{id}` (superuser only)
 - `GET /files/{collection}/{recordId}/{filename}`
 - `GET /realtime` (SSE; first event carries a `clientId`),
   `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`
+- JS hooks: a `pb_hooks/*.pb.js` file next to the data directory can add
+  native-style lifecycle hooks (`onRecordCreate`, ...) and mount extra
+  root-level HTTP routes via `routerAdd` — see
+  [ARCHITECTURE.md](./ARCHITECTURE.md#extending-with-javascript-cratesjsvm).
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.
@@ -70,12 +89,15 @@ included. See the [pocketbase package](https://www.npmjs.com/package/pocketbase)
 - `crates/db` — the storage engine (SQLite/Postgres via sqlx `Any`,
   collection<->table sync, record CRUD, rule enforcement).
 - `crates/storage` — file storage (local disk or any S3-compatible bucket).
-- `crates/auth` — password hashing + JWT sessions.
-- `crates/server` — the axum HTTP API, CLI, and embedded admin dashboard.
+- `crates/auth` — password hashing, JWT session/action tokens, OTP hashing.
+- `crates/jsvm` — embedded QuickJS runtime backing `pb_hooks/` and `routerAdd`.
+- `crates/mailer` — pluggable mail backend (Resend API, SMTP, or log-only).
+- `crates/server` — the axum HTTP API, CLI, plugin system, `jsvm`/`mailer`
+  wiring, and embedded admin dashboard.
 - `web/admin` — the admin dashboard source (React + Vite + TanStack).
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for how these fit together and
 the specific, deliberate trade-offs (e.g. why booleans are stored as
 integers, why realtime is single-node). Read [ROADMAP.md](./ROADMAP.md) for
-what's intentionally not built yet (plugin system, OAuth providers, view
-collections, relation dot-notation in filters).
+what's intentionally not built yet (realtime beyond a single node, admin
+audit log, per-collection rate limiting).

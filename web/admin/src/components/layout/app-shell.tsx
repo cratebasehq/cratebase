@@ -2,6 +2,7 @@ import { createContext, use, useMemo, useState } from "react";
 import { Outlet } from "@tanstack/react-router";
 import { Boxes, Plus, Search } from "lucide-react";
 import { AppCommandPalette } from "@/components/app-command-palette";
+import { ImportCollectionsDialog } from "@/components/collections/import-collections-dialog";
 import { NewCollectionDialog } from "@/components/collections/new-collection-dialog";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppTopbar } from "@/components/layout/app-topbar";
@@ -47,6 +48,7 @@ export function useShellActions(): ShellActions {
 export function AppShell() {
   const { data: collections, isPending } = useCollections();
   const [newCollectionOpen, setNewCollectionOpen] = useState(false);
+  const [importCollectionsOpen, setImportCollectionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
   const actions = useMemo<ShellActions>(
@@ -56,7 +58,6 @@ export function AppShell() {
     }),
     [],
   );
-
   return (
     <ShellActionsContext value={actions}>
       <TooltipProvider delayDuration={300}>
@@ -73,6 +74,7 @@ export function AppShell() {
             collections={collections ?? []}
             loading={isPending}
             onNewCollection={actions.openNewCollection}
+            onImportCollections={() => setImportCollectionsOpen(true)}
           />
 
           <SidebarInset className="flex min-w-0 flex-col overflow-hidden">
@@ -89,6 +91,7 @@ export function AppShell() {
             onOpenChange={setSearchOpen}
           />
           <NewCollectionDialog open={newCollectionOpen} onOpenChange={setNewCollectionOpen} />
+          <ImportCollectionsDialog open={importCollectionsOpen} onOpenChange={setImportCollectionsOpen} />
         </SidebarProvider>
       </TooltipProvider>
     </ShellActionsContext>

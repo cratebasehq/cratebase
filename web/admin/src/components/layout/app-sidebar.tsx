@@ -1,10 +1,20 @@
 import { useMemo, useState } from "react";
 import type { CollectionModel } from "pocketbase";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { ChevronRight, Database, LayoutGrid, Plus, Settings, ShieldUser } from "lucide-react";
+import {
+  ChevronRight,
+  Database,
+  Download,
+  LayoutGrid,
+  Plus,
+  Settings,
+  ShieldUser,
+  Upload,
+} from "lucide-react";
 import { CratebaseMark } from "@/components/brand/cratebase-mark";
 import { AccountMenu } from "@/components/layout/account-menu";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -22,14 +32,30 @@ import {
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
+/** PocketBase's own dashboard names a schema export `pb_schema.json` and
+ * ships the collection array as-is (no envelope) — matching that means an
+ * export from here re-imports into a real PocketBase instance unchanged,
+ * and vice versa. */
+function downloadCollectionsExport(collections: CollectionModel[]) {
+  const blob = new Blob([JSON.stringify(collections, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "pb_schema.json";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 export function AppSidebar({
   collections,
   loading,
   onNewCollection,
+  onImportCollections,
 }: {
   collections: CollectionModel[];
   loading: boolean;
   onNewCollection: () => void;
+  onImportCollections: () => void;
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const [systemOpen, setSystemOpen] = useState(false);
@@ -46,7 +72,6 @@ export function AppSidebar({
     }),
     [collections],
   );
-
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="h-topbar justify-center border-b border-sidebar-border px-2">
@@ -91,10 +116,29 @@ export function AppSidebar({
 
         <SidebarGroup>
           <SidebarGroupLabel>Collections</SidebarGroupLabel>
-          <SidebarGroupAction onClick={onNewCollection} title="New collection">
-            <Plus />
-            <span className="sr-only">New collection</span>
-          </SidebarGroupAction>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <SidebarGroupAction title="New collection, export, or import">
+                <Plus />
+                <span className="sr-only">New collection, export, or import</span>
+              </SidebarGroupAction>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={onNewCollection}>
+                <Plus className="size-3.5" />
+                New collection
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => downloadCollectionsExport(collections)}>
+                <Download className="size-3.5" />
+                Export collections
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onImportCollections}>
+                <Upload className="size-3.5" />
+                Import collections
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <SidebarGroupContent>
             <SidebarMenu>
               {loading ? (

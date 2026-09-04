@@ -13,7 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { CollectionForm } from "@/components/collections/collection-form";
-import { collectionFormErrors, emptyCollectionForm, type CollectionFormValue } from "@/lib/collection-form-value";
+import { authOptionsPayload, collectionFormErrors, emptyCollectionForm, type CollectionFormValue } from "@/lib/collection-form-value";
 import { useCollections } from "@/hooks/use-collections";
 import { cb } from "@/lib/api";
 import { defaultTimestampFields } from "@/lib/field-types";
@@ -56,7 +56,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
-        ...(value.type === "auth" ? { passwordAuth: { identityFields: [value.identityField] } } : {}),
+        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityField) : {}),
       }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["collections"] });

@@ -32,6 +32,7 @@ pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
+pub mod jsvm_host;
 pub mod middleware;
 pub mod plugin;
 pub mod realtime;
@@ -77,6 +78,10 @@ pub fn router(app: App) -> Router {
 
     Router::new()
         .nest("/api", api)
+        // `pb_hooks` `routerAdd` routes mount at the root, exactly as
+        // registered, same as PocketBase; empty when no JS route was
+        // ever registered.
+        .merge(jsvm_host::js_router(&app))
         .merge(dashboard::router())
         .fallback(http_error::not_found_fallback)
         // PocketBase answers a wrong method on a real path with 404, not

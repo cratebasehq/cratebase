@@ -52,9 +52,9 @@ use crate::realtime::{self, RecordAction};
 use crate::routes::common::{self, ParsedBody};
 
 /// PocketBase's per-operation error wrappers.
-const CREATE_FAILED: &str = "Failed to create record.";
-const UPDATE_FAILED: &str = "Failed to update record.";
-const DELETE_FAILED: &str = "Failed to delete record.";
+pub(crate) const CREATE_FAILED: &str = "Failed to create record.";
+pub(crate) const UPDATE_FAILED: &str = "Failed to update record.";
+pub(crate) const DELETE_FAILED: &str = "Failed to delete record.";
 /// Writing to a view collection.
 const UNSUPPORTED_TYPE: &str = "Unsupported collection type.";
 
@@ -611,27 +611,27 @@ fn delete_needs_transaction(app: &App, collection: &Collection) -> bool {
 // ----------------------------------------------------------- write plumbing
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Write {
+pub(crate) enum Write {
     Create,
     Update,
 }
 
 impl Write {
-    fn message(self) -> &'static str {
+    pub(crate) fn message(self) -> &'static str {
         match self {
             Write::Create => CREATE_FAILED,
             Write::Update => UPDATE_FAILED,
         }
     }
 
-    fn outer(self, hooks: &Hooks) -> &Hook<RecordEvent> {
+    pub(crate) fn outer(self, hooks: &Hooks) -> &Hook<RecordEvent> {
         match self {
             Write::Create => &hooks.on_record_create,
             Write::Update => &hooks.on_record_update,
         }
     }
 
-    fn execute(self, hooks: &Hooks) -> &Hook<RecordEvent> {
+    pub(crate) fn execute(self, hooks: &Hooks) -> &Hook<RecordEvent> {
         match self {
             Write::Create => &hooks.on_record_create_execute,
             Write::Update => &hooks.on_record_update_execute,
@@ -702,7 +702,7 @@ where
 /// Validate + write one record inside the caller's transaction, firing
 /// `onRecordValidate`, `onRecord{Create,Update}`, their `*Execute`
 /// siblings and finally the after-success / after-error hooks.
-async fn write_record(
+pub(crate) async fn write_record(
     tx: TxApp,
     collection: Arc<Collection>,
     record: Record,
@@ -823,7 +823,7 @@ async fn finish(
 
 /// The delete counterpart of [`write_record`]. Returns the deleted record
 /// plus the files it orphaned, which the caller removes after the commit.
-async fn delete_in_tx(
+pub(crate) async fn delete_in_tx(
     tx: TxApp,
     collection: Arc<Collection>,
     record: Record,
@@ -906,7 +906,7 @@ async fn delete_in_tx(
 ///   itself: PocketBase reports `validation_values_mismatch`, *not* a
 ///   permission error (KNOWN_DIVERGENCES §21). `email` is only guarded on
 ///   update, because a signup has to be able to supply one.
-async fn apply_auth_fields(
+pub(crate) async fn apply_auth_fields(
     collection: &Arc<Collection>,
     body: &Map<String, Value>,
     record: &mut Record,
@@ -1051,7 +1051,7 @@ async fn read_body(
 /// A read failure. `NotFound` is PocketBase's plain 404; a rejected
 /// `sort`/`filter` surfaces as [`DbError::Filter`] and must become the
 /// *generic* 400 with an empty `data` (KNOWN_DIVERGENCES §18).
-fn read_error(error: DbError) -> AppError {
+pub(crate) fn read_error(error: DbError) -> AppError {
     match error {
         DbError::NotFound => rule_errors::hidden_record(),
         DbError::Filter(detail) => {

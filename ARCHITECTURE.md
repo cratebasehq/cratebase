@@ -12,20 +12,30 @@ crates/
   core     — domain types only (Collection, Field, AppError). Zero I/O.
   filter   — filter expression parser + SQL compiler.
   db       — the storage engine: sqlx `Any` pool, collection<->table sync,
-             record CRUD, API-rule enforcement, admin accounts.
+             record CRUD, API-rule enforcement.
   storage  — file storage: local disk or any S3-compatible bucket
              (object_store crate — one implementation for AWS S3,
              R2, MinIO, RustFS, B2, ...).
-  auth     — Argon2id password hashing, HS256 JWT session tokens.
+  auth     — Argon2id password hashing, HS256 JWT session/action tokens,
+             OTP hashing.
+  jsvm     — an embedded QuickJS runtime (PocketBase-compatible `pb_hooks/`
+             JS hooks and `routerAdd`/`cronAdd`), decoupled from `server`'s
+             HTTP/DB types behind a `HostApi` trait it calls back through.
+  mailer   — pluggable mail backend: Resend HTTP API, plain SMTP, or a
+             `Log` fallback that writes to `tracing` instead of delivering,
+             so every email-dependent flow works with zero external setup.
   server   — axum HTTP API + CLI (`cratebase serve` / `superuser ...`) +
-             the embedded admin dashboard.
+             the embedded admin dashboard + the `jsvm`/`mailer` wiring
+             (`jsvm_host.rs`).
 web/admin  — the admin dashboard (React + Vite), embedded into the server
              binary at compile time via rust-embed.
 ```
 
-Dependencies flow one way: `server` depends on `db`/`storage`/`auth`/`filter`/`core`;
-`db` depends on `filter`/`core`; nothing depends on `server`. This keeps the
-storage engine testable and reusable without pulling in HTTP.
+Dependencies flow one way: `server` depends on every other crate;
+`db` depends on `filter`/`core`; `jsvm` and `mailer` depend on neither
+`db` nor `server` (they talk back to `server` through `HostApi` and a
+plain `Message` type, respectively). This keeps the storage engine, JS
+runtime, and mailer each testable and reusable without pulling in HTTP.
 
 ## The dynamic collection engine (`crates/db`)
 
@@ -93,18 +103,35 @@ and `?=`/`?!=`/... "any of" operators for array fields.
 
 ## Auth model
 
-Two independent identity types share one JWT shape (`cratebase-auth`):
+Superusers are not a separate concept: `_superusers` is an ordinary
+built-in `type: "auth"` collection, exactly like a user-defined one, and
+goes through the same code path (PocketBase dropped its dedicated admin
+table the same way as of v0.23). A `Collection` with `type: "auth"` gets
+five extra physical columns alongside its user-defined schema — `password`
+(the Argon2id hash), `tokenKey`, `email`, `emailVisibility`, `verified` —
+and registration is just `POST .../records` with `password`/
+`passwordConfirm`; there's no separate "register" endpoint.
 
-- **Superusers** (`_admins` table) — manage schema, bypass every API rule.
-- **Auth collection records** — a `Collection` with `type: "auth"` gets two
-  extra physical columns (`email`, `password_hash`) alongside its
-  user-defined schema. Registration is just `POST .../records` on an auth
-  collection with `password`/`passwordConfirm`; there's no separate
-  "register" endpoint.
+Session tokens are stateless HS256 JWTs (`{collectionId, exp, id,
+refreshable, type}`) signed with `app secret + record.tokenKey +
+authToken.secret` — no server-side revocation list. Rotating a record's
+`tokenKey` (which every password or email change does) invalidates every
+outstanding session for that record without a lookup table; rotating the
+app-wide `AUTH_SECRET` invalidates everything at once. Verification,
+password-reset, and email-change tokens reuse the same signed-JWT
+machinery under a different `type` and their own `TokenConfig` secret,
+which is what makes them single-use for free: the same `tokenKey`
+rotation that ends a session also burns any outstanding one-shot token.
 
-Tokens are stateless HS256 JWTs with no server-side revocation list —
-rotating `AUTH_SECRET` invalidates every outstanding token at once. This is
-a deliberate simplicity trade-off, not an oversight.
+Beyond password login, `crates/server/src/routes/auth.rs` implements the
+rest of PocketBase's auth surface on auth collections: email verification
+and password reset (`request-`/`confirm-verification`,
+`request-`/`confirm-password-reset`), email-change confirmation
+(`request-`/`confirm-email-change`), OTP passwordless login (`request-otp`,
+`auth-with-otp`), MFA gating a second factor behind a pending `_mfas`
+session, OAuth2 (Google/GitHub, `oauth2.rs`), superuser impersonation
+(`POST .../impersonate/{id}`), and best-effort new-location login alerts
+tracked in the `_authOrigins` collection.
 
 ## Realtime
 
@@ -134,3 +161,29 @@ output (`web/admin/dist`) is embedded into the `cratebase` binary at
 `cargo build --release` produces one executable that serves the API and the
 dashboard; no Node runtime, and no separate frontend to host, in
 production.
+
+A fresh instance with no superuser yet needs no CLI to get started: `GET
+/api/setup/status` reports `{needsSetup: true}` until the first superuser
+exists, and the dashboard renders an inline setup form against `POST
+/api/setup` instead of a bare login screen (`crates/server/src/routes/setup.rs`).
+`cratebase superuser create` still works for scripted/headless setup —
+`setup.rs` re-checks "does a superuser exist" at write time, so whichever
+path wins the race closes the other one out.
+
+## Extending with JavaScript (`crates/jsvm`)
+
+A `pb_hooks/*.pb.js` file next to the data directory is evaluated at
+startup by an embedded QuickJS runtime (`crates/jsvm`), giving
+PocketBase's own extension surface: `onRecordCreate`/`onRecordUpdate`-style
+lifecycle hooks bound through native `Hook<E>` registration
+(`crates/server/src/hooks.rs::bind_js_hook`), and `routerAdd` for mounting
+custom root-level HTTP routes, turned into real axum routes by
+`jsvm_host::js_router` once every hook file has run. `crates/jsvm` itself
+has no dependency on `db`/`server`; the glue lives in
+`crates/server/src/jsvm_host.rs`, which implements `cratebase_jsvm::HostApi`
+twice — once over the plain `App` for routes/crons/most hooks, and once
+over an open `TxApp` for hooks that fire inside a record write's own
+transaction, so a hook's own `$app.save`/`$app.delete` commits or rolls
+back with the write that triggered it. No `pb_hooks/` directory, or an
+empty one, is a complete no-op: nothing is spawned, matching PocketBase's
+own behavior.

@@ -535,7 +535,7 @@ pub async fn parse_multipart(
 
 /// Read one multipart file part, spilling to disk past
 /// [`SPILL_THRESHOLD`].
-async fn stage_field(
+pub(crate) async fn stage_field(
     mut field: axum::extract::multipart::Field<'_>,
     base_field: &str,
     original_name: &str,

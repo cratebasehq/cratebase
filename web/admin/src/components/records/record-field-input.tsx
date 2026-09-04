@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Braces, WrapText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { type FieldSchema, isMultiValue } from "@/lib/field-types";
@@ -22,6 +22,76 @@ function toDatetimeLocal(value: unknown): string {
   if (Number.isNaN(date.getTime())) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+/**
+ * One coordinate of a `geoPoint` value.
+ *
+ * `<input type="number">` blanks its own `.value` for a not-yet-complete
+ * float — typing the leading `-` of `-122.4` reports `""`, not `"-"`. A
+ * naive `value === "" ? 0 : Number(value)` (as the plain "number" field
+ * type above does) reacts to that blank by resetting the field to `0`,
+ * so the next keystroke lands after a `0` instead of a `-` and the sign
+ * is gone before the user finishes typing. This keeps its own text
+ * draft — a plain `type="text"` input never blanks itself — and only
+ * commits upward once the draft parses to a real number, so `-`, `-1`
+ * and `-1.` are just states the draft passes through.
+ */
+function GeoCoordInput({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  invalid,
+}: {
+  value: number | undefined;
+  onChange: (value: number) => void;
+  placeholder: string;
+  ariaLabel: string;
+  invalid?: boolean;
+}) {
+  const [text, setText] = useState(() => (value !== undefined ? String(value) : ""));
+  // What this input itself last sent upward, so the sync effect below can
+  // tell "the record changed under me" (resync) apart from "the parent
+  // re-rendered with the value I just gave it" (leave the draft alone).
+  const lastSent = useRef(value);
+
+  useEffect(() => {
+    if (value !== lastSent.current) {
+      setText(value !== undefined ? String(value) : "");
+      lastSent.current = value;
+    }
+  }, [value]);
+
+  return (
+    <Input
+      type="text"
+      inputMode="decimal"
+      value={text}
+      onChange={(e) => {
+        const raw = e.target.value;
+        // A coordinate being typed passes through states that aren't a
+        // complete number yet — a lone sign, a trailing dot — without
+        // being rejected mid-keystroke.
+        if (!/^-?\d*\.?\d*$/.test(raw)) return;
+        setText(raw);
+        if (raw === "") {
+          lastSent.current = 0;
+          onChange(0);
+          return;
+        }
+        if (raw === "-" || raw.endsWith(".")) return;
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed)) {
+          lastSent.current = parsed;
+          onChange(parsed);
+        }
+      }}
+      placeholder={placeholder}
+      aria-label={ariaLabel}
+      aria-invalid={invalid}
+      className="h-control-md font-tabular"
+    />
+  );
 }
 
 /**
@@ -190,6 +260,29 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
           invalid={invalid}
           onChange={(next) => onChange(multiple ? next : (next[0] ?? null))}
         />
+      );
+    }
+    case "geoPoint": {
+      const point = value && typeof value === "object" ? (value as { lon?: number; lat?: number }) : {};
+      const lon = typeof point.lon === "number" ? point.lon : undefined;
+      const lat = typeof point.lat === "number" ? point.lat : undefined;
+      return (
+        <div className="flex items-center gap-2">
+          <GeoCoordInput
+            value={lat}
+            onChange={(next) => onChange({ lon: lon ?? 0, lat: next })}
+            placeholder="Latitude"
+            ariaLabel={`${field.name} latitude`}
+            invalid={invalid}
+          />
+          <GeoCoordInput
+            value={lon}
+            onChange={(next) => onChange({ lat: lat ?? 0, lon: next })}
+            placeholder="Longitude"
+            ariaLabel={`${field.name} longitude`}
+            invalid={invalid}
+          />
+        </div>
       );
     }
 
