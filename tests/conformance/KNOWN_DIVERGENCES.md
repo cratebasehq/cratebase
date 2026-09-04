@@ -1,7 +1,10 @@
 # Known divergences, skips and PocketBase surprises
 
 Status against **PocketBase v0.40.2** with the **`pocketbase` JS SDK 0.28.0**:
-**180 passing, 1 skipped, 0 failing** (902 assertions).
+**180 passing, 1 skipped, 0 failing** against a PocketBase server; against a
+Cratebase server, 181 of the same tests pass (the two collection/settings
+list assertions widen for Cratebase's extra system collections/settings key,
+see below) plus the value-add feature suites tracked separately.
 
 ## Skipped tests
 
@@ -174,6 +177,21 @@ These are all asserted by the suite. Several contradict the docs or intuition.
     record id.
 42. `/api/health` is the only endpoint that still uses `code` instead of
     `status` in its envelope.
+
+## Cratebase-only additions (not present in PocketBase)
+
+These are new capabilities, not quirks to match, so they widen the
+expected-value lists in `collections.test.ts`/`settings.test.ts` rather than
+describing a behavioural difference on a shared surface.
+
+43. **Five extra system collections**, all superuser-only end to end (same
+    trust tier as `_superusers`/`_mfas`): `_cron_jobs` (custom scheduled SQL
+    jobs), `_llm_usage` (persisted LLM gateway chat history), `_team_members`
+    and `_teams` (workspace membership), `_webhooks` (outgoing webhook
+    config).
+44. **An extra top-level settings key, `llm`**: the LLM chat gateway's
+    provider config (`baseUrl`, `apiKey`, `model`). `apiKey` is stripped from
+    `GET /api/settings` the same way `smtp.password`/`s3.secret` are.
 
 ## Suite-side workarounds (not PocketBase behaviour)
 

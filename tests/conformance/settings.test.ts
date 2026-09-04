@@ -15,6 +15,7 @@ describe("settings", () => {
     expect(Object.keys(s).sort()).toEqual([
       "backups",
       "batch",
+      "llm",
       "logs",
       "meta",
       "rateLimits",
