@@ -1,0 +1,26 @@
+name: Build macOS binary
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      # rust-embed needs `web/admin/dist` and `web/email/dist` to exist
+      # even when the dashboard/email bundles aren't built (see
+      # crates/server/src/dashboard.rs and crates/server/src/mail.rs).
+      - run: mkdir -p web/admin/dist web/email/dist && touch web/admin/dist/.gitkeep
+      - run: cargo build --release --bin cratebase --target aarch64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cratebase-macos-arm64
+          path: target/aarch64-apple-darwin/release/cratebase
