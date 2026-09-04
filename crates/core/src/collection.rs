@@ -28,23 +28,14 @@ impl CollectionType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct EmailTemplate {
     pub subject: String,
     pub body: String,
 }
 
-impl Default for EmailTemplate {
-    fn default() -> Self {
-        EmailTemplate {
-            subject: String::new(),
-            body: String::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TokenConfig {
     pub duration: i64,
@@ -52,15 +43,6 @@ pub struct TokenConfig {
     /// app secret alone (plus the record's `tokenKey`).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub secret: String,
-}
-
-impl Default for TokenConfig {
-    fn default() -> Self {
-        TokenConfig {
-            duration: 0,
-            secret: String::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -318,21 +318,33 @@ pub fn date(field: &Field, value: &Value) -> Option<FieldError> {
     };
     if let Some(min) = min {
         if dt < *min {
-            return Some(err(
-                MIN_DATE,
-                format!("Must be no less than {}.", go_time(min)),
-            ));
+            return Some(
+                err(MIN_DATE, format!("Must be no less than {}.", go_time(min)))
+                    .with_param("threshold", Value::String(threshold(min))),
+            );
         }
     }
     if let Some(max) = max {
         if dt > *max {
-            return Some(err(
-                MAX_DATE,
-                format!("Must be no greater than {}.", go_time(max)),
-            ));
+            return Some(
+                err(
+                    MAX_DATE,
+                    format!("Must be no greater than {}.", go_time(max)),
+                )
+                .with_param("threshold", Value::String(threshold(max))),
+            );
         }
     }
     None
+}
+
+/// The machine-readable form of a date bound in `params.threshold`. Go
+/// marshals `time.Time` as RFC3339 with trailing zero fractions trimmed,
+/// so a whole second renders as `2020-01-01T00:00:00Z` — not the
+/// millisecond-padded form we use elsewhere.
+fn threshold(dt: &DateTime) -> String {
+    dt.inner()
+        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
 }
 
 /// Go's default `time.Time` rendering, which is what ends up in
@@ -1004,6 +1016,14 @@ mod tests {
         assert_eq!(
             too_early.message,
             "Must be no less than 2026-01-01 00:00:00 +0000 UTC."
+        );
+        // PocketBase carries the bound machine-readably alongside the
+        // prose, RFC3339 with trailing zero fractions trimmed (Go's
+        // time.Time JSON form), asserted in
+        // tests/conformance/records.test.ts.
+        assert_eq!(
+            too_early.params.as_ref().unwrap()["threshold"],
+            json!("2026-01-01T00:00:00Z")
         );
         assert_eq!(
             date(&field, &json!("2027-06-01 00:00:00.000Z"))

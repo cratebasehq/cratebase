@@ -10,10 +10,17 @@ use thiserror::Error;
 /// A single field's validation failure: a stable machine-readable `code`
 /// (PocketBase's `validation_*` vocabulary, see [`codes`]) and a
 /// human-readable `message`.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FieldError {
     pub code: String,
     pub message: String,
+    /// Machine-readable detail behind the message, so a client can render
+    /// its own wording. PocketBase emits this for the comparison
+    /// constraints — a date bound carries
+    /// `{"threshold": "2020-01-01T00:00:00Z"}` — and omits the key
+    /// entirely otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Map<String, Value>>,
 }
 
 impl FieldError {
@@ -21,7 +28,16 @@ impl FieldError {
         Self {
             code: code.into(),
             message: message.into(),
+            params: None,
         }
+    }
+
+    /// Attach a single `params` entry, e.g. `("threshold", json!("..."))`.
+    pub fn with_param(mut self, key: &str, value: Value) -> Self {
+        self.params
+            .get_or_insert_with(serde_json::Map::new)
+            .insert(key.to_string(), value);
+        self
     }
 }
 

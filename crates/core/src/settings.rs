@@ -89,7 +89,7 @@ impl Default for Backups {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RateLimitRule {
     /// A path prefix (`/api/`), an exact path, or a tag (`*:auth`,
@@ -99,17 +99,6 @@ pub struct RateLimitRule {
     pub audience: String,
     pub duration: i64,
     pub max_requests: i64,
-}
-
-impl Default for RateLimitRule {
-    fn default() -> Self {
-        RateLimitRule {
-            label: String::new(),
-            audience: String::new(),
-            duration: 0,
-            max_requests: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
