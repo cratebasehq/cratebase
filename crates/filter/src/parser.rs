@@ -1,4 +1,7 @@
-use crate::ast::{CompareOp, Expr, Literal, Operand};
+//! Recursive-descent parser producing an [`Expr`] tree. `||` binds looser
+//! than `&&`; parentheses group.
+
+use crate::ast::{CompareOp, Expr, Literal, Operand, FUNCTIONS};
 use crate::error::FilterError;
 use crate::lexer::{Lexer, Token};
 
@@ -8,6 +11,9 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// Parse a filter expression. An empty/whitespace-only input is
+    /// [`FilterError::Empty`] so callers can distinguish "no filter" from
+    /// "broken filter".
     pub fn parse(src: &str) -> Result<Expr, FilterError> {
         if src.trim().is_empty() {
             return Err(FilterError::Empty);
@@ -69,8 +75,7 @@ impl Parser {
             match self.bump() {
                 Token::RParen => Ok(inner),
                 other => Err(FilterError::Parse(format!(
-                    "expected ')' but found {:?}",
-                    other
+                    "expected ')' but found {other:?}"
                 ))),
             }
         } else {
@@ -99,8 +104,7 @@ impl Parser {
             Token::QNotLike => (CompareOp::NotLike, true),
             other => {
                 return Err(FilterError::Parse(format!(
-                    "expected comparison operator but found {:?}",
-                    other
+                    "expected comparison operator but found {other:?}"
                 )))
             }
         };
@@ -115,16 +119,67 @@ impl Parser {
 
     fn parse_operand(&mut self) -> Result<Operand, FilterError> {
         match self.bump() {
-            Token::Ident(name) => Ok(Operand::Ident(name)),
+            Token::Ident { name, modifier } => {
+                if matches!(self.peek(), Token::LParen) {
+                    if modifier.is_some() {
+                        return Err(FilterError::Parse(format!(
+                            "function '{name}' cannot carry a modifier"
+                        )));
+                    }
+                    return self.parse_call(name);
+                }
+                Ok(Operand::Ident {
+                    path: name,
+                    modifier,
+                })
+            }
             Token::Str(s) => Ok(Operand::Literal(Literal::Str(s))),
             Token::Num(n) => Ok(Operand::Literal(Literal::Num(n))),
             Token::True => Ok(Operand::Literal(Literal::Bool(true))),
             Token::False => Ok(Operand::Literal(Literal::Bool(false))),
             Token::Null => Ok(Operand::Literal(Literal::Null)),
             other => Err(FilterError::Parse(format!(
-                "expected value or field but found {:?}",
-                other
+                "expected value or field but found {other:?}"
             ))),
         }
+    }
+
+    /// `name(arg, arg, ...)`; the opening parenthesis is the current token.
+    fn parse_call(&mut self, name: String) -> Result<Operand, FilterError> {
+        let Some(&(_, arity)) = FUNCTIONS.iter().find(|(n, _)| *n == name) else {
+            return Err(FilterError::Parse(format!("unknown function '{name}'")));
+        };
+        self.bump(); // '('
+        let mut args = Vec::new();
+        if matches!(self.peek(), Token::RParen) {
+            self.bump();
+        } else {
+            loop {
+                args.push(self.parse_operand()?);
+                match self.bump() {
+                    Token::Comma => continue,
+                    Token::RParen => break,
+                    other => {
+                        return Err(FilterError::Parse(format!(
+                            "expected ',' or ')' in call to '{name}' but found {other:?}"
+                        )))
+                    }
+                }
+            }
+        }
+        if args.len() != arity {
+            return Err(FilterError::Parse(format!(
+                "function '{name}' expects {arity} arguments but {} were given",
+                args.len()
+            )));
+        }
+        for arg in &args {
+            if matches!(arg, Operand::Call { .. }) {
+                return Err(FilterError::Parse(format!(
+                    "nested function calls are not allowed in '{name}'"
+                )));
+            }
+        }
+        Ok(Operand::Call { name, args })
     }
 }
