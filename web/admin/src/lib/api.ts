@@ -23,6 +23,9 @@ export interface SuperuserRecord {
   updated?: string;
   verified?: boolean;
   avatar?: string;
+  /** `"owner"` or `"admin"` — see `cratebase_core::SUPERUSER_ROLE_OWNER`/
+   * `SUPERUSER_ROLE_ADMIN`. */
+  role?: string;
 }
 
 export function isLoggedIn(): boolean {
@@ -41,6 +44,7 @@ export function currentSuperuser(): SuperuserRecord | null {
     created: typeof record["created"] === "string" ? record["created"] : undefined,
     verified: record["verified"] === true,
     avatar: typeof record["avatar"] === "string" ? record["avatar"] : undefined,
+    role: typeof record["role"] === "string" ? record["role"] : undefined,
   };
 }
 

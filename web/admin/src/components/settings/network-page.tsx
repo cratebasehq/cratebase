@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
 import { describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { useCollections } from "@/hooks/use-collections";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -54,11 +55,37 @@ const AUDIENCES = [
   { value: "@auth", label: "Authenticated only" },
 ];
 
+/** The record-endpoint verbs `tags_for` (`crates/server/src/middleware/rate_limit.rs`)
+ * derives from the URL shape. A rule labelled `{collection}:{action}` only
+ * ever matches that one collection's records endpoint for that one verb —
+ * this is what makes per-collection, per-verb limiting possible without a
+ * dedicated schema field. */
+const RECORD_ACTIONS = ["list", "view", "create", "update", "delete"] as const;
+
+/** Real collection names turn "type the tag by hand and hope you spelled
+ * the collection right" into "pick it off a list". The label field stays a
+ * free-text input — tags like `*:auth` and path rules like `/api/batch`
+ * have no collection to suggest — this only adds suggestions on top. */
+function useRuleLabelSuggestions(): string[] {
+  const { data: collections } = useCollections();
+  return useMemo(() => {
+    if (!collections) return [];
+    const suggestions: string[] = [];
+    for (const collection of collections) {
+      for (const action of RECORD_ACTIONS) {
+        suggestions.push(`${collection.name}:${action}`);
+      }
+    }
+    return suggestions;
+  }, [collections]);
+}
+
 export function NetworkPage() {
   const { data: settings, isPending } = useSettings();
   const save = useSettingsMutation();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [seedKey, setSeedKey] = useState<ServerSettings | undefined>(settings);
+  const labelSuggestions = useRuleLabelSuggestions();
 
   if (settings && (seedKey !== settings || draft === null)) {
     setSeedKey(settings);
@@ -151,6 +178,7 @@ export function NetworkPage() {
                   onChange={(e) => patchRule(i, { label: e.target.value })}
                   placeholder="/api/, *:auth, posts:list…"
                   aria-label={`Rule ${i + 1} label`}
+                  list="rate-limit-rule-label-suggestions"
                   className="h-control-sm font-mono text-xs"
                 />
                 <Select value={rule.audience} onValueChange={(audience) => patchRule(i, { audience })}>
@@ -197,11 +225,22 @@ export function NetworkPage() {
               </div>
             ))
           )}
+          {/* Native datalist, not a `Command`/`Popover` combobox: the label
+           * stays free text (tags, prefixes and exact paths all live in the
+           * same field), this only autocompletes real `collection:action`
+           * pairs so a rule can be scoped to one collection without typing
+           * its name — and possibly misspelling it — by hand. */}
+          <datalist id="rate-limit-rule-label-suggestions">
+            {labelSuggestions.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
           <p className="text-2xs leading-snug text-muted-foreground">
             Label is a path prefix (<code className="font-mono">/api/</code>), an exact path, or a tag (
             <code className="font-mono">*:auth</code>, <code className="font-mono">*:create</code>,{" "}
-            <code className="font-mono">posts:list</code>). Window and max requests define "at most N requests
-            per window seconds".
+            <code className="font-mono">posts:list</code>) — start typing a collection name for suggestions
+            scoped to that collection's list/view/create/update/delete endpoints. Window and max requests
+            define "at most N requests per window seconds".
           </p>
         </div>
 

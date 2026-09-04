@@ -184,14 +184,17 @@ These are new capabilities, not quirks to match, so they widen the
 expected-value lists in `collections.test.ts`/`settings.test.ts` rather than
 describing a behavioural difference on a shared surface.
 
-43. **Seven extra system collections**, all superuser-only end to end
+43. **Eight extra system collections**, all superuser-only end to end
     unless noted (same trust tier as `_superusers`/`_mfas`): `_cron_jobs`
     (custom scheduled SQL jobs), `_llm_usage` (persisted LLM gateway chat
     history), `_team_members`/`_teams` (workspace membership), `_webhooks`
     (outgoing webhook config), `_api_keys` (superuser-minted Bearer
     identities, `key` stored hashed), `_push_subscriptions` (self-service —
     a record manages only its own rows, same owner-rule shape as
-    `_mfas`/`_otps`).
+    `_mfas`/`_otps`), `_audit_log` (append-only activity feed of
+    consequential superuser/dashboard actions — no update/delete rule can
+    express "nobody, ever", so this is enforced at the hook level instead;
+    see `crates/server/src/audit.rs`).
 44. **Three extra top-level settings keys**: `llm` (the LLM chat gateway's
     provider config — `baseUrl`, `apiKey`, `model`), `sms` (Twilio-compatible
     provider config — `accountSid`, `authToken`, `fromNumber`), and `push`
@@ -199,6 +202,14 @@ describing a behavioural difference on a shared surface.
     (`llm.apiKey`, `sms.authToken`, `push.vapid.privateKey`,
     `push.fcm.serviceAccountJson`, `push.apns.key`) is stripped from
     `GET /api/settings` the same way `smtp.password`/`s3.secret` are.
+45. **`_superusers` has an extra required `role` field** (`owner` |
+    `admin`), not present in PocketBase's `_superusers`. PocketBase has
+    exactly one superuser tier; Cratebase's `owner` role can manage other
+    superusers' accounts (create/demote/delete), `admin` cannot, and the
+    sole remaining `owner` cannot be demoted or deleted (lockout
+    prevention). Every pre-existing row from before this field existed is
+    backfilled to `owner` on migration, so no installation loses admin
+    access on upgrade. See `crates/server/src/extract.rs`'s `RequireOwner`.
 
 ## Suite-side workarounds (not PocketBase behaviour)
 

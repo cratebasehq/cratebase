@@ -181,6 +181,15 @@ heartbeat after. `heartbeatMs` (default 20s), `staleMs` (default `3 * heartbeatM
 `lastSeenField` (default `"lastSeenAt"`) in the options object tune the timing to your schema and
 how quickly a departed peer should read as offline.
 
+## Versioning
+
+This package versions independently from the `cratebase` server binary. It's an optional
+client-side add-on with its own semver lifecycle — the `pocketbase` peer dependency it targets,
+not the server release cadence, is what actually constrains breaking changes here. Publishing is
+triggered by pushing a `extras-v<version>` tag (see `.github/workflows/publish-extras.yml`), kept
+deliberately separate from the server's own `v*` release tags so a server release never forces an
+unrelated extras publish, and an extras hotfix never waits on one.
+
 ## Development
 
 ```

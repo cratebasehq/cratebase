@@ -23,6 +23,11 @@ web/email/dist/*
 !web/email/dist/.gitkeep
 web/email/node_modules
 
+# @cratebase/extras' dist/ is a real npm build artifact (unlike
+# web/admin's committed dashboard bundle) — CI builds it fresh from
+# source before every publish, so it never needs to be committed.
+sdk/js/extras/dist
+
 # Agent skills installed via `npx skills add` — local dev aids, not
 # part of the shipped product; keep them out of the open-source repo.
 .claude/skills/

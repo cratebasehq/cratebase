@@ -59,6 +59,18 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// One-shot import of an existing PocketBase installation's
+    /// collections, records and files into this Cratebase instance. See
+    /// `docs/migrating-from-pocketbase.md`.
+    MigrateFromPocketbase {
+        /// PocketBase's data directory (what `pocketbase serve --dir`
+        /// pointed at); must contain `data.db` and, if any collection has
+        /// file fields, a `storage/` subdirectory.
+        pb_dir: String,
+        /// Cratebase's own data directory to migrate into.
+        #[arg(long = "dir")]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -152,6 +164,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Migrate { action, dir } => migrate(dir, action).await,
         Command::Schema { action, dir } => schema(dir, action).await,
+        Command::MigrateFromPocketbase { pb_dir, dir } => {
+            migrate_from_pocketbase(dir, pb_dir).await
+        }
     }
 }
 
@@ -393,5 +408,71 @@ async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()>
     }
 
     app.terminate(false).await;
+    Ok(())
+}
+
+/// `cratebase migrate-from-pocketbase <pb_dir>`. Bootstraps a target
+/// Cratebase instance (creating it fresh if `--dir` is new) and imports
+/// `pb_dir`'s collections, records and files into it. See
+/// `crates/server/src/pocketbase_migrate.rs` for the mechanics and
+/// `docs/migrating-from-pocketbase.md` for what does and doesn't transfer.
+async fn migrate_from_pocketbase(dir: Option<String>, pb_dir: String) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+
+    let report = cratebase_server::pocketbase_migrate::run(&app, &pb_dir).await?;
+
+    println!("collections created: {}", report.collections_created.len());
+    for name in &report.collections_created {
+        println!("  + {name}");
+    }
+    println!(
+        "collections updated (existing schema, fields merged): {}",
+        report.collections_updated.len()
+    );
+    for name in &report.collections_updated {
+        println!("  ~ {name}");
+    }
+    if !report.collections_skipped_system.is_empty() {
+        println!(
+            "PocketBase system collections skipped (already exist identically in Cratebase, or are ephemeral auth state not carried across): {}",
+            report.collections_skipped_system.join(", ")
+        );
+    }
+    if !report.unsupported_fields.is_empty() {
+        println!("fields with no Cratebase equivalent (N/A, dropped):");
+        for f in &report.unsupported_fields {
+            println!("  ! {}.{} (type: {})", f.collection, f.field, f.field_type);
+        }
+    }
+    if !report.oauth2_needs_reconfiguration.is_empty() {
+        println!(
+            "OAuth2 providers NOT migrated (client secrets are never carried across instances) — reconfigure manually: {}",
+            report.oauth2_needs_reconfiguration.join(", ")
+        );
+    }
+    println!("records migrated:");
+    for (name, count) in &report.records_migrated {
+        println!("  {name}: {count}");
+    }
+    println!("files copied: {}", report.files_copied);
+    if !report.failed_files.is_empty() {
+        println!("files that failed to copy:");
+        for f in &report.failed_files {
+            println!(
+                "  ! {}/{}/{}: {}",
+                f.collection, f.record_id, f.filename, f.error
+            );
+        }
+    }
+
+    app.terminate(false).await;
+
+    if !report.failed_files.is_empty() {
+        anyhow::bail!(
+            "migration completed with {} file copy failure(s); see above",
+            report.failed_files.len()
+        );
+    }
     Ok(())
 }

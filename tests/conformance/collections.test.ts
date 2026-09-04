@@ -251,6 +251,7 @@ describe("collections: create", () => {
     const sys = all.filter((c) => c.system).map((c) => c.name).sort();
     expect(sys).toEqual([
       "_api_keys",
+      "_audit_log",
       "_authOrigins",
       "_cron_jobs",
       "_externalAuths",

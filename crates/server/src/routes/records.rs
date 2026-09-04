@@ -525,6 +525,13 @@ pub(crate) async fn create_record(
     if rules::is_superuser_only(&collection.create_rule, &ctx) {
         return Err(ApiError(rule_errors::superusers_only()));
     }
+    // Creating a new `_superusers` row is always "managing another
+    // superuser" — there is no existing self row to be self-service
+    // about — so it needs the stricter owner check on top of the plain
+    // "any superuser" gate `is_superuser_only` just ran.
+    if collection.is_superusers() {
+        require_owner(info.auth.as_ref(), "create a superuser account")?;
+    }
     {
         let resolver = CollectionResolver::new(
             collection.clone(),
@@ -636,6 +643,32 @@ pub(crate) async fn update_record(
         return Err(ApiError(rule_errors::hidden_record()));
     }
 
+    // `_superusers`: any superuser may still update their own
+    // non-role fields (self-service password/email changes stay on the
+    // `is_superuser_only` gate above), but touching *another* account,
+    // or changing anyone's `role` (including one's own — closing a
+    // self-promotion hole), needs an owner. On top of that, demoting the
+    // sole remaining owner is rejected outright: nobody would be left
+    // who could ever promote a replacement.
+    if collection.is_superusers() {
+        let role_change = body.data.contains_key("role");
+        let touches_other = info.auth.as_ref().is_none_or(|a| a.id != id);
+        if role_change || touches_other {
+            require_owner(info.auth.as_ref(), "manage another superuser's account")?;
+        }
+        if role_change {
+            let demoted_from_owner = previous.get_string("role")
+                == cratebase_core::SUPERUSER_ROLE_OWNER
+                && body.data.get("role").and_then(Value::as_str)
+                    != Some(cratebase_core::SUPERUSER_ROLE_OWNER);
+            if demoted_from_owner && count_owners(&app).await? <= 1 {
+                return Err(ApiError::bad_request(
+                    "Cannot change the role of the last remaining owner.",
+                ));
+            }
+        }
+    }
+
     let manage = common::has_manage_access(app.db(), &app.db().collections, &ctx, &collection, &id)
         .await
         .map_err(|e| ApiError(e.into()))?;
@@ -736,6 +769,22 @@ pub(crate) async fn delete_record(
         return Err(ApiError(rule_errors::hidden_record()));
     }
 
+    // Deleting a superuser account is always owner-only, self or not —
+    // PocketBase-style admin/session lockout is a worse failure mode
+    // than a superuser having to ask an owner to remove their own
+    // account. The sole remaining owner can never be deleted at all:
+    // that would leave nobody who could ever create another one.
+    if collection.is_superusers() {
+        require_owner(info.auth.as_ref(), "delete a superuser account")?;
+        if record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER
+            && count_owners(&app).await? <= 1
+        {
+            return Err(ApiError::bad_request(
+                "Cannot delete the last remaining owner.",
+            ));
+        }
+    }
+
     let files: Arc<Mutex<Vec<FileRef>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = files.clone();
     let deleted = run_request(
@@ -774,6 +823,42 @@ pub(crate) async fn delete_record(
 
     realtime::publish(&app, &collection, RecordAction::Delete, &deleted);
     Ok(StatusCode::NO_CONTENT)
+}
+
+// -------------------------------------------------- `_superusers` roles
+
+/// The owner-only gate `create_record`/`update_record`/`delete_record`
+/// apply to `_superusers` writes that manage *another* account. `auth`
+/// is `None` only when a plugin or test calls one of those handlers
+/// with no caller at all, which can't happen over real HTTP (the
+/// `is_superuser_only` check above already rejected it) but is handled
+/// the safe way regardless. Delegates to [`crate::extract::RequireOwner`]
+/// so the request-extractor form and this inline form can never
+/// disagree about who counts as an owner.
+fn require_owner(auth: Option<&crate::extract::Auth>, action: &str) -> ApiResult<()> {
+    if auth.is_some_and(crate::extract::RequireOwner::holds) {
+        Ok(())
+    } else {
+        Err(ApiError(AppError::Forbidden(format!(
+            "Only an owner can {action}."
+        ))))
+    }
+}
+
+/// How many `_superusers` rows currently carry `role = "owner"` — the
+/// count the lockout checks in `update_record`/`delete_record` compare
+/// against so the very last owner can never be demoted or deleted.
+async fn count_owners(app: &App) -> ApiResult<i64> {
+    Ok(app
+        .db()
+        .query_scalar(
+            r#"SELECT COUNT(*) FROM "_superusers" WHERE "role" = 'owner'"#,
+            &[],
+        )
+        .await
+        .map_err(|e| ApiError(AppError::from(e)))?
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
 }
 
 /// Whether this delete has to be wrapped in an explicit transaction.
@@ -1307,5 +1392,238 @@ mod tests {
         assert!(truthy(&Value::String("true".into())));
         assert!(!truthy(&Value::String("yes".into())));
         assert!(!truthy(&Value::Null));
+    }
+}
+
+#[cfg(test)]
+mod superuser_role_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use cratebase_auth::TokenType;
+    use cratebase_db::engine::{Executor, Sql};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use crate::app::App;
+    use crate::config::Config;
+
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(Config::memory(dir.path()));
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    /// Creates a superuser (always `role: "owner"`, per
+    /// `App::create_superuser`'s doc comment) and hands back its id and a
+    /// bearer session token. `set_role` flips the row to a different
+    /// role afterwards via a raw update — a stand-in for a dashboard
+    /// admin who was demoted/promoted earlier, without going through the
+    /// very HTTP path under test.
+    async fn superuser(app: &App, email: &str, role: &str) -> (String, String) {
+        let id = app
+            .create_superuser(email, "password12345")
+            .await
+            .expect("create superuser");
+        if role != cratebase_core::SUPERUSER_ROLE_OWNER {
+            app.db()
+                .execute(
+                    r#"UPDATE "_superusers" SET "role" = $1 WHERE "id" = $2"#,
+                    &[Sql::from(role), Sql::from(id.as_str())],
+                )
+                .await
+                .expect("set role");
+        }
+        let token = app
+            .mint_token("_superusers", &id, TokenType::Auth, 3600)
+            .await
+            .expect("mint token");
+        (id, token)
+    }
+
+    fn json_request(method: &str, uri: &str, token: &str, body: Value) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn empty_request(method: &str, uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    async fn role_of(app: &App, id: &str) -> String {
+        app.db()
+            .query_scalar(
+                r#"SELECT "role" FROM "_superusers" WHERE "id" = $1"#,
+                &[Sql::from(id)],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_an_owner_can_create_a_new_superuser() {
+        let (app, _dir) = test_app().await;
+        let (_owner_id, owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (_admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let rejected = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/collections/_superusers/records",
+                &admin_token,
+                json!({
+                    "email": "second@example.com",
+                    "password": "password12345",
+                    "passwordConfirm": "password12345",
+                    "role": "admin",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+
+        let accepted = router
+            .oneshot(json_request(
+                "POST",
+                "/collections/_superusers/records",
+                &owner_token,
+                json!({
+                    "email": "second@example.com",
+                    "password": "password12345",
+                    "passwordConfirm": "password12345",
+                    "role": "admin",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn sole_owner_cannot_be_demoted_or_deleted() {
+        let (app, _dir) = test_app().await;
+        let (owner_id, owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let demote = router
+            .clone()
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/collections/_superusers/records/{owner_id}"),
+                &owner_token,
+                json!({ "role": "admin" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(demote.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(role_of(&app, &owner_id).await, "owner");
+
+        let delete = router
+            .oneshot(empty_request(
+                "DELETE",
+                &format!("/collections/_superusers/records/{owner_id}"),
+                &owner_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::BAD_REQUEST);
+        assert!(app.find_superuser_by_id(&owner_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_second_owner_can_demote_and_delete_another_owner() {
+        let (app, _dir) = test_app().await;
+        let (owner1_id, owner1_token) = superuser(&app, "owner1@example.com", "owner").await;
+        let (owner2_id, _owner2_token) = superuser(&app, "owner2@example.com", "owner").await;
+        let (owner3_id, _owner3_token) = superuser(&app, "owner3@example.com", "owner").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let demote = router
+            .clone()
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/collections/_superusers/records/{owner2_id}"),
+                &owner1_token,
+                json!({ "role": "admin" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(demote.status(), StatusCode::OK);
+        assert_eq!(role_of(&app, &owner2_id).await, "admin");
+
+        let delete = router
+            .oneshot(empty_request(
+                "DELETE",
+                &format!("/collections/_superusers/records/{owner3_id}"),
+                &owner1_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+        assert!(app
+            .find_superuser_by_id(&owner3_id)
+            .await
+            .unwrap()
+            .is_none());
+        // The acting owner (owner1) is untouched and still an owner.
+        assert_eq!(role_of(&app, &owner1_id).await, "owner");
+    }
+
+    #[tokio::test]
+    async fn admin_role_keeps_every_non_management_superuser_endpoint() {
+        let (app, _dir) = test_app().await;
+        let (_owner_id, _owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        // An ordinary superuser-only endpoint unrelated to `_superusers`
+        // management: creating a `_cron_jobs` row. `is_superuser_only`
+        // is the only gate here, exactly as before this feature existed.
+        let created = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/collections/_cron_jobs/records",
+                &admin_token,
+                json!({
+                    "name": "noop",
+                    "expression": "* * * * *",
+                    "sql": "SELECT 1",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+
+        // Self-service on their own `_superusers` row (no role change)
+        // still works for a plain admin.
+        let self_update = router
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/collections/_superusers/records/{admin_id}"),
+                &admin_token,
+                json!({
+                    "password": "newpassword12345",
+                    "passwordConfirm": "newpassword12345",
+                    "oldPassword": "password12345",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(self_update.status(), StatusCode::OK);
     }
 }
