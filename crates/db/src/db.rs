@@ -140,6 +140,26 @@ impl Executor for Db {
     async fn execute(&self, sql: &str, params: &[Sql]) -> DbResult<u64> {
         self.engine.execute(sql, params).await
     }
+
+    async fn query_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: std::time::Duration,
+    ) -> DbResult<Vec<Row>> {
+        self.engine.query_interruptible(sql, params, timeout).await
+    }
+
+    async fn execute_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: std::time::Duration,
+    ) -> DbResult<u64> {
+        self.engine
+            .execute_interruptible(sql, params, timeout)
+            .await
+    }
 }
 
 async fn open_sqlite(path: &str, readers: usize) -> DbResult<SqliteEngine> {
@@ -178,6 +198,9 @@ mod tests {
             "_mfas",
             "_otps",
             "_authOrigins",
+            "_cron_jobs",
+            "_webhooks",
+            "_llm_usage",
         ] {
             assert!(names.contains(&n), "{n} missing from {names:?}");
         }

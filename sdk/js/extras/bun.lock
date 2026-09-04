@@ -1,0 +1,21 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "@cratebase/extras",
+      "devDependencies": {
+        "pocketbase": "^0.28.0",
+        "typescript": "~6.0.2",
+      },
+      "peerDependencies": {
+        "pocketbase": "^0.28.0",
+      },
+    },
+  },
+  "packages": {
+    "pocketbase": ["pocketbase@0.28.0", "", {}, "sha512-aCrab5XPPQ40iKIKicQLdUvrAvJQCHZ3cwZD5i22A8PVM/EcemUta7WFw0x4G6WQEOBMa/8kioqCR62ozk4KvQ=="],
+
+    "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
+  }
+}

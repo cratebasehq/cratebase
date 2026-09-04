@@ -21,12 +21,17 @@ land.
   `plugins/example.rs` is a working reference (a `/stats` route + a
   5-minute logging job) to copy from.
   **Shipped on this foundation:**
-  - **Cron jobs as a plugin** (`plugins/cron_jobs.rs`) — real calendar
-    cron expressions (`croner`), reading job definitions from a
-    `_cron_jobs` collection instead of being hardcoded, with
-    `lastRunAt`/`lastStatus` written back per run. Job bodies are a small
-    built-in registry (`run_job`), not scripted — add a match arm and
-    ship your own binary for a new job type.
+  - **Custom SQL cron jobs** (`crates/server/src/cron_jobs.rs`, not a
+    plugin) — a `_cron_jobs` system collection: name, a 5-field cron
+    expression, and a raw SQL statement to run on it, editable from the
+    dashboard's Cron jobs screen or the generic Records API. No match-arm
+    registry, no rebuild for a new job type — the SQL itself is the job
+    body. Superuser-only end to end (no rule enforcement bypasses it —
+    same trust tier as a collection schema edit), validated as a real
+    cron expression before the row is even written, and reactive: a
+    create/update/delete takes effect on the live scheduler immediately,
+    no restart. `lastRunAt`/`lastStatus`/`lastMessage` are written back
+    after every run, including the real driver error on failure.
   - **Feature flags as a plugin** (`plugins/feature_flags.rs`) — a
     self-contained `_feature_flags` collection + an `evaluation rule`
     (reuses the existing filter/rule engine, evaluated against
@@ -56,8 +61,6 @@ land.
   collection CRUD, `listExternalAuths`/`unlinkExternalAuth` in the SDK)
   work today for a provider linked by some other means, but nothing in
   this codebase can create that link yet.
-- File field constraints in the dashboard UI (`mimeTypes`, `maxSize` are
-  already schema fields but have no editor).
 - **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
   entire `VACUUM INTO` snapshot into a `Vec<u8>` (`tokio::fs::read`)
   before a single `Storage::put`, unlike `download`, which streams
@@ -68,18 +71,20 @@ land.
   support it) before this is safe at scale — file uploads have the same
   shape today (bounded by upload size limits) but a backup has no such
   cap.
-- **Write throughput under contention and wide pages.** After the Phase 1
-  performance pass (`benchmarks/README.md`) Cratebase is faster than
-  PocketBase on 19 of 24 measured cells; the two it still loses, `create`
-  at concurrency 20+ and `perPage=200` reads at concurrency 20+, share a
-  cause: every pooled SQLite connection contends for the single writer
-  lock via `busy_timeout`, and every row is decoded twice through
-  `sqlx::Any`. Fixed by the Phase 2 storage engine (single-writer pool +
-  native drivers), not by tuning. The `SELECT COUNT(*)` this entry used to
-  blame was measured at well under 5% of the request.
 
 ## Shipped
 
+- **Write throughput under contention and wide pages.** The single-writer
+  pool + native-driver storage engine (`crates/db`) resolved the
+  contention this item used to track. Measured on an idle host
+  (`benchmarks/run.sh --skip-build`, 0 errors both sides): Cratebase beats
+  PocketBase on 22 of 24 cells, several by an order of magnitude
+  (`search` at concurrency 50: 49986 vs 4774 req/s, 10.47x; `search-auth`
+  at concurrency 100: 38768 vs 3989 req/s, 9.72x). The two remaining
+  cells, `delete` at concurrency 1 and 20, are within noise of parity
+  (0.95x and 0.97x) — not a regression to chase, just not yet a win.
+  Full table: `benchmarks/README.md`; raw numbers:
+  `benchmarks/results/{cratebase,pocketbase}.json`.
 - **Auth rate limiting.** `/collections/{c}/auth-with-password`, and the
   `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
   IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
@@ -157,6 +162,35 @@ collection has no address to send them to.
   first request and cached to the storage backend) and **protected-file
   access tokens** (`POST /api/files/token`, `?token=`) for embedding a
   gated file where an `Authorization` header can't be sent.
+- **Cross-node realtime (Postgres only).** `GET /api/realtime` SSE
+  subscriptions used to be strictly single-process: `RealtimeService`'s
+  client registry and fan-out (`crates/server/src/realtime.rs`) only
+  ever knew about writes handled by the same process, so a deployment
+  behind a load balancer with more than one app instance would silently
+  drop realtime events for a client parked on a different instance than
+  the one that handled the write. Fixed for Postgres deployments via
+  `pg_notify`/`LISTEN`: every write still does its normal local
+  in-process fan-out, and now also calls the new
+  `Engine::notify_realtime` (`crates/db/src/postgres.rs`) with a small
+  JSON payload — collection id, action, record id, and (only for a
+  delete, where the row won't exist for another process to re-fetch) a
+  snapshot of the record — bounded well under Postgres's 8000-byte
+  `NOTIFY` payload limit and rejected outright rather than silently
+  truncated if it isn't. Every app process sharing that database starts
+  one `Engine::subscribe_realtime` listener at boot
+  (`App::bootstrap` → `realtime::start_cross_node_listener`), on a
+  dedicated (non-pooled) connection that reconnects with backoff on
+  connection loss so one dropped connection can't permanently kill
+  cross-node realtime. A receiving process re-fetches the record and
+  re-evaluates `listRule`/the topic's own filter itself, against its
+  *own* current settings and rule text — never against anything the
+  writer serialized — the same access-decision path a local write
+  already used. SQLite deployments are unaffected: `notify_realtime`/
+  `subscribe_realtime` default to no-ops on any `Engine` that doesn't
+  override them, which is exactly right for a backend that is
+  single-node by construction (one file, one process).
+  See `crates/db/tests/postgres.rs` for a two-connection LISTEN/NOTIFY
+  test proving the plumbing.
 - **Admin dashboard: Settings area** (request logs, backups — including
   upload/restore, cron jobs, and a Network page for rate limits/trusted
   proxy/superuser IPs), **collection export/import**, a **geoPoint field
@@ -168,8 +202,6 @@ collection has no address to send them to.
 
 ## Later
 
-- Realtime beyond a single node (Postgres `LISTEN/NOTIFY` or a queue as the
-  fan-out layer, so `RealtimeHub` isn't in-process-only).
 - Multi-file append/remove semantics on update (today, uploading new files
   for a field replaces the whole value; `field+`/`field-` suffix syntax
   for appending/removing individual files is not implemented).

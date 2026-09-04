@@ -24,20 +24,28 @@
 //! app.serve().await?;
 //! ```
 
+pub mod api_keys;
 pub mod app;
 pub mod config;
 pub mod cron;
+pub mod cron_jobs;
 mod dashboard;
+pub mod embeddings;
 pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
 pub mod jsvm_host;
+pub mod llm;
+pub mod mcp;
 pub mod middleware;
 pub mod plugin;
+pub mod push;
 pub mod realtime;
 pub mod routes;
 pub mod store;
+pub mod teams;
+pub mod webhooks;
 
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
@@ -74,7 +82,12 @@ pub fn router(app: App) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),
             middleware::request_log::log_requests,
-        ));
+        ))
+        // Outermost of the three: counts what a caller actually
+        // received, including a 429 from the rate limiter, so
+        // `/metrics` reflects the real response mix rather than only
+        // what reached a handler.
+        .layer(axum::middleware::from_fn(routes::metrics::record_metrics));
 
     Router::new()
         .nest("/api", api)
@@ -83,6 +96,11 @@ pub fn router(app: App) -> Router {
         // ever registered.
         .merge(jsvm_host::js_router(&app))
         .merge(dashboard::router())
+        // Deliberately outside the `/api` nest and its rate-limit/
+        // logging layers — see `routes::metrics` for why (Prometheus
+        // convention: unauthenticated, un-throttled, not a logged API
+        // call).
+        .merge(routes::metrics::router())
         .fallback(http_error::not_found_fallback)
         // PocketBase answers a wrong method on a real path with 404, not
         // 405 (verified against v0.40.2), so both fallbacks are the same.

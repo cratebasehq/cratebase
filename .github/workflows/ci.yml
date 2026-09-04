@@ -84,6 +84,38 @@ jobs:
       - run: bun run build
         working-directory: web/email
 
+  dependency-scan:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # RustSec advisory database against the committed `Cargo.lock` —
+      # every crate this workspace actually builds with, not just its
+      # direct `Cargo.toml` dependencies.
+      - run: cargo install cargo-audit --locked
+      # RUSTSEC-2023-0071 (Marvin Attack, a timing side-channel in RSA
+      # PKCS#1v1.5 decryption/signing) has no fixed upgrade available
+      # upstream. It reaches this workspace only via
+      # web-push-native -> jwt-simple -> superboring -> rsa (VAPID/Web
+      # Push signing, which is ES256/EC per RFC 8292, not RSA) — the
+      # vulnerable RSA code path is compiled in but never exercised by
+      # any Cratebase code. FCM's own RS256 JWT signing
+      # (crates/server/src/push.rs) goes through `jsonwebtoken`/`ring`
+      # instead, an entirely separate implementation not affected by
+      # this advisory. Re-check this ignore if `web-push-native` or its
+      # dependency tree ever changes.
+      - run: cargo audit --ignore RUSTSEC-2023-0071
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install
+      # npm-registry advisory database against the committed `bun.lock`
+      # — covers `web/admin`, `web/email`, and `tests/conformance` (see
+      # the root `package.json` workspace list) in one pass.
+      - run: bun audit --audit-level=high
+
   docker:
     runs-on: ubuntu-latest
     needs: [rust, dashboard, email]

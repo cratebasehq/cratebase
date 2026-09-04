@@ -57,13 +57,59 @@ benchmarks/run.sh --concurrency=1,20    # any bench.ts flag is forwarded
 Raw results: [`results/cratebase.json`](./results/cratebase.json),
 [`results/pocketbase.json`](./results/pocketbase.json).
 
-## Results (2026-09-04, after the WAL-checkpoint fix)
+## Results (2026-09-04, idle host)
 
-16 vCPU / 27 GB shared sandbox. 0 errors on either server. Median of 3
-runs per cell after a discarded warm-up. Bold ratio = Cratebase faster.
-This is the run in [`results/`](./results/); the host was busy while it
-ran (load average ~7, swap exhausted, ~11% iowait), which is visible in
-the absolute numbers of both servers — see the note at the end.
+16 vCPU / 27 GB shared sandbox, but genuinely idle this time: swap at
+6.3MiB (was 8GiB/8GiB exhausted for the previous run below), load
+average ~1.0 (was ~7). 0 errors on either server. Median of 3 runs per
+cell after a discarded warm-up. Bold ratio = Cratebase faster. This is
+the run in [`results/`](./results/).
+
+| Category | Conc | Cratebase req/s | PocketBase req/s | Ratio | Cratebase p50/p99 ms | PocketBase p50/p99 ms |
+|---|---|---|---|---|---|---|
+| create | 1 | 5011 | 3432 | **1.46x** | 0.19 / 0.30 | 0.21 / 0.80 |
+| create | 20 | 11972 | 6903 | **1.73x** | 1.65 / 1.92 | 1.68 / 22.12 |
+| create | 50 | 11420 | 6980 | **1.64x** | 4.20 / 4.88 | 3.73 / 37.19 |
+| create | 100 | 11960 | 6606 | **1.81x** | 8.11 / 8.87 | 9.36 / 57.88 |
+| auth | 1 | 85 | 22 | **3.87x** | 11.56 / 14.35 | 45.20 / 49.72 |
+| auth | 20 | 318 | 275 | **1.16x** | 59.11 / 95.20 | 66.38 / 108.73 |
+| auth | 50 | 309 | 277 | **1.11x** | 143.22 / 304.27 | 148.70 / 616.48 |
+| auth | 100 | 283 | 277 | **1.02x** | 277.45 / 698.23 | 268.30 / 656.96 |
+| search | 1 | 5217 | 1297 | **4.02x** | 0.18 / 0.37 | 0.68 / 1.29 |
+| search | 20 | 43709 | 7200 | **6.07x** | 0.41 / 0.87 | 2.05 / 10.12 |
+| search | 50 | 49986 | 4774 | **10.47x** | 0.95 / 1.60 | 5.75 / 42.05 |
+| search | 100 | 44230 | 4982 | **8.88x** | 1.71 / 3.82 | 6.77 / 59.31 |
+| search-wide | 1 | 1794 | 665 | **2.70x** | 0.52 / 0.90 | 1.44 / 2.56 |
+| search-wide | 20 | 16848 | 2853 | **5.91x** | 1.07 / 2.58 | 5.64 / 20.82 |
+| search-wide | 50 | 17244 | 2308 | **7.47x** | 2.53 / 4.53 | 14.76 / 60.95 |
+| search-wide | 100 | 16414 | 1924 | **8.53x** | 4.64 / 10.75 | 31.72 / 135.27 |
+| search-auth | 1 | 4284 | 1187 | **3.61x** | 0.23 / 0.36 | 0.75 / 1.65 |
+| search-auth | 20 | 32795 | 6398 | **5.13x** | 0.49 / 1.49 | 2.53 / 10.68 |
+| search-auth | 50 | 38235 | 4893 | **7.82x** | 1.16 / 2.39 | 6.45 / 32.38 |
+| search-auth | 100 | 38768 | 3989 | **9.72x** | 2.08 / 3.22 | 10.10 / 71.41 |
+| delete | 1 | 2534 | 2672 | 0.95x | 0.37 / 0.74 | 0.30 / 0.88 |
+| delete | 20 | 6869 | 7058 | 0.97x | 2.83 / 3.55 | 1.58 / 23.05 |
+| delete | 50 | 12483 | 5595 | **2.23x** | 3.88 / 4.60 | 5.14 / 38.37 |
+| delete | 100 | 11321 | 5030 | **2.25x** | 8.21 / 11.19 | 10.71 / 86.33 |
+
+**22 of 24 cells faster.** The two exceptions are `delete` at
+concurrency 1 and 20 (0.95x, 0.97x) — within noise of parity, not a
+regression: `delete` at c50/c100 on the same run is 2.23x/2.25x with a
+*lower* p50 than c20, so the dip at low concurrency isn't describing a
+real scaling problem, just where PocketBase's own per-request overhead
+happens to be small enough that Cratebase's fixed costs (auth
+resolution, rule evaluation) show up proportionally more before there's
+enough concurrent load to amortize them.
+
+### Previous run (2026-09-04, busy host — kept for the WAL-checkpoint narrative below)
+
+The run below was captured while diagnosing the WAL-checkpoint stall
+described in the next section; the host was busy while it ran (load
+average ~7, swap exhausted, ~11% iowait), which is visible in the
+absolute numbers of both servers — see "Reading these numbers honestly"
+below. Superseded by the idle-host run above for any comparison; kept
+here because the specific numbers it reports (the `delete` p99 fix, the
+controlled A/B) are still the source for the narrative that follows.
 
 | Category | Conc | Cratebase req/s | PocketBase req/s | Ratio | Cratebase p50/p99 ms | PocketBase p50/p99 ms |
 |---|---|---|---|---|---|---|

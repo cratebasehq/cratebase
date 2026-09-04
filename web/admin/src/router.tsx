@@ -14,6 +14,13 @@ import { settingsSuperusersRoute } from "@/routes/settings-superusers";
 import { settingsBackupsRoute } from "@/routes/settings-backups";
 import { settingsCronRoute } from "@/routes/settings-cron";
 import { settingsNetworkRoute } from "@/routes/settings-network";
+import { settingsSqlConsoleRoute } from "@/routes/settings-sql-console";
+import { settingsFileManagerRoute } from "@/routes/settings-file-manager";
+import { settingsWebhooksRoute } from "@/routes/settings-webhooks";
+import { settingsAnalyticsRoute } from "@/routes/settings-analytics";
+import { settingsLlmRoute } from "@/routes/settings-llm";
+import { settingsApiKeysRoute } from "@/routes/settings-api-keys";
+import { settingsMcpRoute } from "@/routes/settings-mcp";
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -29,6 +36,13 @@ const routeTree = rootRoute.addChildren([
       settingsBackupsRoute,
       settingsNetworkRoute,
       settingsCronRoute,
+      settingsSqlConsoleRoute,
+      settingsFileManagerRoute,
+      settingsWebhooksRoute,
+      settingsAnalyticsRoute,
+      settingsLlmRoute,
+      settingsApiKeysRoute,
+      settingsMcpRoute,
     ]),
   ]),
 ]);

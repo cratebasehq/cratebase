@@ -13,6 +13,8 @@ pub enum MailerError {
     Message(#[from] lettre::error::Error),
     #[error("resend api error ({status}): {body}")]
     Resend { status: u16, body: String },
+    #[error("twilio api error ({status}): {body}")]
+    Twilio { status: u16, body: String },
     #[error("http request to resend failed: {0}")]
     Http(#[from] reqwest::Error),
 }

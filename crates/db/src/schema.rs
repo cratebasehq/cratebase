@@ -59,7 +59,7 @@ pub fn column_default(field: &Field) -> &'static str {
     }
     match field.field_type() {
         FieldType::Number | FieldType::Bool => "DEFAULT 0",
-        FieldType::Json | FieldType::GeoPoint => "DEFAULT NULL",
+        FieldType::Json | FieldType::GeoPoint | FieldType::Vector => "DEFAULT NULL",
         _ => "DEFAULT ''",
     }
 }

@@ -15,10 +15,13 @@ describe("settings", () => {
     expect(Object.keys(s).sort()).toEqual([
       "backups",
       "batch",
+      "llm",
       "logs",
       "meta",
+      "push",
       "rateLimits",
       "s3",
+      "sms",
       "smtp",
       "superuserIPs",
       "trustedProxy",

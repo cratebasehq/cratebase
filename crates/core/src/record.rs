@@ -304,7 +304,7 @@ pub fn zero_value(t: FieldType, multiple: bool) -> Value {
     match t {
         FieldType::Number => Value::Number(0.into()),
         FieldType::Bool => Value::Bool(false),
-        FieldType::Json => Value::Null,
+        FieldType::Json | FieldType::Vector => Value::Null,
         FieldType::GeoPoint => serde_json::json!({ "lon": 0.0, "lat": 0.0 }),
         _ => Value::String(String::new()),
     }

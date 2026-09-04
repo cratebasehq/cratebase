@@ -58,6 +58,62 @@ impl Runner {
             Box::new(|db| Box::pin(init_system_up(db))),
             Box::new(|db| Box::pin(init_system_down(db))),
         ));
+        // `_cron_jobs` was added to `default_system_collections()` after
+        // `INIT_SYSTEM` had already shipped and run on real databases —
+        // that function only inserts collections `INIT_SYSTEM` itself
+        // doesn't already know about, so a database bootstrapped before
+        // this change would otherwise never get the new table. A fresh
+        // database already has `_cron_jobs` from `INIT_SYSTEM` and this
+        // migration is a no-op there; an existing one gets it added here.
+        r.register(Migration::new(
+            ADD_CRON_JOBS,
+            Box::new(|db| Box::pin(add_cron_jobs_up(db))),
+            Box::new(|db| Box::pin(add_cron_jobs_down(db))),
+        ));
+        // `_webhooks` follows the same story as `_cron_jobs` immediately
+        // above: it was added to `default_system_collections()` after
+        // `INIT_SYSTEM` shipped, so an existing database needs this
+        // follow-up migration to retroactively get the table. A fresh
+        // database already has `_webhooks` from `INIT_SYSTEM` and this
+        // migration is a no-op there.
+        r.register(Migration::new(
+            ADD_WEBHOOKS,
+            Box::new(|db| Box::pin(add_webhooks_up(db))),
+            Box::new(|db| Box::pin(add_webhooks_down(db))),
+        ));
+        // `_teams`/`_team_members` follow the same story as `_cron_jobs`
+        // and `_webhooks` immediately above: added to
+        // `default_system_collections()` after `INIT_SYSTEM` shipped, so
+        // an existing database needs this follow-up migration to
+        // retroactively get both tables. A fresh database already has
+        // them from `INIT_SYSTEM` and this migration is a no-op there.
+        r.register(Migration::new(
+            ADD_TEAMS,
+            Box::new(|db| Box::pin(add_teams_up(db))),
+            Box::new(|db| Box::pin(add_teams_down(db))),
+        ));
+        // `_llm_usage` follows the same story as `_cron_jobs`,
+        // `_webhooks` and `_teams` immediately above: added to
+        // `default_system_collections()` after `INIT_SYSTEM` shipped, so
+        // an existing database needs this follow-up migration to
+        // retroactively get the table. A fresh database already has it
+        // from `INIT_SYSTEM` and this migration is a no-op there.
+        r.register(Migration::new(
+            ADD_LLM_USAGE,
+            Box::new(|db| Box::pin(add_llm_usage_up(db))),
+            Box::new(|db| Box::pin(add_llm_usage_down(db))),
+        ));
+        // Same story again for `_api_keys` and `_push_subscriptions`.
+        r.register(Migration::new(
+            ADD_API_KEYS,
+            Box::new(|db| Box::pin(add_api_keys_up(db))),
+            Box::new(|db| Box::pin(add_api_keys_down(db))),
+        ));
+        r.register(Migration::new(
+            ADD_PUSH_SUBSCRIPTIONS,
+            Box::new(|db| Box::pin(add_push_subscriptions_up(db))),
+            Box::new(|db| Box::pin(add_push_subscriptions_down(db))),
+        ));
         r
     }
 
@@ -224,6 +280,141 @@ async fn init_system_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_CRON_JOBS: &str = "2_add_cron_jobs.rs";
+
+async fn add_cron_jobs_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_cron_jobs").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_cron_jobs")
+        .expect("_cron_jobs is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_cron_jobs_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_cron_jobs").is_some() {
+        db.collections.delete(&*db.engine, "_cron_jobs").await?;
+    }
+    Ok(())
+}
+
+pub const ADD_WEBHOOKS: &str = "3_add_webhooks.rs";
+
+async fn add_webhooks_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_webhooks").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_webhooks")
+        .expect("_webhooks is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_webhooks_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_webhooks").is_some() {
+        db.collections.delete(&*db.engine, "_webhooks").await?;
+    }
+    Ok(())
+}
+
+pub const ADD_TEAMS: &str = "4_add_teams.rs";
+
+async fn add_teams_up(db: &Db) -> DbResult<()> {
+    for name in ["_teams", "_team_members"] {
+        if db.collections.get_by_name(name).is_some() {
+            continue;
+        }
+        let collection = Collection::default_system_collections()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} is a default system collection"));
+        db.collections.insert(&*db.engine, &collection).await?;
+    }
+    Ok(())
+}
+
+async fn add_teams_down(db: &Db) -> DbResult<()> {
+    // `_team_members` before `_teams`: it holds a relation field pointing
+    // at `_teams`, same ordering constraint `init_system_down` follows by
+    // reverting `seed_collections()` in reverse.
+    for name in ["_team_members", "_teams"] {
+        if db.collections.get_by_name(name).is_some() {
+            db.collections.delete(&*db.engine, name).await?;
+        }
+    }
+    Ok(())
+}
+
+pub const ADD_LLM_USAGE: &str = "5_add_llm_usage.rs";
+
+async fn add_llm_usage_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_llm_usage").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_llm_usage")
+        .expect("_llm_usage is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_llm_usage_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_llm_usage").is_some() {
+        db.collections.delete(&*db.engine, "_llm_usage").await?;
+    }
+    Ok(())
+}
+
+pub const ADD_API_KEYS: &str = "6_add_api_keys.rs";
+
+async fn add_api_keys_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_api_keys").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_api_keys")
+        .expect("_api_keys is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_api_keys_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_api_keys").is_some() {
+        db.collections.delete(&*db.engine, "_api_keys").await?;
+    }
+    Ok(())
+}
+
+pub const ADD_PUSH_SUBSCRIPTIONS: &str = "7_add_push_subscriptions.rs";
+
+async fn add_push_subscriptions_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_push_subscriptions").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_push_subscriptions")
+        .expect("_push_subscriptions is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_push_subscriptions_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_push_subscriptions").is_some() {
+        db.collections
+            .delete(&*db.engine, "_push_subscriptions")
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,7 +433,18 @@ mod tests {
     async fn init_seeds_system_collections_with_fixture_ids() {
         let db = fresh().await;
         let ran = Runner::core().up(&db).await.unwrap();
-        assert_eq!(ran, vec![INIT_SYSTEM.to_string()]);
+        assert_eq!(
+            ran,
+            vec![
+                INIT_SYSTEM.to_string(),
+                ADD_CRON_JOBS.to_string(),
+                ADD_WEBHOOKS.to_string(),
+                ADD_TEAMS.to_string(),
+                ADD_LLM_USAGE.to_string(),
+                ADD_API_KEYS.to_string(),
+                ADD_PUSH_SUBSCRIPTIONS.to_string(),
+            ]
+        );
         assert_eq!(
             db.collections.get("_superusers").unwrap().id,
             "pbc_3142635823"
@@ -252,6 +454,13 @@ mod tests {
         assert_eq!(db.collections.get("_otps").unwrap().id, "pbc_1638494021");
         assert!(db.collections.get("_externalAuths").is_some());
         assert!(db.collections.get("_authOrigins").is_some());
+        assert!(db.collections.get("_cron_jobs").is_some());
+        assert!(db.collections.get("_webhooks").is_some());
+        assert!(db.collections.get("_teams").is_some());
+        assert!(db.collections.get("_team_members").is_some());
+        assert!(db.collections.get("_llm_usage").is_some());
+        assert!(db.collections.get("_api_keys").is_some());
+        assert!(db.collections.get("_push_subscriptions").is_some());
         assert!(db.collections.get("_superusers").unwrap().system);
         for t in [
             "_superusers",
@@ -260,6 +469,13 @@ mod tests {
             "_otps",
             "_externalAuths",
             "_authOrigins",
+            "_cron_jobs",
+            "_webhooks",
+            "_teams",
+            "_team_members",
+            "_llm_usage",
+            "_api_keys",
+            "_push_subscriptions",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
@@ -267,8 +483,19 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 1).await.unwrap();
-        assert_eq!(reverted, vec![INIT_SYSTEM.to_string()]);
+        let reverted = Runner::core().down(&db, 7).await.unwrap();
+        assert_eq!(
+            reverted,
+            vec![
+                ADD_PUSH_SUBSCRIPTIONS.to_string(),
+                ADD_API_KEYS.to_string(),
+                ADD_LLM_USAGE.to_string(),
+                ADD_TEAMS.to_string(),
+                ADD_WEBHOOKS.to_string(),
+                ADD_CRON_JOBS.to_string(),
+                INIT_SYSTEM.to_string(),
+            ]
+        );
         assert!(db.collections.is_empty());
         assert!(!db.engine.table_exists("users").await.unwrap());
         assert!(!is_applied(&db, INIT_SYSTEM).await.unwrap());

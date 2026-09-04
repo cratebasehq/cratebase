@@ -14,7 +14,7 @@ async-trait.workspace = true
 chrono.workspace = true
 
 [dependencies.object_store]
-version = "0.11"
+version = "0.14"
 features = ["aws"]
 
 [dev-dependencies]
