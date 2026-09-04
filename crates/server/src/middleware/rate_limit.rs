@@ -592,4 +592,63 @@ mod tests {
         assert!(tags_for(&Method::GET, "/api/health").is_empty());
         assert!(tags_for(&Method::GET, "/_/index.html").is_empty());
     }
+
+    #[test]
+    fn per_collection_tag_rule_is_scoped_to_that_collection() {
+        // A rule labelled `posts:list` is the URL-shape tag `tags_for`
+        // derives only for GET requests against `posts`'s records
+        // endpoint (see the doc comment on `tags_for`); an identically
+        // shaped request against a different collection carries the tag
+        // `comments:list` instead, which this rule set has no rule for.
+        // This is the actual "per-collection" guarantee: not merely a
+        // path prefix (which `/api/collections/posts/` would give too,
+        // and which would still match `/api/collections/posts/records`
+        // exactly the same for every verb), but one rule that fires for
+        // one collection's one action and never for another's.
+        let limiter = RateLimiter::new();
+        limiter.configure(&limits(vec![rule("posts:list", "", 1, 60)]));
+
+        let posts_tags = tags_for(&Method::GET, "/api/collections/posts/records");
+        let comments_tags = tags_for(&Method::GET, "/api/collections/comments/records");
+        assert_eq!(posts_tags, ["*:list", "posts:list"]);
+        assert_eq!(comments_tags, ["*:list", "comments:list"]);
+
+        // First request against `posts` is within budget.
+        limiter
+            .check(
+                "/api/collections/posts/records",
+                &posts_tags,
+                false,
+                "1.2.3.4",
+                "1.2.3.4",
+            )
+            .unwrap();
+        // Second request against `posts` from the same client blows the
+        // one-request budget: the rule fires.
+        let err = limiter
+            .check(
+                "/api/collections/posts/records",
+                &posts_tags,
+                false,
+                "1.2.3.4",
+                "1.2.3.4",
+            )
+            .unwrap_err();
+        assert_eq!(err.status(), 429);
+
+        // The identically shaped endpoint on a different collection, same
+        // client, is untouched — no rule matches its `comments:list` tag
+        // and its `posts:list` window was never shared.
+        for _ in 0..5 {
+            limiter
+                .check(
+                    "/api/collections/comments/records",
+                    &comments_tags,
+                    false,
+                    "1.2.3.4",
+                    "1.2.3.4",
+                )
+                .unwrap();
+        }
+    }
 }

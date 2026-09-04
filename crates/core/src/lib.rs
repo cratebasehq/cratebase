@@ -46,6 +46,17 @@ pub const SUPERUSERS_COLLECTION: &str = "_superusers";
 /// PocketBase's literal id for the built-in `users` collection.
 pub const USERS_COLLECTION_ID: &str = "_pb_users_auth_";
 
+/// `_superusers.role` values. `Owner` is the only role that may create
+/// or delete another superuser account, or change anyone's role
+/// (including its own) — see `crates/server/src/extract.rs`'s
+/// `RequireOwner` extractor and `crates/server/src/routes/records.rs`'s
+/// `_superusers`-specific write guards. Kept as two flat string
+/// constants rather than a Rust enum so the value round-trips through
+/// the same `Select` field machinery (and JSON wire shape) as any other
+/// collection's dropdown field.
+pub const SUPERUSER_ROLE_OWNER: &str = "owner";
+pub const SUPERUSER_ROLE_ADMIN: &str = "admin";
+
 /// Whether `name` is a valid identifier for a collection or field:
 /// ASCII letters, digits and underscores, not starting with a digit, at
 /// most 64 chars.

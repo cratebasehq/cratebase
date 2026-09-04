@@ -60,6 +60,10 @@ base64 = "0.22"
 # shells out to Mozilla's `ece` via openssl bindings.
 http = "1"
 web-push-native = "0.5"
+# Reading a PocketBase `pb_data/data.db` file directly for
+# `migrate-from-pocketbase` — the same bundled-SQLite crate `cratebase-db`
+# already uses, so no second SQLite implementation enters the binary.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

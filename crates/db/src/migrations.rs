@@ -15,7 +15,7 @@
 use chrono::Utc;
 use futures::future::BoxFuture;
 
-use cratebase_core::Collection;
+use cratebase_core::{Collection, Field};
 
 use crate::db::Db;
 use crate::engine::{Executor, Sql};
@@ -113,6 +113,32 @@ impl Runner {
             ADD_PUSH_SUBSCRIPTIONS,
             Box::new(|db| Box::pin(add_push_subscriptions_up(db))),
             Box::new(|db| Box::pin(add_push_subscriptions_down(db))),
+        ));
+        // `_superusers.role` was added after `INIT_SYSTEM` shipped, same
+        // story as every migration above — except this one alters an
+        // *existing* system collection's schema instead of adding a
+        // whole new one, so a fresh database (whose `default_superusers`
+        // already has the field) is a no-op here, while an existing
+        // database needs the column added *and* every pre-existing row
+        // backfilled to `"owner"` — the column's own zero default
+        // (`''`) is not a valid role, and defaulting to anything less
+        // than full access would silently downgrade every current
+        // superuser's own account on upgrade.
+        r.register(Migration::new(
+            ADD_SUPERUSER_ROLE,
+            Box::new(|db| Box::pin(add_superuser_role_up(db))),
+            Box::new(|db| Box::pin(add_superuser_role_down(db))),
+        ));
+        // `_audit_log` follows the same story as every migration above:
+        // added to `default_system_collections()` after `INIT_SYSTEM`
+        // shipped, so an existing database needs this follow-up
+        // migration to retroactively get the table. A fresh database
+        // already has it from `INIT_SYSTEM` and this migration is a
+        // no-op there.
+        r.register(Migration::new(
+            ADD_AUDIT_LOG,
+            Box::new(|db| Box::pin(add_audit_log_up(db))),
+            Box::new(|db| Box::pin(add_audit_log_down(db))),
         ));
         r
     }
@@ -415,6 +441,78 @@ async fn add_push_subscriptions_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_SUPERUSER_ROLE: &str = "8_add_superuser_role.rs";
+
+/// Adds `_superusers.role` (see `Field::role_field`) to a database that
+/// predates it, and backfills every pre-existing row to `"owner"` — the
+/// column's own physical zero default (`''`) is not a valid role, and
+/// leaving it there would silently strip every current superuser of the
+/// full access they had before this migration ran.
+async fn add_superuser_role_up(db: &Db) -> DbResult<()> {
+    let Some(previous) = db
+        .collections
+        .get_by_name(cratebase_core::SUPERUSERS_COLLECTION)
+    else {
+        return Ok(());
+    };
+    if previous.fields.iter().any(|f| f.name == "role") {
+        return Ok(());
+    }
+    let mut next = (*previous).clone();
+    // Same insertion point `Collection::default_superusers` uses: right
+    // before `created`/`updated`.
+    let pos = next.fields.len() - 2;
+    next.fields.insert(pos, Field::role_field());
+    db.collections.update(&*db.engine, &next).await?;
+    db.execute(
+        &format!(
+            r#"UPDATE "{}" SET "role" = '{}' WHERE "role" = '' OR "role" IS NULL"#,
+            cratebase_core::SUPERUSERS_COLLECTION,
+            cratebase_core::SUPERUSER_ROLE_OWNER,
+        ),
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+async fn add_superuser_role_down(db: &Db) -> DbResult<()> {
+    let Some(previous) = db
+        .collections
+        .get_by_name(cratebase_core::SUPERUSERS_COLLECTION)
+    else {
+        return Ok(());
+    };
+    if !previous.fields.iter().any(|f| f.name == "role") {
+        return Ok(());
+    }
+    let mut next = (*previous).clone();
+    next.fields.retain(|f| f.name != "role");
+    db.collections.update(&*db.engine, &next).await?;
+    Ok(())
+}
+
+pub const ADD_AUDIT_LOG: &str = "9_add_audit_log.rs";
+
+async fn add_audit_log_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_audit_log").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_audit_log")
+        .expect("_audit_log is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_audit_log_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_audit_log").is_some() {
+        db.collections.delete(&*db.engine, "_audit_log").await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +541,8 @@ mod tests {
                 ADD_LLM_USAGE.to_string(),
                 ADD_API_KEYS.to_string(),
                 ADD_PUSH_SUBSCRIPTIONS.to_string(),
+                ADD_SUPERUSER_ROLE.to_string(),
+                ADD_AUDIT_LOG.to_string(),
             ]
         );
         assert_eq!(
@@ -461,6 +561,7 @@ mod tests {
         assert!(db.collections.get("_llm_usage").is_some());
         assert!(db.collections.get("_api_keys").is_some());
         assert!(db.collections.get("_push_subscriptions").is_some());
+        assert!(db.collections.get("_audit_log").is_some());
         assert!(db.collections.get("_superusers").unwrap().system);
         for t in [
             "_superusers",
@@ -476,6 +577,7 @@ mod tests {
             "_llm_usage",
             "_api_keys",
             "_push_subscriptions",
+            "_audit_log",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
@@ -483,10 +585,12 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 7).await.unwrap();
+        let reverted = Runner::core().down(&db, 9).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_AUDIT_LOG.to_string(),
+                ADD_SUPERUSER_ROLE.to_string(),
                 ADD_PUSH_SUBSCRIPTIONS.to_string(),
                 ADD_API_KEYS.to_string(),
                 ADD_LLM_USAGE.to_string(),
@@ -499,6 +603,65 @@ mod tests {
         assert!(db.collections.is_empty());
         assert!(!db.engine.table_exists("users").await.unwrap());
         assert!(!is_applied(&db, INIT_SYSTEM).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn add_superuser_role_backfills_existing_rows_to_owner() {
+        let db = fresh().await;
+        // Seed `_superusers` in the exact shape it had before this
+        // migration existed — `default_superusers()` itself now always
+        // includes `role`, so a real "predates this feature" table is
+        // built by stripping it back off rather than by running the
+        // in-code seed collections (which would already have it).
+        let mut without_role = Collection::default_superusers();
+        without_role.fields.retain(|f| f.name != "role");
+        db.collections
+            .insert(&*db.engine, &without_role)
+            .await
+            .unwrap();
+        assert!(db
+            .collections
+            .get_by_name("_superusers")
+            .unwrap()
+            .fields
+            .iter()
+            .all(|f| f.name != "role"));
+
+        // A superuser row created before the `role` column existed —
+        // exactly the shape a real installation's table has going into
+        // the upgrade.
+        db.execute(
+            r#"INSERT INTO "_superusers"
+               ("id", "email", "password", "tokenKey", "emailVisibility", "verified", "created", "updated")
+               VALUES ('sup00000000000', 'a@b.co', 'hash', 'tok0000000000000000000000000000', 0, 1,
+                       '2024-01-01 00:00:00.000Z', '2024-01-01 00:00:00.000Z')"#,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        add_superuser_role_up(&db).await.unwrap();
+
+        assert!(db
+            .collections
+            .get_by_name("_superusers")
+            .unwrap()
+            .fields
+            .iter()
+            .any(|f| f.name == "role"));
+        let role = db
+            .query_scalar(
+                r#"SELECT "role" FROM "_superusers" WHERE "id" = 'sup00000000000'"#,
+                &[],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_str().map(str::to_string));
+        assert_eq!(role.as_deref(), Some("owner"));
+
+        // Re-running on an already-migrated collection is a no-op, not
+        // an error (idempotent, like every other migration here).
+        add_superuser_role_up(&db).await.unwrap();
     }
 
     #[tokio::test]

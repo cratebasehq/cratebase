@@ -21,6 +21,7 @@ import { settingsAnalyticsRoute } from "@/routes/settings-analytics";
 import { settingsLlmRoute } from "@/routes/settings-llm";
 import { settingsApiKeysRoute } from "@/routes/settings-api-keys";
 import { settingsMcpRoute } from "@/routes/settings-mcp";
+import { settingsAuditRoute } from "@/routes/settings-audit";
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -43,6 +44,7 @@ const routeTree = rootRoute.addChildren([
       settingsLlmRoute,
       settingsApiKeysRoute,
       settingsMcpRoute,
+      settingsAuditRoute,
     ]),
   ]),
 ]);

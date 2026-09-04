@@ -594,11 +594,20 @@ impl Collection {
         c
     }
 
-    /// The built-in `_superusers` auth collection.
+    /// The built-in `_superusers` auth collection. `role` (`"owner"` /
+    /// `"admin"`, see `Field::role_field`) is what lets more than one
+    /// superuser exist with different trust levels — see
+    /// `crates/server/src/extract.rs`'s `RequireOwner` and
+    /// `crates/server/src/routes/records.rs`'s `_superusers`-specific
+    /// write guards for the enforcement side.
     pub fn default_superusers() -> Self {
         let mut c = Collection::new(crate::SUPERUSERS_COLLECTION, CollectionType::Auth);
         c.system = true;
         c.auth.manage_rule = None;
+        // Insert before created/updated, same convention `default_users`
+        // uses for its own extra fields.
+        let pos = c.fields.len() - 2;
+        c.fields.insert(pos, Field::role_field());
         c.indexes = vec![
             format!(
                 "CREATE UNIQUE INDEX `idx_tokenKey_{}` ON `_superusers` (`tokenKey`)",
@@ -990,6 +999,55 @@ impl Collection {
                 .into(),
         ];
 
+        // Append-only: `list_rule`/`view_rule` stay `Collection::new`'s
+        // default `None` (superuser-only — this log is itself sensitive,
+        // since it can show who else has superuser access), and
+        // `create_rule` stays `None` too (matching `_cron_jobs`/
+        // `_webhooks`/`_llm_usage`: writes are meant to come from
+        // `crate::audit` in the server crate, not a client, though
+        // nothing stops a superuser from writing one directly). There is
+        // deliberately no way to express "no update/delete, ever, not
+        // even for a superuser" through a rule string — `None` still
+        // lets a superuser through, same as every other rule here.
+        // `crate::audit::bind_hooks` enforces that half fresh, with a
+        // pair of `on_record_update`/`on_record_delete` handlers tagged
+        // to this collection that reject the write outright before
+        // calling `e.next()` — the same "a handler that never calls
+        // `next()` replaces the built-in behaviour" pattern
+        // `crates/server/src/hooks.rs`'s module doc describes, just
+        // applied to *always* refuse rather than conditionally allow.
+        // `actor` is nullable because not every audited action has a
+        // human behind it (a future system-initiated write, e.g. from a
+        // cron job, would leave it unset).
+        let mut audit_log = Collection::new("_audit_log", CollectionType::Base);
+        audit_log.system = true;
+        let mut actor = Field::new(
+            "actor",
+            FieldKind::Relation {
+                collection_id: crate::ids::collection_id("auth", crate::SUPERUSERS_COLLECTION),
+                cascade_delete: false,
+                min_select: 0,
+                max_select: 1,
+            },
+        );
+        actor.required = false;
+        actor.system = true;
+        let mut action = text("action");
+        action.system = true;
+        let mut target = text("target");
+        target.system = true;
+        let mut meta = Field::new("meta", FieldKind::Json { max_size: 0 });
+        meta.required = false;
+        meta.system = true;
+        let pos = audit_log.fields.len() - 2;
+        audit_log
+            .fields
+            .splice(pos..pos, [actor, action, target, meta]);
+        audit_log.indexes = vec![
+            "CREATE INDEX `idx_audit_log_action` ON `_audit_log` (action)".into(),
+            "CREATE INDEX `idx_audit_log_created` ON `_audit_log` (created)".into(),
+        ];
+
         vec![
             external,
             mfas,
@@ -1002,6 +1060,7 @@ impl Collection {
             llm_usage,
             api_keys,
             push_subscriptions,
+            audit_log,
         ]
     }
 }
@@ -1051,6 +1110,35 @@ mod tests {
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
         assert_eq!(c.fields[2].id, "text2504183744");
         assert_eq!(c.fields[3].id, "email3885137012");
+    }
+
+    #[test]
+    fn default_superusers_has_a_required_owner_admin_role_field() {
+        let c = Collection::default_superusers();
+        let names: Vec<&str> = c.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "id",
+                "password",
+                "tokenKey",
+                "email",
+                "emailVisibility",
+                "verified",
+                "role",
+                "created",
+                "updated",
+            ]
+        );
+        let role = c.fields.iter().find(|f| f.name == "role").unwrap();
+        assert!(role.required);
+        match &role.kind {
+            FieldKind::Select { values, max_select } => {
+                assert_eq!(values, &vec!["owner".to_string(), "admin".to_string()]);
+                assert_eq!(*max_select, 1);
+            }
+            other => panic!("expected a select field, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1130,6 +1218,7 @@ mod tests {
                 crate::ids::collection_id("base", "_llm_usage").as_str(),
                 crate::ids::collection_id("base", "_api_keys").as_str(),
                 crate::ids::collection_id("base", "_push_subscriptions").as_str(),
+                crate::ids::collection_id("base", "_audit_log").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

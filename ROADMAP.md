@@ -49,18 +49,24 @@ land.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
-- **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
-  entire `VACUUM INTO` snapshot into a `Vec<u8>` (`tokio::fs::read`)
-  before a single `Storage::put`, unlike `download`, which streams
-  (`Storage::get_stream`). Fine for a small/medium SQLite file; holds
-  the whole database in memory for a multi-GB one, risking an OOM on a
-  self-hosted box with limited RAM. Needs a streaming `put` on the
-  `Storage` trait (both the local-disk and S3 multipart-upload impls
-  support it) before this is safe at scale — file uploads have the same
-  shape today (bounded by upload size limits) but a backup has no such
-  cap.
 
 ## Shipped
+
+- **Streaming backup upload.** `write_backup` in `routes/backups.rs`
+  builds the `VACUUM INTO` snapshot into a temp-file ZIP via
+  `spawn_blocking`, then opens that file and feeds it through
+  `tokio_util::io::ReaderStream` into `Storage::put_stream` — never a
+  `Vec<u8>`/`tokio::fs::read` of the whole archive. `put_stream` buffers
+  only up to one 5 MiB multipart chunk before switching to the driver's
+  multipart upload (S3 `CreateMultipartUpload`, or a renamed temp file
+  for the local driver) and bounds in-flight parts with
+  `wait_for_capacity(4)`, so memory use is capped regardless of archive
+  size — the same primitive `download` already used via
+  `Storage::get_stream`. Verified live: a 1.6 GB SQLite database backed
+  up through the real `/api/backups` endpoint peaked at ~330 MB RSS
+  (vs. a 1.6+ GB spike the old whole-file-buffering implementation would
+  have hit), produced an 871.8 MB compressed archive, and the downloaded
+  copy passed `sqlite3 <file> .tables` with every row intact.
 
 - **Write throughput under contention and wide pages.** The single-writer
   pool + native-driver storage engine (`crates/db`) resolved the
