@@ -1,15 +1,12 @@
 {
   "name": "cratebase-workspace",
   "private": true,
-  "workspaces": ["sdk/js", "web/admin", "web/email"],
+  "workspaces": ["sdk/js", "web/admin", "web/email", "tests/conformance"],
   "scripts": {
     "sdk:build": "bun run --cwd sdk/js build",
     "admin:dev": "bun run --cwd web/admin dev",
     "admin:build": "bun run --cwd web/admin build",
     "email:build": "bun run --cwd web/email build",
-    "examples:serve": "bash examples/serve.sh",
-    "examples:todo:setup": "bash examples/todo/setup.sh",
-    "examples:chat:setup": "bash examples/realtime-chat/setup.sh",
-    "examples:cursors:setup": "bash examples/realtime-cursors/setup.sh"
+    "conformance": "bun run --cwd tests/conformance test"
   }
 }

@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# End-to-end Cratebase vs PocketBase benchmark.
+#
+# Builds a release Cratebase binary, boots both servers on fresh data
+# directories, provisions an identical superuser + `posts` collection on
+# each, runs `bench.ts` against both back to back, stops them, and prints
+# a comparison table. Results land in benchmarks/results/*.json.
+#
+# Usage:
+#   benchmarks/run.sh [--pb=/path/to/pocketbase] [--skip-build] [bench.ts args...]
+#
+# Any extra args are forwarded to bench.ts (e.g. --concurrency=1,20,50,100).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PB_BIN="${PB_BIN:-/tmp/pb-bench/pb/pocketbase}"
+PB_VERSION="0.40.2"
+WORK="${BENCH_WORK_DIR:-/tmp/pb-bench}"
+CB_PORT=8091
+PB_PORT=8092
+EMAIL=admin@bench.dev
+PASS=benchpass123
+SKIP_BUILD=0
+EXTRA=()
+
+for arg in "$@"; do
+  case "$arg" in
+    --pb=*) PB_BIN="${arg#--pb=}" ;;
+    --skip-build) SKIP_BUILD=1 ;;
+    *) EXTRA+=("$arg") ;;
+  esac
+done
+
+if [ ! -x "$PB_BIN" ]; then
+  echo "downloading PocketBase v$PB_VERSION to $PB_BIN"
+  mkdir -p "$(dirname "$PB_BIN")"
+  curl -sL -o "$WORK/pocketbase.zip" \
+    "https://github.com/pocketbase/pocketbase/releases/download/v$PB_VERSION/pocketbase_${PB_VERSION}_linux_amd64.zip"
+  unzip -o -q "$WORK/pocketbase.zip" -d "$(dirname "$PB_BIN")"
+fi
+
+if [ "$SKIP_BUILD" = 0 ]; then
+  (cd "$ROOT" && cargo build --release -p cratebase-server)
+fi
+CB_BIN="$ROOT/target/release/cratebase"
+
+rm -rf "$WORK/cb-data" "$WORK/pb-data"
+mkdir -p "$WORK/cb-data" "$WORK/pb-data" "$ROOT/benchmarks/results"
+
+cb_env() {
+  DATABASE_URL="sqlite://$WORK/cb-data/cratebase.db" \
+  CRATEBASE_DATA_DIR="$WORK/cb-data" \
+  STORAGE_LOCAL_DIR="$WORK/cb-data/storage" \
+  PORT=$CB_PORT AUTH_RATE_LIMIT_ENABLED=false RUST_LOG=warn \
+  "$@"
+}
+
+cb_env "$CB_BIN" superuser create "$EMAIL" "$PASS" >/dev/null
+"$PB_BIN" superuser create "$EMAIL" "$PASS" --dir "$WORK/pb-data" >/dev/null
+
+cb_env "$CB_BIN" serve >"$WORK/cb.log" 2>&1 &
+CB_PID=$!
+"$PB_BIN" serve --http="127.0.0.1:$PB_PORT" --dir="$WORK/pb-data" >"$WORK/pb.log" 2>&1 &
+PB_PID=$!
+trap 'kill $CB_PID $PB_PID 2>/dev/null || true' EXIT
+
+wait_for() {
+  for _ in $(seq 1 100); do
+    if curl -sf "$1" >/dev/null; then return 0; fi
+    sleep 0.1
+  done
+  echo "server at $1 did not come up" >&2
+  exit 1
+}
+wait_for "http://127.0.0.1:$CB_PORT/api/health"
+wait_for "http://127.0.0.1:$PB_PORT/api/health"
+
+# --- provision the posts collection on each ---------------------------------
+CB_TOKEN=$(curl -sf -X POST "http://127.0.0.1:$CB_PORT/api/admins/auth-with-password" \
+  -H 'content-type: application/json' \
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/')
+curl -sf -X POST "http://127.0.0.1:$CB_PORT/api/collections" \
+  -H "authorization: Bearer $CB_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"posts","type":"base",
+       "schema":[{"id":"f1","name":"title","type":"text","required":true},
+                 {"id":"f2","name":"content","type":"text"},
+                 {"id":"f3","name":"published","type":"bool"}],
+       "listRule":"","viewRule":"","createRule":"","updateRule":null,"deleteRule":null}' >/dev/null
+
+PB_TOKEN=$(curl -sf -X POST "http://127.0.0.1:$PB_PORT/api/collections/_superusers/auth-with-password" \
+  -H 'content-type: application/json' \
+  -d "{\"identity\":\"$EMAIL\",\"password\":\"$PASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/')
+curl -sf -X POST "http://127.0.0.1:$PB_PORT/api/collections" \
+  -H "authorization: Bearer $PB_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"posts","type":"base",
+       "fields":[{"name":"title","type":"text","required":true},
+                 {"name":"content","type":"text"},
+                 {"name":"published","type":"bool"}],
+       "listRule":"","viewRule":"","createRule":"","updateRule":null,"deleteRule":null}' >/dev/null
+
+# --- run ----------------------------------------------------------------------
+cd "$ROOT"
+bun run benchmarks/bench.ts --base-url="http://127.0.0.1:$CB_PORT" \
+  --admin-email="$EMAIL" --admin-password="$PASS" \
+  --label=Cratebase --out=benchmarks/results/cratebase.json "${EXTRA[@]}" >/dev/null
+bun run benchmarks/bench.ts --base-url="http://127.0.0.1:$PB_PORT" \
+  --admin-email="$EMAIL" --admin-password="$PASS" \
+  --label=PocketBase --out=benchmarks/results/pocketbase.json "${EXTRA[@]}" >/dev/null
+
+bun run benchmarks/compare.ts benchmarks/results/cratebase.json benchmarks/results/pocketbase.json

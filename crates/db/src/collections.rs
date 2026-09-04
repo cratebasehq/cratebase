@@ -1,351 +1,443 @@
-use cratebase_core::field::{Field, FieldType};
-use cratebase_core::{AuthOptions, Collection, CollectionType};
-use sqlx::any::AnyRow;
-use sqlx::Row;
+//! `_collections` persistence and the in-memory [`CollectionStore`].
+//!
+//! Every request addresses a collection and needs its fields and rules,
+//! so the store is the only read path: a fully loaded [`Snapshot`]
+//! behind an `ArcSwap`, replaced atomically after any change. Readers
+//! take an `Arc<Snapshot>` (one atomic load, no lock) and keep a
+//! consistent view for the duration of a request even if a collection
+//! is modified concurrently.
+//!
+//! Two server processes sharing one database will not see each other's
+//! schema changes until restart, the same limitation PocketBase has.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use arc_swap::ArcSwap;
+use cratebase_core::{Collection, DateTime};
+use serde_json::{json, Map, Value};
 
 use crate::backend::Backend;
+use crate::engine::{Engine, Executor, Row, Sql};
 use crate::error::{DbError, DbResult};
-use crate::pool::Db;
+use crate::schema;
 
-fn row_to_collection(row: &AnyRow) -> DbResult<Collection> {
-    let type_str: String = row.try_get("type")?;
-    let collection_type = match type_str.as_str() {
-        "auth" => CollectionType::Auth,
-        "view" => CollectionType::View,
-        _ => CollectionType::Base,
-    };
-    let schema_json: String = row.try_get("schema")?;
-    let schema: Vec<Field> = serde_json::from_str(&schema_json)
-        .map_err(|e| DbError::InvalidIdentifier(format!("corrupt schema json: {e}")))?;
-    let auth_options_json: String = row.try_get("auth_options")?;
-    let auth_options: AuthOptions = serde_json::from_str(&auth_options_json)
-        .map_err(|e| DbError::InvalidIdentifier(format!("corrupt auth_options json: {e}")))?;
-
-    Ok(Collection {
-        id: row.try_get("id")?,
-        name: row.try_get("name")?,
-        collection_type,
-        schema,
-        list_rule: row.try_get("list_rule")?,
-        view_rule: row.try_get("view_rule")?,
-        create_rule: row.try_get("create_rule")?,
-        update_rule: row.try_get("update_rule")?,
-        delete_rule: row.try_get("delete_rule")?,
-        auth_options,
-        view_query: row.try_get("view_query")?,
-        created: row.try_get("created")?,
-        updated: row.try_get("updated")?,
-    })
+/// An immutable view of every collection.
+#[derive(Default)]
+pub struct Snapshot {
+    pub all: Vec<Arc<Collection>>,
+    pub by_id: HashMap<String, Arc<Collection>>,
+    pub by_name: HashMap<String, Arc<Collection>>,
 }
 
-pub async fn list_collections(db: &Db) -> DbResult<Vec<Collection>> {
-    let rows = sqlx::query("SELECT * FROM _collections ORDER BY name")
-        .fetch_all(&db.pool)
+impl Snapshot {
+    fn build(collections: Vec<Collection>) -> Self {
+        let mut all: Vec<Arc<Collection>> = collections.into_iter().map(Arc::new).collect();
+        all.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
+        let by_id = all.iter().map(|c| (c.id.clone(), c.clone())).collect();
+        let by_name = all.iter().map(|c| (c.name.clone(), c.clone())).collect();
+        Snapshot {
+            all,
+            by_id,
+            by_name,
+        }
+    }
+
+    pub fn get(&self, name_or_id: &str) -> Option<Arc<Collection>> {
+        self.by_name
+            .get(name_or_id)
+            .or_else(|| self.by_id.get(name_or_id))
+            .cloned()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CollectionStore {
+    snapshot: Arc<ArcSwap<Snapshot>>,
+}
+
+impl CollectionStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the snapshot with everything in `_collections`.
+    pub async fn load(&self, ex: &dyn Executor) -> DbResult<()> {
+        let all = fetch_all(ex).await?;
+        self.replace(all);
+        Ok(())
+    }
+
+    /// Replace the snapshot from an in-memory list (tests, imports).
+    pub fn replace(&self, collections: Vec<Collection>) {
+        self.snapshot.store(Arc::new(Snapshot::build(collections)));
+    }
+
+    pub fn all(&self) -> Arc<Snapshot> {
+        self.snapshot.load_full()
+    }
+
+    pub fn get(&self, name_or_id: &str) -> Option<Arc<Collection>> {
+        self.snapshot.load().get(name_or_id)
+    }
+
+    pub fn get_by_id(&self, id: &str) -> Option<Arc<Collection>> {
+        self.snapshot.load().by_id.get(id).cloned()
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<Arc<Collection>> {
+        self.snapshot.load().by_name.get(name).cloned()
+    }
+
+    pub fn len(&self) -> usize {
+        self.snapshot.load().all.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Persist a new collection, create its table/view and indexes, and
+    /// reload the snapshot. All DDL and the `_collections` row share one
+    /// transaction.
+    pub async fn insert(
+        &self,
+        engine: &dyn Engine,
+        collection: &Collection,
+    ) -> DbResult<Arc<Collection>> {
+        let backend = Backend::from_dialect(engine.dialect());
+        let tx = engine.begin().await?;
+        insert_in(&tx, backend, collection).await?;
+        tx.commit().await?;
+        self.load(engine).await?;
+        self.get_by_id(&collection.id).ok_or(DbError::NotFound)
+    }
+
+    /// Persist changes to an existing collection (looked up by id in the
+    /// current snapshot), migrate its table, and reload the snapshot.
+    pub async fn update(
+        &self,
+        engine: &dyn Engine,
+        collection: &Collection,
+    ) -> DbResult<Arc<Collection>> {
+        let previous = self.get_by_id(&collection.id).ok_or(DbError::NotFound)?;
+        let backend = Backend::from_dialect(engine.dialect());
+        let tx = engine.begin().await?;
+        update_in(&tx, backend, &previous, collection).await?;
+        tx.commit().await?;
+        self.load(engine).await?;
+        self.get_by_id(&collection.id).ok_or(DbError::NotFound)
+    }
+
+    /// Delete a collection (by name or id), drop its table/view, and
+    /// reload the snapshot.
+    pub async fn delete(&self, engine: &dyn Engine, name_or_id: &str) -> DbResult<()> {
+        let existing = self.get(name_or_id).ok_or(DbError::NotFound)?;
+        let tx = engine.begin().await?;
+        delete_in(&tx, &existing).await?;
+        tx.commit().await?;
+        self.load(engine).await
+    }
+}
+
+// --- transaction-scoped primitives ---------------------------------------
+//
+// The service layer wraps these in its own transaction when it needs to
+// combine a collection change with other writes; the `CollectionStore`
+// methods above are the convenience form.
+
+/// Write the `_collections` row and create the physical table within
+/// the caller's executor (usually a transaction). Does not reload the
+/// store.
+pub async fn insert_in(ex: &dyn Executor, backend: Backend, c: &Collection) -> DbResult<()> {
+    let p = row_params(c)?;
+    ex.execute(
+        r#"INSERT INTO "_collections" ("id", "name", "type", "system", "fields", "indexes",
+            "listRule", "viewRule", "createRule", "updateRule", "deleteRule",
+            "options", "created", "updated")
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"#,
+        &p,
+    )
+    .await?;
+    schema::sync(ex, backend, None, c).await
+}
+
+/// Update the `_collections` row and migrate the physical table.
+pub async fn update_in(
+    ex: &dyn Executor,
+    backend: Backend,
+    previous: &Collection,
+    next: &Collection,
+) -> DbResult<()> {
+    let mut p = row_params(next)?;
+    // Move the id to the end for the WHERE clause.
+    let id = p.remove(0);
+    p.push(id);
+    let n = ex
+        .execute(
+            r#"UPDATE "_collections" SET "name" = $1, "type" = $2, "system" = $3, "fields" = $4,
+                "indexes" = $5, "listRule" = $6, "viewRule" = $7, "createRule" = $8,
+                "updateRule" = $9, "deleteRule" = $10, "options" = $11, "created" = $12,
+                "updated" = $13
+               WHERE "id" = $14"#,
+            &p,
+        )
+        .await?;
+    if n == 0 {
+        return Err(DbError::NotFound);
+    }
+    schema::sync(ex, backend, Some(previous), next).await
+}
+
+/// Delete the `_collections` row and drop the table/view.
+pub async fn delete_in(ex: &dyn Executor, c: &Collection) -> DbResult<()> {
+    ex.execute(
+        r#"DELETE FROM "_collections" WHERE "id" = $1"#,
+        &[Sql::from(c.id.as_str())],
+    )
+    .await?;
+    schema::drop_object(ex, c).await
+}
+
+const SELECT: &str = r#"SELECT "id", "name", "type", "system", "fields", "indexes",
+    "listRule", "viewRule", "createRule", "updateRule", "deleteRule",
+    "options", "created", "updated" FROM "_collections""#;
+
+/// Every collection, straight from the table (bypasses the store).
+pub async fn fetch_all(ex: &dyn Executor) -> DbResult<Vec<Collection>> {
+    let rows = ex
+        .query(&format!("{SELECT} ORDER BY \"created\", \"name\""), &[])
         .await?;
     rows.iter().map(row_to_collection).collect()
 }
 
-pub async fn get_collection_by_id(db: &Db, id: &str) -> DbResult<Collection> {
-    let row = sqlx::query("SELECT * FROM _collections WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&db.pool)
+/// One collection by name or id, straight from the table.
+pub async fn fetch(ex: &dyn Executor, name_or_id: &str) -> DbResult<Collection> {
+    let row = ex
+        .query_one(
+            &format!("{SELECT} WHERE \"name\" = $1 OR \"id\" = $1"),
+            &[Sql::from(name_or_id)],
+        )
         .await?
         .ok_or(DbError::NotFound)?;
     row_to_collection(&row)
 }
 
-pub async fn get_collection_by_name(db: &Db, name: &str) -> DbResult<Collection> {
-    let row = sqlx::query("SELECT * FROM _collections WHERE name = $1")
-        .bind(name)
-        .fetch_optional(&db.pool)
-        .await?
-        .ok_or(DbError::NotFound)?;
-    row_to_collection(&row)
+/// The keys of the PocketBase collection JSON that live in their own
+/// columns; everything else goes into `options`.
+const COLUMN_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "type",
+    "system",
+    "fields",
+    "indexes",
+    "listRule",
+    "viewRule",
+    "createRule",
+    "updateRule",
+    "deleteRule",
+    "created",
+    "updated",
+];
+
+fn rule(r: &Option<String>) -> Sql {
+    match r {
+        Some(s) => Sql::Text(s.clone()),
+        None => Sql::Null,
+    }
 }
 
-/// Transaction-scoped counterpart to [`get_collection_by_id`]. Reads
-/// through `tx` rather than the pool so a caller already holding the
-/// pool's only checked-out connection (e.g. `/api/batch`, whose SQLite
-/// test pool is sized 1) doesn't self-deadlock waiting to acquire a
-/// second one.
-pub async fn get_collection_by_id_tx(
-    tx: &mut crate::records::RecordTx,
-    id: &str,
-) -> DbResult<Collection> {
-    let row = sqlx::query("SELECT * FROM _collections WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(DbError::NotFound)?;
-    row_to_collection(&row)
-}
-
-/// Transaction-scoped counterpart to [`get_collection_by_name`]. See
-/// [`get_collection_by_id_tx`] for why this exists.
-pub async fn get_collection_by_name_tx(
-    tx: &mut crate::records::RecordTx,
-    name: &str,
-) -> DbResult<Collection> {
-    let row = sqlx::query("SELECT * FROM _collections WHERE name = $1")
-        .bind(name)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or(DbError::NotFound)?;
-    row_to_collection(&row)
-}
-
-pub async fn create_collection(db: &Db, collection: &Collection) -> DbResult<()> {
-    let type_str = match collection.collection_type {
-        CollectionType::Base => "base",
-        CollectionType::Auth => "auth",
-        CollectionType::View => "view",
+fn row_params(c: &Collection) -> DbResult<Vec<Sql>> {
+    if c.id.is_empty() || c.name.is_empty() {
+        return Err(DbError::InvalidIdentifier(
+            "collection id and name are required".into(),
+        ));
+    }
+    let mut options = match c.to_json() {
+        Value::Object(m) => m,
+        _ => Map::new(),
     };
-    let schema_json = serde_json::to_string(&collection.schema).unwrap();
-    let auth_options_json = serde_json::to_string(&collection.auth_options).unwrap();
-
-    sqlx::query(
-        "INSERT INTO _collections
-         (id, name, type, schema, list_rule, view_rule, create_rule, update_rule, delete_rule, auth_options, view_query, created, updated)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
-    )
-    .bind(&collection.id)
-    .bind(&collection.name)
-    .bind(type_str)
-    .bind(&schema_json)
-    .bind(&collection.list_rule)
-    .bind(&collection.view_rule)
-    .bind(&collection.create_rule)
-    .bind(&collection.update_rule)
-    .bind(&collection.delete_rule)
-    .bind(&auth_options_json)
-    .bind(&collection.view_query)
-    .bind(&collection.created)
-    .bind(&collection.updated)
-    .execute(&db.pool)
-    .await
-    .map_err(|e| map_unique_violation(e, "name"))?;
-
-    sync_table(db, collection, None).await?;
-    Ok(())
+    for k in COLUMN_KEYS {
+        options.remove(*k);
+    }
+    Ok(vec![
+        Sql::from(c.id.as_str()),
+        Sql::from(c.name.as_str()),
+        Sql::from(c.collection_type.as_str()),
+        Sql::from(c.system),
+        Sql::Text(serde_json::to_string(&c.fields)?),
+        Sql::Text(serde_json::to_string(&c.indexes)?),
+        rule(&c.list_rule),
+        rule(&c.view_rule),
+        rule(&c.create_rule),
+        rule(&c.update_rule),
+        rule(&c.delete_rule),
+        Sql::Text(Value::Object(options).to_string()),
+        Sql::Text(c.created.to_pb_string()),
+        Sql::Text(c.updated.to_pb_string()),
+    ])
 }
 
-pub async fn update_collection(
-    db: &Db,
-    previous: &Collection,
-    updated: &Collection,
-) -> DbResult<()> {
-    let type_str = match updated.collection_type {
-        CollectionType::Base => "base",
-        CollectionType::Auth => "auth",
-        CollectionType::View => "view",
+fn text(row: &Row, col: &str) -> String {
+    row.get(col).cloned().unwrap_or(Sql::Null).into_string()
+}
+
+fn nullable(row: &Row, col: &str) -> Value {
+    match row.get(col) {
+        Some(Sql::Null) | None => Value::Null,
+        Some(v) => Value::String(v.clone().into_string()),
+    }
+}
+
+/// Rebuild the PocketBase JSON from a row and let `Collection`'s
+/// `Deserialize` impl (defaults included) do the rest.
+pub fn row_to_collection(row: &Row) -> DbResult<Collection> {
+    let fields: Value = serde_json::from_str(&text(row, "fields")).unwrap_or_else(|_| json!([]));
+    let indexes: Value = serde_json::from_str(&text(row, "indexes")).unwrap_or_else(|_| json!([]));
+    let options: Value = serde_json::from_str(&text(row, "options")).unwrap_or_else(|_| json!({}));
+    let mut m = match options {
+        Value::Object(m) => m,
+        _ => Map::new(),
     };
-    let schema_json = serde_json::to_string(&updated.schema).unwrap();
-    let auth_options_json = serde_json::to_string(&updated.auth_options).unwrap();
-
-    sqlx::query(
-        "UPDATE _collections SET
-            name = $1, type = $2, schema = $3, list_rule = $4, view_rule = $5,
-            create_rule = $6, update_rule = $7, delete_rule = $8, auth_options = $9,
-            view_query = $10, updated = $11
-         WHERE id = $12",
-    )
-    .bind(&updated.name)
-    .bind(type_str)
-    .bind(&schema_json)
-    .bind(&updated.list_rule)
-    .bind(&updated.view_rule)
-    .bind(&updated.create_rule)
-    .bind(&updated.update_rule)
-    .bind(&updated.delete_rule)
-    .bind(&auth_options_json)
-    .bind(&updated.view_query)
-    .bind(&updated.updated)
-    .bind(&updated.id)
-    .execute(&db.pool)
-    .await
-    .map_err(|e| map_unique_violation(e, "name"))?;
-
-    sync_table(db, updated, Some(previous)).await?;
-    Ok(())
+    m.insert("id".into(), json!(text(row, "id")));
+    m.insert("name".into(), json!(text(row, "name")));
+    m.insert("type".into(), json!(text(row, "type")));
+    m.insert(
+        "system".into(),
+        json!(row.get_i64("system").unwrap_or(0) != 0),
+    );
+    m.insert("fields".into(), fields);
+    m.insert("indexes".into(), indexes);
+    for k in [
+        "listRule",
+        "viewRule",
+        "createRule",
+        "updateRule",
+        "deleteRule",
+    ] {
+        m.insert(k.into(), nullable(row, k));
+    }
+    let stamp = |col: &str| DateTime::parse(&text(row, col)).unwrap_or_default();
+    m.insert("created".into(), json!(stamp("created")));
+    m.insert("updated".into(), json!(stamp("updated")));
+    Ok(serde_json::from_value(Value::Object(m))?)
 }
 
-pub async fn delete_collection(db: &Db, collection: &Collection) -> DbResult<()> {
-    sqlx::query("DELETE FROM _collections WHERE id = $1")
-        .bind(&collection.id)
-        .execute(&db.pool)
-        .await?;
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let drop_sql = if collection.collection_type == CollectionType::View {
-        format!("DROP VIEW IF EXISTS {table}")
-    } else {
-        format!("DROP TABLE IF EXISTS {table}")
-    };
-    sqlx::query(&drop_sql).execute(&db.pool).await?;
-    Ok(())
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sqlite::SqliteEngine;
+    use crate::system::ensure_system_tables;
+    use cratebase_core::{CollectionType, Field, FieldKind, FieldType};
 
-fn map_unique_violation(e: sqlx::Error, field: &str) -> DbError {
-    if let sqlx::Error::Database(db_err) = &e {
-        if db_err.is_unique_violation() {
-            return DbError::UniqueViolation(field.to_string());
-        }
-    }
-    DbError::Sqlx(e)
-}
-
-/// The physical storage "shape" a field occupies. Changing shape (e.g.
-/// text -> number, or single -> multiple) requires dropping and recreating
-/// the column, which clears any data already stored in it.
-fn physical_kind(field: &Field) -> &'static str {
-    let multiple = field.field_type.supports_multiple() && field.options.multiple.unwrap_or(false);
-    if multiple {
-        return "text";
-    }
-    match field.field_type {
-        FieldType::Number => "number",
-        FieldType::Bool => "bool",
-        _ => "text",
-    }
-}
-
-fn sql_type_for(backend: Backend, field: &Field) -> &'static str {
-    match physical_kind(field) {
-        "number" => backend.number_type(),
-        "bool" => backend.bool_type(),
-        _ => backend.text_type(),
-    }
-}
-
-/// Create or incrementally alter the physical table backing `collection` so
-/// its columns match `collection.schema`. New fields get `ADD COLUMN`;
-/// removed fields get `DROP COLUMN`; fields whose physical shape changed are
-/// dropped and re-added (data loss on that column only — schema changes to
-/// a field's type or multiplicity are inherently destructive without a full
-/// migration/backfill system, which is out of scope for v1).
-///
-/// `View` collections take a different path entirely: instead of a table,
-/// `cb_<name>` is created as a real SQL `VIEW` over `collection.view_query`.
-/// Every list/filter/sort/pagination code path in `records::list_records`/
-/// `get_record` runs unmodified against it — a view is queryable exactly
-/// like a table for `SELECT`. Recreated unconditionally (DROP + CREATE) on
-/// every call since `view_query` may have changed and there's no portable
-/// `CREATE OR REPLACE VIEW` across backends (SQLite has no such syntax).
-pub async fn sync_table(
-    db: &Db,
-    collection: &Collection,
-    previous: Option<&Collection>,
-) -> DbResult<()> {
-    let backend = db.backend;
-    let table = backend.quote_ident(&collection.table_name())?;
-
-    if collection.collection_type == CollectionType::View {
-        let query = collection.view_query.as_deref().ok_or_else(|| {
-            DbError::InvalidIdentifier("view collection is missing 'view_query'".into())
-        })?;
-        sqlx::query(&format!("DROP VIEW IF EXISTS {table}"))
-            .execute(&db.pool)
-            .await?;
-        sqlx::query(&format!("CREATE VIEW {table} AS {query}"))
-            .execute(&db.pool)
-            .await?;
-        return Ok(());
+    async fn engine() -> SqliteEngine {
+        let e = SqliteEngine::open_memory().unwrap();
+        ensure_system_tables(&e).await.unwrap();
+        e
     }
 
-    match previous {
-        None => {
-            let mut cols = vec![
-                format!("{} TEXT PRIMARY KEY", backend.quote_ident("id")?),
-                format!("{} TEXT NOT NULL", backend.quote_ident("created")?),
-                format!("{} TEXT NOT NULL", backend.quote_ident("updated")?),
-            ];
-            if collection.is_auth() {
-                cols.push(format!(
-                    "{} TEXT NOT NULL",
-                    backend.quote_ident(collection.auth_options.identity_field())?
-                ));
-                cols.push(format!(
-                    "{} TEXT NOT NULL",
-                    backend.quote_ident("password_hash")?
-                ));
-                cols.push(format!(
-                    "{} {} NOT NULL",
-                    backend.quote_ident("verified")?,
-                    backend.bool_type()
-                ));
-            }
-            for f in &collection.schema {
-                cols.push(format!(
-                    "{} {}",
-                    backend.quote_ident(&f.name)?,
-                    sql_type_for(backend, f)
-                ));
-            }
-            let sql = format!("CREATE TABLE IF NOT EXISTS {table} ({})", cols.join(", "));
-            sqlx::query(&sql).execute(&db.pool).await?;
-            if collection.is_auth() {
-                let identity = collection.auth_options.identity_field();
-                let idx = backend.quote_ident(&format!("idx_{}_{identity}", collection.name))?;
-                let identity_col = backend.quote_ident(identity)?;
-                sqlx::query(&format!(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} ({identity_col})"
-                ))
-                .execute(&db.pool)
-                .await?;
-            }
-        }
-        Some(prev) => {
-            for f in &collection.schema {
-                match prev.field(&f.name) {
-                    None => {
-                        let sql = format!(
-                            "ALTER TABLE {table} ADD COLUMN {} {}",
-                            backend.quote_ident(&f.name)?,
-                            sql_type_for(backend, f)
-                        );
-                        sqlx::query(&sql).execute(&db.pool).await?;
-                    }
-                    Some(pf) if physical_kind(pf) != physical_kind(f) => {
-                        let drop_sql = format!(
-                            "ALTER TABLE {table} DROP COLUMN {}",
-                            backend.quote_ident(&f.name)?
-                        );
-                        sqlx::query(&drop_sql).execute(&db.pool).await?;
-                        let add_sql = format!(
-                            "ALTER TABLE {table} ADD COLUMN {} {}",
-                            backend.quote_ident(&f.name)?,
-                            sql_type_for(backend, f)
-                        );
-                        sqlx::query(&add_sql).execute(&db.pool).await?;
-                    }
-                    Some(_) => {}
-                }
-            }
-            for pf in &prev.schema {
-                if collection.field(&pf.name).is_none() {
-                    let sql = format!(
-                        "ALTER TABLE {table} DROP COLUMN {}",
-                        backend.quote_ident(&pf.name)?
-                    );
-                    sqlx::query(&sql).execute(&db.pool).await?;
-                }
-            }
-        }
+    #[tokio::test]
+    async fn insert_get_update_rename_delete_and_snapshot_swap() {
+        let e = engine().await;
+        let store = CollectionStore::new();
+        store.load(&e).await.unwrap();
+        assert!(store.is_empty());
+
+        let users = Collection::default_users();
+        let stored = store.insert(&e, &users).await.unwrap();
+        assert_eq!(stored.id, "_pb_users_auth_");
+        assert!(stored.is_auth());
+        assert_eq!(stored.auth, users.auth);
+        assert_eq!(stored.to_json(), users.to_json());
+        assert!(e.table_exists("users").await.unwrap());
+
+        let mut posts = Collection::new("posts", CollectionType::Base);
+        posts.list_rule = Some(String::new());
+        posts.view_rule = Some("published = true".into());
+        posts.fields.insert(
+            1,
+            Field::new("title", FieldKind::default_for(FieldType::Text)),
+        );
+        store.insert(&e, &posts).await.unwrap();
+        let before = store.all();
+        assert_eq!(before.all.len(), 2);
+        assert!(store.get("posts").is_some());
+        assert!(store.get(&posts.id).is_some());
+        assert_eq!(
+            store.get_by_name("posts").unwrap().list_rule,
+            Some(String::new())
+        );
+        assert_eq!(
+            store.get_by_id(&posts.id).unwrap().view_rule.as_deref(),
+            Some("published = true")
+        );
+        assert!(store.get_by_id("posts").is_none());
+        assert!(store.get_by_name("posts").unwrap().create_rule.is_none());
+
+        // Duplicate name is a unique violation on `_collections.name`.
+        let mut dup = Collection::new("posts", CollectionType::Base);
+        dup.id = "pbc_dup".into();
+        let err = store.insert(&e, &dup).await.unwrap_err();
+        assert!(matches!(err, DbError::UniqueViolation(_)), "{err:?}");
+        assert_eq!(store.len(), 2);
+
+        // Rename + add field.
+        let mut renamed = (*store.get("posts").unwrap()).clone();
+        renamed.name = "articles".into();
+        renamed.fields.push(Field::new(
+            "body",
+            FieldKind::default_for(FieldType::Editor),
+        ));
+        store.update(&e, &renamed).await.unwrap();
+        assert!(store.get("posts").is_none());
+        assert!(store.get("articles").is_some());
+        assert!(e.table_exists("articles").await.unwrap());
+        assert!(e
+            .table_columns("articles")
+            .await
+            .unwrap()
+            .contains(&"body".to_string()));
+        // The old snapshot is untouched (readers holding it stay consistent).
+        assert!(before.get("posts").is_some());
+        assert!(!Arc::ptr_eq(&before, &store.all()));
+
+        let mut view = Collection::new("titles", CollectionType::View);
+        view.view_query = "SELECT id, title FROM articles".into();
+        let stored = store.insert(&e, &view).await.unwrap();
+        assert!(stored.is_view());
+        assert_eq!(stored.view_query, view.view_query);
+        assert_eq!(
+            fetch(&e, "titles").await.unwrap().view_query,
+            view.view_query
+        );
+
+        store.delete(&e, "titles").await.unwrap();
+        store.delete(&e, &renamed.id).await.unwrap();
+        assert!(matches!(
+            store.delete(&e, "nope").await,
+            Err(DbError::NotFound)
+        ));
+        assert!(!e.table_exists("articles").await.unwrap());
+        assert_eq!(store.len(), 1);
+        assert_eq!(fetch_all(&e).await.unwrap().len(), 1);
+
+        let mut ghost = Collection::new("ghost", CollectionType::Base);
+        ghost.id = "pbc_ghost".into();
+        assert!(matches!(
+            store.update(&e, &ghost).await,
+            Err(DbError::NotFound)
+        ));
     }
 
-    for f in &collection.schema {
-        let idx_name = format!("idx_{}_{}", collection.name, f.name);
-        let idx = backend.quote_ident(&idx_name)?;
-        if f.unique {
-            let sql = format!(
-                "CREATE UNIQUE INDEX IF NOT EXISTS {idx} ON {table} ({})",
-                backend.quote_ident(&f.name)?
-            );
-            sqlx::query(&sql).execute(&db.pool).await?;
-        } else {
-            let sql = format!("DROP INDEX IF EXISTS {idx}");
-            sqlx::query(&sql).execute(&db.pool).await?;
-        }
+    #[tokio::test]
+    async fn failed_ddl_rolls_back_the_row() {
+        let e = engine().await;
+        let store = CollectionStore::new();
+        let mut bad = Collection::new("bad", CollectionType::View);
+        bad.view_query = "SELECT * FROM does_not_exist".into();
+        assert!(store.insert(&e, &bad).await.is_err());
+        assert!(matches!(fetch(&e, "bad").await, Err(DbError::NotFound)));
+        assert!(store.get("bad").is_none());
     }
-
-    Ok(())
 }

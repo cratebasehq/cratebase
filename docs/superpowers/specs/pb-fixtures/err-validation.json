@@ -1,0 +1,10 @@
+{
+  "data": {
+    "passwordConfirm": {
+      "code": "validation_values_mismatch",
+      "message": "Values don't match."
+    }
+  },
+  "message": "Failed to create record.",
+  "status": 400
+}

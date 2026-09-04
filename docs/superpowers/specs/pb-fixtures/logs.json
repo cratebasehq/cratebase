@@ -1,0 +1,44 @@
+{
+  "items": [
+    {
+      "id": "0gatxkjq3chfjwx",
+      "created": "2026-09-03 12:44:06.380Z",
+      "data": {
+        "auth": "",
+        "execTime": 0.439382,
+        "method": "GET",
+        "referer": "",
+        "remoteIP": "127.0.0.1",
+        "status": 200,
+        "type": "request",
+        "url": "/api/health",
+        "userAgent": "curl/8.5.0",
+        "userIP": "127.0.0.1"
+      },
+      "message": "GET /api/health",
+      "level": 0
+    },
+    {
+      "id": "aenn44s8o7j2c9c",
+      "created": "2026-09-03 12:44:06.470Z",
+      "data": {
+        "auth": "",
+        "execTime": 52.575178,
+        "method": "POST",
+        "referer": "",
+        "remoteIP": "127.0.0.1",
+        "status": 200,
+        "type": "request",
+        "url": "/api/collections/_superusers/auth-with-password",
+        "userAgent": "curl/8.5.0",
+        "userIP": "127.0.0.1"
+      },
+      "message": "POST /api/collections/_superusers/auth-with-password",
+      "level": 0
+    }
+  ],
+  "page": 1,
+  "perPage": 2,
+  "totalItems": 29006,
+  "totalPages": 14503
+}

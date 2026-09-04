@@ -24,17 +24,12 @@ option — see the comment above `deleteOwnCursor` in `app.js`.
 
 ## 1. Start Cratebase
 
-From the repo root:
-
 ```bash
-cargo run --bin cratebase -- serve
+docker compose up -d
+docker compose exec cratebase cratebase superuser create you@example.com yourpassword
 ```
 
-(`docker compose up -d` also works if you'd rather run it containerized —
-just note its `cratebase` service uses a separate persisted volume from
-the `cargo run` binary's local `data/` dir, so pick one and stick with it
-per demo session, and stop the other before switching so they don't
-fight over port 8090.)
+(or, from source: `cargo build --release -p cratebase-server && ./target/release/cratebase superuser create you@example.com yourpassword && ./target/release/cratebase serve`)
 
 This example assumes the API is reachable at `http://localhost:8090` (the
 default). Serving `index.html` from a different origin is fine — CORS
@@ -43,14 +38,33 @@ with `?api=http://your-host:port` appended.
 
 ## 2. Create the `cursors` collection
 
-Run the setup script — it upserts an `admin@example.com` / `changeme123`
-superuser (override with `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars) and
-creates a `cursors` collection with fully public rules (`""` = anyone, no
-auth needed) if it doesn't already exist. Safe to re-run.
+Get a superuser token, then create a `base` collection with fully public
+rules (`""` = anyone, no auth needed) so the demo works with zero client
+setup:
 
 ```bash
-bun run examples:cursors:setup
-# or directly: bash examples/realtime-cursors/setup.sh
+ADMIN_TOKEN=$(curl -s -X POST localhost:8090/api/admins/auth-with-password \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"yourpassword"}' | jq -r .token)
+
+curl -X POST localhost:8090/api/collections \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "name": "cursors",
+    "type": "base",
+    "schema": [
+      {"id": "f1", "name": "clientId", "type": "text", "required": true, "unique": true},
+      {"id": "f2", "name": "x", "type": "number", "required": true},
+      {"id": "f3", "name": "y", "type": "number", "required": true},
+      {"id": "f4", "name": "color", "type": "text", "required": true},
+      {"id": "f5", "name": "label", "type": "text"}
+    ],
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "",
+    "updateRule": "",
+    "deleteRule": ""
+  }'
 ```
 
 Every rule is `""` (public) — `createRule`/`updateRule`/`deleteRule` all
@@ -62,24 +76,18 @@ open scratch collection.
 
 ## 3. Serve the example
 
+Any static file server works, e.g.:
+
 ```bash
-bun run examples:serve
+cd examples/realtime-cursors
+python3 -m http.server 5500
 ```
 
-This serves the whole repo (not just this directory) — required because
-`index.html`'s import map points `"cratebase"` at
-`../../sdk/js/dist/index.js`, a path that only resolves when the server
-is rooted above `examples/`. Serving just this directory (e.g. `cd
-examples/realtime-cursors && python3 -m http.server`) 404s on that
-import, which fails silently (bare specifier `"cratebase"` can't resolve
-at all — the page loads but no cursor ever appears, guest or peer).
-
-Open **`http://localhost:4173/examples/realtime-cursors/`** in two or
-more browser tabs (or two different browsers/devices on the same
-network, pointed at your machine's IP) and move the mouse around — each
-tab renders every *other* tab's cursor live, labeled with a randomly
-generated name and color. Your own real system cursor is never
-duplicated with a rendered dot.
+Open `http://localhost:5500` in two or more browser tabs (or two
+different browsers/devices on the same network, pointed at your
+machine's IP) and move the mouse around — each tab renders every *other*
+tab's cursor live, labeled with a randomly generated name and color. Your
+own real system cursor is never duplicated with a rendered dot.
 
 ## How it works
 
@@ -112,17 +120,12 @@ duplicated with a rendered dot.
 
 ## Verification
 
-Verified live: `bun run examples:cursors:setup` against a fresh `cargo
-run --bin cratebase -- serve` instance, served via `bun run
-examples:serve`, loaded in a real browser (headless Chromium) — no
-console/network errors, the identity/upsert/realtime-subscribe flow all
-ran (`GET /api/realtime` connects, own cursor upserts via
-PATCH-then-POST-fallback exactly as designed). Multi-tab peer-dot
-rendering across two simultaneous tabs was not re-verified after this
-pass.
-
-**Fixed since the original version of this README**: `index.html` was
-missing the import map entirely (bare specifier `"cratebase"` had
-nothing to resolve it to), so `app.js` failed to load at all — no
-cursors, no realtime, silently. It now declares the same import map
-every other `examples/*` app uses.
+- `node --check app.js` passes (plain ES module syntax, no bundler
+  needed).
+- **Not verified**: actual multi-tab live behavior in a browser — this
+  sandbox has no browser available. The realtime/CRUD flow was checked
+  against `openapi.yaml`, `sdk/js/src/record-service.ts`, and
+  `sdk/js/src/realtime.ts` line-by-line instead (same request shapes,
+  same SSE event names, same subscribe-after-`PB_CONNECT` sequencing).
+  Please smoke-test with two real browser tabs before relying on this
+  as a finished demo.

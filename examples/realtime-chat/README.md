@@ -6,8 +6,8 @@ and watch it appear instantly in the other with zero polling.
 
 This example is intentionally **not** an auth demo — there's a plain
 display-name field (stored in `localStorage`, no login) so the focus stays
-on realtime record subscriptions. See `examples/todo` for a real
-register/login-gated flow.
+on realtime record subscriptions. See `examples/auth-demo` for the auth
+flows.
 
 ## Importing `cratebase` with zero build step
 
@@ -48,39 +48,65 @@ elsewhere).
 
 ## 2. Create the `messages` collection
 
-Run the setup script — it upserts an `admin@example.com` / `changeme123`
-superuser (override with `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars) and
-creates the `messages` collection with public list/view/create rules
-(`updateRule`/`deleteRule` stay superuser-only, since this example never
-edits or deletes messages) if it doesn't already exist. Safe to re-run.
+Get an admin token, then create a `messages` collection with `author` and
+`content` text fields, and public list/view/create rules so the example
+works with zero auth setup.
 
 ```bash
-bun run examples:chat:setup
-# or directly: bash examples/realtime-chat/setup.sh
+# 1. Authenticate as an admin/superuser and capture the token.
+ADMIN_TOKEN=$(curl -s -X POST http://localhost:8090/api/admins/auth-with-password \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@example.com","password":"your-admin-password"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+# 2. Create the collection.
+curl -s -X POST http://localhost:8090/api/collections \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{
+    "name": "messages",
+    "type": "base",
+    "schema": [
+      { "name": "author", "type": "text", "required": true },
+      { "name": "content", "type": "text", "required": true }
+    ],
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "",
+    "updateRule": null,
+    "deleteRule": null
+  }'
 ```
 
-Point at a different instance with `CRATEBASE_URL=http://host:port bun
-run examples:chat:setup`.
+Notes:
+
+- `listRule`/`viewRule`/`createRule` set to `""` (empty string, not `null`)
+  means "public, no auth required" in Cratebase's rule semantics — anyone
+  can list, view, and create messages. `updateRule`/`deleteRule` are left
+  `null` (superuser-only) since this example never edits or deletes
+  messages.
+- Swap in your real admin email/password from whatever seeded the instance
+  you're running against.
+- If your `cratebase` binary/admin bootstrap flow differs, adjust step 1
+  accordingly — the important part is ending up with a superuser Bearer
+  token for step 2.
 
 ## 3. Serve the example
 
+Any static file server works, from this directory:
+
 ```bash
-bun run examples:serve
+cd examples/realtime-chat
+python3 -m http.server 8080
 ```
 
-This serves the whole repo (not just this directory) — required because
-`index.html`'s import map points `"cratebase"` at
-`../../sdk/js/dist/index.js`, a path that only resolves when the server
-is rooted above `examples/`. Serving just this directory (e.g. `cd
-examples/realtime-chat && python3 -m http.server`) 404s on that import;
-the failure is silent in the UI (no JS runs, so the composer form falls
-back to a native GET submit that reloads the page with your message
-stuck in the URL's query string).
+Then open `http://localhost:8080` in two browser tabs. Set a display name
+in each tab, send a message from one, and it should appear in the other
+tab immediately via the realtime SSE subscription — no page refresh, no
+polling.
 
-Then open **`http://localhost:4173/examples/realtime-chat/`** in two
-browser tabs. Set a display name in each tab, send a message from one,
-and it should appear in the other tab immediately via the realtime SSE
-subscription — no page refresh, no polling.
+> Serving over `http://` (not `file://`) matters: browsers restrict ES
+> module imports and `fetch`/`EventSource` calls from `file://` origins.
 
 ## How it works
 
@@ -101,10 +127,12 @@ subscription — no page refresh, no polling.
 
 ## Verification status
 
-Verified live: `bun run examples:chat:setup` against a fresh `cargo run
---bin cratebase -- serve` instance, served via `bun run examples:serve`,
-driven in a real browser (headless Chromium) — submitting the composer
-form appended a message with no page reload and no console/network
-errors. Two-tab live delivery was not re-verified after this pass; the
-sender's own render comes back through the same `connectRealtime()` SSE
-path a second tab would use.
+This was verified with static analysis and a syntax/bundle check only:
+`node --check app.js` and `bun build app.js --outdir /tmp/checkbuild` both
+pass (the latter also confirms the relative import to
+`sdk/js/dist/index.js` resolves correctly). **No live `cratebase serve`
+instance or browser was run in producing this example** — the realtime
+subscribe/publish flow, the collection-creation `curl` commands, and the
+rendered UI have not been exercised end-to-end. Please run through steps
+1–3 above once against a live instance to confirm before relying on this
+in a demo.

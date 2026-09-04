@@ -1,0 +1,13 @@
+{
+  "record": {
+    "collectionId": "pbc_3142635823",
+    "collectionName": "_superusers",
+    "created": "2026-09-03 12:44:06.227Z",
+    "email": "admin@bench.dev",
+    "emailVisibility": false,
+    "id": "l5rhsibvzk6xatx",
+    "updated": "2026-09-03 12:44:06.227Z",
+    "verified": true
+  },
+  "token": "<redacted>"
+}

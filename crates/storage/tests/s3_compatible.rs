@@ -3,7 +3,8 @@ use cratebase_storage::{Storage, StorageConfig};
 
 /// Proves the S3 driver actually round-trips against a real S3-compatible
 /// server (RustFS/MinIO in dev, R2 in production all speak the same
-/// protocol). Skips when `TEST_S3_*` env vars aren't set.
+/// protocol), including the multipart streaming path and prefix listing /
+/// deletion. Skips when `TEST_S3_ENDPOINT` isn't set.
 #[tokio::test]
 async fn s3_round_trip() {
     let Ok(endpoint) = std::env::var("TEST_S3_ENDPOINT") else {
@@ -25,8 +26,10 @@ async fn s3_round_trip() {
         force_path_style: true,
     })
     .unwrap();
+    assert!(!storage.is_local());
 
-    let key = format!("cratebase-test/{}.txt", uuid_like());
+    let prefix = format!("cratebase-test/{}", uuid_like());
+    let key = format!("{prefix}/hello.txt");
     assert!(!storage.exists(&key).await.unwrap());
 
     storage
@@ -34,12 +37,31 @@ async fn s3_round_trip() {
         .await
         .unwrap();
     assert!(storage.exists(&key).await.unwrap());
+    assert_eq!(storage.size(&key).await.unwrap(), Some(17));
 
     let data = storage.get(&key).await.unwrap();
     assert_eq!(&data[..], b"hello from rustfs");
 
-    storage.delete(&key).await.unwrap();
+    // Streaming upload large enough to force a real multipart upload.
+    let big_key = format!("{prefix}/big.bin");
+    let chunk = Bytes::from(vec![9u8; 1024 * 1024]);
+    let chunks: Vec<Result<Bytes, std::io::Error>> = (0..11).map(|_| Ok(chunk.clone())).collect();
+    storage
+        .put_stream(&big_key, futures::stream::iter(chunks), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        storage.size(&big_key).await.unwrap(),
+        Some(11 * 1024 * 1024)
+    );
+
+    let listed = storage.list(&prefix).await.unwrap();
+    assert_eq!(listed.len(), 2);
+
+    assert_eq!(storage.delete_prefix(&prefix).await.unwrap(), 2);
     assert!(!storage.exists(&key).await.unwrap());
+    assert!(!storage.exists(&big_key).await.unwrap());
+    assert!(storage.list(&prefix).await.unwrap().is_empty());
 }
 
 fn uuid_like() -> String {

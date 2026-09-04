@@ -1,108 +1,88 @@
-//! Cratebase's HTTP server: wires the db/storage/auth crates into an axum
-//! `Router` and exposes the pieces `main.rs` needs to actually run it (or a
-//! test harness needs to spin up an in-process instance).
+//! Cratebase's HTTP server: the [`App`] handle, the hook system, the
+//! services that do not depend on the record layer, and the axum router
+//! that ties them together.
+//!
+//! # Layout
+//!
+//! * [`app`] — the `App`/`TxApp` handles and the boot/serve/terminate
+//!   lifecycle.
+//! * [`hooks`] + [`events`] — PocketBase's middleware-style hook chains.
+//! * [`config`] — boot-time settings from the environment; everything
+//!   else lives in [`cratebase_core::Settings`].
+//! * [`middleware`] — client-IP resolution, request logging, rate limits,
+//!   CORS.
+//! * [`routes`] — health, settings, logs, backups, crons. The record,
+//!   collection, auth, file, realtime and batch routes are W4b and are
+//!   marked in `routes::api_router`.
+//! * [`plugin`], [`store`], [`cron`], [`extract`], [`http_error`].
+//!
+//! # Building an app
+//!
+//! ```ignore
+//! let app = App::new(Config::from_env());
+//! app.register_plugin(FnPlugin::new("audit", audit))?;
+//! app.serve().await?;
+//! ```
 
-pub mod auth_fields;
+pub mod app;
 pub mod config;
+pub mod cron;
 mod dashboard;
+pub mod events;
 pub mod extract;
-pub mod helpers;
+pub mod hooks;
 pub mod http_error;
-pub mod mail;
-pub mod oauth2;
-pub mod payload;
+pub mod middleware;
 pub mod plugin;
-pub mod plugins;
-pub mod realtime;
-mod request_log;
-mod routes;
-pub mod state;
-
-use std::sync::Arc;
+pub mod routes;
+pub mod store;
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::{HeaderValue, Method};
 use axum::Router;
-use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
-use config::Config;
-use cratebase_db::{system, Db};
-use cratebase_storage::Storage;
-use realtime::RealtimeHub;
-use state::AppState;
+pub use app::{App, TxApp};
+pub use config::Config;
+pub use cron::CronService;
+pub use hooks::{Chain, Event, Handler, Hook, HookResult, Hooks};
+pub use http_error::{ApiError, ApiResult};
+pub use plugin::{FnPlugin, Plugin, PluginRegistry};
+pub use store::Store;
 
-/// Connect to the database and storage backend, run system-table bootstrap,
-/// and assemble the shared application state. Called once at startup (and
-/// by integration tests that want a fully wired instance without a real
-/// network listener).
-pub async fn build_state(config: Config) -> anyhow::Result<AppState> {
-    let db = Db::connect(&config.database_url).await?;
-    system::ensure_system_tables(&db).await?;
-    system::ensure_request_logs_table(&db).await?;
-    system::ensure_default_collections(&db).await?;
-    let storage = Storage::connect(&config.storage)?;
-    let mailer = cratebase_mailer::Mailer::connect(
-        &config.mailer,
-        &config.mail_from_address,
-        &config.mail_from_name,
-    )?;
+/// One request-body cap for every route. File uploads are the only large
+/// bodies Cratebase accepts; 100 MiB covers typical documents, images and
+/// video clips while bounding worst-case memory per in-flight request.
+pub const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 
-    Ok(AppState {
-        db,
-        storage,
-        config: Arc::new(config),
-        realtime: RealtimeHub::default(),
-        mailer,
-    })
-}
+// `App` is itself the router state; axum's blanket `impl<T: Clone>
+// FromRef<T> for T` already covers it, so the extractors that ask for
+// `App: FromRef<S>` work with `State<App>` out of the box.
 
-/// One request body size cap for every route. File uploads are the only
-/// large bodies Cratebase accepts; 100 MiB comfortably covers typical
-/// documents/images/video clips while still bounding worst-case memory use
-/// per in-flight request.
-const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
-
-/// Assembles the HTTP router. `plugins` is injected rather than hardcoded
-/// to `plugins::registry()` so a downstream Rust binary can depend on this
-/// crate as a library and register its own [`plugin::Plugin`]s, instead of
-/// only being able to add plugins by editing
-/// `crates/server/src/plugins/mod.rs` in this repo directly (see
-/// `plugin`'s module doc for the full pattern). Pass `&plugins::registry()`
-/// to keep every built-in plugin, or `&PluginRegistry::new().register(YourPlugin)`
-/// for a binary that ships only your own.
-pub fn build_app(state: AppState, plugins: &plugin::PluginRegistry) -> Router {
-    let cors = build_cors(&state.config.cors_allow_origins);
-
-    let api = routes::router(state.config.auth_rate_limit_enabled).layer(
-        axum::middleware::from_fn_with_state(state.clone(), request_log::log_requests),
-    );
+/// Assemble the complete router: `/api` (with logging and rate limiting),
+/// the embedded dashboard, and PocketBase's error envelope on every
+/// fallback.
+pub fn router(app: App) -> Router {
+    let api = routes::api_router(&app)
+        // Order matters: the rate limiter runs *before* the handler but
+        // after logging, so a 429 is logged like any other response.
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            middleware::rate_limit::rate_limit,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            middleware::request_log::log_requests,
+        ));
 
     Router::new()
         .nest("/api", api)
         .merge(dashboard::router())
-        .merge(plugins.router())
+        .fallback(http_error::not_found_fallback)
+        // PocketBase answers a wrong method on a real path with 404, not
+        // 405 (verified against v0.40.2), so both fallbacks are the same.
+        .method_not_allowed_fallback(http_error::not_found_fallback)
         .layer(TraceLayer::new_for_http())
-        .layer(cors)
+        .layer(middleware::cors::layer(&app.config().origins))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .with_state(state)
-}
-
-fn build_cors(allowed: &[String]) -> CorsLayer {
-    let layer = CorsLayer::new()
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PATCH,
-            Method::DELETE,
-            Method::OPTIONS,
-        ])
-        .allow_headers(tower_http::cors::Any);
-
-    if allowed.iter().any(|o| o == "*") {
-        layer.allow_origin(tower_http::cors::Any)
-    } else {
-        let origins: Vec<HeaderValue> = allowed.iter().filter_map(|o| o.parse().ok()).collect();
-        layer.allow_origin(AllowOrigin::list(origins))
-    }
+        .with_state(app)
 }

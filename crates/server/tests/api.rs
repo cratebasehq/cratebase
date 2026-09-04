@@ -1,2439 +1,1114 @@
-//! End-to-end HTTP tests: drives the real axum `Router` in-process (no TCP
-//! socket) against an isolated sqlite DB and temp-dir local storage per
-//! test, so these exercise the exact request/response contract clients see.
+//! End-to-end tests for the W4a surface: the app lifecycle, the hook
+//! chain, the middleware and the five live route groups.
+//!
+//! Everything runs against an in-memory SQLite database and a temp
+//! directory, driven through `tower::ServiceExt::oneshot` — no listener,
+//! no ports, so the whole file runs in parallel with everything else.
 
-use axum::body::Body;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use cratebase_mailer::MailerConfig;
+use axum::response::Response;
+use cratebase_core::{AppError, Settings};
+use cratebase_server::app::App;
 use cratebase_server::config::Config;
-use cratebase_server::state::AppState;
-use cratebase_server::{build_app, build_state};
-use cratebase_storage::StorageConfig;
+use cratebase_server::hooks::{Event, Handler, Hook, HookResult};
+use cratebase_server::plugin::FnPlugin;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-async fn test_state() -> AppState {
-    test_state_with_rate_limit(false).await
+const SUPERUSER_EMAIL: &str = "admin@example.com";
+const SUPERUSER_PASSWORD: &str = "hunter2hunter2";
+
+/// A bootstrapped app plus the temp dir keeping its data alive.
+struct Harness {
+    app: App,
+    token: String,
+    _dir: tempfile::TempDir,
 }
 
-async fn test_state_with_rate_limit(auth_rate_limit_enabled: bool) -> AppState {
-    let dir = std::env::temp_dir().join(format!(
-        "cratebase-api-test-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let config = Config {
-        database_url: "sqlite::memory:".to_string(),
-        storage: StorageConfig::Local {
-            base_dir: dir.join("storage").to_string_lossy().to_string(),
-        },
-        auth_secret: "test-secret".to_string(),
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        admin_token_ttl_seconds: 3600,
-        auth_token_ttl_seconds: 3600,
-        cors_allow_origins: vec!["*".to_string()],
-        data_dir: dir.to_string_lossy().to_string(),
-        // `tower::ServiceExt::oneshot` (used throughout this file) never
-        // populates `ConnectInfo<SocketAddr>`, so the rate limiter's IP
-        // key extractor would reject every login request with no peer
-        // address to key on unless the request sets `x-forwarded-for`
-        // itself (`SmartIpKeyExtractor` checks that header first). Real
-        // requests through `axum::serve` carry a real peer address — see
-        // `main.rs`'s `into_make_service_with_connect_info`.
-        auth_rate_limit_enabled,
-        mailer: MailerConfig::Log,
-        mail_from_address: "no-reply@test.local".to_string(),
-        mail_from_name: "Cratebase Test".to_string(),
-        public_app_url: "http://localhost:8090".to_string(),
-        verification_token_ttl_seconds: 86_400,
-        password_reset_token_ttl_seconds: 3_600,
-        email_change_token_ttl_seconds: 3_600,
-        file_token_ttl_seconds: 5,
-        otp_token_ttl_seconds: 300,
-        oauth_providers: Vec::new(),
-    };
-    build_state(config).await.unwrap()
-}
-
-async fn test_state_with_otp_ttl(otp_token_ttl_seconds: i64) -> AppState {
-    let dir = std::env::temp_dir().join(format!(
-        "cratebase-api-test-otp-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let config = Config {
-        database_url: "sqlite::memory:".to_string(),
-        storage: StorageConfig::Local {
-            base_dir: dir.join("storage").to_string_lossy().to_string(),
-        },
-        auth_secret: "test-secret".to_string(),
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        admin_token_ttl_seconds: 3600,
-        auth_token_ttl_seconds: 3600,
-        cors_allow_origins: vec!["*".to_string()],
-        data_dir: dir.to_string_lossy().to_string(),
-        auth_rate_limit_enabled: false,
-        mailer: MailerConfig::Log,
-        mail_from_address: "no-reply@test.local".to_string(),
-        mail_from_name: "Cratebase Test".to_string(),
-        public_app_url: "http://localhost:8090".to_string(),
-        verification_token_ttl_seconds: 86_400,
-        password_reset_token_ttl_seconds: 3_600,
-        email_change_token_ttl_seconds: 3_600,
-        file_token_ttl_seconds: 5,
-        otp_token_ttl_seconds,
-        oauth_providers: Vec::new(),
-    };
-    build_state(config).await.unwrap()
-}
-
-async fn json_body(response: axum::response::Response) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
-}
-
-fn json_request(method: &str, uri: &str, token: Option<&str>, body: Value) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json");
-    if let Some(t) = token {
-        builder = builder.header("authorization", format!("Bearer {t}"));
+impl Harness {
+    async fn new() -> Harness {
+        Harness::with(|_| {}).await
     }
-    builder.body(Body::from(body.to_string())).unwrap()
-}
 
-fn get_request(uri: &str, token: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("GET").uri(uri);
-    if let Some(t) = token {
-        builder = builder.header("authorization", format!("Bearer {t}"));
-    }
-    builder.body(Body::empty()).unwrap()
-}
-
-/// Recovers the plaintext OTP code the server just minted for
-/// `(collection_id, record_id)`, for tests to drive `auth-with-otp`/
-/// `mfa/confirm` without a real mailer to read the email from. The row
-/// only stores `hash_otp(code)` (never the plaintext — same as
-/// production), so this reads the stored hash straight out of
-/// `_otp_codes` and brute-forces the 10^6-code space to find the
-/// matching plaintext, exactly what makes a 6-digit OTP "safe": not the
-/// hash, the short TTL and single-use consumption around it.
-async fn find_otp_code(state: &AppState, collection_id: &str, record_id: &str) -> String {
-    let row: (String,) = sqlx::query_as(
-        "SELECT code_hash FROM _otp_codes WHERE collection_id = $1 AND record_id = $2",
-    )
-    .bind(collection_id)
-    .bind(record_id)
-    .fetch_one(&state.db.pool)
-    .await
-    .unwrap();
-    let hash = row.0;
-    for candidate in 0u32..1_000_000 {
-        let code = format!("{candidate:06}");
-        if cratebase_auth::hash_otp(&code) == hash {
-            return code;
+    /// `tweak` runs on the freshly built `App` before `bootstrap`, so a
+    /// test can register hooks and plugins that boot with it.
+    async fn with(tweak: impl FnOnce(&App)) -> Harness {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(Config::memory(dir.path()));
+        tweak(&app);
+        app.bootstrap().await.expect("bootstrap");
+        let id = app
+            .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
+            .await
+            .expect("superuser");
+        let token = app
+            .mint_token("_superusers", &id, cratebase_auth::TokenType::Auth, 3600)
+            .await
+            .expect("token");
+        Harness {
+            app,
+            token,
+            _dir: dir,
         }
     }
-    panic!("no otp code in 0..1_000_000 hashes to the stored code_hash");
-}
 
-/// Provisions a superuser directly against the shared `Db` (there is no
-/// public "create first admin" HTTP endpoint by design — schema management
-/// is superuser-only, same as `cratebase superuser create`) and logs in
-/// over HTTP like a real client to get a bearer token.
-async fn admin_token(state: &AppState, app: &axum::Router) -> String {
-    let hash = cratebase_auth::hash_password("admin12345").unwrap();
-    cratebase_db::admins::create_admin(&state.db, "admin@test.local", &hash)
-        .await
-        .unwrap();
+    fn router(&self) -> axum::Router {
+        cratebase_server::router(self.app.clone())
+    }
 
-    let login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/admins/auth-with-password",
-            None,
-            json!({"email": "admin@test.local", "password": "admin12345"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    json_body(login).await["token"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
+    async fn send(&self, request: Request<Body>) -> (StatusCode, Value) {
+        let response = self.router().oneshot(request).await.expect("response");
+        split(response).await
+    }
 
-#[tokio::test]
-async fn health_check() {
-    let app = build_app(test_state().await, &cratebase_server::plugins::registry());
-    let res = app.oneshot(get_request("/api/health", None)).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(json_body(res).await["status"], "ok");
-}
-
-#[tokio::test]
-async fn plugin_stats_route_reports_record_counts() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "widgets", "type": "base",
-                "schema": [{"id": "f1", "name": "name", "type": "text"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/widgets/records",
-            None,
-            json!({"name": "gizmo"}),
-        ))
-        .await
-        .unwrap();
-
-    let stats = app
-        .oneshot(get_request("/api/plugins/example/stats", None))
-        .await
-        .unwrap();
-    assert_eq!(stats.status(), StatusCode::OK);
-    assert_eq!(json_body(stats).await["recordCounts"]["widgets"], 1);
-}
-
-#[tokio::test]
-async fn collection_management_requires_admin() {
-    let app = build_app(test_state().await, &cratebase_server::plugins::registry());
-    let res = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            None,
-            json!({"name": "posts", "type": "base", "schema": []}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn full_record_lifecycle_with_public_rules() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    let create_collection = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "posts",
-                "type": "base",
-                "schema": [
-                    {"id": "f1", "name": "title", "type": "text", "required": true},
-                    {"id": "f2", "name": "published", "type": "bool"}
-                ],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(create_collection.status(), StatusCode::OK);
-
-    let created = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/posts/records",
-            None,
-            json!({"title": "Hello", "published": true}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(created.status(), StatusCode::OK);
-    let record = json_body(created).await;
-    assert_eq!(record["title"], "Hello");
-    let id = record["id"].as_str().unwrap().to_string();
-
-    let listed = app
-        .clone()
-        .oneshot(get_request(
-            "/api/collections/posts/records?filter=published%20%3D%20true",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(json_body(listed).await["totalItems"], 1);
-
-    let updated = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/collections/posts/records/{id}"),
-            None,
-            json!({"title": "Updated"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(updated.status(), StatusCode::OK);
-    assert_eq!(json_body(updated).await["title"], "Updated");
-
-    let deleted = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/collections/posts/records/{id}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
-
-    let missing = app
-        .oneshot(get_request(
-            &format!("/api/collections/posts/records/{id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn view_collection_lists_filtered_rows_and_rejects_writes() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "posts",
-                "type": "base",
-                "schema": [
-                    {"id": "f1", "name": "title", "type": "text", "required": true},
-                    {"id": "f2", "name": "published", "type": "bool"}
-                ],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    for (title, published) in [
-        ("Alpha", true),
-        ("Bravo", false),
-        ("Charlie", true),
-        ("Delta", true),
-    ] {
-        let res = app
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/collections/posts/records",
-                None,
-                json!({"title": title, "published": published}),
-            ))
+    async fn get(&self, uri: &str) -> (StatusCode, Value) {
+        self.send(Request::get(uri).body(Body::empty()).unwrap())
             .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
     }
 
-    let create_view = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "published_posts",
-                "type": "view",
-                "schema": [{"id": "vf1", "name": "title", "type": "text"}],
-                "viewQuery": "SELECT id, title, created, updated FROM cb_posts WHERE published = 1",
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        create_view.status(),
-        StatusCode::OK,
-        "{:?}",
-        json_body(create_view).await
-    );
-
-    // Unfiltered list only ever surfaces the three published rows — the
-    // `WHERE published = 1` baked into the view query, not anything the
-    // client asked for.
-    let listed = app
-        .clone()
-        .oneshot(get_request(
-            "/api/collections/published_posts/records",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(listed.status(), StatusCode::OK);
-    let body = json_body(listed).await;
-    assert_eq!(body["totalItems"], 3);
-    let titles: Vec<&str> = body["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["title"].as_str().unwrap())
-        .collect();
-    assert!(
-        !titles.contains(&"Bravo"),
-        "unpublished row must be excluded"
-    );
-
-    // `?filter=` composes with the view exactly like it does for a table.
-    let filtered = app
-        .clone()
-        .oneshot(get_request(
-            "/api/collections/published_posts/records?filter=title~%22Charlie%22",
-            None,
-        ))
-        .await
-        .unwrap();
-    let filtered_body = json_body(filtered).await;
-    assert_eq!(filtered_body["totalItems"], 1);
-    assert_eq!(filtered_body["items"][0]["title"], "Charlie");
-
-    // `?sort=` and pagination also work unmodified against the view.
-    let sorted = app
-        .clone()
-        .oneshot(get_request(
-            "/api/collections/published_posts/records?sort=-title&perPage=2&page=1",
-            None,
-        ))
-        .await
-        .unwrap();
-    let sorted_body = json_body(sorted).await;
-    assert_eq!(sorted_body["totalItems"], 3);
-    assert_eq!(sorted_body["totalPages"], 2);
-    assert_eq!(sorted_body["items"].as_array().unwrap().len(), 2);
-    assert_eq!(sorted_body["items"][0]["title"], "Delta");
-    assert_eq!(sorted_body["items"][1]["title"], "Charlie");
-
-    // Writes against a view collection are rejected outright.
-    let create_record = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/published_posts/records",
-            None,
-            json!({"title": "Echo"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(create_record.status(), StatusCode::BAD_REQUEST);
-
-    let first_id = body["items"][0]["id"].as_str().unwrap().to_string();
-    let update_record = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/collections/published_posts/records/{first_id}"),
-            None,
-            json!({"title": "Nope"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(update_record.status(), StatusCode::BAD_REQUEST);
-
-    let delete_record = app
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!(
-                    "/api/collections/published_posts/records/{first_id}"
-                ))
+    async fn get_auth(&self, uri: &str) -> (StatusCode, Value) {
+        self.send(
+            Request::get(uri)
+                .header("authorization", &self.token)
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
-        .unwrap();
-    assert_eq!(delete_record.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn email_field_name_only_reserved_on_auth_collections() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    // A base collection storing contacts should be able to name a field
-    // "email" — only auth collections reserve it for their own column.
-    let base = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "contacts", "type": "base",
-                "schema": [{"id": "f1", "name": "email", "type": "email"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(base.status(), StatusCode::OK, "{:?}", json_body(base).await);
-
-    let auth = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "members", "type": "auth",
-                "schema": [{"id": "f1", "name": "email", "type": "text"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(auth.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn locked_create_rule_rejects_anonymous_writes() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "secrets", "type": "base",
-                "schema": [{"id": "f1", "name": "value", "type": "text"}],
-                "listRule": "", "viewRule": "", "createRule": null, "updateRule": null, "deleteRule": null
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let res = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/secrets/records",
-            None,
-            json!({"value": "x"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn auth_collection_register_login_and_self_update() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/collections/users",
-            Some(&token),
-            json!({
-                "name": "users", "type": "auth",
-                "schema": [{"id": "f1", "name": "displayName", "type": "text"}],
-                "listRule": "@request.auth.id != \"\"", "viewRule": "", "createRule": "",
-                "updateRule": "id = @request.auth.id", "deleteRule": null
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "alice@example.com", "password": "secret123", "passwordConfirm": "secret123", "displayName": "Alice"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(register.status(), StatusCode::OK);
-
-    let bad_login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "alice@example.com", "password": "wrong"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(bad_login.status(), StatusCode::UNAUTHORIZED);
-
-    let login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "alice@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let login_body = json_body(login).await;
-    let user_token = login_body["token"].as_str().unwrap().to_string();
-    let user_id = login_body["record"]["id"].as_str().unwrap().to_string();
-    assert!(
-        login_body["record"].get("password_hash").is_none(),
-        "password hash must never be exposed"
-    );
-
-    let anon_list = app
-        .clone()
-        .oneshot(get_request("/api/collections/users/records", None))
-        .await
-        .unwrap();
-    assert_eq!(
-        json_body(anon_list).await["totalItems"],
-        0,
-        "anonymous must not see auth records"
-    );
-
-    let auth_list = app
-        .clone()
-        .oneshot(get_request(
-            "/api/collections/users/records",
-            Some(&user_token),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(json_body(auth_list).await["totalItems"], 1);
-
-    let self_update = app
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/collections/users/records/{user_id}"),
-            Some(&user_token),
-            json!({"displayName": "Alice Updated"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(self_update.status(), StatusCode::OK);
-    assert_eq!(json_body(self_update).await["displayName"], "Alice Updated");
-}
-
-#[tokio::test]
-async fn auth_collection_with_username_identity_field() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    // An auth collection can be configured to log in with something other
-    // than an email address, and admin-created records don't need
-    // `passwordConfirm` at all.
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "players", "type": "auth",
-                "authOptions": {"identityField": "username"},
-                "schema": [],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let created = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/players/records",
-            Some(&token),
-            json!({"username": "neo", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        created.status(),
-        StatusCode::OK,
-        "{:?}",
-        json_body(created).await
-    );
-    let record = json_body(created).await;
-    assert_eq!(record["username"], "neo");
-    assert!(
-        record.get("email").is_none(),
-        "no email column on a username-identity collection"
-    );
-
-    let login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/players/auth-with-password",
-            None,
-            json!({"identity": "neo", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-}
-
-#[tokio::test]
-async fn file_upload_and_download_round_trip() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "docs", "type": "base",
-                "schema": [{"id": "f1", "name": "title", "type": "text"}, {"id": "f2", "name": "attachment", "type": "file"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let boundary = "----cratebase-test-boundary";
-    let body = format!(
-        "--{b}\r\ncontent-disposition: form-data; name=\"title\"\r\n\r\nReport\r\n\
-         --{b}\r\ncontent-disposition: form-data; name=\"attachment\"; filename=\"note.txt\"\r\ncontent-type: text/plain\r\n\r\nhello file\r\n--{b}--\r\n",
-        b = boundary
-    );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/collections/docs/records")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
-    let created = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(created.status(), StatusCode::OK);
-    let record = json_body(created).await;
-    let filename = record["attachment"].as_str().unwrap().to_string();
-    let id = record["id"].as_str().unwrap().to_string();
-
-    let download = app
-        .oneshot(get_request(
-            &format!("/api/files/docs/{id}/{filename}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(download.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(download.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(&bytes[..], b"hello file");
-}
-
-#[tokio::test]
-async fn file_upload_rejects_disallowed_mime_and_oversized_file() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "photos", "type": "base",
-                "schema": [{
-                    "id": "f1", "name": "image", "type": "file",
-                    "options": {"mimeTypes": ["image/png"], "maxSize": 5}
-                }],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    // Wrong mime type: field only accepts image/png, upload sends text/plain.
-    let boundary = "----cratebase-test-boundary";
-    let body = format!(
-        "--{b}\r\ncontent-disposition: form-data; name=\"image\"; filename=\"note.txt\"\r\ncontent-type: text/plain\r\n\r\nhello\r\n--{b}--\r\n",
-        b = boundary
-    );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/collections/photos/records")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    let body = json_body(res).await;
-    assert_eq!(body["data"]["image"]["code"], "invalid_mime_type");
-
-    // Right mime type, but bytes exceed the 5-byte maxSize.
-    let body = format!(
-        "--{b}\r\ncontent-disposition: form-data; name=\"image\"; filename=\"pic.png\"\r\ncontent-type: image/png\r\n\r\ntoo many bytes\r\n--{b}--\r\n",
-        b = boundary
-    );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/collections/photos/records")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    let body = json_body(res).await;
-    assert_eq!(body["data"]["image"]["code"], "file_too_large");
-}
-
-#[tokio::test]
-async fn realtime_publish_enforces_list_rule_per_subscriber() {
-    use cratebase_core::field::FieldType;
-    use cratebase_core::{now, Collection, CollectionType, Field, FieldOptions};
-    use cratebase_db::resolver::AuthContext;
-    use cratebase_server::realtime::RealtimeHub;
-
-    let state = test_state().await;
-
-    let collection = Collection {
-        id: "c1".into(),
-        name: "posts".into(),
-        collection_type: CollectionType::Base,
-        schema: vec![Field {
-            id: "f1".into(),
-            name: "owner".into(),
-            field_type: FieldType::Text,
-            required: false,
-            unique: false,
-            options: FieldOptions::default(),
-        }],
-        list_rule: Some("owner = @request.auth.id".into()),
-        view_rule: Some("owner = @request.auth.id".into()),
-        create_rule: Some(String::new()),
-        update_rule: Some(String::new()),
-        delete_rule: Some(String::new()),
-        auth_options: Default::default(),
-        view_query: None,
-        created: now(),
-        updated: now(),
-    };
-
-    let hub = RealtimeHub::default();
-    let owner_auth = AuthContext {
-        id: "user-1".into(),
-        collection_id: "users".into(),
-        is_superuser: false,
-        record: Default::default(),
-    };
-    let other_auth = AuthContext {
-        id: "user-2".into(),
-        collection_id: "users".into(),
-        is_superuser: false,
-        record: Default::default(),
-    };
-
-    let (owner_id, mut owner_rx) = hub.connect(Some(owner_auth)).await;
-    let (other_id, mut other_rx) = hub.connect(Some(other_auth)).await;
-    hub.subscribe(&owner_id, vec!["posts".into()], None).await;
-    hub.subscribe(&other_id, vec!["posts".into()], None).await;
-
-    let record = json!({"id": "r1", "owner": "user-1", "created": "x", "updated": "x"});
-    hub.publish(&state.db, &collection, "create", &record).await;
-
-    assert!(
-        owner_rx.try_recv().is_ok(),
-        "owner's listRule admits this record, they should receive the event"
-    );
-    assert!(
-        other_rx.try_recv().is_err(),
-        "other subscriber's listRule denies this record — they must NOT receive it"
-    );
-}
-
-#[tokio::test]
-async fn login_endpoint_rate_limits_after_burst() {
-    let state = test_state_with_rate_limit(true).await;
-    let app = build_app(state, &cratebase_server::plugins::registry());
-
-    fn login_request(forwarded_for: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/api/admins/auth-with-password")
-            .header("content-type", "application/json")
-            .header("x-forwarded-for", forwarded_for)
-            .body(Body::from(
-                json!({"email": "nobody@test.local", "password": "wrong"}).to_string(),
-            ))
-            .unwrap()
     }
 
-    // Burst size is 8 (see routes/auth.rs): all 8 should reach the
-    // handler (401, wrong credentials) rather than being rate-limited.
-    for i in 0..8 {
-        let res = app
-            .clone()
-            .oneshot(login_request("203.0.113.9"))
+    async fn json_auth(&self, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
+        self.send(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", &self.token)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn raw_auth(&self, method: &str, uri: &str) -> Response {
+        self.router()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("authorization", &self.token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::UNAUTHORIZED,
-            "request {i} within burst should reach the handler, not be rate-limited"
-        );
+            .expect("response")
     }
-    // The 9th immediate request from the same IP exceeds the burst.
-    let res = app
-        .clone()
-        .oneshot(login_request("203.0.113.9"))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
-
-    // A different client IP has its own, unaffected bucket.
-    let res = app.oneshot(login_request("203.0.113.42")).await.unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::UNAUTHORIZED,
-        "a different IP must not share the throttled IP's bucket"
-    );
 }
 
-#[tokio::test]
-async fn email_verification_flow_gates_login_until_confirmed() {
-    use cratebase_auth::{issue_action_token, TokenKind};
-
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "PATCH",
-            "/api/collections/users",
-            Some(&token),
-            json!({
-                "name": "users", "type": "auth",
-                "schema": [],
-                "authOptions": {"requireEmailVerification": true},
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": null, "deleteRule": null
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "bob@example.com", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(register.status(), StatusCode::OK);
-    let register_body = json_body(register).await;
-    let user_id = register_body["id"].as_str().unwrap().to_string();
-    let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
-    assert_eq!(
-        register_body["verified"], false,
-        "new accounts start unverified"
-    );
-
-    let blocked_login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "bob@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        blocked_login.status(),
-        StatusCode::FORBIDDEN,
-        "login must be blocked until the email is verified"
-    );
-
-    let request = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/request-verification",
-            None,
-            json!({"email": "bob@example.com"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(request.status(), StatusCode::NO_CONTENT);
-
-    // Simulates the token a real user would receive by email — issued
-    // with the same parameters `request-verification` uses internally.
-    let verify_token = issue_action_token(
-        &user_id,
-        TokenKind::VerifyEmail,
-        &collection_id,
-        None,
-        "test-secret",
-        3600,
-    )
-    .unwrap();
-    let confirm = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/confirm-verification",
-            None,
-            json!({"token": verify_token}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(confirm.status(), StatusCode::NO_CONTENT);
-
-    let login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "bob@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        login.status(),
-        StatusCode::OK,
-        "login must succeed once verified"
-    );
-}
-
-#[tokio::test]
-async fn password_reset_flow_replaces_password() {
-    use cratebase_auth::{issue_action_token, TokenKind};
-
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "carol@example.com", "password": "oldpassword1", "passwordConfirm": "oldpassword1"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(register.status(), StatusCode::OK);
-    let register_body = json_body(register).await;
-    let user_id = register_body["id"].as_str().unwrap().to_string();
-    let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
-
-    let request = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/request-password-reset",
-            None,
-            json!({"email": "carol@example.com"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(request.status(), StatusCode::NO_CONTENT);
-
-    let reset_token = issue_action_token(
-        &user_id,
-        TokenKind::ResetPassword,
-        &collection_id,
-        None,
-        "test-secret",
-        3600,
-    )
-    .unwrap();
-    let confirm = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/confirm-password-reset",
-            None,
-            json!({"token": reset_token, "password": "newpassword1", "passwordConfirm": "newpassword1"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(confirm.status(), StatusCode::NO_CONTENT);
-
-    let old_login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "carol@example.com", "password": "oldpassword1"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        old_login.status(),
-        StatusCode::UNAUTHORIZED,
-        "old password must stop working"
-    );
-
-    let new_login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "carol@example.com", "password": "newpassword1"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(new_login.status(), StatusCode::OK, "new password must work");
-}
-
-#[tokio::test]
-async fn email_change_flow_updates_identity_after_confirmation() {
-    use cratebase_auth::{issue_action_token, TokenKind};
-
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "dave@example.com", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(register.status(), StatusCode::OK);
-
-    let login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "dave@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    let login_body = json_body(login).await;
-    let user_token = login_body["token"].as_str().unwrap().to_string();
-    let user_id = login_body["record"]["id"].as_str().unwrap().to_string();
-    let collection_id = login_body["record"]["collectionId"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let request = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/request-email-change",
-            Some(&user_token),
-            json!({"newEmail": "dave-new@example.com"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(request.status(), StatusCode::NO_CONTENT);
-
-    let change_token = issue_action_token(
-        &user_id,
-        TokenKind::ChangeEmail,
-        &collection_id,
-        Some("dave-new@example.com"),
-        "test-secret",
-        3600,
-    )
-    .unwrap();
-    let confirm = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/confirm-email-change",
-            None,
-            json!({"token": change_token}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(confirm.status(), StatusCode::NO_CONTENT);
-
-    let old_login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "dave@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        old_login.status(),
-        StatusCode::UNAUTHORIZED,
-        "old email must stop working"
-    );
-
-    let new_login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "dave-new@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(new_login.status(), StatusCode::OK, "new email must work");
-}
-
-#[tokio::test]
-async fn oauth2_auth_methods_lists_configured_providers_with_redirect_baked_in() {
-    use cratebase_server::oauth2::ProviderConfig;
-
-    let dir = std::env::temp_dir().join(format!(
-        "cratebase-api-test-oauth2-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let config = Config {
-        database_url: "sqlite::memory:".to_string(),
-        storage: StorageConfig::Local {
-            base_dir: dir.join("storage").to_string_lossy().to_string(),
-        },
-        auth_secret: "test-secret".to_string(),
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        admin_token_ttl_seconds: 3600,
-        auth_token_ttl_seconds: 3600,
-        cors_allow_origins: vec!["*".to_string()],
-        data_dir: dir.to_string_lossy().to_string(),
-        auth_rate_limit_enabled: false,
-        mailer: MailerConfig::Log,
-        mail_from_address: "no-reply@test.local".to_string(),
-        mail_from_name: "Cratebase Test".to_string(),
-        public_app_url: "http://localhost:8090".to_string(),
-        verification_token_ttl_seconds: 86_400,
-        password_reset_token_ttl_seconds: 3_600,
-        email_change_token_ttl_seconds: 3_600,
-        file_token_ttl_seconds: 120,
-        otp_token_ttl_seconds: 300,
-        oauth_providers: vec![ProviderConfig {
-            name: "google",
-            client_id: "test-client-id".to_string(),
-            client_secret: "test-client-secret".to_string(),
-            auth_url: "https://accounts.google.com/o/oauth2/v2/auth",
-            token_url: "https://oauth2.googleapis.com/token",
-            userinfo_url: "https://www.googleapis.com/oauth2/v3/userinfo",
-            scope: "openid email profile",
-        }],
-    };
-    let state = build_state(config).await.unwrap();
-    let app = build_app(state, &cratebase_server::plugins::registry());
-
-    let res = app
-        .oneshot(get_request(
-            "/api/collections/users/auth-methods?redirectUri=myapp%3A%2F%2Fcallback",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let body = json_body(res).await;
-    assert_eq!(body["password"], true);
-    assert_eq!(body["oauth2"]["enabled"], true);
-    let providers = body["oauth2"]["providers"].as_array().unwrap();
-    assert_eq!(providers.len(), 1);
-    assert_eq!(providers[0]["name"], "google");
-    let auth_url = providers[0]["authUrl"].as_str().unwrap();
-    assert!(auth_url.contains("client_id=test-client-id"));
-    assert!(auth_url.contains("redirect_uri=myapp%3A%2F%2Fcallback"));
-}
-
-#[tokio::test]
-async fn oauth2_login_rejects_unconfigured_provider() {
-    let state = test_state().await;
-    let app = build_app(state, &cratebase_server::plugins::registry());
-
-    let res = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-oauth2",
-            None,
-            json!({"provider": "google", "code": "fake-code", "redirectUri": "https://example.com/callback"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::BAD_REQUEST,
-        "no provider configured in test harness, must be rejected before any network call"
-    );
-}
-
-#[tokio::test]
-async fn file_thumbnail_generates_resized_image_and_caches_derivative() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "photos2", "type": "base",
-                "schema": [{"id": "f1", "name": "image", "type": "file"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    // A solid-color 64x64 PNG built in-process rather than checked-in test
-    // fixture bytes.
-    let source = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-        64,
-        64,
-        image::Rgb([220, 20, 60]),
-    ));
-    let mut png_bytes = Vec::new();
-    source
-        .write_to(
-            &mut std::io::Cursor::new(&mut png_bytes),
-            image::ImageFormat::Png,
-        )
-        .unwrap();
-
-    let boundary = "----cratebase-thumb-boundary";
-    let mut body = Vec::new();
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\ncontent-disposition: form-data; name=\"image\"; filename=\"pic.png\"\r\ncontent-type: image/png\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(&png_bytes);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/collections/photos2/records")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
-    let created = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(
-        created.status(),
-        StatusCode::OK,
-        "{:?}",
-        json_body(created).await
-    );
-    let record = json_body(created).await;
-    let filename = record["image"].as_str().unwrap().to_string();
-    let id = record["id"].as_str().unwrap().to_string();
-
-    let thumb_res = app
-        .clone()
-        .oneshot(get_request(
-            &format!("/api/files/photos2/{id}/{filename}?thumb=16x16"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(thumb_res.status(), StatusCode::OK);
-    assert_eq!(
-        thumb_res.headers().get("content-type").unwrap(),
-        "image/png"
-    );
-    let thumb_bytes = axum::body::to_bytes(thumb_res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let decoded = image::load_from_memory(&thumb_bytes).unwrap();
-    assert_eq!(decoded.width(), 16);
-    assert_eq!(decoded.height(), 16);
-    assert!(
-        thumb_bytes.len() < png_bytes.len(),
-        "a 16x16 thumbnail must be smaller than the 64x64 original"
-    );
-
-    // The derivative must now be cached in the storage backend alongside
-    // the original, so a second identical request is a plain storage read
-    // rather than another decode/resize/encode round trip.
-    let collection = cratebase_db::collections::get_collection_by_name(&state.db, "photos2")
-        .await
-        .unwrap();
-    let cache_key = format!("{}/{}/thumbs/{}_16x16", collection.id, id, filename);
-    assert!(
-        state.storage.exists(&cache_key).await.unwrap(),
-        "resized thumbnail must be cached to storage under a derived key"
-    );
-
-    let second = app
-        .oneshot(get_request(
-            &format!("/api/files/photos2/{id}/{filename}?thumb=16x16"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(second.status(), StatusCode::OK);
-    let second_bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(
-        &second_bytes[..],
-        &thumb_bytes[..],
-        "cache hit must return byte-identical cached derivative"
-    );
-}
-
-#[tokio::test]
-async fn file_thumbnail_falls_back_to_original_for_non_image_mime() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "docs2", "type": "base",
-                "schema": [{"id": "f1", "name": "attachment", "type": "file"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let boundary = "----cratebase-thumb-fallback-boundary";
-    let body = format!(
-        "--{b}\r\ncontent-disposition: form-data; name=\"attachment\"; filename=\"note.txt\"\r\ncontent-type: text/plain\r\n\r\nhello file\r\n--{b}--\r\n",
-        b = boundary
-    );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/collections/docs2/records")
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
-    let created = app.clone().oneshot(req).await.unwrap();
-    let record = json_body(created).await;
-    let filename = record["attachment"].as_str().unwrap().to_string();
-    let id = record["id"].as_str().unwrap().to_string();
-
-    let res = app
-        .oneshot(get_request(
-            &format!("/api/files/docs2/{id}/{filename}?thumb=16x16"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(
-        &bytes[..],
-        b"hello file",
-        "non-raster mime must ignore ?thumb= and serve the original"
-    );
-}
-
-#[tokio::test]
-async fn protected_file_requires_auth_and_accepts_file_token() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let admin = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&admin),
-            json!({
-                "name": "secure_docs", "type": "base",
-                "schema": [{"id": "f1", "name": "attachment", "type": "file"}],
-                "listRule": "@request.auth.id != \"\"", "viewRule": "@request.auth.id != \"\"",
-                "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&admin),
-            json!({
-                "name": "sd_users", "type": "auth",
-                "schema": [],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let boundary = "----cratebase-protected-boundary";
-    let body = format!(
-        "--{b}\r\ncontent-disposition: form-data; name=\"attachment\"; filename=\"secret.txt\"\r\ncontent-type: text/plain\r\n\r\ntop secret\r\n--{b}--\r\n",
-        b = boundary
-    );
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/collections/secure_docs/records")
-        .header("authorization", format!("Bearer {admin}"))
-        .header(
-            "content-type",
-            format!("multipart/form-data; boundary={boundary}"),
-        )
-        .body(Body::from(body))
-        .unwrap();
-    let created = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(
-        created.status(),
-        StatusCode::OK,
-        "{:?}",
-        json_body(created).await
-    );
-    let record = json_body(created).await;
-    let filename = record["attachment"].as_str().unwrap().to_string();
-    let id = record["id"].as_str().unwrap().to_string();
-
-    // No auth at all: a non-empty viewRule that fails to match compiles
-    // to a `WHERE` filter with no matching rows — same anti-enumeration
-    // behavior as every other record read (see `records.rs`'s `forbidden()`
-    // vs plain not-found), so this surfaces as 404, not 403.
-    let denied = app
-        .clone()
-        .oneshot(get_request(
-            &format!("/api/files/secure_docs/{id}/{filename}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(denied.status(), StatusCode::NOT_FOUND);
-
-    // Register and log in an ordinary (non-superuser) auth record, since a
-    // file token should work for any authenticated caller, not just admins.
-    let signup = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/sd_users/records",
-            None,
-            json!({"email": "viewer@test.local", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        signup.status(),
-        StatusCode::OK,
-        "{:?}",
-        json_body(signup).await
-    );
-
-    let login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/sd_users/auth-with-password",
-            None,
-            json!({"identity": "viewer@test.local", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let user_token = json_body(login).await["token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // Mint a short-lived file token for the logged-in viewer.
-    let mint = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/files/token")
-                .header("authorization", format!("Bearer {user_token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(mint.status(), StatusCode::OK, "{:?}", json_body(mint).await);
-    let file_token = json_body(mint).await["token"].as_str().unwrap().to_string();
-
-    // No Authorization header, only `?token=`: the viewRule now passes.
-    let via_token = app
-        .oneshot(get_request(
-            &format!("/api/files/secure_docs/{id}/{filename}?token={file_token}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        via_token.status(),
-        StatusCode::OK,
-        "{:?}",
-        json_body(via_token).await
-    );
-    let bytes = axum::body::to_bytes(via_token.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(&bytes[..], b"top secret");
-}
-
-#[tokio::test]
-async fn batch_create_commits_every_record_in_order() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "notes",
-                "type": "base",
-                "schema": [{"id": "f1", "name": "title", "type": "text", "required": true}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let batch = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/batch",
-            None,
-            json!({
-                "requests": [
-                    {"method": "POST", "url": "/api/collections/notes/records", "body": {"title": "one"}},
-                    {"method": "POST", "url": "/api/collections/notes/records", "body": {"title": "two"}},
-                    {"method": "POST", "url": "/api/collections/notes/records", "body": {"title": "three"}}
-                ]
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(batch.status(), StatusCode::OK);
-    let body = json_body(batch).await;
-    let results = body["results"].as_array().unwrap();
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[0]["status"], 200);
-    assert_eq!(results[0]["body"]["title"], "one");
-    assert_eq!(results[1]["body"]["title"], "two");
-    assert_eq!(results[2]["body"]["title"], "three");
-
-    let listed = app
-        .oneshot(get_request("/api/collections/notes/records", None))
-        .await
-        .unwrap();
-    assert_eq!(json_body(listed).await["totalItems"], 3);
-}
-
-#[tokio::test]
-async fn batch_rolls_back_every_write_when_one_sub_request_fails() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "tasks",
-                "type": "base",
-                "schema": [{"id": "f1", "name": "title", "type": "text", "required": true}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
-        .await
-        .unwrap();
-
-    let batch = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/batch",
-            None,
-            json!({
-                "requests": [
-                    {"method": "POST", "url": "/api/collections/tasks/records", "body": {"title": "first"}},
-                    // Violates the required `title` field on the second sub-request.
-                    {"method": "POST", "url": "/api/collections/tasks/records", "body": {}},
-                    {"method": "POST", "url": "/api/collections/tasks/records", "body": {"title": "third"}}
-                ]
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(batch.status(), StatusCode::BAD_REQUEST);
-    let body = json_body(batch).await;
-    assert_eq!(body["failedIndex"], 1);
-    assert_eq!(body["error"]["data"]["title"]["code"], "value_required");
-
-    let listed = app
-        .oneshot(get_request("/api/collections/tasks/records", None))
-        .await
-        .unwrap();
-    assert_eq!(
-        json_body(listed).await["totalItems"],
-        0,
-        "the first and third creates must be rolled back along with the failing second one"
-    );
-}
-
-#[tokio::test]
-async fn otp_login_succeeds_with_correct_code() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "otp-user@example.com", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(register.status(), StatusCode::OK);
-    let register_body = json_body(register).await;
-    let user_id = register_body["id"].as_str().unwrap().to_string();
-    let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
-
-    let requested = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/request-otp",
-            None,
-            json!({"email": "otp-user@example.com"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(requested.status(), StatusCode::NO_CONTENT);
-
-    let code = find_otp_code(&state, &collection_id, &user_id).await;
-
-    let login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-otp",
-            None,
-            json!({"email": "otp-user@example.com", "otp": code}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let login_body = json_body(login).await;
-    assert!(login_body["token"].as_str().is_some_and(|t| !t.is_empty()));
-    assert_eq!(login_body["record"]["id"], user_id);
-}
-
-#[tokio::test]
-async fn otp_login_fails_with_incorrect_code() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "otp-wrong@example.com", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    let register_body = json_body(register).await;
-    let user_id = register_body["id"].as_str().unwrap().to_string();
-    let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/request-otp",
-            None,
-            json!({"email": "otp-wrong@example.com"}),
-        ))
-        .await
-        .unwrap();
-
-    let real_code = find_otp_code(&state, &collection_id, &user_id).await;
-    let wrong_code = if real_code == "000000" {
-        "111111"
+async fn split(response: Response) -> (StatusCode, Value) {
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value = if bytes.is_empty() {
+        Value::Null
     } else {
-        "000000"
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
+    (status, value)
+}
 
-    let login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-otp",
-            None,
-            json!({"email": "otp-wrong@example.com", "otp": wrong_code}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::UNAUTHORIZED);
+// --------------------------------------------------------------- lifecycle
+
+#[tokio::test]
+async fn bootstrap_opens_everything_and_refuses_a_second_call() {
+    let harness = Harness::new().await;
+    assert!(harness.app.is_bootstrapped());
+    assert!(harness.app.try_db().is_some());
+    assert!(harness.app.db().collections.get("_superusers").is_some());
+    assert!(harness.app.db().collections.get("users").is_some());
+    assert!(harness.app.bootstrap().await.is_err(), "second bootstrap");
 }
 
 #[tokio::test]
-async fn otp_login_fails_with_expired_code() {
-    let state = test_state_with_otp_ttl(1).await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "otp-expired@example.com", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
+async fn plugins_run_at_bootstrap_and_reject_duplicates() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let counter = ran.clone();
+    let harness = Harness::with(move |app| {
+        let counter = counter.clone();
+        app.register_plugin(FnPlugin::new("audit", move |_app| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }))
         .unwrap();
-    let register_body = json_body(register).await;
-    let user_id = register_body["id"].as_str().unwrap().to_string();
-    let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
-
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/request-otp",
-            None,
-            json!({"email": "otp-expired@example.com"}),
-        ))
-        .await
-        .unwrap();
-
-    let code = find_otp_code(&state, &collection_id, &user_id).await;
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-    let login = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-otp",
-            None,
-            json!({"email": "otp-expired@example.com", "otp": code}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::UNAUTHORIZED);
+        // A second plugin with the same name is refused.
+        assert!(app
+            .register_plugin(FnPlugin::new("audit", |_| Ok(())))
+            .is_err());
+        // ... as is one named after a built-in route group.
+        assert!(app
+            .register_plugin(FnPlugin::new("settings", |_| Ok(())))
+            .is_err());
+    })
+    .await;
+    assert_eq!(ran.load(Ordering::SeqCst), 1);
+    assert_eq!(harness.app.plugin_names(), ["audit"]);
 }
 
 #[tokio::test]
-async fn mfa_required_blocks_password_login_until_otp_confirmed() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
+async fn run_in_transaction_commits_and_rolls_back() {
+    use cratebase_db::engine::{Executor, Sql};
 
-    app.clone()
-        .oneshot(json_request(
+    let harness = Harness::new().await;
+    let app = &harness.app;
+
+    app.run_in_transaction(|tx| async move {
+        tx.execute(
+            r#"INSERT INTO "_params" ("id", "key", "value", "created", "updated") VALUES ($1, $2, $3, '', '')"#,
+            &[Sql::from("id1"), Sql::from("committed"), Sql::from("yes")],
+        )
+        .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        cratebase_db::params::get(app.db(), "committed")
+            .await
+            .unwrap(),
+        Some("yes".into())
+    );
+
+    let failed: Result<(), AppError> = app
+        .run_in_transaction(|tx| async move {
+            tx.execute(
+                r#"INSERT INTO "_params" ("id", "key", "value", "created", "updated") VALUES ($1, $2, $3, '', '')"#,
+                &[Sql::from("id2"), Sql::from("rolled-back"), Sql::from("no")],
+            )
+            .await?;
+            Err(AppError::bad_request("nope"))
+        })
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        cratebase_db::params::get(app.db(), "rolled-back")
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_bearer_token_is_resolved_exactly_once_per_request() {
+    // The Phase 1 regression this guards: the logging layer resolved the
+    // caller, then the handler's extractor resolved it again, doubling
+    // the JWT verify + database round trip on every authenticated call.
+    let harness = Harness::new().await;
+    let before = harness.app.auth_resolutions();
+
+    // `/api/settings` passes through the log layer, the rate-limit layer,
+    // `RequireSuperuser` and `RequestInfo` — four askers, one resolution.
+    let (status, _) = harness.get_auth("/api/settings").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        harness.app.auth_resolutions() - before,
+        1,
+        "one authenticated request must cost exactly one token resolution"
+    );
+
+    // An anonymous request resolves nothing at all.
+    let before = harness.app.auth_resolutions();
+    assert_eq!(harness.get("/api/health").await.0, 200);
+    assert_eq!(harness.app.auth_resolutions() - before, 0);
+}
+
+// -------------------------------------------------------------- hook chain
+
+/// A minimal event so the chain can be exercised without a database.
+#[derive(Default)]
+struct Probe {
+    hook_chain: cratebase_server::hooks::Chain<Self>,
+    log: Arc<Mutex<Vec<String>>>,
+}
+cratebase_server::impl_event!(Probe);
+
+fn note(name: &'static str) -> Handler<Probe> {
+    Handler::new(move |e: &mut Probe| {
+        Box::pin(async move {
+            e.log.lock().unwrap().push(name.to_string());
+            e.next().await
+        })
+    })
+}
+
+#[tokio::test]
+async fn the_hook_chain_runs_in_order_and_a_handler_can_abort_it() {
+    let hook: Hook<Probe> = Hook::new();
+    hook.bind(note("second").with_priority(0));
+    hook.bind(note("first").with_priority(-1));
+    hook.bind(note("third").with_id("third").with_priority(1));
+
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut event = Probe {
+        log: log.clone(),
+        ..Default::default()
+    };
+    hook.trigger(&mut event, |e| {
+        Box::pin(async move {
+            e.log.lock().unwrap().push("framework".into());
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["first", "second", "third", "framework"]
+    );
+
+    // Removing a handler by id takes it out of the next trigger.
+    assert_eq!(hook.unbind("third"), 1);
+    log.lock().unwrap().clear();
+    let mut event = Probe {
+        log: log.clone(),
+        ..Default::default()
+    };
+    hook.trigger_bare(&mut event).await.unwrap();
+    assert_eq!(*log.lock().unwrap(), ["first", "second"]);
+
+    // A handler that never calls `next()` stops everything after it,
+    // including the framework's own action.
+    let hook: Hook<Probe> = Hook::new();
+    hook.bind_func(|e: &mut Probe| {
+        Box::pin(async move {
+            e.log.lock().unwrap().push("stop".into());
+            Ok(())
+        })
+    });
+    hook.bind(note("unreachable").with_priority(1));
+    log.lock().unwrap().clear();
+    let mut event = Probe {
+        log: log.clone(),
+        ..Default::default()
+    };
+    hook.trigger(&mut event, |e| {
+        Box::pin(async move {
+            e.log.lock().unwrap().push("framework".into());
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(*log.lock().unwrap(), ["stop"]);
+}
+
+#[tokio::test]
+async fn a_settings_hook_can_veto_the_update() {
+    let harness = Harness::with(|app| {
+        app.hooks().on_settings_update_request.bind_func(
+            |_e| -> futures::future::BoxFuture<'_, HookResult> {
+                Box::pin(async { Err(AppError::forbidden("settings are frozen")) })
+            },
+        );
+    })
+    .await;
+
+    let (status, body) = harness
+        .json_auth(
             "PATCH",
-            "/api/collections/users",
-            Some(&token),
-            json!({
-                "name": "users", "type": "auth",
-                "schema": [],
-                "authOptions": {"mfaRequired": true},
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": null, "deleteRule": null
-            }),
-        ))
-        .await
-        .unwrap();
+            "/api/settings",
+            json!({"meta": {"appName": "Nope"}}),
+        )
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(body["message"], "settings are frozen");
+    assert_eq!(harness.app.settings().meta.app_name, "Acme");
+}
 
-    let register = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/records",
-            None,
-            json!({"email": "mfa-user@example.com", "password": "secret123", "passwordConfirm": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    let register_body = json_body(register).await;
-    let user_id = register_body["id"].as_str().unwrap().to_string();
-    let collection_id = register_body["collectionId"].as_str().unwrap().to_string();
+// ------------------------------------------------------------------ health
 
-    let login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/auth-with-password",
-            None,
-            json!({"identity": "mfa-user@example.com", "password": "secret123"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let login_body = json_body(login).await;
-    assert!(
-        login_body["token"].is_null(),
-        "a correct password login on an mfaRequired collection must not return a usable session token directly"
+#[tokio::test]
+async fn health_matches_the_pocketbase_envelope() {
+    let harness = Harness::new().await;
+
+    let (status, body) = harness.get("/api/health").await;
+    assert_eq!(status, 200);
+    // `code`, not `status` — the one endpoint that kept the old key.
+    assert_eq!(body["code"], 200);
+    assert_eq!(body["message"], "API is healthy.");
+    assert_eq!(body["data"], json!({}));
+
+    let (status, body) = harness.get_auth("/api/health").await;
+    assert_eq!(status, 200);
+    assert!(body["data"]["canBackup"].is_boolean());
+    assert!(body["data"]["realIP"].is_string());
+    assert!(body["data"].get("possibleProxyHeader").is_some());
+}
+
+// ---------------------------------------------------------------- settings
+
+#[tokio::test]
+async fn settings_round_trip_keeps_secrets_out_of_responses() {
+    let harness = Harness::new().await;
+
+    let (status, body) = harness.get_auth("/api/settings").await;
+    assert_eq!(status, 200);
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "backups",
+            "batch",
+            "logs",
+            "meta",
+            "rateLimits",
+            "s3",
+            "smtp",
+            "superuserIPs",
+            "trustedProxy"
+        ]
     );
-    let mfa_id = login_body["mfaId"].as_str().unwrap().to_string();
-    assert_eq!(login_body["mfaRequired"], true);
+    assert!(body["smtp"].get("password").is_none());
+    assert!(body["s3"].get("secret").is_none());
+    assert!(body["backups"]["s3"].get("secret").is_none());
 
-    let code = find_otp_code(&state, &collection_id, &user_id).await;
+    // Store a secret, then patch an unrelated key: the secret survives
+    // because the merge is deep and the client never echoed it back.
+    let mut with_secret = Settings::default();
+    with_secret.smtp.password = "hunter2".into();
+    harness.app.set_settings(with_secret).await.unwrap();
 
-    let confirm = app
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/users/mfa/confirm",
-            None,
-            json!({"mfaId": mfa_id, "otp": code}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(confirm.status(), StatusCode::OK);
-    let confirm_body = json_body(confirm).await;
-    assert!(confirm_body["token"]
-        .as_str()
-        .is_some_and(|t| !t.is_empty()));
-    assert_eq!(confirm_body["record"]["id"], user_id);
+    let (status, body) = harness
+        .json_auth(
+            "PATCH",
+            "/api/settings",
+            json!({"meta": {"appName": "Renamed"}, "logs": {"maxDays": 9}}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["meta"]["appName"], "Renamed");
+    assert_eq!(body["logs"]["maxDays"], 9);
+    assert!(body["smtp"].get("password").is_none());
+    assert_eq!(harness.app.settings().smtp.password, "hunter2");
+    // Untouched keys keep their values.
+    assert_eq!(body["meta"]["senderAddress"], "support@example.com");
+
+    // ...and the change is hot: no restart, the next GET sees it.
+    let (_, body) = harness.get_auth("/api/settings").await;
+    assert_eq!(body["meta"]["appName"], "Renamed");
 }
 
 #[tokio::test]
-async fn request_log_middleware_captures_requests() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
+async fn settings_validation_reports_a_nested_tree() {
+    let harness = Harness::new().await;
+    let (status, body) = harness
+        .json_auth(
+            "PATCH",
+            "/api/settings",
+            json!({"meta": {"appName": ""}, "logs": {"maxDays": -1}}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["message"],
+        "An error occurred while saving the new settings."
+    );
+    assert_eq!(
+        body["data"]["meta"]["appName"]["code"],
+        "validation_required"
+    );
+    assert!(body["data"]["logs"]["maxDays"].is_object());
+    // Nothing was persisted.
+    assert_eq!(harness.app.settings().meta.app_name, "Acme");
+}
 
-    app.clone()
-        .oneshot(get_request("/api/health", None))
-        .await
-        .unwrap();
+#[tokio::test]
+async fn test_s3_reports_a_disabled_filesystem() {
+    let harness = Harness::new().await;
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/settings/test/s3",
+            json!({"filesystem": "storage"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    let message = body["message"].as_str().unwrap();
+    assert!(
+        message.contains("Failed to test the S3 filesystem."),
+        "{message}"
+    );
+    assert!(
+        message.contains("S3 storage filesystem is not enabled."),
+        "{message}"
+    );
+}
 
-    // The middleware persists on a spawned task rather than inline (so
-    // logging never adds latency to the response it's describing) — give
-    // it a moment to land before asserting on it.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+#[tokio::test]
+async fn test_email_validates_its_arguments() {
+    let harness = Harness::new().await;
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/settings/test/email",
+            json!({"collection": "_superusers", "email": "not-an-email", "template": "verification"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["data"]["email"]["code"], "validation_is_email");
 
-    let logs = app
-        .oneshot(get_request("/api/logs", Some(&token)))
-        .await
-        .unwrap();
-    assert_eq!(logs.status(), StatusCode::OK);
-    let body = json_body(logs).await;
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/settings/test/email",
+            json!({"collection": "_superusers", "email": "a@b.co", "template": "bogus"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["data"]["template"].is_object());
+
+    // A valid request goes through the (log-backed) mailer.
+    let (status, _) = harness
+        .json_auth(
+            "POST",
+            "/api/settings/test/email",
+            json!({"collection": "_superusers", "email": "a@b.co", "template": "verification"}),
+        )
+        .await;
+    assert_eq!(status, 204);
+}
+
+// -------------------------------------------------------------------- logs
+
+#[tokio::test]
+async fn requests_are_logged_then_listed_filtered_and_fetched() {
+    let harness = Harness::new().await;
+
+    // A success and a failure, so both slog levels are exercised.
+    assert_eq!(harness.get("/api/health").await.0, 200);
+    assert_eq!(harness.get("/api/not-a-route").await.0, 404);
+    harness.app.logger().flush().await;
+
+    let (status, body) = harness.get_auth("/api/logs?perPage=50").await;
+    assert_eq!(status, 200);
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        ["items", "page", "perPage", "totalItems", "totalPages"]
+    );
+    assert!(body["totalItems"].as_i64().unwrap() >= 2);
+
     let items = body["items"].as_array().unwrap();
+    let health = items
+        .iter()
+        .find(|i| i["message"] == "GET /api/health")
+        .expect("the health request was logged");
+    let mut row_keys: Vec<&str> = health
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    row_keys.sort();
+    assert_eq!(row_keys, ["created", "data", "id", "level", "message"]);
+    assert_eq!(health["level"], 0);
+    assert_eq!(health["data"]["type"], "request");
+    assert_eq!(health["data"]["method"], "GET");
+    assert_eq!(health["data"]["url"], "/api/health");
+    assert_eq!(health["data"]["status"], 200);
+    assert_eq!(health["data"]["auth"], "");
+    assert!(health["data"]["execTime"].is_number());
     assert!(
-        items
-            .iter()
-            .any(|e| e["path"] == "/api/health" && e["status"] == 200),
-        "expected the /api/health request to show up in the request log: {items:?}"
+        health["data"].get("error").is_none(),
+        "a 2xx row has no error"
     );
+    assert!(health["id"].as_str().unwrap().len() == 15);
+
+    let failure = items
+        .iter()
+        .find(|i| i["message"] == "GET /api/not-a-route")
+        .expect("the 404 was logged");
+    assert_eq!(failure["level"], 8, "a failed request logs at error level");
+    assert_eq!(failure["data"]["status"], 404);
+    assert_eq!(
+        failure["data"]["error"],
+        AppError::DEFAULT_NOT_FOUND,
+        "the error message travels on the response extensions"
+    );
+
+    // Filters compile against the synthetic log schema.
+    let (status, filtered) = harness
+        .get_auth(r#"/api/logs?filter=data.url%20%3D%20%22%2Fapi%2Fhealth%22"#)
+        .await;
+    assert_eq!(status, 200);
+    assert!(filtered["totalItems"].as_i64().unwrap() >= 1);
+    for item in filtered["items"].as_array().unwrap() {
+        assert_eq!(item["data"]["url"], "/api/health");
+    }
+
+    let (status, by_level) = harness
+        .get_auth("/api/logs?filter=level%20%3E%3D%208")
+        .await;
+    assert_eq!(status, 200);
+    for item in by_level["items"].as_array().unwrap() {
+        assert_eq!(item["level"], 8);
+    }
+
+    // getOne + 404.
+    let id = health["id"].as_str().unwrap();
+    let (status, one) = harness.get_auth(&format!("/api/logs/{id}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(one["id"], id);
+    let (status, missing) = harness.get_auth("/api/logs/nonexistent0001").await;
+    assert_eq!(status, 404);
+    assert_eq!(missing["message"], AppError::DEFAULT_NOT_FOUND);
+
+    // Stats are hourly buckets.
+    let (status, stats) = harness.get_auth("/api/logs/stats").await;
+    assert_eq!(status, 200);
+    let buckets = stats.as_array().unwrap();
+    assert!(!buckets.is_empty());
+    for bucket in buckets {
+        let mut keys: Vec<&str> = bucket
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["date", "total"]);
+        let date = bucket["date"].as_str().unwrap();
+        assert!(date.ends_with(":00:00.000Z"), "{date}");
+    }
+
+    // A malformed filter is a 400, not a 500.
+    let (status, _) = harness.get_auth("/api/logs?filter=nonsense%20field").await;
+    assert_eq!(status, 400);
 }
 
+// ------------------------------------------------------------------- crons
+
 #[tokio::test]
-async fn backups_round_trip_on_sqlite() {
-    // `VACUUM INTO` needs a real on-disk database to copy from — `:memory:`
-    // (what `test_state()` normally uses) has no backing file for SQLite
-    // to snapshot from in the first place, so this test spins up its own
-    // file-backed instance instead.
-    let dir = std::env::temp_dir().join(format!(
-        "cratebase-api-test-backup-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let db_path = dir.join("cratebase.db");
+async fn crons_list_the_system_jobs_and_run_on_demand() {
+    let harness = Harness::new().await;
 
-    let config = Config {
-        database_url: format!("sqlite://{}?mode=rwc", db_path.to_string_lossy()),
-        storage: StorageConfig::Local {
-            base_dir: dir.join("storage").to_string_lossy().to_string(),
-        },
-        auth_secret: "test-secret".to_string(),
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        admin_token_ttl_seconds: 3600,
-        auth_token_ttl_seconds: 3600,
-        cors_allow_origins: vec!["*".to_string()],
-        data_dir: dir.to_string_lossy().to_string(),
-        auth_rate_limit_enabled: false,
-        mailer: MailerConfig::Log,
-        mail_from_address: "no-reply@test.local".to_string(),
-        mail_from_name: "Cratebase Test".to_string(),
-        public_app_url: "http://localhost:8090".to_string(),
-        verification_token_ttl_seconds: 86_400,
-        password_reset_token_ttl_seconds: 3_600,
-        email_change_token_ttl_seconds: 3_600,
-        file_token_ttl_seconds: 5,
-        otp_token_ttl_seconds: 300,
-        oauth_providers: Vec::new(),
-    };
-    let state = build_state(config).await.unwrap();
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    let create = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/backups",
-            Some(&token),
-            json!({}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(create.status(), StatusCode::OK);
-    let create_body = json_body(create).await;
-    let name = create_body["name"].as_str().unwrap().to_string();
-    assert!(
-        create_body["size"].as_u64().unwrap() > 0,
-        "a real sqlite snapshot must have nonzero size"
-    );
-
-    let list = app
-        .clone()
-        .oneshot(get_request("/api/backups", Some(&token)))
-        .await
-        .unwrap();
-    assert_eq!(list.status(), StatusCode::OK);
-    let list_body = json_body(list).await;
-    assert!(list_body
+    let (status, jobs) = harness.get_auth("/api/crons").await;
+    assert_eq!(status, 200);
+    let by_id: std::collections::HashMap<&str, &str> = jobs
         .as_array()
         .unwrap()
         .iter()
-        .any(|b| b["name"] == name));
+        .map(|j| (j["id"].as_str().unwrap(), j["expression"].as_str().unwrap()))
+        .collect();
+    assert_eq!(by_id["__pbDBOptimize__"], "0 0 * * *");
+    assert_eq!(by_id["__pbMFACleanup__"], "0 * * * *");
+    assert_eq!(by_id["__pbOTPCleanup__"], "0 * * * *");
+    assert_eq!(by_id["__pbLogsCleanup__"], "0 */6 * * *");
+    // The auto-backup job only exists once a schedule is configured.
+    assert!(!by_id.contains_key("__pbAutoBackup__"));
+    for job in jobs.as_array().unwrap() {
+        let mut keys: Vec<&str> = job
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["expression", "id"]);
+    }
 
-    let download = app
-        .clone()
-        .oneshot(get_request(
-            &format!("/api/backups/{name}/download"),
-            Some(&token),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(download.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(download.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert!(
-        !bytes.is_empty(),
-        "downloaded backup must contain the sqlite snapshot bytes"
+    let response = harness
+        .raw_auth("POST", "/api/crons/__pbLogsCleanup__")
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let (status, body) = harness
+        .json_auth("POST", "/api/crons/__nope__", json!({}))
+        .await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        body,
+        json!({"status": 404, "message": "Missing or invalid cron job.", "data": {}})
     );
+}
 
-    let delete = app
-        .clone()
+#[tokio::test]
+async fn the_auto_backup_job_follows_the_settings() {
+    let harness = Harness::new().await;
+    let mut settings = Settings::default();
+    settings.backups.cron = "0 3 * * *".into();
+    harness.app.set_settings(settings).await.unwrap();
+
+    let (_, jobs) = harness.get_auth("/api/crons").await;
+    let backup = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["id"] == "__pbAutoBackup__")
+        .expect("__pbAutoBackup__ is registered");
+    assert_eq!(backup["expression"], "0 3 * * *");
+
+    // Clearing the schedule removes it again.
+    harness.app.set_settings(Settings::default()).await.unwrap();
+    let (_, jobs) = harness.get_auth("/api/crons").await;
+    assert!(!jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|j| j["id"] == "__pbAutoBackup__"));
+}
+
+// ----------------------------------------------------------------- backups
+
+#[tokio::test]
+async fn backups_create_list_download_and_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    // A real file-backed database, so there is something to snapshot.
+    let mut config = Config::for_data_dir(dir.path());
+    config.secret = "test-secret-0123456789".into();
+    let app = App::new(config);
+    app.bootstrap().await.unwrap();
+    let id = app
+        .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
+        .await
+        .unwrap();
+    let token = app
+        .mint_token("_superusers", &id, cratebase_auth::TokenType::Auth, 3600)
+        .await
+        .unwrap();
+    let file_token = app
+        .mint_token("_superusers", &id, cratebase_auth::TokenType::File, 3600)
+        .await
+        .unwrap();
+    let router = || cratebase_server::router(app.clone());
+
+    let created = router()
         .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/api/backups/{name}"))
-                .header("authorization", format!("Bearer {token}"))
+            Request::post("/api/backups")
+                .header("authorization", &token)
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"name": "conformance.zip"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::NO_CONTENT);
+
+    let (status, list) = split(
+        router()
+            .oneshot(
+                Request::get("/api/backups")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["key"] == "conformance.zip")
+        .expect("the backup is listed");
+    let mut keys: Vec<&str> = entry
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort();
+    assert_eq!(keys, ["key", "modified", "size"]);
+    let size = entry["size"].as_u64().unwrap();
+    assert!(size > 0);
+
+    // Downloading needs a superuser file token in the query string.
+    let denied = router()
+        .oneshot(
+            Request::get("/api/backups/conformance.zip")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(delete.status(), StatusCode::NO_CONTENT);
-
-    let list_after = app
-        .oneshot(get_request("/api/backups", Some(&token)))
-        .await
-        .unwrap();
-    let list_after_body = json_body(list_after).await;
-    assert!(
-        !list_after_body
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|b| b["name"] == name),
-        "deleted backup must no longer be listed"
+    assert_eq!(denied.status(), 403);
+    let (_, body) = split(denied).await;
+    assert_eq!(
+        body["message"],
+        "Insufficient permissions to access the resource."
     );
-}
 
-/// Proves the same server rejects a backup attempt outright on Postgres
-/// rather than silently doing nothing or corrupting a shared cluster.
-/// Skips (rather than fails) when `TEST_POSTGRES_URL` isn't set, matching
-/// `crates/db/tests/postgres.rs`'s convention.
-#[tokio::test]
-async fn backups_are_rejected_on_postgres() {
-    let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
-        eprintln!("skipping backups_are_rejected_on_postgres: TEST_POSTGRES_URL not set");
-        return;
-    };
-
-    let dir = std::env::temp_dir().join(format!(
-        "cratebase-api-test-pg-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let config = Config {
-        database_url: url,
-        storage: StorageConfig::Local {
-            base_dir: dir.join("storage").to_string_lossy().to_string(),
-        },
-        auth_secret: "test-secret".to_string(),
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        admin_token_ttl_seconds: 3600,
-        auth_token_ttl_seconds: 3600,
-        cors_allow_origins: vec!["*".to_string()],
-        data_dir: dir.to_string_lossy().to_string(),
-        auth_rate_limit_enabled: false,
-        mailer: MailerConfig::Log,
-        mail_from_address: "no-reply@test.local".to_string(),
-        mail_from_name: "Cratebase Test".to_string(),
-        public_app_url: "http://localhost:8090".to_string(),
-        verification_token_ttl_seconds: 86_400,
-        password_reset_token_ttl_seconds: 3_600,
-        email_change_token_ttl_seconds: 3_600,
-        file_token_ttl_seconds: 5,
-        otp_token_ttl_seconds: 300,
-        oauth_providers: Vec::new(),
-    };
-    let state = build_state(config).await.unwrap();
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-
-    // Doesn't reuse `admin_token`'s fixed `admin@test.local` address: a
-    // shared Postgres instance can carry admin rows across test runs
-    // (there's no per-test schema reset here, unlike
-    // `crates/db/tests/postgres.rs`), and a unique id-suffixed email
-    // sidesteps that instead of requiring one.
-    let email = format!("backups-pg-test-{}@test.local", cratebase_core::new_id());
-    let hash = cratebase_auth::hash_password("admin12345").unwrap();
-    cratebase_db::admins::create_admin(&state.db, &email, &hash)
+    let downloaded = router()
+        .oneshot(
+            Request::get(format!("/api/backups/conformance.zip?token={file_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let login = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/admins/auth-with-password",
-            None,
-            json!({"email": email, "password": "admin12345"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let token = json_body(login).await["token"]
+    assert_eq!(downloaded.status(), 200);
+    assert_eq!(downloaded.headers()["content-type"], "application/zip");
+    let bytes = to_bytes(downloaded.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes.len() as u64, size);
+    assert_eq!(&bytes[..2], b"PK", "zip magic");
+
+    // A duplicate name and a traversal attempt are both rejected.
+    let (status, body) = split(
+        router()
+            .oneshot(
+                Request::post("/api/backups")
+                    .header("authorization", &token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"name": "conformance.zip"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["data"]["name"]["code"],
+        "validation_backup_name_exists"
+    );
+
+    let (status, body) = split(
+        router()
+            .oneshot(
+                Request::post("/api/backups")
+                    .header("authorization", &token)
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"name": "../escape.zip"}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body["data"]["name"].is_object());
+
+    // Deleting a missing one is a 400 with PocketBase's wording.
+    let (status, body) = split(
+        router()
+            .oneshot(
+                Request::delete("/api/backups/missing.zip")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert!(body["message"]
         .as_str()
         .unwrap()
-        .to_string();
+        .contains("Invalid or already deleted backup file."));
 
-    let create = app
-        .oneshot(json_request(
-            "POST",
-            "/api/backups",
-            Some(&token),
-            json!({}),
-        ))
+    let removed = router()
+        .oneshot(
+            Request::delete("/api/backups/conformance.zip")
+                .header("authorization", &token)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(
-        create.status(),
-        StatusCode::BAD_REQUEST,
-        "backups must be refused on a Postgres-backed server"
-    );
-}
+    assert_eq!(removed.status(), StatusCode::NO_CONTENT);
 
-#[tokio::test]
-async fn collection_save_rejects_unparseable_and_unknown_field_rules() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
-
-    // Syntax error: dangling operator.
-    let bad_syntax = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "rule_syntax_error",
-                "type": "base",
-                "schema": [{"id": "f1", "name": "title", "type": "text"}],
-                "listRule": "title =",
-                "viewRule": "", "createRule": "", "updateRule": null, "deleteRule": null
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(bad_syntax.status(), StatusCode::BAD_REQUEST);
-    let body = json_body(bad_syntax).await;
-    assert!(
-        body["message"].as_str().unwrap().contains("listRule"),
-        "error should name which rule failed: {body:?}"
-    );
-
-    // Unknown field: typo'd column name.
-    let bad_field = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "rule_unknown_field",
-                "type": "base",
-                "schema": [{"id": "f1", "name": "title", "type": "text"}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "titel = \"x\"", "deleteRule": null
-            }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(bad_field.status(), StatusCode::BAD_REQUEST);
-    let body = json_body(bad_field).await;
-    assert!(
-        body["message"].as_str().unwrap().contains("updateRule"),
-        "error should name which rule failed: {body:?}"
-    );
-
-    // Neither invalid collection was persisted.
-    let list = app
-        .oneshot(get_request("/api/collections", Some(&token)))
-        .await
-        .unwrap();
-    let names: Vec<String> = json_body(list)
-        .await
+    let (_, list) = split(
+        router()
+            .oneshot(
+                Request::get("/api/backups")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!list
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| c["name"].as_str().unwrap().to_string())
-        .collect();
-    assert!(!names.contains(&"rule_syntax_error".to_string()));
-    assert!(!names.contains(&"rule_unknown_field".to_string()));
+        .any(|b| b["key"] == "conformance.zip"));
+
+    // Restoring something that isn't there never touches the data dir.
+    let (status, body) = split(
+        router()
+            .oneshot(
+                Request::post("/api/backups/missing.zip/restore")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["message"], "Missing or invalid backup file.");
+
+    app.terminate(false).await;
+}
+
+// ------------------------------------------------------------------ errors
+
+#[tokio::test]
+async fn errors_use_the_pocketbase_envelope() {
+    let harness = Harness::new().await;
+
+    // 404: unknown route.
+    let (status, body) = harness.get("/api/not-a-route").await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        body,
+        json!({"status": 404, "message": AppError::DEFAULT_NOT_FOUND, "data": {}})
+    );
+
+    // 404 (not 405): the wrong method on a route that exists.
+    let (status, body) = harness
+        .send(Request::delete("/api/health").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(status, 404, "PocketBase answers 404, not 405");
+    assert_eq!(body["data"], json!({}));
+
+    // 401: an admin endpoint without a token.
+    let (status, body) = harness.get("/api/settings").await;
+    assert_eq!(status, 401);
+    assert_eq!(
+        body,
+        json!({"status": 401, "message": AppError::DEFAULT_UNAUTHORIZED, "data": {}})
+    );
+
+    // 401: a token that is well-formed but not signed with the record key.
+    let (status, _) = harness
+        .send(
+            Request::get("/api/settings")
+                .header("authorization", "Bearer not.a.token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, 401);
+
+    // 403: a superuser whose IP is not on the allowlist.
+    let settings = Settings {
+        superuser_ips: vec!["10.99.99.99".into()],
+        ..Settings::default()
+    };
+    harness.app.set_settings(settings).await.unwrap();
+    let (status, body) = harness.get_auth("/api/settings").await;
+    assert_eq!(status, 403);
+    assert_eq!(body["message"], AppError::DEFAULT_FORBIDDEN);
+    harness.app.set_settings(Settings::default()).await.unwrap();
+
+    // 400: a malformed JSON body is PocketBase-shaped, not axum's text.
+    let (status, body) = harness
+        .send(
+            Request::patch("/api/settings")
+                .header("authorization", &harness.token)
+                .header("content-type", "application/json")
+                .body(Body::from("{not json"))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["message"].is_string());
+    assert_eq!(body["data"], json!({}));
 }
 
 #[tokio::test]
-async fn request_otp_rate_limits_after_burst() {
-    let state = test_state_with_rate_limit(true).await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
+async fn the_rate_limiter_returns_pocketbases_429() {
+    let harness = Harness::new().await;
+    let mut settings = Settings::default();
+    settings.rate_limits.enabled = true;
+    settings.rate_limits.rules = vec![cratebase_core::settings::RateLimitRule {
+        label: "/api/health".into(),
+        audience: String::new(),
+        duration: 60,
+        max_requests: 2,
+    }];
+    harness.app.set_settings(settings).await.unwrap();
 
-    fn otp_request(forwarded_for: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri("/api/collections/users/request-otp")
-            .header("content-type", "application/json")
-            .header("x-forwarded-for", forwarded_for)
-            .body(Body::from(
-                json!({"email": "nobody@test.local"}).to_string(),
-            ))
-            .unwrap()
-    }
+    assert_eq!(harness.get("/api/health").await.0, 200);
+    assert_eq!(harness.get("/api/health").await.0, 200);
+    let (status, body) = harness.get("/api/health").await;
+    assert_eq!(status, 429);
+    assert_eq!(
+        body,
+        json!({"status": 429, "message": "Too Many Requests.", "data": {}})
+    );
 
-    // Same burst=8 governor config as routes::auth::router. request-otp
-    // always answers 204 regardless of match (no-enumeration), so every
-    // in-burst request should be 204, not 429.
-    for i in 0..8 {
-        let res = app
-            .clone()
-            .oneshot(otp_request("203.0.114.9"))
-            .await
-            .unwrap();
+    // A rule that does not cover the path leaves it alone.
+    assert_eq!(harness.get("/api/not-a-route").await.0, 404);
+}
+
+#[tokio::test]
+async fn a_spoofed_forwarded_header_cannot_dodge_the_rate_limit() {
+    let harness = Harness::new().await;
+    let mut settings = Settings::default();
+    settings.rate_limits.enabled = true;
+    settings.rate_limits.rules = vec![cratebase_core::settings::RateLimitRule {
+        label: "/api/health".into(),
+        audience: String::new(),
+        duration: 60,
+        max_requests: 1,
+    }];
+    harness.app.set_settings(settings).await.unwrap();
+
+    // No trusted proxy is configured, so every one of these is the same
+    // (empty, in-process) client however creative the header is.
+    assert_eq!(harness.get("/api/health").await.0, 200);
+    for spoof in ["1.1.1.1", "2.2.2.2", "3.3.3.3"] {
+        let (status, _) = harness
+            .send(
+                Request::get("/api/health")
+                    .header("x-forwarded-for", spoof)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
         assert_eq!(
-            res.status(),
-            StatusCode::NO_CONTENT,
-            "request {i} within burst should reach the handler, not be rate-limited"
+            status, 429,
+            "X-Forwarded-For: {spoof} must not reset the window"
         );
     }
-    let res = app.oneshot(otp_request("203.0.114.9")).await.unwrap();
-    assert_eq!(
-        res.status(),
-        StatusCode::TOO_MANY_REQUESTS,
-        "the 9th immediate request from the same IP must exceed the burst — request-otp is a \
-         mail-bombing vector and must be throttled the same as request-verification/etc"
-    );
+
+    // Once the operator declares the header, it is honoured and each
+    // forwarded IP gets its own budget.
+    harness.app.rate_limiter().reset();
+    let mut settings = harness.app.settings().as_ref().clone();
+    settings.trusted_proxy.headers = vec!["X-Forwarded-For".into()];
+    harness.app.set_settings(settings).await.unwrap();
+    for distinct in ["1.1.1.1", "2.2.2.2", "3.3.3.3"] {
+        let (status, _) = harness
+            .send(
+                Request::get("/api/health")
+                    .header("x-forwarded-for", distinct)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(status, 200, "{distinct} has its own window");
+    }
 }
 
+// -------------------------------------------------------------- superusers
+
 #[tokio::test]
-async fn rules_support_relation_dot_notation() {
-    let state = test_state().await;
-    let app = build_app(state.clone(), &cratebase_server::plugins::registry());
-    let token = admin_token(&state, &app).await;
+async fn the_superuser_cli_path_creates_a_usable_account() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::new(Config::memory(dir.path()));
+    app.bootstrap().await.unwrap();
 
-    let create_authors = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "rule_authors",
-                "type": "base",
-                "schema": [{"id": "f1", "name": "name", "type": "text", "required": true}],
-                "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": ""
-            }),
-        ))
+    let id = app
+        .create_superuser("cli@example.com", "correct horse")
         .await
         .unwrap();
-    let authors_id = json_body(create_authors).await["id"]
-        .as_str()
+    assert_eq!(id.len(), 15);
+    let row = app
+        .find_superuser_by_email("cli@example.com")
+        .await
         .unwrap()
-        .to_string();
+        .expect("the row exists");
+    let hash = row.get_str("password").unwrap();
+    assert!(cratebase_auth::verify_password("correct horse", hash));
+    assert_ne!(hash, "correct horse", "passwords are hashed");
+    assert_eq!(row.get_str("tokenKey").unwrap().len(), 50);
 
-    // Saving a listRule using the exact dot-notation example the admin
-    // dashboard's rule-syntax-help popover advertises must succeed, not
-    // be falsely rejected by save-time validation.
-    let create_articles = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections",
-            Some(&token),
-            json!({
-                "name": "rule_articles",
-                "type": "base",
-                "schema": [
-                    {"id": "f1", "name": "title", "type": "text", "required": true},
-                    {"id": "f2", "name": "author", "type": "relation", "options": {"collectionId": authors_id}}
-                ],
-                "listRule": "author.name = \"Ada\"",
-                "viewRule": "author.name = \"Ada\"",
-                "createRule": "", "updateRule": null, "deleteRule": null
-            }),
-        ))
+    // A token minted for it authenticates.
+    let token = app
+        .mint_token("_superusers", &id, cratebase_auth::TokenType::Auth, 3600)
         .await
         .unwrap();
+    let (status, _) = split(
+        cratebase_server::router(app.clone())
+            .oneshot(
+                Request::get("/api/settings")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // Changing the password rotates `tokenKey`, so the old token dies.
+    assert!(app
+        .set_superuser_password("cli@example.com", "a different one")
+        .await
+        .unwrap());
+    let (status, _) = split(
+        cratebase_server::router(app.clone())
+            .oneshot(
+                Request::get("/api/settings")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(
-        create_articles.status(),
-        StatusCode::OK,
-        "a listRule/viewRule using relation dot-notation (the admin dashboard's own \
-         documented example) must be accepted, not rejected as an unknown field: {:?}",
-        json_body(create_articles).await
+        status, 401,
+        "rotating tokenKey invalidates existing sessions"
     );
 
-    let ada = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/rule_authors/records",
-            None,
-            json!({"name": "Ada"}),
-        ))
-        .await
-        .unwrap();
-    let ada_id = json_body(ada).await["id"].as_str().unwrap().to_string();
+    assert!(app.delete_superuser("cli@example.com").await.unwrap());
+    assert!(!app.delete_superuser("cli@example.com").await.unwrap());
+}
 
-    let bob = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/rule_authors/records",
-            None,
-            json!({"name": "Bob"}),
-        ))
-        .await
-        .unwrap();
-    let bob_id = json_body(bob).await["id"].as_str().unwrap().to_string();
+// ------------------------------------------------------------------ plugins
 
-    app.clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/rule_articles/records",
-            None,
-            json!({"title": "By Ada", "author": ada_id}),
-        ))
-        .await
-        .unwrap();
-    let by_bob = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/collections/rule_articles/records",
-            None,
-            json!({"title": "By Bob", "author": bob_id}),
-        ))
-        .await
-        .unwrap();
-    let by_bob_id = json_body(by_bob).await["id"].as_str().unwrap().to_string();
+#[tokio::test]
+async fn plugin_routes_live_inside_the_api_nest() {
+    struct Echo;
+    impl cratebase_server::plugin::Plugin for Echo {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn routes(&self) -> Option<axum::Router<App>> {
+            Some(axum::Router::new().route(
+                "/ping",
+                axum::routing::get(|| async { axum::Json(json!({"pong": true})) }),
+            ))
+        }
+    }
 
-    // listRule enforcement: only Ada's article is visible.
-    let list = app
-        .clone()
-        .oneshot(get_request("/api/collections/rule_articles/records", None))
-        .await
-        .unwrap();
-    let items = json_body(list).await["items"].as_array().unwrap().clone();
-    assert_eq!(items.len(), 1, "listRule should only admit Ada's article");
-    assert_eq!(items[0]["title"], "By Ada");
+    let harness = Harness::with(|app| app.register_plugin(Echo).unwrap()).await;
+    let (status, body) = harness.get("/api/plugins/echo/ping").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["pong"], true);
 
-    // viewRule enforcement: Bob's article is individually denied too.
-    let view_bob = app
-        .oneshot(get_request(
-            &format!("/api/collections/rule_articles/records/{by_bob_id}"),
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(view_bob.status(), StatusCode::NOT_FOUND);
+    // ...which means the request-log middleware saw it.
+    harness.app.logger().flush().await;
+    let (_, logs) = harness
+        .get_auth("/api/logs?filter=data.url%20%7E%20%22plugins%22")
+        .await;
+    assert!(
+        logs["totalItems"].as_i64().unwrap() >= 1,
+        "plugin routes must be logged like every other /api route"
+    );
 }

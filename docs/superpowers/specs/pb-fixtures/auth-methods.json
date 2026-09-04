@@ -1,0 +1,23 @@
+{
+  "password": {
+    "identityFields": [
+      "email"
+    ],
+    "enabled": true
+  },
+  "oauth2": {
+    "providers": [],
+    "enabled": false
+  },
+  "mfa": {
+    "enabled": false,
+    "duration": 0
+  },
+  "otp": {
+    "enabled": false,
+    "duration": 0
+  },
+  "authProviders": [],
+  "usernamePassword": false,
+  "emailPassword": true
+}

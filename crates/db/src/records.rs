@@ -1,249 +1,311 @@
-use cratebase_core::field::FieldType;
-use cratebase_core::{new_id, now, Collection};
-use cratebase_filter::CompiledFilter;
+//! The record read/write API: everything above this line is HTTP, hooks
+//! and events (the server layer); everything below it is SQL.
+//!
+//! Deliberate boundaries, so the server layer stays in charge of the
+//! things it must own:
+//!
+//! * **No events, no hooks, no storage.** `create`/`update`/`delete`
+//!   touch the database and nothing else. `delete` *reports* the file
+//!   keys it orphaned; removing them from storage is the caller's job.
+//! * **Rules in, HTTP status out.** `list`/`find_by_id` apply the
+//!   collection's `listRule`/`viewRule`; a record the rule hides is
+//!   absent (a denied `view` is [`DbError::NotFound`], never a 403, so
+//!   the API cannot be used to probe for hidden ids). A rule of `None`
+//!   ("superusers only") yields an empty page here — PocketBase answers
+//!   that with `403` before querying, which is the server layer's call
+//!   (see [`crate::rules::evaluate`]).
+//! * **Serialization is the caller's.** Records come back as
+//!   [`Record`]s; `?fields=` projection happens at the JSON boundary via
+//!   [`cratebase_core::record::project_fields`].
+
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
+
+use cratebase_core::{
+    ids, now, Collection, Field, FieldKind, FieldType, Record, RESERVED_FIELD_NAMES,
+};
 use serde_json::{Map, Value};
-use sqlx::any::{AnyArguments, AnyRow};
-use sqlx::{Arguments, Row};
 
-use crate::backend::Backend;
+use crate::collections::CollectionStore;
+use crate::context::{CollectionResolver, RequestContext};
+use crate::engine::{quote_ident, Executor, Row, Sql};
 use crate::error::{DbError, DbResult};
-use crate::pool::Db;
-use crate::resolver::{CollectionResolver, RequestContext};
-use crate::value::{bind_filter_value, ColumnValue};
+use crate::query::{self, in_placeholders, Query};
+use crate::rules;
+use crate::validate::{self, UploadMeta};
+use crate::{expand, schema};
 
-pub struct ListParams<'a> {
-    pub filter: Option<&'a str>,
-    pub sort: Option<&'a str>,
-    pub page: i64,
-    pub per_page: i64,
+/// PocketBase's default and maximum page sizes. The cap is 1000, as
+/// measured against v0.40.2 (`tests/conformance/records.test.ts`).
+pub const DEFAULT_PER_PAGE: i64 = 30;
+pub const MAX_PER_PAGE: i64 = 1000;
+
+/// A file that belonged to a deleted record. The caller removes it from
+/// storage; `crates/db` has no storage handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRef {
+    pub collection_id: String,
+    pub record_id: String,
+    pub filename: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ListParams<'a> {
+    /// 1-based; clamped to at least 1.
+    pub page: i64,
+    /// Clamped to `1..=1000`. The caller supplies PocketBase's default
+    /// of 30 when the request omits `perPage`.
+    pub per_page: i64,
+    pub sort: Option<&'a str>,
+    pub filter: Option<&'a str>,
+    pub expand: Option<&'a str>,
+    /// Skip the `COUNT(*)`; `totalItems`/`totalPages` come back as `-1`,
+    /// exactly as PocketBase's `?skipTotal=1`.
+    pub skip_total: bool,
+}
+
+#[derive(Debug)]
 pub struct ListResult {
-    pub items: Vec<Value>,
+    pub items: Vec<Record>,
     pub page: i64,
     pub per_page: i64,
     pub total_items: i64,
     pub total_pages: i64,
 }
 
-fn is_multiple(field: &cratebase_core::Field) -> bool {
-    field.field_type.supports_multiple() && field.options.multiple.unwrap_or(false)
+// --- column <-> JSON ------------------------------------------------------
+
+/// Whether a value is already a password hash rather than a plaintext to
+/// be hashed: Argon2 (ours) or bcrypt (imported from PocketBase).
+pub fn is_hash(value: &Value) -> bool {
+    matches!(value.as_str(), Some(s) if s.starts_with("$argon2") || s.starts_with("$2"))
 }
 
-fn row_to_record(row: &AnyRow, collection: &Collection) -> DbResult<Value> {
-    let mut obj = Map::new();
-    obj.insert("id".into(), Value::String(row.try_get("id")?));
-    obj.insert("created".into(), Value::String(row.try_get("created")?));
-    obj.insert("updated".into(), Value::String(row.try_get("updated")?));
-    obj.insert("collectionId".into(), Value::String(collection.id.clone()));
-    obj.insert(
-        "collectionName".into(),
-        Value::String(collection.name.clone()),
-    );
-    if collection.is_auth() {
-        let identity = collection.auth_options.identity_field();
-        let value: Option<String> = row.try_get(identity)?;
-        obj.insert(
-            identity.to_string(),
-            value.map(Value::String).unwrap_or(Value::Null),
-        );
-        let verified: Option<i64> = row.try_get("verified")?;
-        obj.insert(
-            "verified".into(),
-            Value::Bool(verified.map(|n| n != 0).unwrap_or(false)),
-        );
+/// Whether a field's stored column holds JSON text.
+fn stores_json(field: &Field) -> bool {
+    schema::is_multiple(field)
+        || matches!(field.field_type(), FieldType::Json | FieldType::GeoPoint)
+}
+
+/// Encode a JSON value for its physical column. Multi-valued fields and
+/// `json`/`geoPoint` become JSON text; numbers are `REAL`; bools are
+/// `0`/`1`; everything else is text, with `null` normalized to `''` so a
+/// column never mixes `NULL` and `''` for the same "empty".
+pub fn column_value(field: &Field, value: &Value) -> Sql {
+    if schema::is_multiple(field) {
+        let items: Vec<Value> = match value {
+            Value::Array(a) => a.clone(),
+            Value::Null => vec![],
+            Value::String(s) if s.is_empty() => vec![],
+            Value::String(s) => match serde_json::from_str::<Value>(s) {
+                Ok(Value::Array(a)) => a,
+                _ => vec![Value::String(s.clone())],
+            },
+            other => vec![other.clone()],
+        };
+        return Sql::Text(Value::Array(items).to_string());
+    }
+    match field.field_type() {
+        FieldType::Number => Sql::Real(value.as_f64().unwrap_or(0.0)),
+        FieldType::Bool => Sql::Int(i64::from(value.as_bool().unwrap_or(false))),
+        FieldType::Json | FieldType::GeoPoint => match value {
+            Value::Null => Sql::Null,
+            // A json field submitted as text keeps its own encoding.
+            Value::String(s) => Sql::Text(s.clone()),
+            other => Sql::Text(other.to_string()),
+        },
+        _ => match value {
+            Value::Null => Sql::Text(String::new()),
+            Value::String(s) => Sql::Text(s.clone()),
+            other => Sql::Text(other.to_string()),
+        },
+    }
+}
+
+/// Decode a column back into the JSON shape the API emits.
+pub fn decode_column(field: &Field, value: Option<&Sql>) -> Value {
+    let Some(value) = value else {
+        return cratebase_core::record::zero_value(field.field_type(), field.is_multiple());
+    };
+    if stores_json(field) {
+        let raw = match value {
+            Sql::Null => None,
+            other => Some(other.clone().into_string()),
+        };
+        let parsed = raw
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| serde_json::from_str::<Value>(s).ok());
+        return match parsed {
+            Some(v) if schema::is_multiple(field) && !v.is_array() => Value::Array(vec![v]),
+            Some(v) => v,
+            // Not valid JSON: hand back the raw text rather than losing
+            // it (a hand-written view query can produce anything).
+            None => match raw {
+                Some(s) if !s.is_empty() => {
+                    if schema::is_multiple(field) {
+                        Value::Array(vec![Value::String(s)])
+                    } else {
+                        Value::String(s)
+                    }
+                }
+                _ => cratebase_core::record::zero_value(field.field_type(), field.is_multiple()),
+            },
+        };
+    }
+    match field.field_type() {
+        FieldType::Number => match value {
+            Sql::Null => Value::Number(0.into()),
+            other => number_value(other.as_f64().unwrap_or(0.0)),
+        },
+        FieldType::Bool => Value::Bool(value.as_i64().unwrap_or(0) != 0),
+        _ => match value {
+            Sql::Null => Value::String(String::new()),
+            other => Value::String(other.clone().into_string()),
+        },
+    }
+}
+
+/// `2.0` serializes as `2`, matching PocketBase's JSON output for whole
+/// numbers stored in a float column.
+fn number_value(n: f64) -> Value {
+    if n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 {
+        Value::Number((n as i64).into())
+    } else {
+        serde_json::Number::from_f64(n)
+            .map(Value::Number)
+            .unwrap_or(Value::Number(0.into()))
+    }
+}
+
+/// Maps each field of a collection onto its position in a result set.
+///
+/// Built **once per query**, not once per row: `Row::get` is a linear
+/// scan of the column names, so decoding a 500-row page field-by-field
+/// through it would be quadratic in the field count. Decoding then walks
+/// the record's value slots positionally — no hashing, no key clones and
+/// no intermediate `serde_json::Map`.
+pub struct RowDecoder<'a> {
+    collection: &'a Arc<Collection>,
+    positions: Vec<Option<usize>>,
+}
+
+impl<'a> RowDecoder<'a> {
+    pub fn new(collection: &'a Arc<Collection>, columns: &[String]) -> Self {
+        let positions = collection
+            .fields
+            .iter()
+            .map(|f| columns.iter().position(|c| *c == f.name))
+            .collect();
+        RowDecoder {
+            collection,
+            positions,
+        }
     }
 
-    for field in &collection.schema {
-        let multiple = is_multiple(field);
-        let column = if multiple {
-            let s: Option<String> = row.try_get(field.name.as_str())?;
-            ColumnValue::Text(s)
-        } else {
-            match field.field_type {
-                FieldType::Number => {
-                    let n: Option<f64> = row.try_get(field.name.as_str())?;
-                    ColumnValue::Number(n)
-                }
-                FieldType::Bool => {
-                    let b: Option<i64> = row.try_get(field.name.as_str())?;
-                    ColumnValue::Bool(b.map(|n| n != 0))
-                }
-                _ => {
-                    let s: Option<String> = row.try_get(field.name.as_str())?;
-                    ColumnValue::Text(s)
+    pub fn decode(&self, row: &Row) -> Record {
+        // `Record::new` lays the fields out in schema order, which is the
+        // order `positions` is in, so the slots line up by index.
+        let mut record = Record::new(self.collection.clone());
+        {
+            let data = record.data_mut();
+            for (i, field) in self.collection.fields.iter().enumerate() {
+                let column = self.positions[i].and_then(|p| row.values.get(p));
+                let value = decode_column(field, column);
+                // A schema with duplicate field names collapses to fewer
+                // slots than fields (PocketBase allows that: last one
+                // wins), so the alignment is verified rather than assumed.
+                if aligned(data, i, &field.name) {
+                    if let Some((_, slot)) = data.get_index_mut(i) {
+                        *slot = value;
+                    }
+                } else {
+                    data.insert(field.name.clone(), value);
                 }
             }
-        };
-        obj.insert(
-            field.name.clone(),
-            column.to_json(field.field_type, multiple),
-        );
-    }
-
-    Ok(Value::Object(obj))
-}
-
-/// Parse `sort=-created,name` into an `ORDER BY` clause. Unknown fields are
-/// rejected rather than silently ignored so typos surface immediately.
-fn build_order_by(
-    collection: &Collection,
-    backend: Backend,
-    sort: Option<&str>,
-) -> DbResult<String> {
-    let sort = sort.unwrap_or("-created");
-    let mut parts = Vec::new();
-    for token in sort.split(',').map(str::trim).filter(|t| !t.is_empty()) {
-        let (name, desc) = match token.strip_prefix('-') {
-            Some(rest) => (rest, true),
-            None => (token, false),
-        };
-        if name != "id"
-            && name != "created"
-            && name != "updated"
-            && collection.field(name).is_none()
-        {
-            return Err(DbError::InvalidIdentifier(format!(
-                "unknown sort field '{name}'"
-            )));
         }
-        let quoted = backend.quote_ident(name)?;
-        parts.push(format!("{quoted} {}", if desc { "DESC" } else { "ASC" }));
-    }
-    if parts.is_empty() {
-        parts.push(format!("{} DESC", backend.quote_ident("created")?));
-    }
-    Ok(parts.join(", "))
-}
-
-fn encode_err(e: sqlx::error::BoxDynError) -> DbError {
-    DbError::Sqlx(sqlx::Error::Encode(e))
-}
-
-async fn bind_all<'q>(params: Vec<Value>) -> DbResult<AnyArguments<'q>> {
-    let mut args = AnyArguments::default();
-    for p in params {
-        bind_filter_value(&mut args, p).map_err(encode_err)?;
-    }
-    Ok(args)
-}
-
-fn map_unique_violation(e: sqlx::Error) -> DbError {
-    if let sqlx::Error::Database(db_err) = &e {
-        if db_err.is_unique_violation() {
-            return DbError::UniqueViolation(
-                db_err
-                    .constraint()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "unique".to_string()),
-            );
-        }
-    }
-    DbError::Sqlx(e)
-}
-
-async fn fetch_by_id(db: &Db, collection: &Collection, id: &str) -> DbResult<Value> {
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let id_col = db.backend.quote_ident("id")?;
-    let sql = format!("SELECT * FROM {table} WHERE {id_col} = $1");
-    let row = sqlx::query(&sql).bind(id).fetch_optional(&db.pool).await?;
-    match row {
-        Some(r) => row_to_record(&r, collection),
-        None => Err(DbError::NotFound),
+        // Marks the record as loaded and snapshots `original` for the
+        // update diff, which is what `Record::from_loaded` would do.
+        record.mark_saved();
+        record
     }
 }
 
-/// Total row count for a collection's table, no filter/pagination. Used by
-/// the stats/metrics extension point rather than the paginated list path.
-pub async fn count_records(db: &Db, collection: &Collection) -> DbResult<i64> {
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-        .fetch_one(&db.pool)
-        .await?;
-    Ok(count)
+/// Whether slot `index` of a record's value map belongs to `field`.
+pub(crate) fn aligned(data: &indexmap::IndexMap<String, Value>, index: usize, field: &str) -> bool {
+    data.get_index(index).is_some_and(|(k, _)| k == field)
 }
 
-pub async fn list_records(
-    db: &Db,
-    collection: &Collection,
+/// Decode a single row. Prefer [`RowDecoder`] for a result set.
+pub fn row_to_record(collection: &Arc<Collection>, row: &Row) -> Record {
+    RowDecoder::new(collection, &row.columns).decode(row)
+}
+
+fn rows_to_records(collection: &Arc<Collection>, rows: &[Row]) -> Vec<Record> {
+    let Some(first) = rows.first() else {
+        return vec![];
+    };
+    let decoder = RowDecoder::new(collection, &first.columns);
+    rows.iter().map(|r| decoder.decode(r)).collect()
+}
+
+// --- reads ----------------------------------------------------------------
+
+/// List with the collection's `listRule` applied and the user's `filter`
+/// AND-ed onto it. Parameter numbering is shared: the rule binds first,
+/// the filter continues from where the rule stopped, and `LIMIT`/`OFFSET`
+/// take the last two slots.
+pub async fn list(
+    ex: &dyn Executor,
+    store: &CollectionStore,
     ctx: &RequestContext,
-    rule_filter: Option<CompiledFilter>,
+    collection: &Arc<Collection>,
     params: ListParams<'_>,
 ) -> DbResult<ListResult> {
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let offset_so_far = rule_filter.as_ref().map(|f| f.params.len()).unwrap_or(0);
-
-    let user_filter = match params.filter {
-        Some(expr) if !expr.trim().is_empty() => {
-            let related = crate::resolver::load_related_collections(db, collection, expr).await?;
-            let resolver = CollectionResolver {
-                collection,
-                backend: db.backend,
-                ctx,
-                use_data_for_fields: false,
-                related,
-            };
-            Some(cratebase_filter::parse_and_compile(
-                expr,
-                &resolver,
-                db.backend.dialect(),
-                offset_so_far,
-            )?)
-        }
-        _ => None,
-    };
-
-    let mut clauses = Vec::new();
-    let mut params_vec = Vec::new();
-    if let Some(f) = rule_filter {
-        clauses.push(f.sql);
-        params_vec.extend(f.params);
-    }
-    if let Some(f) = user_filter {
-        clauses.push(f.sql);
-        params_vec.extend(f.params);
-    }
-    let where_clause = if clauses.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {}", clauses.join(" AND "))
-    };
-    let order_by = build_order_by(collection, db.backend, params.sort)?;
-
-    let count_sql = format!("SELECT COUNT(*) FROM {table}{where_clause}");
-    let count_args = bind_all(params_vec.clone()).await?;
-    let total_items: i64 = sqlx::query_scalar_with(&count_sql, count_args)
-        .fetch_one(&db.pool)
-        .await?;
-
-    let per_page = params.per_page.clamp(1, 500);
+    let per_page = params.per_page.clamp(1, MAX_PER_PAGE);
     let page = params.page.max(1);
-    let offset = (page - 1) * per_page;
+    let resolver = CollectionResolver::new(collection.clone(), store, ctx, ex.dialect());
 
-    let n = params_vec.len();
-    let list_sql = format!(
-        "SELECT * FROM {table}{where_clause} ORDER BY {order_by} LIMIT ${} OFFSET ${}",
-        n + 1,
-        n + 2
-    );
-    let mut list_args = bind_all(params_vec).await?;
-    list_args.add(per_page).map_err(encode_err)?;
-    list_args.add(offset).map_err(encode_err)?;
+    let rule = rules::evaluate(&collection.list_rule, &resolver, 0)?;
+    if rule.is_deny_all() {
+        return Ok(empty_result(page, per_page, params.skip_total));
+    }
 
-    let rows = sqlx::query_with(&list_sql, list_args)
-        .fetch_all(&db.pool)
-        .await?;
-    let items = rows
-        .iter()
-        .map(|r| row_to_record(r, collection))
-        .collect::<DbResult<Vec<_>>>()?;
+    let mut query = Query::new(collection);
+    if let Some(filter) = rule.into_filter() {
+        query.push_filter(filter);
+    }
+    if let Some(expr) = params.filter.map(str::trim).filter(|s| !s.is_empty()) {
+        let compiled = cratebase_filter::parse_and_compile(expr, &resolver, query.params().len())?;
+        query.push_filter(compiled);
+    }
+    query.set_order_by(query::order_by(&resolver, params.sort)?);
 
-    let total_pages = if total_items == 0 {
-        0
+    let total_items = if params.skip_total {
+        -1
     } else {
-        (total_items + per_page - 1) / per_page
+        ex.query_scalar(&query.count_sql(), query.params())
+            .await?
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
     };
 
+    // The SQL is rendered before the page parameters are bound so the
+    // `LIMIT $n OFFSET $n+1` placeholders land on the right slots.
+    let sql = query.select_sql();
+    query.bind_page(per_page, (page - 1) * per_page);
+    let rows = ex.query(&sql, query.params()).await?;
+    let mut items = rows_to_records(collection, &rows);
+
+    if let Some(spec) = params.expand.map(str::trim).filter(|s| !s.is_empty()) {
+        expand::resolve(ex, store, ctx, &mut items, spec, 0).await?;
+    }
+
+    let total_pages = match total_items {
+        -1 => -1,
+        0 => 0,
+        n => (n + per_page - 1) / per_page,
+    };
     Ok(ListResult {
         items,
         page,
@@ -253,529 +315,709 @@ pub async fn list_records(
     })
 }
 
-/// Fetch a single record, applying the caller's `viewRule` as an additional
-/// WHERE condition so a record the rule denies looks identical to one that
-/// doesn't exist.
-pub async fn get_record(
-    db: &Db,
-    collection: &Collection,
-    id: &str,
-    rule_filter: Option<CompiledFilter>,
-) -> DbResult<Value> {
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let id_col = db.backend.quote_ident("id")?;
-
-    let n = rule_filter.as_ref().map(|f| f.params.len()).unwrap_or(0);
-    let extra_sql = rule_filter.as_ref().map(|f| f.sql.clone());
-    let mut args = bind_all(rule_filter.map(|f| f.params).unwrap_or_default()).await?;
-    args.add(id.to_string()).map_err(encode_err)?;
-
-    let extra_clause = extra_sql.map(|s| format!(" AND {s}")).unwrap_or_default();
-    let sql = format!(
-        "SELECT * FROM {table} WHERE {id_col} = ${}{extra_clause}",
-        n + 1
-    );
-
-    let row = sqlx::query_with(&sql, args)
-        .fetch_optional(&db.pool)
-        .await?;
-    match row {
-        Some(r) => row_to_record(&r, collection),
-        None => Err(DbError::NotFound),
+fn empty_result(page: i64, per_page: i64, skip_total: bool) -> ListResult {
+    ListResult {
+        items: vec![],
+        page,
+        per_page,
+        total_items: if skip_total { -1 } else { 0 },
+        total_pages: if skip_total { -1 } else { 0 },
     }
 }
 
-/// Transaction-scoped counterpart to [`get_record`]. Reads through `tx`
-/// rather than the pool — see [`crate::collections::get_collection_by_id_tx`]
-/// for why this exists.
-pub async fn get_record_tx(
-    tx: &mut RecordTx,
-    backend: Backend,
-    collection: &Collection,
+/// One record with `viewRule` applied. A record the rule denies is
+/// [`DbError::NotFound`], the same answer a missing id gets.
+pub async fn find_by_id(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    ctx: &RequestContext,
+    collection: &Arc<Collection>,
     id: &str,
-    rule_filter: Option<CompiledFilter>,
-) -> DbResult<Value> {
-    let table = backend.quote_ident(&collection.table_name())?;
-    let id_col = backend.quote_ident("id")?;
+    expand_spec: Option<&str>,
+) -> DbResult<Record> {
+    let resolver = CollectionResolver::new(collection.clone(), store, ctx, ex.dialect());
+    let rule = rules::evaluate(&collection.view_rule, &resolver, 0)?;
+    if rule.is_deny_all() {
+        return Err(DbError::NotFound);
+    }
 
-    let n = rule_filter.as_ref().map(|f| f.params.len()).unwrap_or(0);
-    let extra_sql = rule_filter.as_ref().map(|f| f.sql.clone());
-    let mut args = bind_all(rule_filter.map(|f| f.params).unwrap_or_default()).await?;
-    args.add(id.to_string()).map_err(encode_err)?;
-
-    let extra_clause = extra_sql.map(|s| format!(" AND {s}")).unwrap_or_default();
-    let sql = format!(
-        "SELECT * FROM {table} WHERE {id_col} = ${}{extra_clause}",
-        n + 1
+    let mut query = Query::new(collection);
+    if let Some(filter) = rule.into_filter() {
+        query.push_filter(filter);
+    }
+    let placeholder = query.next_placeholder();
+    query.push_condition(
+        format!(
+            "{}.\"id\" = ${placeholder}",
+            quote_ident(collection.table_name())
+        ),
+        vec![Sql::Text(id.to_string())],
     );
 
-    let row = sqlx::query_with(&sql, args)
-        .fetch_optional(&mut **tx)
-        .await?;
-    match row {
-        Some(r) => row_to_record(&r, collection),
-        None => Err(DbError::NotFound),
+    let sql = query.select_sql();
+    query.bind_page(1, 0);
+    let row = ex
+        .query_one(&sql, query.params())
+        .await?
+        .ok_or(DbError::NotFound)?;
+    let mut records = vec![row_to_record(collection, &row)];
+
+    if let Some(spec) = expand_spec.map(str::trim).filter(|s| !s.is_empty()) {
+        expand::resolve(ex, store, ctx, &mut records, spec, 0).await?;
+    }
+    Ok(records.remove(0))
+}
+
+/// Rule-free lookup by id, for internal callers (auth, hooks, plugins).
+pub async fn find_by_id_raw(
+    ex: &dyn Executor,
+    collection: &Arc<Collection>,
+    id: &str,
+) -> DbResult<Record> {
+    let sql = format!(
+        "SELECT * FROM {} WHERE \"id\" = $1 LIMIT 1",
+        quote_ident(collection.table_name())
+    );
+    let row = ex
+        .query_one(&sql, &[Sql::Text(id.to_string())])
+        .await?
+        .ok_or(DbError::NotFound)?;
+    Ok(row_to_record(collection, &row))
+}
+
+/// Rule-free lookup of several records by id, in one statement. The order
+/// of the result follows the database, not `ids`.
+pub async fn find_by_ids(
+    ex: &dyn Executor,
+    collection: &Arc<Collection>,
+    ids: &[String],
+) -> DbResult<Vec<Record>> {
+    if ids.is_empty() {
+        return Ok(vec![]);
+    }
+    let sql = format!(
+        "SELECT * FROM {} WHERE \"id\" IN ({})",
+        quote_ident(collection.table_name()),
+        in_placeholders(1, ids.len())
+    );
+    let params: Vec<Sql> = ids.iter().map(|id| Sql::Text(id.clone())).collect();
+    let rows = ex.query(&sql, &params).await?;
+    Ok(rows_to_records(collection, &rows))
+}
+
+/// Rule-free "first record matching this filter", PocketBase's
+/// `FindFirstRecordByFilter`. `params` fills `{:name}` placeholders in
+/// the filter, so a caller never has to build the expression by string
+/// concatenation.
+pub async fn find_first_by_filter(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    collection: &Arc<Collection>,
+    filter: &str,
+    params: &Map<String, Value>,
+) -> DbResult<Option<Record>> {
+    let ctx = RequestContext::superuser();
+    let resolver = CollectionResolver::new(collection.clone(), store, &ctx, ex.dialect());
+    let expr = substitute_params(filter, params);
+    let compiled = cratebase_filter::parse_and_compile(&expr, &resolver, 0)?;
+
+    let mut query = Query::new(collection);
+    query.push_filter(compiled);
+    query.set_order_by(query::order_by(&resolver, None)?);
+    let sql = query.select_sql();
+    query.bind_page(1, 0);
+    let row = ex.query_one(&sql, query.params()).await?;
+    Ok(row.map(|r| row_to_record(collection, &r)))
+}
+
+/// Replace `{:name}` placeholders with filter-language literals. Strings
+/// are quoted and escaped, so a value can never break out into the
+/// expression; the compiler then binds them as real SQL parameters.
+fn substitute_params(filter: &str, params: &Map<String, Value>) -> String {
+    if params.is_empty() || !filter.contains("{:") {
+        return filter.to_string();
+    }
+    let mut out = filter.to_string();
+    for (key, value) in params {
+        let literal = match value {
+            Value::Null => "null".to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => n.to_string(),
+            other => {
+                let s = match other {
+                    Value::String(s) => s.clone(),
+                    v => v.to_string(),
+                };
+                format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
+            }
+        };
+        out = out.replace(&format!("{{:{key}}}"), &literal);
+    }
+    out
+}
+
+/// Total rows in a collection, no rule and no filter.
+pub async fn count(ex: &dyn Executor, collection: &Arc<Collection>) -> DbResult<i64> {
+    let sql = format!(
+        "SELECT COUNT(*) FROM {}",
+        quote_ident(collection.table_name())
+    );
+    Ok(ex
+        .query_scalar(&sql, &[])
+        .await?
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
+}
+
+// --- writes ---------------------------------------------------------------
+
+fn reject_view(collection: &Collection) -> DbResult<()> {
+    if collection.is_view() {
+        return Err(DbError::Unsupported(format!(
+            "collection '{}' is a view and is read-only",
+            collection.name
+        )));
+    }
+    Ok(())
+}
+
+/// Fill in the values the server owns: autodate stamps, autogenerated
+/// text (`id`, `tokenKey`, any field with an `autogeneratePattern`) and
+/// the `emailVisibility` default.
+fn normalize(record: &mut Record, is_create: bool) {
+    let collection = record.collection().clone();
+    let stamp = now().to_pb_string();
+
+    // Cast before anything else: PocketBase stores the cast value, so
+    // autogeneration and validation must both see it (a number field sent
+    // as `"abc"` is `0`, and `0` is blank, so a required one still fails).
+    validate::coerce_record(record);
+
+    if is_create && record.id().is_empty() {
+        let generated = collection
+            .field("id")
+            .and_then(|f| match &f.kind {
+                FieldKind::Text {
+                    autogenerate_pattern,
+                    ..
+                } if !autogenerate_pattern.is_empty() => {
+                    Some(ids::autogenerate(autogenerate_pattern))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(ids::record_id);
+        record.set_id(generated);
+    }
+
+    for field in &collection.fields {
+        match &field.kind {
+            FieldKind::Autodate {
+                on_create,
+                on_update,
+            } => {
+                if (is_create && *on_create) || (!is_create && *on_update) {
+                    record.set(&field.name, Value::String(stamp.clone()));
+                }
+            }
+            FieldKind::Text {
+                autogenerate_pattern,
+                primary_key,
+                ..
+            } if !autogenerate_pattern.is_empty() && !primary_key => {
+                let blank = record
+                    .get(&field.name)
+                    .map(validate::is_blank)
+                    .unwrap_or(true);
+                if blank {
+                    record.set(
+                        &field.name,
+                        Value::String(ids::autogenerate(autogenerate_pattern)),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // PocketBase keeps `emailVisibility` a real bool and defaults it to
+    // false, so an auth record never leaks an address by accident.
+    if collection.is_auth() && !matches!(record.get("emailVisibility"), Some(Value::Bool(_))) {
+        record.set("emailVisibility", Value::Bool(false));
     }
 }
 
-pub async fn create_record(
-    db: &Db,
-    collection: &Collection,
-    data: Map<String, Value>,
-) -> DbResult<Value> {
-    create_record_with_id(db, collection, new_id(), data).await
-}
-
-/// Set every `Autodate` field's stored value to `ts`, for the fields
-/// configured to fire on this lifecycle event (`onCreate` or `onUpdate`).
-/// Runs after `validate::validate_and_normalize`, which never lets a
-/// client-supplied value reach `normalized` for this field type — the
-/// value here is always server-computed.
-fn apply_autodate_fields(
-    collection: &Collection,
-    normalized: &mut Map<String, Value>,
-    ts: &str,
-    on_create: bool,
-) {
-    for field in &collection.schema {
-        if field.field_type != FieldType::Autodate {
+/// Hash any `password` field holding a fresh plaintext. A value that is
+/// already a hash (loaded from storage, or unchanged) is left alone, so
+/// an update never re-hashes and invalidates a password.
+fn hash_passwords(record: &mut Record) -> DbResult<()> {
+    let collection = record.collection().clone();
+    for field in collection.fields_of_type(FieldType::Password) {
+        let Some(value) = record.get(&field.name) else {
+            continue;
+        };
+        if validate::is_blank(value) || is_hash(value) {
             continue;
         }
-        let fires = if on_create {
-            field.options.on_create.unwrap_or(false)
-        } else {
-            field.options.on_update.unwrap_or(false)
+        let Some(plain) = value.as_str() else {
+            continue;
         };
-        if fires {
-            normalized.insert(field.name.clone(), Value::String(ts.to_string()));
-        }
+        let hash = cratebase_auth::hash_password(plain)
+            .map_err(|e| DbError::Other(format!("password hashing failed: {e}")))?;
+        record.set(&field.name, Value::String(hash));
     }
+    Ok(())
 }
 
-/// Like [`create_record`] but with a caller-chosen id. Used when the id
-/// must be known before the row exists — e.g. uploaded files are stored
-/// under a key derived from the record id, so the server layer generates
-/// the id up front, uploads to storage, then creates the row with that
-/// same id.
-pub async fn create_record_with_id(
-    db: &Db,
-    collection: &Collection,
-    id: String,
-    data: Map<String, Value>,
-) -> DbResult<Value> {
-    if collection.is_view() {
-        return Err(DbError::ViewReadOnly);
-    }
-    let mut normalized =
-        crate::validate::validate_and_normalize(db, collection, &data, false).await?;
+/// Validate and insert. An empty `record.id()` is generated first (so the
+/// caller can rely on the id afterwards), autodate/autogenerate/password
+/// normalization runs, then the row is written.
+pub async fn create(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    record: &mut Record,
+) -> DbResult<()> {
+    create_with_uploads(ex, store, record, &[]).await
+}
 
-    let ts = now();
-    apply_autodate_fields(collection, &mut normalized, &ts, true);
-    let table = db.backend.quote_ident(&collection.table_name())?;
+/// [`create`] with the pending file uploads the caller is about to store,
+/// so `maxSelect`/`maxSize`/`mimeTypes` can be enforced.
+pub async fn create_with_uploads(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    record: &mut Record,
+    uploads: &[UploadMeta],
+) -> DbResult<()> {
+    let collection = record.collection().clone();
+    reject_view(&collection)?;
+    let supplied_id = !record.id().is_empty();
 
-    let mut columns = vec![
-        "id".to_string(),
-        "created".to_string(),
-        "updated".to_string(),
-    ];
-    let mut args = AnyArguments::default();
-    args.add(id.clone()).map_err(encode_err)?;
-    args.add(ts.clone()).map_err(encode_err)?;
-    args.add(ts).map_err(encode_err)?;
-
-    // `email`/`password_hash` are physical columns on every Auth-typed
-    // collection's table (see `collections::sync_table`) but are not part
-    // of its user-editable `schema`, so they're pulled from the raw
-    // request `data` here rather than the schema-validated `normalized`
-    // map. The server layer is responsible for hashing the password and
-    // validating the email before it reaches this function.
-    if collection.is_auth() {
-        let identity = collection.auth_options.identity_field();
-        if let Some(value) = data.get(identity).and_then(Value::as_str) {
-            columns.push(identity.to_string());
-            ColumnValue::Text(Some(value.to_string()))
-                .bind(&mut args)
-                .map_err(encode_err)?;
+    normalize(record, true);
+    if supplied_id {
+        if let Some(e) = validate::id_on_create(ex, &collection, record.id()).await? {
+            let mut errors = BTreeMap::new();
+            errors.insert("id".to_string(), e);
+            return Err(DbError::Validation(errors));
         }
-        if let Some(hash) = data.get("password_hash").and_then(Value::as_str) {
-            columns.push("password_hash".to_string());
-            ColumnValue::Text(Some(hash.to_string()))
-                .bind(&mut args)
-                .map_err(encode_err)?;
-        }
-        // New accounts always start unverified — never client-settable —
-        // regardless of whether `requireEmailVerification` currently
-        // gates login, so flipping that setting later needs no backfill.
-        columns.push("verified".to_string());
-        ColumnValue::Bool(Some(false))
-            .bind(&mut args)
-            .map_err(encode_err)?;
     }
+    validate::check(ex, store, record, uploads).await?;
+    hash_passwords(record)?;
 
-    for field in &collection.schema {
-        let value = normalized.get(&field.name).cloned().unwrap_or(Value::Null);
-        let multiple = is_multiple(field);
-        let column = ColumnValue::from_json(field.field_type, multiple, &value);
-        columns.push(field.name.clone());
-        column.bind(&mut args).map_err(encode_err)?;
+    let mut columns = Vec::with_capacity(collection.fields.len());
+    let mut params = Vec::with_capacity(collection.fields.len());
+    for field in &collection.fields {
+        let value = record.get(&field.name).cloned().unwrap_or(Value::Null);
+        columns.push(quote_ident(&field.name));
+        params.push(column_value(field, &value));
     }
-
-    let quoted_cols: DbResult<Vec<String>> =
-        columns.iter().map(|c| db.backend.quote_ident(c)).collect();
-    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
     let sql = format!(
-        "INSERT INTO {table} ({}) VALUES ({})",
-        quoted_cols?.join(", "),
-        placeholders.join(", ")
+        "INSERT INTO {} ({}) VALUES ({})",
+        quote_ident(collection.table_name()),
+        columns.join(", "),
+        in_placeholders(1, params.len())
     );
-    sqlx::query_with(&sql, args)
-        .execute(&db.pool)
+    ex.execute(&sql, &params)
         .await
-        .map_err(map_unique_violation)?;
-
-    fetch_by_id(db, collection, &id).await
+        .map_err(|e| map_unique(&collection, e))?;
+    record.mark_saved();
+    Ok(())
 }
 
-pub async fn update_record(
-    db: &Db,
-    collection: &Collection,
-    id: &str,
-    data: Map<String, Value>,
-) -> DbResult<Value> {
-    if collection.is_view() {
-        return Err(DbError::ViewReadOnly);
-    }
-    let mut normalized =
-        crate::validate::validate_and_normalize(db, collection, &data, true).await?;
-    let ts = now();
-    apply_autodate_fields(collection, &mut normalized, &ts, false);
+/// Validate and update only the fields whose value differs from what was
+/// loaded ([`Record`] keeps the original row for exactly this).
+pub async fn update(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    record: &mut Record,
+) -> DbResult<()> {
+    update_with_uploads(ex, store, record, &[]).await
+}
 
-    let identity = collection.auth_options.identity_field();
-    let auth_identity = if collection.is_auth() {
-        data.get(identity).and_then(Value::as_str)
-    } else {
-        None
-    };
-    let auth_password_hash = if collection.is_auth() {
-        data.get("password_hash").and_then(Value::as_str)
-    } else {
-        None
-    };
-    if normalized.is_empty() && auth_identity.is_none() && auth_password_hash.is_none() {
-        return fetch_by_id(db, collection, id).await;
-    }
-
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let mut sets = vec![format!("{} = $1", db.backend.quote_ident("updated")?)];
-    let mut args = AnyArguments::default();
-    args.add(ts).map_err(encode_err)?;
-
-    let mut idx = 2;
-    if let Some(value) = auth_identity {
-        sets.push(format!("{} = ${idx}", db.backend.quote_ident(identity)?));
-        args.add(value.to_string()).map_err(encode_err)?;
-        idx += 1;
-    }
-    if let Some(hash) = auth_password_hash {
-        sets.push(format!(
-            "{} = ${idx}",
-            db.backend.quote_ident("password_hash")?
+/// [`update`] with pending file uploads; see [`create_with_uploads`].
+pub async fn update_with_uploads(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    record: &mut Record,
+    uploads: &[UploadMeta],
+) -> DbResult<()> {
+    let collection = record.collection().clone();
+    reject_view(&collection)?;
+    if record.is_new() {
+        return Err(DbError::Unsupported(
+            "update called on a record that was never loaded".into(),
         ));
-        args.add(hash.to_string()).map_err(encode_err)?;
-        idx += 1;
     }
-    for field in &collection.schema {
-        if let Some(value) = normalized.get(&field.name) {
-            let multiple = is_multiple(field);
-            let column = ColumnValue::from_json(field.field_type, multiple, value);
-            sets.push(format!("{} = ${idx}", db.backend.quote_ident(&field.name)?));
-            column.bind(&mut args).map_err(encode_err)?;
-            idx += 1;
-        }
-    }
-    args.add(id.to_string()).map_err(encode_err)?;
-
-    let sql = format!(
-        "UPDATE {table} SET {} WHERE {} = ${idx}",
-        sets.join(", "),
-        db.backend.quote_ident("id")?
-    );
-    let result = sqlx::query_with(&sql, args)
-        .execute(&db.pool)
-        .await
-        .map_err(map_unique_violation)?;
-    if result.rows_affected() == 0 {
+    let id = record.id().to_string();
+    if id.is_empty() {
         return Err(DbError::NotFound);
     }
 
-    fetch_by_id(db, collection, id).await
-}
+    normalize(record, false);
+    validate::check(ex, store, record, uploads).await?;
+    hash_passwords(record)?;
 
-pub async fn delete_record(db: &Db, collection: &Collection, id: &str) -> DbResult<()> {
-    if collection.is_view() {
-        return Err(DbError::ViewReadOnly);
-    }
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let sql = format!(
-        "DELETE FROM {table} WHERE {} = $1",
-        db.backend.quote_ident("id")?
-    );
-    let result = sqlx::query(&sql).bind(id).execute(&db.pool).await?;
-    if result.rows_affected() == 0 {
-        Err(DbError::NotFound)
-    } else {
-        Ok(())
-    }
-}
-
-/// Look up an auth-record's id, password hash, and verified status by its
-/// identity field (e.g. email or username), for the password login
-/// endpoint. One query instead of an id lookup followed by separate field
-/// lookups.
-pub async fn find_auth_credentials(
-    db: &Db,
-    collection: &Collection,
-    identity_value: &str,
-) -> DbResult<Option<(String, String, bool)>> {
-    let table = db.backend.quote_ident(&collection.table_name())?;
-    let sql = format!(
-        "SELECT {}, {}, {} FROM {table} WHERE {} = $1",
-        db.backend.quote_ident("id")?,
-        db.backend.quote_ident("password_hash")?,
-        db.backend.quote_ident("verified")?,
-        db.backend
-            .quote_ident(collection.auth_options.identity_field())?,
-    );
-    let row = sqlx::query(&sql)
-        .bind(identity_value)
-        .fetch_optional(&db.pool)
-        .await?;
-    Ok(match row {
-        Some(r) => {
-            let verified: i64 = r.try_get("verified")?;
-            Some((r.try_get("id")?, r.try_get("password_hash")?, verified != 0))
+    let mut assignments = Vec::new();
+    let mut params = Vec::new();
+    for field in &collection.fields {
+        // The primary key is never rewritten; PocketBase does not allow
+        // changing a record's id after creation.
+        if field.is_primary_key() {
+            continue;
         }
-        None => None,
-    })
-}
-
-/// Flips an auth record's `verified` column to `true`. Not a `schema`
-/// field (same reason `password_hash` isn't), so it bypasses
-/// `update_record`'s normal validated-fields path — used only by the
-/// `confirm-verification` endpoint after checking a `VerifyEmail` token.
-pub async fn set_verified(db: &Db, collection: &Collection, id: &str) -> DbResult<()> {
-    let table = db.backend.quote_ident(&collection.table_name())?;
+        let value = record.get(&field.name).cloned().unwrap_or(Value::Null);
+        if record.original(&field.name) == Some(&value) {
+            continue;
+        }
+        params.push(column_value(field, &value));
+        assignments.push(format!("{} = ${}", quote_ident(&field.name), params.len()));
+    }
+    if assignments.is_empty() {
+        return Ok(());
+    }
+    params.push(Sql::Text(id));
     let sql = format!(
-        "UPDATE {table} SET {} = $1 WHERE {} = $2",
-        db.backend.quote_ident("verified")?,
-        db.backend.quote_ident("id")?
+        "UPDATE {} SET {} WHERE \"id\" = ${}",
+        quote_ident(collection.table_name()),
+        assignments.join(", "),
+        params.len()
     );
-    let mut args = AnyArguments::default();
-    ColumnValue::Bool(Some(true))
-        .bind(&mut args)
-        .map_err(encode_err)?;
-    args.add(id.to_string()).map_err(encode_err)?;
-    let result = sqlx::query_with(&sql, args).execute(&db.pool).await?;
-    if result.rows_affected() == 0 {
-        Err(DbError::NotFound)
-    } else {
-        Ok(())
+    let affected = ex
+        .execute(&sql, &params)
+        .await
+        .map_err(|e| map_unique(&collection, e))?;
+    if affected == 0 {
+        return Err(DbError::NotFound);
+    }
+    record.mark_saved();
+    Ok(())
+}
+
+/// Map a driver unique violation onto the field its index covers.
+fn map_unique(collection: &Collection, e: DbError) -> DbError {
+    match e {
+        DbError::UniqueViolation(detail) => query::unique_violation(collection, &detail),
+        other => other,
     }
 }
 
-/// A [`sqlx::Any`] transaction obtained from [`crate::pool::Db::pool`].
-/// `AnyPool::begin()` yields `'static` because the transaction owns its
-/// pooled connection outright, so this alias needs no lifetime parameter.
-pub type RecordTx = sqlx::Transaction<'static, sqlx::Any>;
-
-/// Transaction-scoped counterpart to [`fetch_by_id`]. Reads through `tx`
-/// rather than the pool so a caller can read back a row it just wrote in
-/// the same uncommitted transaction (e.g. the `/api/batch` endpoint).
-async fn fetch_by_id_tx(
-    tx: &mut RecordTx,
-    backend: Backend,
-    collection: &Collection,
-    id: &str,
-) -> DbResult<Value> {
-    let table = backend.quote_ident(&collection.table_name())?;
-    let id_col = backend.quote_ident("id")?;
-    let sql = format!("SELECT * FROM {table} WHERE {id_col} = $1");
-    let row = sqlx::query(&sql).bind(id).fetch_optional(&mut **tx).await?;
-    match row {
-        Some(r) => row_to_record(&r, collection),
-        None => Err(DbError::NotFound),
-    }
-}
-
-/// Transaction-scoped counterpart to [`create_record_with_id`], used by the
-/// `/api/batch` endpoint so every sub-request's write lands on the same
-/// connection inside one SQL transaction: if a later sub-request fails,
-/// dropping `tx` without committing undoes this insert along with every
-/// other write already made through it in the batch.
+/// Delete a record and everything that must follow it.
 ///
-/// Unlike [`create_record_with_id`], this does not call
-/// `validate::validate_and_normalize` itself — the caller runs that (and
-/// rule evaluation) against the pool *before* opening the transaction, so
-/// only the actual row mutation is transactional. `data` is the raw
-/// (auth-prepared) payload, needed for the `email`/`password_hash`
-/// physical columns exactly as in `create_record_with_id`; `normalized` is
-/// its already-validated schema-field subset.
-pub async fn create_record_with_id_tx(
-    tx: &mut RecordTx,
-    backend: Backend,
-    collection: &Collection,
-    id: String,
-    data: Map<String, Value>,
-    mut normalized: Map<String, Value>,
-) -> DbResult<Value> {
-    let ts = now();
-    apply_autodate_fields(collection, &mut normalized, &ts, true);
-    let table = backend.quote_ident(&collection.table_name())?;
-
-    let mut columns = vec![
-        "id".to_string(),
-        "created".to_string(),
-        "updated".to_string(),
-    ];
-    let mut args = AnyArguments::default();
-    args.add(id.clone()).map_err(encode_err)?;
-    args.add(ts.clone()).map_err(encode_err)?;
-    args.add(ts).map_err(encode_err)?;
-
-    if collection.is_auth() {
-        let identity = collection.auth_options.identity_field();
-        if let Some(value) = data.get(identity).and_then(Value::as_str) {
-            columns.push(identity.to_string());
-            ColumnValue::Text(Some(value.to_string()))
-                .bind(&mut args)
-                .map_err(encode_err)?;
-        }
-        if let Some(hash) = data.get("password_hash").and_then(Value::as_str) {
-            columns.push("password_hash".to_string());
-            ColumnValue::Text(Some(hash.to_string()))
-                .bind(&mut args)
-                .map_err(encode_err)?;
-        }
-        columns.push("verified".to_string());
-        ColumnValue::Bool(Some(false))
-            .bind(&mut args)
-            .map_err(encode_err)?;
-    }
-
-    for field in &collection.schema {
-        let value = normalized.get(&field.name).cloned().unwrap_or(Value::Null);
-        let multiple = is_multiple(field);
-        let column = ColumnValue::from_json(field.field_type, multiple, &value);
-        columns.push(field.name.clone());
-        column.bind(&mut args).map_err(encode_err)?;
-    }
-
-    let quoted_cols: DbResult<Vec<String>> =
-        columns.iter().map(|c| backend.quote_ident(c)).collect();
-    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
-    let sql = format!(
-        "INSERT INTO {table} ({}) VALUES ({})",
-        quoted_cols?.join(", "),
-        placeholders.join(", ")
-    );
-    sqlx::query_with(&sql, args)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_unique_violation)?;
-
-    fetch_by_id_tx(tx, backend, collection, &id).await
-}
-
-/// Transaction-scoped counterpart to [`update_record`] — see
-/// [`create_record_with_id_tx`] for why validation happens outside `tx`.
-pub async fn update_record_tx(
-    tx: &mut RecordTx,
-    backend: Backend,
-    collection: &Collection,
-    id: &str,
-    data: Map<String, Value>,
-    mut normalized: Map<String, Value>,
-) -> DbResult<Value> {
-    let ts = now();
-    apply_autodate_fields(collection, &mut normalized, &ts, false);
-
-    let identity = collection.auth_options.identity_field();
-    let auth_identity = if collection.is_auth() {
-        data.get(identity).and_then(Value::as_str)
-    } else {
-        None
-    };
-    let auth_password_hash = if collection.is_auth() {
-        data.get("password_hash").and_then(Value::as_str)
-    } else {
-        None
-    };
-    if normalized.is_empty() && auth_identity.is_none() && auth_password_hash.is_none() {
-        return fetch_by_id_tx(tx, backend, collection, id).await;
-    }
-
-    let table = backend.quote_ident(&collection.table_name())?;
-    let mut sets = vec![format!("{} = $1", backend.quote_ident("updated")?)];
-    let mut args = AnyArguments::default();
-    args.add(ts).map_err(encode_err)?;
-
-    let mut idx = 2;
-    if let Some(value) = auth_identity {
-        sets.push(format!("{} = ${idx}", backend.quote_ident(identity)?));
-        args.add(value.to_string()).map_err(encode_err)?;
-        idx += 1;
-    }
-    if let Some(hash) = auth_password_hash {
-        sets.push(format!(
-            "{} = ${idx}",
-            backend.quote_ident("password_hash")?
-        ));
-        args.add(hash.to_string()).map_err(encode_err)?;
-        idx += 1;
-    }
-    for field in &collection.schema {
-        if let Some(value) = normalized.get(&field.name) {
-            let multiple = is_multiple(field);
-            let column = ColumnValue::from_json(field.field_type, multiple, value);
-            sets.push(format!("{} = ${idx}", backend.quote_ident(&field.name)?));
-            column.bind(&mut args).map_err(encode_err)?;
-            idx += 1;
-        }
-    }
-    args.add(id.to_string()).map_err(encode_err)?;
-
-    let sql = format!(
-        "UPDATE {table} SET {} WHERE {} = ${idx}",
-        sets.join(", "),
-        backend.quote_ident("id")?
-    );
-    let result = sqlx::query_with(&sql, args)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_unique_violation)?;
-    if result.rows_affected() == 0 {
+/// For every relation field on any *other* collection that points at this
+/// one, PocketBase either deletes the referencing records
+/// (`cascadeDelete: true`, applied recursively) or strips this id out of
+/// their value (`''` for a single relation, removal from the array for a
+/// multi one). A visited set stops a relation cycle from looping.
+///
+/// The returned [`FileRef`]s cover every record actually deleted,
+/// including cascaded ones.
+pub async fn delete(
+    ex: &dyn Executor,
+    store: &CollectionStore,
+    record: &Record,
+) -> DbResult<Vec<FileRef>> {
+    let collection = record.collection().clone();
+    reject_view(&collection)?;
+    if record.id().is_empty() {
         return Err(DbError::NotFound);
     }
 
-    fetch_by_id_tx(tx, backend, collection, id).await
+    let mut files = Vec::new();
+    let mut visited: HashSet<(String, String)> = HashSet::new();
+    let mut queue: Vec<(Arc<Collection>, String)> = vec![(collection, record.id().to_string())];
+    let mut first = true;
+
+    while let Some((collection, id)) = queue.pop() {
+        if !visited.insert((collection.id.clone(), id.clone())) {
+            continue;
+        }
+        // The caller already loaded the root record; everything cascaded
+        // has to be fetched to know which files it owned.
+        let loaded = if first {
+            first = false;
+            Some(record.clone())
+        } else {
+            match find_by_id_raw(ex, &collection, &id).await {
+                Ok(r) => Some(r),
+                Err(DbError::NotFound) => None,
+                Err(e) => return Err(e),
+            }
+        };
+        let Some(loaded) = loaded else { continue };
+        files.extend(file_refs(&loaded));
+
+        for (referencing, field) in referencing_fields(store, &collection) {
+            if field.cascade_delete() {
+                for target in referencing_ids(ex, &referencing, &field, &id).await? {
+                    queue.push((referencing.clone(), target));
+                }
+            } else {
+                strip_reference(ex, &referencing, &field, &id).await?;
+            }
+        }
+
+        let sql = format!(
+            "DELETE FROM {} WHERE \"id\" = $1",
+            quote_ident(collection.table_name())
+        );
+        let affected = ex.execute(&sql, &[Sql::Text(id.clone())]).await?;
+        if affected == 0 && visited.len() == 1 {
+            return Err(DbError::NotFound);
+        }
+    }
+    Ok(files)
 }
 
-/// Transaction-scoped counterpart to [`delete_record`].
-pub async fn delete_record_tx(
-    tx: &mut RecordTx,
-    backend: Backend,
-    collection: &Collection,
+/// Every `(collection, relation field)` pair pointing at `target`,
+/// excluding `target`'s own self-relations' owner (a self-relation still
+/// counts, but the visited set stops the recursion).
+fn referencing_fields(
+    store: &CollectionStore,
+    target: &Collection,
+) -> Vec<(Arc<Collection>, Field)> {
+    let mut out = Vec::new();
+    for collection in &store.all().all {
+        if collection.is_view() {
+            continue;
+        }
+        for field in collection.fields_of_type(FieldType::Relation) {
+            if field.relation_collection_id() == Some(target.id.as_str()) {
+                out.push((collection.clone(), field.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// A multi-valued column as a JSON array, tolerating the two non-array
+/// states a column can be left in: `NULL` (the schema default) and `''`
+/// (a field that used to be single-valued). `json_each` on either would
+/// abort the statement with "malformed JSON".
+pub(crate) fn json_array(column: &str) -> String {
+    format!("CASE WHEN {column} IS NULL OR {column} = '' THEN '[]' ELSE {column} END")
+}
+
+/// SQL testing whether `field` on `table` references `$1`.
+fn references_condition(field: &Field, dialect: cratebase_filter::Dialect) -> String {
+    let column = quote_ident(&field.name);
+    if !field.is_multiple() {
+        return format!("{column} = $1");
+    }
+    let array = json_array(&column);
+    match dialect {
+        cratebase_filter::Dialect::Sqlite => {
+            format!("EXISTS (SELECT 1 FROM json_each({array}) WHERE \"value\" = $1)")
+        }
+        cratebase_filter::Dialect::Postgres => {
+            format!("jsonb_exists(({array})::jsonb, $1)")
+        }
+    }
+}
+
+async fn referencing_ids(
+    ex: &dyn Executor,
+    collection: &Arc<Collection>,
+    field: &Field,
+    id: &str,
+) -> DbResult<Vec<String>> {
+    let sql = format!(
+        "SELECT \"id\" FROM {} WHERE {}",
+        quote_ident(collection.table_name()),
+        references_condition(field, ex.dialect())
+    );
+    let rows = ex.query(&sql, &[Sql::Text(id.to_string())]).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.get_str("id").map(str::to_string))
+        .collect())
+}
+
+/// Remove `id` from a non-cascading relation field: `''` for a single
+/// relation, filtered out of the array for a multi one.
+async fn strip_reference(
+    ex: &dyn Executor,
+    collection: &Arc<Collection>,
+    field: &Field,
     id: &str,
 ) -> DbResult<()> {
-    let table = backend.quote_ident(&collection.table_name())?;
+    let table = quote_ident(collection.table_name());
+    let column = quote_ident(&field.name);
+    if !field.is_multiple() {
+        let sql = format!("UPDATE {table} SET {column} = '' WHERE {column} = $1");
+        ex.execute(&sql, &[Sql::Text(id.to_string())]).await?;
+        return Ok(());
+    }
+    // Rewriting the JSON array in Rust keeps one code path for both
+    // backends instead of two dialects of JSON surgery in SQL.
     let sql = format!(
-        "DELETE FROM {table} WHERE {} = $1",
-        backend.quote_ident("id")?
+        "SELECT \"id\", {column} FROM {table} WHERE {}",
+        references_condition(field, ex.dialect())
     );
-    let result = sqlx::query(&sql).bind(id).execute(&mut **tx).await?;
-    if result.rows_affected() == 0 {
-        Err(DbError::NotFound)
-    } else {
-        Ok(())
+    let rows = ex.query(&sql, &[Sql::Text(id.to_string())]).await?;
+    for row in rows {
+        let Some(row_id) = row.get_str("id").map(str::to_string) else {
+            continue;
+        };
+        let current = decode_column(field, row.get(&field.name));
+        let kept: Vec<Value> = match current {
+            Value::Array(items) => items
+                .into_iter()
+                .filter(|v| v.as_str() != Some(id))
+                .collect(),
+            other => vec![other],
+        };
+        let update = format!("UPDATE {table} SET {column} = $1 WHERE \"id\" = $2");
+        ex.execute(
+            &update,
+            &[Sql::Text(Value::Array(kept).to_string()), Sql::Text(row_id)],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Every file name a record owns, as storage keys.
+fn file_refs(record: &Record) -> Vec<FileRef> {
+    let collection = record.collection();
+    let mut out = Vec::new();
+    for field in collection.fields_of_type(FieldType::File) {
+        for name in record.get_string_list(&field.name) {
+            if name.is_empty() {
+                continue;
+            }
+            out.push(FileRef {
+                collection_id: collection.id.clone(),
+                record_id: record.id().to_string(),
+                filename: name,
+            });
+        }
+    }
+    out
+}
+
+/// Build a [`Record`] from a request body, ignoring keys that are not
+/// fields (PocketBase silently drops unknown keys) and the reserved
+/// names it never accepts.
+pub fn from_body(collection: Arc<Collection>, body: &Map<String, Value>) -> Record {
+    let mut record = Record::new(collection.clone());
+    for (key, value) in body {
+        if RESERVED_FIELD_NAMES.contains(&key.as_str()) {
+            continue;
+        }
+        if collection.has_field(key) {
+            record.set(key, value.clone());
+        }
+    }
+    record
+}
+
+/// Apply a request body onto a loaded record, leaving untouched fields at
+/// their stored value (PocketBase's `PATCH` semantics).
+pub fn apply_body(record: &mut Record, body: &Map<String, Value>) {
+    let collection = record.collection().clone();
+    for (key, value) in body {
+        if RESERVED_FIELD_NAMES.contains(&key.as_str()) {
+            continue;
+        }
+        if collection.has_field(key) {
+            record.set(key, value.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cratebase_core::{CollectionType, FieldKind};
+    use serde_json::json;
+
+    #[test]
+    fn substitutes_named_filter_params_safely() {
+        let mut params = Map::new();
+        params.insert("name".into(), json!("it's"));
+        params.insert("n".into(), json!(3));
+        assert_eq!(
+            substitute_params("a = {:name} && b > {:n}", &params),
+            "a = 'it\\'s' && b > 3"
+        );
+        assert_eq!(substitute_params("a = 1", &params), "a = 1");
+    }
+
+    #[test]
+    fn encodes_and_decodes_every_field_shape() {
+        let multi = Field::new(
+            "tags",
+            FieldKind::Select {
+                values: vec!["a".into()],
+                max_select: 3,
+            },
+        );
+        assert_eq!(
+            column_value(&multi, &json!(["a"])),
+            Sql::Text("[\"a\"]".into())
+        );
+        assert_eq!(column_value(&multi, &Value::Null), Sql::Text("[]".into()));
+        assert_eq!(
+            decode_column(&multi, Some(&Sql::Text("[\"a\"]".into()))),
+            json!(["a"])
+        );
+        assert_eq!(decode_column(&multi, Some(&Sql::Null)), json!([]));
+
+        let number = Field::new(
+            "views",
+            FieldKind::Number {
+                min: None,
+                max: None,
+                only_int: false,
+            },
+        );
+        assert_eq!(column_value(&number, &json!(2)), Sql::Real(2.0));
+        assert_eq!(decode_column(&number, Some(&Sql::Real(2.0))), json!(2));
+        assert_eq!(decode_column(&number, Some(&Sql::Real(2.5))), json!(2.5));
+
+        let flag = Field::new("published", FieldKind::Bool {});
+        assert_eq!(column_value(&flag, &json!(true)), Sql::Int(1));
+        assert_eq!(decode_column(&flag, Some(&Sql::Int(1))), json!(true));
+
+        let data = Field::new("data", FieldKind::Json { max_size: 0 });
+        assert_eq!(
+            column_value(&data, &json!({"a": 1})),
+            Sql::Text("{\"a\":1}".into())
+        );
+        assert_eq!(column_value(&data, &Value::Null), Sql::Null);
+        assert_eq!(
+            decode_column(&data, Some(&Sql::Text("{\"a\":1}".into()))),
+            json!({"a": 1})
+        );
+        assert_eq!(decode_column(&data, Some(&Sql::Null)), Value::Null);
+
+        let text = Field::new("title", FieldKind::default_for(FieldType::Text));
+        assert_eq!(column_value(&text, &Value::Null), Sql::Text(String::new()));
+        assert_eq!(decode_column(&text, Some(&Sql::Null)), json!(""));
+        assert_eq!(decode_column(&text, None), json!(""));
+    }
+
+    #[test]
+    fn body_is_filtered_to_real_fields() {
+        let mut c = Collection::new("posts", CollectionType::Base);
+        let pos = c.fields.len() - 2;
+        c.fields.insert(
+            pos,
+            Field::new("title", FieldKind::default_for(FieldType::Text)),
+        );
+        let c = Arc::new(c);
+        let body = json!({"title": "hi", "collectionId": "x", "nope": 1})
+            .as_object()
+            .cloned()
+            .unwrap();
+        let record = from_body(c, &body);
+        assert_eq!(record.get("title"), Some(&json!("hi")));
+        assert!(record.get("nope").is_none());
+    }
+
+    #[test]
+    fn hash_detection() {
+        assert!(is_hash(&json!("$argon2id$v=19$...")));
+        assert!(is_hash(&json!("$2a$05$abc")));
+        assert!(!is_hash(&json!("plaintext")));
+        assert!(!is_hash(&Value::Null));
     }
 }

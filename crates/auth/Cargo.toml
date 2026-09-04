@@ -7,9 +7,15 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+# Only the runtime is needed, for `spawn_blocking` around the CPU-bound
+# password hashing; nothing else in this crate is async.
+tokio = { version = "1", default-features = false, features = ["rt"] }
 rand.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
+base64 = "0.22"
+bcrypt = "0.17"
 
 [dependencies.argon2]
 version = "0.5"
@@ -20,3 +26,6 @@ features = ["getrandom"]
 
 [dependencies.jsonwebtoken]
 version = "9"
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["rt", "macros"] }

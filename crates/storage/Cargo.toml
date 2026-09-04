@@ -6,15 +6,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cratebase-core.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 
-
-[dev-dependencies]
-tokio = { workspace = true }
 [dependencies.object_store]
 version = "0.11"
 features = ["aws"]
+
+[dev-dependencies]
+tokio = { workspace = true }
