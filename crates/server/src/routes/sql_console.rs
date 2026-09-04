@@ -34,16 +34,21 @@
 //! went wrong" would make it useless. Errors are surfaced verbatim via
 //! `to_string()` instead of the blanket conversion.
 //!
-//! # No row-cap query rewriting
+//! # Row cap enforced at the source for plain `SELECT`s
 //!
-//! Wrapping an arbitrary caller-supplied statement in `SELECT * FROM (...)
-//! LIMIT 500` is fragile — it breaks on statements that aren't a single
-//! `SELECT` (a `WITH` chain ending in something else, trailing
-//! semicolons, dialect quirks) and changes what the caller's own SQL
-//! actually did. Instead the full result set is fetched and the
-//! *response* is truncated to [`ROW_CAP`] rows, with `truncated: true`
-//! when that happened — safe for the response payload, honest about
-//! what ran.
+//! A bare `SELECT ...` (no leading `WITH`, no trailing statements after
+//! a `;`) is wrapped as `SELECT * FROM (<original>) AS
+//! __cratebase_capped LIMIT <cap>+1` before it reaches the driver, so a
+//! `SELECT * FROM huge_table` never materializes more than `ROW_CAP + 1`
+//! rows in memory regardless of the table's real size. A `WITH` chain
+//! (which might not end in a single `SELECT`'s row shape — see the
+//! `is_read_statement` doc) or a statement containing more than one
+//! trailing semicolon-separated piece is *not* wrapped, for exactly the
+//! fragility reasons above: the full result set is fetched and the
+//! *response* truncated to [`ROW_CAP`] instead, same as before this
+//! change. This narrows, rather than closes, the unbounded-memory gap —
+//! narrowing to "the common case is capped at the source" is worth
+//! doing even though the general case still isn't.
 //!
 //! # Real cancellation on SQLite, bounded wait elsewhere
 //!
@@ -122,6 +127,33 @@ fn is_read_statement(sql: &str) -> bool {
     head == "SELECT" || head == "WITH"
 }
 
+/// Wrap a bare `SELECT` in an outer `LIMIT` so the driver itself never
+/// materializes more than `cap + 1` rows, or `None` when the statement
+/// isn't safely wrappable (see the module doc's "Row cap enforced at
+/// the source" section): a `WITH` chain, or anything with more than one
+/// semicolon-separated piece (a naive check — a semicolon inside a
+/// string literal falls back to `None` too, which is a safe, merely
+/// conservative failure mode, not a wrong-result one).
+fn cappable_select(sql: &str, cap: usize) -> Option<String> {
+    let trimmed = sql.trim();
+    let head: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if head != "SELECT" {
+        return None;
+    }
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    if body.contains(';') {
+        return None;
+    }
+    Some(format!(
+        "SELECT * FROM ({body}) AS __cratebase_capped LIMIT {}",
+        cap + 1
+    ))
+}
+
 async fn run_sql(
     axum::extract::State(app): axum::extract::State<App>,
     _su: RequireSuperuser,
@@ -141,9 +173,10 @@ async fn run_sql(
     }
 
     if is_read {
+        let query_sql = cappable_select(&req.sql, ROW_CAP).unwrap_or_else(|| req.sql.clone());
         let rows = app
             .db()
-            .query_interruptible(&req.sql, &[], QUERY_TIMEOUT)
+            .query_interruptible(&query_sql, &[], QUERY_TIMEOUT)
             .await
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         let columns: Vec<String> = rows
@@ -185,5 +218,51 @@ fn sql_to_json(value: Sql) -> Value {
             .unwrap_or(Value::Null),
         Sql::Text(s) => Value::String(s),
         Sql::Blob(b) => Value::String(BASE64.encode(b)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cappable_select_wraps_a_bare_select() {
+        let wrapped = cappable_select("select * from posts", 500).unwrap();
+        assert_eq!(
+            wrapped,
+            "SELECT * FROM (select * from posts) AS __cratebase_capped LIMIT 501"
+        );
+    }
+
+    #[test]
+    fn cappable_select_tolerates_a_single_trailing_semicolon() {
+        let wrapped = cappable_select("SELECT id FROM posts;  ", 10).unwrap();
+        assert_eq!(
+            wrapped,
+            "SELECT * FROM (SELECT id FROM posts) AS __cratebase_capped LIMIT 11"
+        );
+    }
+
+    #[test]
+    fn cappable_select_declines_a_with_chain() {
+        assert!(cappable_select("WITH x AS (SELECT 1) SELECT * FROM x", 500).is_none());
+    }
+
+    #[test]
+    fn cappable_select_declines_multiple_statements() {
+        assert!(cappable_select("SELECT 1; SELECT 2", 500).is_none());
+    }
+
+    #[test]
+    fn cappable_select_declines_a_write() {
+        assert!(cappable_select("DELETE FROM posts", 500).is_none());
+    }
+
+    #[test]
+    fn is_read_statement_accepts_select_and_with_only() {
+        assert!(is_read_statement("  select 1"));
+        assert!(is_read_statement("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(!is_read_statement("DELETE FROM posts"));
+        assert!(!is_read_statement("insert into posts values (1)"));
     }
 }

@@ -221,6 +221,44 @@ allows this write" — out of scope for this pass. What ships instead is
 an honest count of what the beacon actually sends: raw pageviews,
 distinct paths, and referrers.
 
+## Rate-limiting expensive endpoints
+
+`settings.rateLimits` already supports per-path/per-prefix/per-tag rules —
+each rule's `label` *is* the path/prefix/tag it matches (an exact path, a
+prefix like `/api/`, or a tag like `*:auth`), scoped by `audience`
+(`""`/`@guest`/`@auth`) — but the defaults don't single out two endpoints
+that are meaningfully more expensive than an ordinary record read and are
+worth an explicit rule in production:
+
+- **`POST /api/sql`** — the dashboard SQL console. Superuser-only already,
+  but a single query can still hold a database connection for seconds (see
+  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)'s
+  note on SQLite cancellation limits). A low per-minute cap on this exact
+  path prevents one runaway script or a compromised superuser session from
+  starving every other request.
+- **`POST /api/llm/chat`** — every call spends the operator's own
+  configured LLM provider quota/credits. It requires authentication (any
+  record, not just superusers), but authentication alone doesn't bound
+  *cost* the way it does for an ordinary record write.
+
+```json
+{
+  "rateLimits": {
+    "enabled": true,
+    "rules": [
+      { "label": "/api/sql", "audience": "", "maxRequests": 20, "duration": 60 },
+      { "label": "/api/llm/chat", "audience": "", "maxRequests": 30, "duration": 60 }
+    ]
+  }
+}
+```
+
+`PATCH /api/settings` with the body above (or the dashboard's Network
+settings page) adds both without touching any other rule already
+configured — rules are matched most-specific-first (exact path beats
+prefix beats tag), so an exact-path rule here doesn't affect a broader
+`/api/` prefix rule you may already have.
+
 ## Examples
 
 Four runnable apps in [examples/](./examples), each with its own
