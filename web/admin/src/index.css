@@ -9,8 +9,11 @@
 /* ===========================================================================
  * Cratebase design tokens
  *
- * Identity: "rust on ink" — a warm near-black surface with a single
- * ember/amber accent (a literal nod to Rust the language and to the metal).
+ * Identity: monochrome. The brand is a value, not a hue — near-white on
+ * ink, near-black on paper — so the only saturated colour anywhere in
+ * the product carries meaning: red is a failure, green a success, amber
+ * a warning, blue information. A branded accent competing with those is
+ * exactly how a destructive button ends up looking like a primary one.
  * Geist Sans for UI text, Geist Mono for anything tabular or
  * identifier-shaped (record ids, timestamps, field types, JSON).
  *
@@ -139,7 +142,7 @@
     --shadow-e3: var(--elevation-3);
     --shadow-e4: var(--elevation-4);
     --shadow-e5: var(--elevation-5);
-    --shadow-ember: var(--elevation-ember);
+    --shadow-lift: var(--elevation-lift);
 
     /* --- Motion ----------------------------------------------------------
      * Emil Kowalski-style punchy curves: the built-in CSS easings read as
@@ -202,78 +205,84 @@
 }
 
 :root {
-    --background: #fbf9f6;
-    --foreground: #211d19;
-    --surface-sunken: #f3efe8;
+    --background: #ffffff;
+    --foreground: #09090b;
+    --surface-sunken: #f4f4f5;
     --surface-raised: #ffffff;
     --card: #ffffff;
-    --card-foreground: #211d19;
+    --card-foreground: #09090b;
     --popover: #ffffff;
-    --popover-foreground: #211d19;
-    --primary: #d9530f;
-    --primary-foreground: #fffaf6;
-    --secondary: #f0ebe3;
-    --secondary-foreground: #211d19;
-    --muted: #f0ebe3;
-    --muted-foreground: #756a5d;
-    --accent: #f5e2d3;
-    --accent-foreground: #7c2d05;
-    --destructive: #c4351f;
-    --destructive-foreground: #fff6f4;
-    --success: #2f7d4f;
-    --success-foreground: #f3fbf6;
-    --warning: #9a6206;
-    --warning-foreground: #fffaf0;
-    --info: #2a6ba8;
-    --info-foreground: #f4f9ff;
-    --border: #e4dcd0;
-    --border-strong: #d2c7b7;
-    --input: #e4dcd0;
-    --ring: #d9530f;
-    --chart-1: #d9530f;
-    --chart-2: #b9762f;
-    --chart-3: #8a8578;
-    --chart-4: #5f5a4e;
-    --chart-5: #3a362d;
-    --radius: 0.625rem;
-    --sidebar: #f5f1ea;
-    --sidebar-foreground: #211d19;
-    --sidebar-primary: #d9530f;
-    --sidebar-primary-foreground: #fffaf6;
-    --sidebar-accent: #ecdfcd;
-    --sidebar-accent-foreground: #7c2d05;
-    --sidebar-border: #e4dcd0;
-    --sidebar-ring: #d9530f;
+    --popover-foreground: #09090b;
+    --primary: #18181b;
+    --primary-foreground: #fafafa;
+    --secondary: #f4f4f5;
+    --secondary-foreground: #18181b;
+    --muted: #f4f4f5;
+    --muted-foreground: #64646d;
+    --accent: #f4f4f5;
+    --accent-foreground: #18181b;
+    --destructive: #c62d2d;
+    --destructive-foreground: #ffffff;
+    --success: #15803d;
+    --success-foreground: #ffffff;
+    --warning: #a45700;
+    --warning-foreground: #ffffff;
+    --info: #1d4ed8;
+    --info-foreground: #ffffff;
+    --border: #e4e4e7;
+    --border-strong: #8f8f98;
+    --input: #e4e4e7;
+    --ring: #18181b;
 
-    /* Paper elevation: a tight contact shadow plus a soft, warm ambient
-       one. The umbra is tinted with the ink hue, never neutral grey. */
-    --elevation-0: 0 0 0 1px rgb(33 29 25 / 0.05);
-    --elevation-1: 0 1px 1px 0 rgb(33 29 25 / 0.05), 0 1px 3px -1px rgb(33 29 25 / 0.07);
-    --elevation-2: 0 1px 2px 0 rgb(33 29 25 / 0.06), 0 4px 10px -3px rgb(33 29 25 / 0.09);
-    --elevation-3: 0 2px 4px -1px rgb(33 29 25 / 0.06), 0 10px 24px -8px rgb(33 29 25 / 0.14);
-    --elevation-4: 0 4px 8px -2px rgb(33 29 25 / 0.07), 0 20px 44px -14px rgb(33 29 25 / 0.20);
-    --elevation-5: 0 8px 16px -4px rgb(33 29 25 / 0.08), 0 36px 72px -24px rgb(33 29 25 / 0.28);
-    --elevation-ember: 0 1px 2px 0 rgb(139 46 5 / 0.24), 0 8px 20px -8px rgb(217 83 15 / 0.45);
+    /* Charts are the one place saturation is allowed to be decorative, so
+       they carry a categorical ramp of their own rather than tints of a
+       brand colour that no longer has a hue. Ordered for maximum
+       adjacent-pair separation, including for deuteranopia. */
+    --chart-1: #2563eb;
+    --chart-2: #7c3aed;
+    --chart-3: #0d9488;
+    --chart-4: #c2410c;
+    --chart-5: #be185d;
+    --radius: 0.625rem;
+    --sidebar: #fafafa;
+    --sidebar-foreground: #09090b;
+    --sidebar-primary: #18181b;
+    --sidebar-primary-foreground: #fafafa;
+    --sidebar-accent: #f0f0f2;
+    --sidebar-accent-foreground: #18181b;
+    --sidebar-border: #e4e4e7;
+    --sidebar-ring: #18181b;
+
+    /* Paper elevation: a tight contact shadow plus a soft ambient one.
+       Neutral now that the ink underneath it is neutral — a warm umbra
+       under a colourless palette reads as a stain. */
+    --elevation-0: 0 0 0 1px rgb(9 9 11 / 0.06);
+    --elevation-1: 0 1px 1px 0 rgb(9 9 11 / 0.05), 0 1px 3px -1px rgb(9 9 11 / 0.08);
+    --elevation-2: 0 1px 2px 0 rgb(9 9 11 / 0.06), 0 4px 10px -3px rgb(9 9 11 / 0.10);
+    --elevation-3: 0 2px 4px -1px rgb(9 9 11 / 0.06), 0 10px 24px -8px rgb(9 9 11 / 0.15);
+    --elevation-4: 0 4px 8px -2px rgb(9 9 11 / 0.07), 0 20px 44px -14px rgb(9 9 11 / 0.20);
+    --elevation-5: 0 8px 16px -4px rgb(9 9 11 / 0.08), 0 36px 72px -24px rgb(9 9 11 / 0.28);
+    --elevation-lift: 0 1px 2px 0 rgb(9 9 11 / 0.16), 0 8px 20px -8px rgb(9 9 11 / 0.30);
 }
 
 .dark {
-    --background: #121110;
-    --foreground: #f2ece4;
-    --surface-sunken: #090807;
-    --surface-raised: #232120;
-    --card: #1b1917;
-    --card-foreground: #f2ece4;
-    --popover: #1b1917;
-    --popover-foreground: #f2ece4;
-    --primary: #ef7d3e;
-    --primary-foreground: #1b0f06;
-    --secondary: #242220;
-    --secondary-foreground: #f2ece4;
-    --muted: #242220;
-    --muted-foreground: #a89b8c;
-    --accent: #2e2118;
-    --accent-foreground: #ffab74;
-    --destructive: #e5533a;
+    --background: #09090b;
+    --foreground: #fafafa;
+    --surface-sunken: #050506;
+    --surface-raised: #1e1e21;
+    --card: #131316;
+    --card-foreground: #fafafa;
+    --popover: #131316;
+    --popover-foreground: #fafafa;
+    --primary: #fafafa;
+    --primary-foreground: #09090b;
+    --secondary: #1c1c1f;
+    --secondary-foreground: #fafafa;
+    --muted: #1c1c1f;
+    --muted-foreground: #a1a1aa;
+    --accent: #232327;
+    --accent-foreground: #fafafa;
+    --destructive: #f0563c;
     --destructive-foreground: #1a0906;
     --success: #4ec27f;
     --success-foreground: #05190e;
@@ -282,32 +291,33 @@
     --info: #6aaae8;
     --info-foreground: #04121f;
     --border: #ffffff14;
-    --border-strong: #ffffff2e;
+    --border-strong: #6e6e77;
     --input: #ffffff1f;
-    --ring: #ef7d3e;
-    --chart-1: #ef7d3e;
-    --chart-2: #c99354;
-    --chart-3: #8f8778;
-    --chart-4: #625c4d;
-    --chart-5: #3a362d;
-    --sidebar: #171513;
-    --sidebar-foreground: #f2ece4;
-    --sidebar-primary: #ef7d3e;
-    --sidebar-primary-foreground: #1b0f06;
-    --sidebar-accent: #2e2118;
-    --sidebar-accent-foreground: #ffab74;
+    --ring: #d4d4d8;
+    --chart-1: #60a5fa;
+    --chart-2: #a78bfa;
+    --chart-3: #2dd4bf;
+    --chart-4: #fb923c;
+    --chart-5: #f472b6;
+    --sidebar: #0d0d0f;
+    --sidebar-foreground: #fafafa;
+    --sidebar-primary: #fafafa;
+    --sidebar-primary-foreground: #09090b;
+    --sidebar-accent: #1c1c1f;
+    --sidebar-accent-foreground: #fafafa;
     --sidebar-border: #ffffff14;
-    --sidebar-ring: #ef7d3e;
+    --sidebar-ring: #d4d4d8;
 
     /* Ink elevation: a lit top edge does the lifting, the shadow only
        separates. Copying the paper shadows here would read as smudge. */
-    --elevation-0: inset 0 0 0 1px rgb(255 255 255 / 0.05);
+    --elevation-0: inset 0 0 0 1px rgb(255 255 255 / 0.06);
     --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.5), inset 0 1px 0 0 rgb(255 255 255 / 0.04);
     --elevation-2: 0 2px 6px -1px rgb(0 0 0 / 0.55), inset 0 1px 0 0 rgb(255 255 255 / 0.05);
     --elevation-3: 0 8px 22px -6px rgb(0 0 0 / 0.62), inset 0 1px 0 0 rgb(255 255 255 / 0.06);
     --elevation-4: 0 16px 40px -12px rgb(0 0 0 / 0.7), inset 0 1px 0 0 rgb(255 255 255 / 0.07);
     --elevation-5: 0 28px 68px -20px rgb(0 0 0 / 0.78), inset 0 1px 0 0 rgb(255 255 255 / 0.08);
-    --elevation-ember: 0 1px 2px 0 rgb(0 0 0 / 0.5), 0 10px 26px -10px rgb(239 125 62 / 0.55);
+    --elevation-lift: 0 1px 2px 0 rgb(0 0 0 / 0.6), 0 10px 26px -10px rgb(0 0 0 / 0.75),
+        inset 0 1px 0 0 rgb(255 255 255 / 0.14);
 }
 
 /* Motion and stacking are theme-independent, so they live once on :root.

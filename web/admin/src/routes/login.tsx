@@ -221,7 +221,7 @@ function LoginPage() {
                 type="submit"
                 size="lg"
                 disabled={pending}
-                className="mt-1 w-full shadow-ember"
+                className="mt-1 w-full shadow-lift"
               >
                 {pending ? <Spinner /> : null}
                 {pending ? "Signing in…" : "Sign in"}
