@@ -286,7 +286,7 @@ impl Worker {
             let invoke: Function = Self::cb(ctx)?.get("invokeHook")?;
             let ev = to_js(ctx, &Value::Object(data))?;
             let out: JsValue = invoke.call((id.0.as_str(), ev))?;
-            Ok(from_js(ctx, out)?)
+            from_js(ctx, out)
         });
         self.state.host_stack.borrow_mut().clear();
         let raw = result?;
@@ -299,7 +299,7 @@ impl Worker {
             let invoke: Function = Self::cb(ctx)?.get("invokeRoute")?;
             let req = serde_json::to_value(&req).unwrap_or(Value::Null);
             let out: JsValue = invoke.call((id.0.as_str(), to_js(ctx, &req)?))?;
-            Ok(from_js(ctx, out)?)
+            from_js(ctx, out)
         })?;
         serde_json::from_value(raw)
             .map_err(|e| AppError::internal(format!("bad route response from JavaScript: {e}")))

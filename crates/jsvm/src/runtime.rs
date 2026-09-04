@@ -260,7 +260,7 @@ pub struct JsRequest {
 }
 
 /// The body of a [`JsResponse`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "camelCase")]
 pub enum JsBody {
     Json(Value),
@@ -268,13 +268,9 @@ pub enum JsBody {
     Html(String),
     Bytes(Vec<u8>),
     Redirect(String),
+    /// A handler that returned nothing: 204, no body.
+    #[default]
     NoContent,
-}
-
-impl Default for JsBody {
-    fn default() -> Self {
-        JsBody::NoContent
-    }
 }
 
 /// The response a route handler produced.

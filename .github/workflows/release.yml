@@ -27,6 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Pinned, because the dashboard bundle is committed and CI
+          # byte-compares a fresh build against it. A different Bun emits
+          # different minified output and different content hashes, which
+          # would fail the drift check on every run for no real reason.
+          bun-version: 1.4.0
       - run: bun install
       - run: bun run admin:build
       - name: The committed bundle must match a fresh build
