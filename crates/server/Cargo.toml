@@ -38,6 +38,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path"] }
 croner = { version = "4.0.0", features = ["chrono"] }
 arc-swap = "1"
+# Realtime holds a read lock on the client registry for every publish;
+# no poisoning and a cheaper read path than std::sync::RwLock.
+parking_lot = "0.12"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tempfile = "3"
 walkdir = "2"

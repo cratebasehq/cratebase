@@ -10,6 +10,11 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY web/admin web/admin
 COPY web/email web/email
+# The root package.json lists `tests/conformance` as a workspace and Bun
+# refuses to install when a declared member is missing. The image has no
+# use for the suite itself, so only its manifest is copied — enough for
+# the workspace to resolve, without dragging the tests into the build.
+COPY tests/conformance/package.json tests/conformance/package.json
 RUN bun install && bun run admin:build && bun run email:build
 
 # ---- deps cache layer -------------------------------------------------

@@ -52,6 +52,7 @@ pub struct AppInner {
     /// and stop itself when the app goes away.
     rate_limiter: Arc<RateLimiter>,
     cron: CronService,
+    realtime: crate::realtime::RealtimeService,
     hooks: Hooks,
     store: Store,
     plugins: std::sync::Mutex<PluginRegistry>,
@@ -114,6 +115,7 @@ impl App {
                 logger: OnceLock::new(),
                 rate_limiter: Arc::new(RateLimiter::new()),
                 cron: CronService::new(),
+                realtime: crate::realtime::RealtimeService::new(),
                 hooks: Hooks::new(),
                 store: Store::new(),
                 plugins: std::sync::Mutex::new(PluginRegistry::new()),
@@ -193,6 +195,11 @@ impl App {
 
     pub fn cron(&self) -> &CronService {
         &self.inner.cron
+    }
+
+    /// The realtime (SSE) client registry.
+    pub fn realtime(&self) -> &crate::realtime::RealtimeService {
+        &self.inner.realtime
     }
 
     pub fn hooks(&self) -> &Hooks {
