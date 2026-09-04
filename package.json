@@ -1,9 +1,8 @@
 {
   "name": "cratebase-workspace",
   "private": true,
-  "workspaces": ["sdk/js", "web/admin", "web/email", "tests/conformance"],
+  "workspaces": ["web/admin", "web/email", "tests/conformance"],
   "scripts": {
-    "sdk:build": "bun run --cwd sdk/js build",
     "admin:dev": "bun run --cwd web/admin dev",
     "admin:build": "bun run --cwd web/admin build",
     "email:build": "bun run --cwd web/email build",
