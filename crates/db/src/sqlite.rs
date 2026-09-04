@@ -260,7 +260,65 @@ fn open_connection(path: &str, reader: bool) -> DbResult<Connection> {
     if reader {
         conn.execute_batch("PRAGMA query_only = ON;")?;
     }
+    register_geo_distance(&conn)?;
     Ok(conn)
+}
+
+/// Register `geoDistance(lonA, latA, lonB, latB)`, the great-circle
+/// distance in kilometres that `cratebase-filter` compiles geo
+/// comparisons into on SQLite. Postgres needs no equivalent: the
+/// compiler inlines the same haversine there.
+///
+/// `NULL` in, `NULL` out, so a row with an unset geo point simply fails
+/// the comparison instead of aborting the query. The function is
+/// deterministic, which lets SQLite use it in an index or a partial
+/// index predicate.
+fn register_geo_distance(conn: &Connection) -> DbResult<()> {
+    use rusqlite::functions::FunctionFlags;
+
+    conn.create_scalar_function(
+        "geoDistance",
+        4,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| {
+            let mut args = [0f64; 4];
+            for (i, slot) in args.iter_mut().enumerate() {
+                // Coordinates reach us as REAL from a geoPoint column but
+                // as INTEGER or TEXT from a bound literal, so the
+                // conversion has to be lenient rather than `as_f64`.
+                match to_f64(ctx.get_raw(i)) {
+                    Some(v) => *slot = v,
+                    None => return Ok(None),
+                }
+            }
+            let [lon_a, lat_a, lon_b, lat_b] = args;
+            Ok(Some(haversine_km(lon_a, lat_a, lon_b, lat_b)))
+        },
+    )
+    .map_err(map_err)
+}
+
+/// Any SQLite value as a float; `None` for NULL and anything unparsable.
+fn to_f64(value: ValueRef<'_>) -> Option<f64> {
+    match value {
+        ValueRef::Null => None,
+        ValueRef::Integer(i) => Some(i as f64),
+        ValueRef::Real(f) => Some(f),
+        ValueRef::Text(t) => std::str::from_utf8(t).ok()?.trim().parse().ok(),
+        ValueRef::Blob(_) => None,
+    }
+}
+
+/// Great-circle distance in kilometres (R = 6371), clamped so floating
+/// point noise can never push `acos` out of its domain.
+fn haversine_km(lon_a: f64, lat_a: f64, lon_b: f64, lat_b: f64) -> f64 {
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+    let (lat_a, lat_b) = (lat_a.to_radians(), lat_b.to_radians());
+    let delta_lon = (lon_b - lon_a).to_radians();
+    let cos = lat_a.sin() * lat_b.sin() + lat_a.cos() * lat_b.cos() * delta_lon.cos();
+    EARTH_RADIUS_KM * cos.clamp(-1.0, 1.0).acos()
 }
 
 impl Inner {
@@ -641,6 +699,24 @@ mod tests {
         assert_eq!(rows[0].get_str("s"), Some("hi"));
         assert_eq!(rows[0].values[3], Sql::Blob(vec![1, 2]));
         assert!(rows[0].values[4].is_null());
+    }
+
+    #[tokio::test]
+    async fn geo_distance_is_registered_and_matches_the_haversine() {
+        let e = SqliteEngine::open_memory().unwrap();
+        let rows = e
+            .query(
+                "SELECT geoDistance(0.0, 0.0, 0.0, 1.0), geoDistance(1, 1, 1, 1), \
+                 geoDistance(NULL, 0.0, 0.0, 1.0), geoDistance('0', '0', '0.0', '1.0')",
+                &[],
+            )
+            .await
+            .unwrap();
+        let one_degree = rows[0].values[0].as_f64().unwrap();
+        assert!((one_degree - 111.19).abs() < 0.1, "{one_degree}");
+        assert_eq!(rows[0].values[1].as_f64(), Some(0.0));
+        assert!(rows[0].values[2].is_null());
+        assert_eq!(rows[0].values[3].as_f64(), rows[0].values[0].as_f64());
     }
 
     #[tokio::test]
