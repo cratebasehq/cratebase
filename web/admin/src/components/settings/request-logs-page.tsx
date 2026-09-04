@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { cb } from "@/lib/api";
 import { settingsLogsRoute } from "@/routes/settings-logs";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +10,77 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ListTree } from "lucide-react";
+
+/** `GET /api/logs/stats` — hourly request counts for whatever filter the
+ * table itself is showing, so the chart and the rows underneath it always
+ * agree on what "the current view" means. */
+type LogStat = { date: string; total: number };
+
+/** Renders as a plain hour for a bucket less than a day old, and adds the
+ * date once the range spans more than one — the hourly label alone stops
+ * being enough to tell two bars apart once they're a day apart. */
+function bucketLabel(iso: string, spansMultipleDays: boolean): string {
+  const date = new Date(iso);
+  const hour = date.toLocaleTimeString(undefined, { hour: "numeric" });
+  if (!spansMultipleDays) return hour;
+  return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${hour}`;
+}
+
+/** The activity chart above the log table — hourly request volume for the
+ * current filter. Superuser-only like the rest of this screen; there's
+ * nothing here that isn't already visible row-by-row in the table, this
+ * is just the shape of it at a glance. */
+function RequestLogsChart({ filter }: { filter: string }) {
+  const { data: stats } = useQuery({
+    queryKey: ["request-logs", "stats", filter],
+    queryFn: () => cb.send<LogStat[]>("/api/logs/stats", { method: "GET", query: { filter: filter || undefined } }),
+    placeholderData: (previous) => previous,
+  });
+
+  const spansMultipleDays = useMemo(() => {
+    if (!stats || stats.length < 2) return false;
+    const first = new Date(stats[0]!.date).toDateString();
+    const last = new Date(stats[stats.length - 1]!.date).toDateString();
+    return first !== last;
+  }, [stats]);
+
+  const chartData = useMemo(
+    () => (stats ?? []).map((s) => ({ ...s, label: bucketLabel(s.date, spansMultipleDays) })),
+    [stats, spansMultipleDays],
+  );
+
+  if (!stats || stats.length === 0) return null;
+
+  return (
+    <div className="h-32 w-full rounded-lg border border-border bg-card p-2">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <XAxis
+            dataKey="label"
+            tick={{ fontSize: 10 }}
+            tickLine={false}
+            axisLine={false}
+            interval="preserveStartEnd"
+            className="fill-muted-foreground"
+          />
+          <YAxis hide allowDecimals={false} />
+          <Tooltip
+            cursor={{ fill: "var(--color-accent)" }}
+            contentStyle={{
+              background: "var(--color-popover)",
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-lg)",
+              fontSize: 12,
+            }}
+            labelFormatter={(label) => label}
+            formatter={(value) => [`${value} request${value === 1 ? "" : "s"}`, undefined]}
+          />
+          <Bar dataKey="total" radius={[2, 2, 0, 0]} className="fill-primary" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 /**
  * A log row as the server writes it, which is PocketBase's shape: the
@@ -100,6 +172,8 @@ export function RequestLogsPage() {
 
   return (
     <div className="flex flex-col gap-4 p-6">
+      <RequestLogsChart filter={filter} />
+
       <form onSubmit={submitFilter} className="flex max-w-sm items-center gap-2">
         <Input
           value={filterInput}

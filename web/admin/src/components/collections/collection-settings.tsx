@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CollectionForm } from "@/components/collections/collection-form";
 import {
+  authOptionsPayload,
   collectionFormErrors,
   collectionToFormValue,
   type CollectionFormValue,
@@ -119,7 +120,7 @@ export function CollectionSettings({
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
-        ...(value.type === "auth" ? { passwordAuth: { identityFields: [value.identityField] } } : {}),
+        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityField) : {}),
       }),
     onSuccess: async (saved) => {
       setBaseline(saved);

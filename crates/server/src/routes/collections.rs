@@ -32,7 +32,7 @@ use cratebase_db::collections as store_ops;
 use cratebase_db::engine::quote_ident;
 use cratebase_db::{schema, DbError};
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::app::App;
 use crate::events::{collection_tags, CollectionEvent, CollectionRequestEvent};
@@ -895,6 +895,34 @@ fn validate(
                 "Invalid view query - the query must include an \"id\" column.",
             ),
         );
+    }
+
+    // MFA needs a second factor to actually add anything: with only one
+    // enabled auth method there is nothing to challenge for beyond the
+    // first, so PocketBase rejects enabling it outright rather than
+    // silently accepting a no-op MFA config.
+    if next.is_auth() && next.auth.mfa.enabled {
+        let enabled_methods = [
+            next.auth.password_auth.enabled,
+            next.auth.otp.enabled,
+            next.auth.oauth2.enabled,
+        ]
+        .into_iter()
+        .filter(|&e| e)
+        .count();
+        if enabled_methods < 2 {
+            let mut data = Map::new();
+            data.insert(
+                "mfa".into(),
+                json!({
+                    "enabled": {
+                        "code": "validation_mfa_not_enough_auths",
+                        "message": "MFA requires at least two enabled auth methods.",
+                    }
+                }),
+            );
+            return Err(ApiError::nested_validation(message, data));
+        }
     }
 
     if !errors.is_empty() {

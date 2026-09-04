@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Archive, Download, Trash2 } from "lucide-react";
+import { Archive, Download, RotateCcw, Trash2, Upload } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
 import {
   AlertDialog,
@@ -72,6 +72,8 @@ export function BackupsPage() {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [deleting, setDeleting] = useState<BackupInfo | null>(null);
+  const [restoring, setRestoring] = useState<BackupInfo | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: backups, isLoading } = useQuery({
     queryKey: ["backups"],
@@ -122,6 +124,43 @@ export function BackupsPage() {
     },
   });
 
+  // `pb.backups.upload()` is the SDK's own helper — it multipart-encodes
+  // `{ file }` exactly the way `crate::routes::backups::upload` expects
+  // (a `file` part plus an optional `name` part), so there's no reason to
+  // hand-roll a `FormData` here the way the other actions build raw
+  // `cb.send()` calls.
+  const upload = useMutation({
+    mutationFn: (file: File) => cb.backups.upload({ file }),
+    onSuccess: async () => {
+      await invalidate();
+      toast.success("Backup uploaded");
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, {
+        description: failure.fields.file ?? failure.detail ?? undefined,
+      });
+    },
+  });
+
+  // A restore closes every open database handle, swaps the data directory,
+  // and re-execs the server process (see the doc comment on
+  // `crate::routes::backups::restore`) — so a success here doesn't mean the
+  // restore finished, only that it started. The connection drops out from
+  // under whatever screen is open next; there's nothing more to await.
+  const restore = useMutation({
+    mutationFn: (key: string) => cb.backups.restore(key),
+    onSuccess: () => {
+      toast.success("Restoring backup", {
+        description: "The server is restarting to load it. This page will lose its connection briefly.",
+      });
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.detail || undefined });
+    },
+  });
+
   async function handleCreate() {
     if (pending) return;
     setPending(true);
@@ -132,6 +171,12 @@ export function BackupsPage() {
     } finally {
       setPending(false);
     }
+  }
+
+  function handleFileSelected(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) upload.mutate(file);
   }
 
   return (
@@ -150,10 +195,23 @@ export function BackupsPage() {
             </>
           ) : null}
         </p>
-        <Button onClick={handleCreate} disabled={pending}>
-          {pending ? <Spinner /> : null}
-          {pending ? "Creating…" : "Create backup"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={handleFileSelected}
+          />
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending}>
+            {upload.isPending ? <Spinner /> : <Upload className="size-3.5" />}
+            {upload.isPending ? "Uploading…" : "Upload backup"}
+          </Button>
+          <Button onClick={handleCreate} disabled={pending}>
+            {pending ? <Spinner /> : null}
+            {pending ? "Creating…" : "Create backup"}
+          </Button>
+        </div>
       </div>
 
       <Table>
@@ -162,7 +220,7 @@ export function BackupsPage() {
             <TableHead>Name</TableHead>
             <TableHead className="w-[100px]">Size</TableHead>
             <TableHead className="w-[180px]">Created</TableHead>
-            <TableHead className="w-[100px]" />
+            <TableHead className="w-[130px]" />
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -175,6 +233,15 @@ export function BackupsPage() {
               </TableCell>
               <TableCell>
                 <div className="flex justify-end gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Restore ${backup.key}`}
+                    title="Restore"
+                    onClick={() => setRestoring(backup)}
+                  >
+                    <RotateCcw className="size-3.5" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -214,7 +281,8 @@ export function BackupsPage() {
                     </EmptyMedia>
                     <EmptyTitle>No backups yet</EmptyTitle>
                     <EmptyDescription>
-                      Create one above to snapshot the database as it stands right now.
+                      Create one above to snapshot the database as it stands right now, or upload an existing
+                      archive.
                     </EmptyDescription>
                   </EmptyHeader>
                 </Empty>
@@ -244,6 +312,32 @@ export function BackupsPage() {
               }}
             >
               Delete backup
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={restoring !== null} onOpenChange={(open) => !open && setRestoring(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restore this backup?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Every record, file, and setting will be replaced with what is in{" "}
+              <span className="font-mono">{restoring?.key}</span>. The server restarts itself to apply it, which
+              drops every open connection for a few seconds. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = restoring;
+                setRestoring(null);
+                if (target) restore.mutate(target.key);
+              }}
+            >
+              Restore backup
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

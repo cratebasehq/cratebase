@@ -34,6 +34,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SortableFieldRow } from "@/components/collections/sortable-field-row";
 import { RuleField } from "@/components/collections/rule-field";
 import { IndexEditor } from "@/components/collections/index-editor";
+import { AuthOptionsEditor } from "@/components/collections/auth-options-editor";
 
 /** How long an error waits before it appears while the field is still
  * being typed in. Matches the old inline-validation component: nothing is
@@ -276,6 +277,10 @@ export function CollectionForm({
           </SortableContext>
         </DndContext>
       </section>
+
+      {value.type === "auth" && value.auth ? (
+        <AuthOptionsEditor value={value.auth} onChange={(auth) => onChange({ ...value, auth })} />
+      ) : null}
 
       <section className="flex flex-col gap-3">
         <div className="flex flex-col">

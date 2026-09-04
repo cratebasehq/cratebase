@@ -498,7 +498,12 @@ export function SchemaFieldRow({
         </OptionGroup>
       ) : null}
 
-      {open && (field.type === "email" || field.type === "url" || field.type === "date" || field.type === "json") ? (
+      {open &&
+      (field.type === "email" ||
+        field.type === "url" ||
+        field.type === "date" ||
+        field.type === "json" ||
+        field.type === "geoPoint") ? (
         <OptionGroup title="Options" error={optionsError}>
           <p className="text-2xs leading-snug text-muted-foreground">
             {field.type === "email"
@@ -507,7 +512,9 @@ export function SchemaFieldRow({
                 ? "Validated as an absolute URL. Domain allow/deny lists are set through the API."
                 : field.type === "date"
                   ? "Stored as a UTC timestamp. Filter it with the date macros — @now, @todayStart, @monthStart."
-                  : "Stored as JSON. Filterable with :length and :each; not sortable."}
+                  : field.type === "json"
+                    ? "Stored as JSON. Filterable with :length and :each; not sortable."
+                    : "Stored as { lon, lat } in decimal degrees. Longitude in [-180, 180], latitude in [-90, 90]."}
           </p>
         </OptionGroup>
       ) : null}

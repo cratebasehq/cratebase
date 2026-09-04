@@ -23,6 +23,7 @@ echo "==> Serving examples on http://localhost:${PORT}"
 echo "    Todo (register/login/CRUD/realtime): http://localhost:${PORT}/examples/todo/"
 echo "    Realtime chat:                       http://localhost:${PORT}/examples/realtime-chat/"
 echo "    Realtime cursors:                    http://localhost:${PORT}/examples/realtime-cursors/"
+echo "    Kanban (own Vite dev server, not this one): npm --prefix examples/kanban install && npm --prefix examples/kanban run dev"
 echo
 echo "    Make sure \`cargo run -p cratebase-server --bin cratebase -- serve\` is running (http://localhost:8090)."
 echo

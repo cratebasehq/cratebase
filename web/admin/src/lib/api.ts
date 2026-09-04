@@ -68,6 +68,32 @@ export async function checkHealth(): Promise<{ message: string }> {
   return cb.send<{ message: string }>("/api/health", { method: "GET", requestKey: null });
 }
 
+/** `GET /api/setup/status` — unauthenticated. Tells the login screen
+ * whether to render the ordinary login form or the first-run "create your
+ * first superuser" form. */
+export async function checkSetupStatus(): Promise<{ needsSetup: boolean }> {
+  return cb.send<{ needsSetup: boolean }>("/api/setup/status", {
+    method: "GET",
+    requestKey: null,
+  });
+}
+
+/** `POST /api/setup` — unauthenticated, and only succeeds once: the server
+ * rejects it with 403 as soon as any superuser exists. Does not sign in —
+ * the caller follows up with {@link authWithPassword} using the same
+ * credentials, exactly like a normal login. */
+export async function createFirstSuperuser(
+  email: string,
+  password: string,
+  passwordConfirm: string,
+): Promise<void> {
+  await cb.send("/api/setup", {
+    method: "POST",
+    body: { email, password, passwordConfirm },
+    requestKey: null,
+  });
+}
+
 /* ------------------------------------------------------------------------ *
  * Error handling
  * ------------------------------------------------------------------------ */

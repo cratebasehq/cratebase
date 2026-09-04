@@ -69,11 +69,34 @@ pub struct AppInner {
     /// "exactly one resolution per request" instead of trusting a
     /// comment.
     auth_resolutions: std::sync::atomic::AtomicU64,
+    /// Set once the JS runtime starts (absent `pb_hooks/`, or an empty
+    /// one, means it never does). An `Arc<OnceLock<_>>` rather than a
+    /// plain field so hook bridges bound while the runtime's own hook
+    /// files are still being evaluated (see `register_hook`) can hold a
+    /// handle to it before `Runtime::start` has returned.
+    jsvm: Arc<OnceLock<cratebase_jsvm::Runtime>>,
+    /// Routes a `pb_hooks` file mounted with `routerAdd`, collected while
+    /// the runtime starts and turned into real axum routes by
+    /// `crate::jsvm_host::js_router` once `crate::router` assembles the
+    /// server.
+    js_routes: std::sync::Mutex<Vec<JsRoute>>,
 }
 
 #[derive(Clone)]
 pub struct App {
     inner: Arc<AppInner>,
+}
+
+/// One `routerAdd` registration: a JS-runtime route waiting to be turned
+/// into a real axum route by `crate::jsvm_host::js_router`.
+#[derive(Clone)]
+pub struct JsRoute {
+    /// Upper-case HTTP method, or empty for "any method" (PocketBase
+    /// accepts both from `routerAdd`).
+    pub method: String,
+    /// PocketBase-style path pattern (`/hello/{name}`, `/files/{path...}`).
+    pub pattern: String,
+    pub handler: cratebase_jsvm::RouteHandlerId,
 }
 
 impl std::fmt::Debug for App {
@@ -121,6 +144,8 @@ impl App {
                 plugins: std::sync::Mutex::new(PluginRegistry::new()),
                 bootstrapped: std::sync::atomic::AtomicBool::new(false),
                 auth_resolutions: std::sync::atomic::AtomicU64::new(0),
+                jsvm: Arc::new(OnceLock::new()),
+                js_routes: std::sync::Mutex::new(Vec::new()),
             }),
         }
     }
@@ -208,6 +233,42 @@ impl App {
 
     pub fn store(&self) -> &Store {
         &self.inner.store
+    }
+
+    /// The running JS runtime, once `App::bootstrap` has started one.
+    /// `None` when no `pb_hooks` directory exists (or it is empty) — the
+    /// documented zero-cost case, so nothing here ever starts a runtime
+    /// speculatively.
+    pub fn jsvm(&self) -> Option<cratebase_jsvm::Runtime> {
+        self.inner.jsvm.get().cloned()
+    }
+
+    /// A handle a hook bridge can hold onto *before* the runtime it will
+    /// eventually call into has finished starting (see
+    /// `crate::hooks::bind_js_hook`): registration happens synchronously
+    /// while `Runtime::start` evaluates the hook files, which is before
+    /// the `Runtime` value it returns exists.
+    pub(crate) fn jsvm_cell(&self) -> Arc<OnceLock<cratebase_jsvm::Runtime>> {
+        self.inner.jsvm.clone()
+    }
+
+    /// Record a `routerAdd` registration. Turned into a real route by
+    /// `crate::jsvm_host::js_router` when `crate::router` assembles the
+    /// server, which happens once every `pb_hooks` file has already run.
+    pub(crate) fn push_js_route(&self, route: JsRoute) {
+        self.inner
+            .js_routes
+            .lock()
+            .expect("js route registry poisoned")
+            .push(route);
+    }
+
+    pub fn js_routes(&self) -> Vec<JsRoute> {
+        self.inner
+            .js_routes
+            .lock()
+            .expect("js route registry poisoned")
+            .clone()
     }
 
     pub fn is_bootstrapped(&self) -> bool {
@@ -308,6 +369,15 @@ impl App {
         };
         self.apply_settings(Arc::new(settings))?;
 
+        // Starts the JS runtime when `pb_hooks/` exists and has at least
+        // one `*.pb.js` file; a no-op otherwise (spec: absent `pb_hooks`
+        // must cost nothing). Must run before `register_system_crons` /
+        // `plugin.setup` below so a `pb_hooks` file's `cronAdd`/`onRecord*`
+        // registrations are in place before anything can trigger them, and
+        // after settings/collections are loaded so a hook file that reads
+        // `$app.*` at evaluation time sees a working database.
+        crate::jsvm_host::maybe_start(self).await?;
+
         let logger = if config.log_requests {
             LogWriter::spawn(self.db().clone())
         } else {
@@ -371,6 +441,12 @@ impl App {
         if let Err(e) = self.hooks().on_terminate.trigger_bare(&mut event).await {
             tracing::warn!(error = %e, "on_terminate handler failed");
         }
+        // Stopped after `on_terminate` so a JS `onTerminate` handler still
+        // runs, and before the database closes since a worker thread may
+        // still be mid-call.
+        if let Some(rt) = self.jsvm() {
+            rt.stop();
+        }
         self.logger().flush().await;
         if let Some(db) = self.try_db() {
             if let Err(e) = db.close().await {
@@ -431,9 +507,10 @@ impl App {
                 }
             });
 
-        // `_mfas` / `_otps` rows are short-lived; W4b-2's auth service fills
-        // these in with the per-collection durations. Until then they are
-        // registered (the API lists them) but sweep nothing.
+        // `_mfas` / `_otps` rows are short-lived; each auth collection has
+        // its own configured duration, and both system tables are shared
+        // across every auth collection, so the sweep walks the collection
+        // store rather than issuing one blanket cutoff.
         let app = self.clone();
         let _ = self
             .inner
@@ -441,8 +518,29 @@ impl App {
             .add(cron::JOB_MFA_CLEANUP, "0 * * * *", move || {
                 let app = app.clone();
                 async move {
-                    // W4b-2: delete expired `_mfas` rows.
-                    let _ = &app;
+                    for collection in app.db().collections.all().all.iter() {
+                        if !collection.is_auth() || !collection.auth.mfa.enabled {
+                            continue;
+                        }
+                        let cutoff = cratebase_core::DateTime::from_utc(
+                            chrono::Utc::now()
+                                - chrono::Duration::seconds(collection.auth.mfa.duration.max(1)),
+                        );
+                        let sql = r#"DELETE FROM "_mfas" WHERE "collectionRef" = $1 AND "created" < $2"#;
+                        if let Err(e) = app
+                            .db()
+                            .execute(
+                                sql,
+                                &[
+                                    Sql::Text(collection.id.clone()),
+                                    Sql::Text(cutoff.to_pb_string()),
+                                ],
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %e, collection = %collection.name, "mfa cleanup failed");
+                        }
+                    }
                 }
             });
         let app = self.clone();
@@ -452,8 +550,29 @@ impl App {
             .add(cron::JOB_OTP_CLEANUP, "0 * * * *", move || {
                 let app = app.clone();
                 async move {
-                    // W4b-2: delete expired `_otps` rows.
-                    let _ = &app;
+                    for collection in app.db().collections.all().all.iter() {
+                        if !collection.is_auth() || !collection.auth.otp.enabled {
+                            continue;
+                        }
+                        let cutoff = cratebase_core::DateTime::from_utc(
+                            chrono::Utc::now()
+                                - chrono::Duration::seconds(collection.auth.otp.duration.max(1)),
+                        );
+                        let sql = r#"DELETE FROM "_otps" WHERE "collectionRef" = $1 AND "created" < $2"#;
+                        if let Err(e) = app
+                            .db()
+                            .execute(
+                                sql,
+                                &[
+                                    Sql::Text(collection.id.clone()),
+                                    Sql::Text(cutoff.to_pb_string()),
+                                ],
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %e, collection = %collection.name, "otp cleanup failed");
+                        }
+                    }
                 }
             });
 

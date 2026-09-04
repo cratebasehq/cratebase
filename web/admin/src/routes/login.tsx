@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { ClientResponseError } from "pocketbase";
 import { createRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { Check, Copy, Eye, EyeOff, TriangleAlert } from "lucide-react";
+import { Eye, EyeOff, TriangleAlert } from "lucide-react";
 import { CratebaseMark } from "@/components/brand/cratebase-mark";
 import {
   RequestInspector,
@@ -19,11 +20,15 @@ import {
 } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { authWithPassword, checkHealth, describeFailure, isLoggedIn } from "@/lib/api";
+import {
+  authWithPassword,
+  checkHealth,
+  checkSetupStatus,
+  createFirstSuperuser,
+  describeFailure,
+  isLoggedIn,
+} from "@/lib/api";
 import { rootRoute } from "@/routes/root";
-
-const CREATE_COMMAND = "cratebase superuser create";
 
 function LoginPage() {
   const navigate = useNavigate();
@@ -37,6 +42,10 @@ function LoginPage() {
   const [clientErrors, setClientErrors] = useState<Record<string, string>>({});
   const identityRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+  // "checking": neither form renders yet, avoiding a login-form flash
+  // before the answer arrives. "needed": no superuser exists — render the
+  // first-run setup form instead of login. "resolved": normal login.
+  const [setupStatus, setSetupStatus] = useState<"checking" | "needed" | "resolved">("checking");
 
   // Ask the server whether it is even there before anyone types a password.
   // `/api/health` is unauthenticated, so this is the honest answer to the
@@ -46,6 +55,21 @@ function LoginPage() {
     checkHealth().then(
       () => !cancelled && setReachability("up"),
       () => !cancelled && setReachability("down"),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // A fresh database has no superuser and therefore no way to log in —
+  // ask before rendering either form. A failed check (server down, old
+  // Cratebase without this endpoint) falls back to the ordinary login
+  // form rather than getting stuck on "checking" forever.
+  useEffect(() => {
+    let cancelled = false;
+    checkSetupStatus().then(
+      (result) => !cancelled && setSetupStatus(result.needsSetup ? "needed" : "resolved"),
+      () => !cancelled && setSetupStatus("resolved"),
     );
     return () => {
       cancelled = true;
@@ -123,13 +147,17 @@ function LoginPage() {
 
         <main className="flex flex-1 items-center py-12">
           <div className="w-full">
-            <h1 className="text-3xl font-medium tracking-tight">Sign in</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Superuser access to{" "}
-              <span className="font-mono text-foreground">{displayOrigin()}</span>
-            </p>
+            {setupStatus === "checking" ? null : setupStatus === "needed" ? (
+              <FirstRunSetupForm onFallbackToLogin={() => setSetupStatus("resolved")} />
+            ) : (
+              <>
+                <h1 className="text-3xl font-medium tracking-tight">Sign in</h1>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Superuser access to{" "}
+                  <span className="font-mono text-foreground">{displayOrigin()}</span>
+                </p>
 
-            <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4" noValidate>
+                <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4" noValidate>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="identity" className="text-xs">
                   Email
@@ -233,10 +261,8 @@ function LoginPage() {
                   can enable them. Nothing renders while none are configured. */}
               <AlternateAuthMethods />
             </form>
-
-            <div className="mt-7 border-t border-border pt-4">
-              <CreateSuperuserHint />
-            </div>
+              </>
+            )}
           </div>
         </main>
       </div>
@@ -268,27 +294,158 @@ function AlternateAuthMethods() {
   return null;
 }
 
-function CreateSuperuserHint() {
-  const { copy, status } = useCopyToClipboard();
+/** Rendered instead of the login form when `GET /api/setup/status` says no
+ * superuser exists yet. Creates the first superuser, then signs in with the
+ * same credentials exactly like a normal login — `POST /api/setup` never
+ * mints a token itself. */
+function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => void }) {
+  const navigate = useNavigate();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) return;
+
+    const problems: Record<string, string> = {};
+    if (!email.includes("@")) problems["email"] = "That doesn't look like an email address.";
+    if (password.length < 8) problems["password"] = "At least 8 characters.";
+    if (password !== passwordConfirm) problems["passwordConfirm"] = "Values don't match.";
+    if (Object.keys(problems).length > 0) {
+      setFields(problems);
+      return;
+    }
+    setFields({});
+    setPending(true);
+    try {
+      await createFirstSuperuser(email.trim(), password, passwordConfirm);
+      try {
+        await authWithPassword(email.trim(), password);
+        await navigate({ to: "/" });
+        return;
+      } catch {
+        // Created but the immediate login somehow failed — fall back to
+        // the normal form rather than get stuck on a dead setup screen.
+        onFallbackToLogin();
+        return;
+      }
+    } catch (error) {
+      const described = describeFailure(error, "generic");
+      if (error instanceof ClientResponseError && error.status === 403) {
+        // Someone else finished setup in the gap between this page loading
+        // and this submit — re-derive from a fresh read, not the stale
+        // "needed" state that got us here.
+        setNotice("Someone else just finished setup. Sign in below.");
+        onFallbackToLogin();
+        return;
+      }
+      setFields(described.fields);
+      setNotice(described.detail || described.title);
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-      <span>No superuser yet? Create one:</span>
-      <button
-        type="button"
-        onClick={() => copy(CREATE_COMMAND)}
-        className="group flex items-center gap-1.5 rounded-md border border-border bg-card px-1.5 py-1 font-mono text-xs text-foreground transition-colors hover:border-border-strong"
-        aria-label={`Copy "${CREATE_COMMAND}" to the clipboard`}
-      >
-        <span className="text-muted-foreground">$</span>
-        {CREATE_COMMAND}
-        {status === "copied" ? (
-          <Check className="size-3 text-success" />
-        ) : (
-          <Copy className="size-3 text-muted-foreground transition-colors group-hover:text-foreground" />
-        )}
-      </button>
-    </div>
+    <>
+      <h1 className="text-3xl font-medium tracking-tight">Create your first superuser</h1>
+      <p className="mt-2 text-sm text-muted-foreground">
+        This Cratebase instance has no superuser yet — create one to open the dashboard.
+      </p>
+
+      <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4" noValidate>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="setup-email" className="text-xs">
+            Email
+          </Label>
+          <Input
+            id="setup-email"
+            type="email"
+            inputMode="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="username"
+            autoFocus
+            required
+            disabled={pending}
+            aria-invalid={fields["email"] ? true : undefined}
+            placeholder="you@example.com"
+            className="h-control-lg"
+          />
+          {fields["email"] ? (
+            <p className="text-xs text-destructive">{fields["email"]}</p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="setup-password" className="text-xs">
+            Password
+          </Label>
+          <InputGroup className="h-control-lg">
+            <InputGroupInput
+              id="setup-password"
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="new-password"
+              required
+              disabled={pending}
+              aria-invalid={fields["password"] ? true : undefined}
+            />
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton
+                type="button"
+                onClick={() => setShowPassword((shown) => !shown)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? <EyeOff /> : <Eye />}
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
+          {fields["password"] ? (
+            <p className="text-xs text-destructive">{fields["password"]}</p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="setup-password-confirm" className="text-xs">
+            Confirm password
+          </Label>
+          <Input
+            id="setup-password-confirm"
+            type={showPassword ? "text" : "password"}
+            value={passwordConfirm}
+            onChange={(event) => setPasswordConfirm(event.target.value)}
+            autoComplete="new-password"
+            required
+            disabled={pending}
+            aria-invalid={fields["passwordConfirm"] ? true : undefined}
+            className="h-control-lg"
+          />
+          {fields["passwordConfirm"] ? (
+            <p className="text-xs text-destructive">{fields["passwordConfirm"]}</p>
+          ) : null}
+        </div>
+
+        {notice ? (
+          <Alert variant="destructive" role="alert" className="border-destructive/25 bg-destructive/5">
+            <TriangleAlert />
+            <AlertTitle>{notice}</AlertTitle>
+          </Alert>
+        ) : null}
+
+        <Button type="submit" size="lg" disabled={pending} className="mt-1 w-full shadow-lift">
+          {pending ? <Spinner /> : null}
+          {pending ? "Creating…" : "Create superuser"}
+        </Button>
+      </form>
+    </>
   );
 }
 

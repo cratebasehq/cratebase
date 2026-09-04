@@ -13,6 +13,7 @@ import { settingsMailRoute } from "@/routes/settings-mail";
 import { settingsSuperusersRoute } from "@/routes/settings-superusers";
 import { settingsBackupsRoute } from "@/routes/settings-backups";
 import { settingsCronRoute } from "@/routes/settings-cron";
+import { settingsNetworkRoute } from "@/routes/settings-network";
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -26,6 +27,7 @@ const routeTree = rootRoute.addChildren([
       settingsSuperusersRoute,
       settingsLogsRoute,
       settingsBackupsRoute,
+      settingsNetworkRoute,
       settingsCronRoute,
     ]),
   ]),

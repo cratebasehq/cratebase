@@ -1,12 +1,11 @@
 //! The `/api` router.
 //!
 //! Everything under `/api`, mounted inside the logging and rate-limit
-//! layers. The two groups still missing (realtime and batch) are W4b-2
-//! and are deliberately *absent* rather than stubbed with `todo!()`, so a
-//! missing endpoint is a clean PocketBase 404 and never a panic.
+//! layers.
 
 pub mod auth;
 pub mod backups;
+pub mod batch;
 pub mod collections;
 pub mod common;
 pub mod crons;
@@ -15,6 +14,7 @@ pub mod health;
 pub mod logs;
 pub mod records;
 pub mod settings;
+pub mod setup;
 
 use axum::Router;
 
@@ -37,9 +37,9 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(records::router())
         .merge(auth::router())
         .merge(files::router())
-        .merge(crate::realtime::router());
-
-    // W4b-2: `.merge(batch::router())` — POST /api/batch.
+        .merge(crate::realtime::router())
+        .merge(batch::router())
+        .merge(setup::router());
 
     // Plugin routes live inside this nest so they inherit request logging
     // and rate limiting (see `crate::plugin`).

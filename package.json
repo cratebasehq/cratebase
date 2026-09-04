@@ -10,6 +10,7 @@
     "examples:serve": "bash examples/serve.sh",
     "examples:todo:setup": "bash examples/todo/setup.sh",
     "examples:chat:setup": "bash examples/realtime-chat/setup.sh",
-    "examples:cursors:setup": "bash examples/realtime-cursors/setup.sh"
+    "examples:cursors:setup": "bash examples/realtime-cursors/setup.sh",
+    "examples:kanban:setup": "bash examples/kanban/setup.sh"
   }
 }
