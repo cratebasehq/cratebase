@@ -9,6 +9,7 @@
 
 mod error;
 mod fingerprint;
+mod oauth2;
 mod otp;
 mod password;
 mod pkce;
@@ -16,6 +17,10 @@ mod token;
 
 pub use error::{AuthError, AuthResult};
 pub use fingerprint::auth_origin_fingerprint;
+pub use oauth2::{
+    parse_generic_userinfo, parse_github_userinfo, parse_google_userinfo, parse_token_response,
+    KnownProvider, OAuth2User, TokenExchange, TokenResponse,
+};
 pub use otp::{generate_otp, hash_otp, DEFAULT_OTP_LENGTH};
 pub use password::{
     hash_password, hash_password_async, needs_rehash, verify_password, verify_password_async,

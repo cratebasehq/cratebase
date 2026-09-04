@@ -1,9 +1,8 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
-import { NetworkPage } from "@/components/settings/network-page";
 
 export const settingsNetworkRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/network",
-  component: NetworkPage,
+  component: lazyRouteComponent(() => import("@/components/settings/network-page"), "NetworkPage"),
 });
