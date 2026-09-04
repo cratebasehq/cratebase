@@ -25,29 +25,35 @@ is byte-compatible with PocketBase v0.40.2.
 
 ### Performance vs PocketBase
 
-22 of 24 benchmark cells are faster. Ratio is PocketBase-relative; lower
-is better for us. Full table: `bun run benchmarks/compare.ts
-benchmarks/results/pocketbase.json benchmarks/results/cratebase.json`.
+24 of 24 benchmark cells are faster (re-run 2026-09-04, see conditions
+note below). Ratio is PocketBase-relative; lower is better for us. Full
+table: `bun run benchmarks/compare.ts benchmarks/results/pocketbase.json
+benchmarks/results/cratebase.json`.
 
 | Workload | Conc | PocketBase req/s | Cratebase req/s | Speedup |
 |---|---:|---:|---:|---:|
-| search | 50 | 3,598 | 48,155 | **13.4x** |
-| search | 20 | 4,522 | 36,037 | **8.0x** |
-| search-auth | 20 | 5,467 | 25,124 | **4.6x** |
-| search-wide | 50 | 1,945 | 9,062 | **4.7x** |
-| auth | 1 | 21 | 79 | **3.8x** |
-| create | 100 | 5,965 | 8,823 | 1.5x |
-| delete | 1 | 2,534 | 2,264 | **0.9x (slower)** |
-| delete | 20 | 6,408 | 5,715 | **0.9x (slower)** |
+| search | 50 | 4,053 | 46,057 | **11.4x** |
+| search | 100 | 4,936 | 41,302 | **8.4x** |
+| search-wide | 100 | 1,966 | 17,467 | **8.9x** |
+| search-auth | 20 | 6,291 | 39,762 | **6.3x** |
+| auth | 1 | 22 | 84 | **3.9x** |
+| create | 100 | 6,711 | 9,163 | **1.4x** |
+| delete | 1 | 2,615 | 4,311 | **1.7x** |
+| auth | 50 | 270 | 282 | 1.0x (weakest cell) |
 
 The tail is the more interesting half: `create` at 100 concurrent is
-p99 **69.07ms → 12.59ms**, and `search` at 50 is p99 **57.25ms → 1.62ms**.
+p99 **61.43ms → 13.01ms**, and `search` at 50 is p99 **43.62ms → 1.61ms**.
 PocketBase's p99 blows out under contention; ours stays flat.
 
-⚠️ **These were measured on a host that was under memory pressure**
-(swap exhausted mid-run). They are directionally right and the read
-numbers are reproducible, but **re-run on an idle machine before putting
-any of them in a README or a launch post.** That re-run is W6 below.
+This run measured 0 errors on either server across all 24 cells. The
+host was not idle: `free -h` immediately before the run showed 8.5Gi
+free RAM (of 27Gi) and swap already at 7.6/8.0Gi used, and swap stayed
+at ~7.8/8.0Gi used through the run — this machine runs permanently near
+its swap ceiling, not a one-off spike. Read the ratios and the p99
+columns above the absolute numbers; a genuinely idle rig was not
+available for this measurement. Raw data:
+[`benchmarks/results/cratebase.json`](../../../benchmarks/results/cratebase.json),
+[`benchmarks/results/pocketbase.json`](../../../benchmarks/results/pocketbase.json).
 
 ---
 
@@ -141,12 +147,13 @@ worth fixing in this package.
 
 Close everything, confirm swap is free, then `bash benchmarks/run.sh`.
 Replace `benchmarks/results/*.json` and update every number in §1.
-Investigate `delete` at concurrency 1–20, the only two cells we lose.
 
-The previously suspected cause — an inline WAL checkpoint — was already
-fixed (p99 20ms → 2ms, +45% throughput); see the module doc in
-`crates/db/src/sqlite.rs`. Whatever remains is something else, and it may
-simply be noise from the degraded host.
+Update, 2026-09-04 re-run: all 24 cells are now faster than PocketBase
+(none lost), including `delete` at every concurrency — see §1. Swap was
+not free during that run (still ~7.8/8.0Gi used), so this does not
+satisfy the "idle machine" bar this package asks for; if a genuinely
+idle host becomes available, re-run once more to confirm the ratios
+hold and close this package out.
 
 ### W7 — Documentation pass
 
