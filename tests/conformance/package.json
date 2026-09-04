@@ -1,0 +1,16 @@
+{
+  "name": "@cratebase/conformance",
+  "private": true,
+  "type": "module",
+  "description": "PocketBase-compatibility conformance suite: runs the official pocketbase JS SDK against a live server (PocketBase or Cratebase).",
+  "scripts": {
+    "test": "bun test",
+    "test:pb": "PB_BIN=${PB_BIN:-/tmp/pb-bench/pb/pocketbase} bun test"
+  },
+  "dependencies": {
+    "pocketbase": "^0.28.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.2.0"
+  }
+}
