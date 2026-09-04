@@ -425,6 +425,43 @@ impl Collection {
         self.name == crate::SUPERUSERS_COLLECTION
     }
 
+    /// A JSON-Schema / OpenAI-function-calling-shaped description of this
+    /// collection's writable, non-system fields:
+    /// `{name, description, parameters: {type: "object",
+    /// properties: {...}, required: [...]}}`. The single source of truth
+    /// both the MCP tool definitions and the `/tool-schema` REST endpoint
+    /// call, so the two surfaces can never drift apart (see
+    /// `crates/server/src/mcp.rs` and
+    /// `crates/server/src/routes/tool_schema.rs`). System fields
+    /// (`id`, `created`, `updated`, the auth system fields, ...) are
+    /// omitted: they are never supplied by a caller.
+    pub fn to_json_schema(&self) -> Value {
+        let mut properties = Map::new();
+        let mut required = Vec::new();
+        for field in self.fields.iter().filter(|f| !f.system) {
+            properties.insert(field.name.clone(), field.kind.to_json_schema(&field.help));
+            if field.required {
+                required.push(Value::String(field.name.clone()));
+            }
+        }
+        let field_count = properties.len();
+        json!({
+            "name": self.name,
+            "description": format!(
+                "The '{}' {} collection ({} field{}).",
+                self.name,
+                self.collection_type.as_str(),
+                field_count,
+                if field_count == 1 { "" } else { "s" },
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": Value::Object(properties),
+                "required": required,
+            },
+        })
+    }
+
     /// The SQL table (or view) name. PocketBase names tables after the
     /// collection so `viewQuery` SQL is portable.
     pub fn table_name(&self) -> &str {
@@ -575,8 +612,11 @@ impl Collection {
         c
     }
 
-    /// The system `_externalAuths`, `_mfas`, `_otps`, `_authOrigins`
-    /// base collections, with PocketBase's rules and indexes.
+    /// The system `_externalAuths`, `_mfas`, `_otps`, `_authOrigins`,
+    /// `_cron_jobs`, `_webhooks`, `_teams`, `_team_members` base
+    /// collections, with PocketBase's rules and indexes (`_cron_jobs`,
+    /// `_webhooks`, `_teams` and `_team_members` have no PocketBase
+    /// equivalent — see their own comments).
     pub fn default_system_collections() -> Vec<Self> {
         let text = |name: &str| {
             let mut f = Field::new(
@@ -674,7 +714,220 @@ impl Collection {
             "CREATE UNIQUE INDEX `idx_authOrigins_unique_pairs` ON `_authOrigins` (collectionRef, recordRef, fingerprint)".into(),
         ];
 
-        vec![external, mfas, otps, origins]
+        // Superuser-only end to end (list/view/create/update/delete all
+        // stay at `Collection::new`'s default `None`) — a custom cron
+        // job runs arbitrary SQL on a schedule with no rule enforcement
+        // in between, the same trust tier as editing a collection's
+        // schema or the dashboard's SQL console, not something any
+        // non-superuser record should ever reach.
+        let mut cron_jobs = Collection::new("_cron_jobs", CollectionType::Base);
+        cron_jobs.system = true;
+        let mut enabled = Field::new("enabled", FieldKind::Bool {});
+        enabled.system = true;
+        let mut last_run_at = Field::new(
+            "lastRunAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        last_run_at.system = true;
+        last_run_at.required = false;
+        let mut last_status = text("lastStatus");
+        last_status.required = false;
+        let mut last_message = text("lastMessage");
+        last_message.required = false;
+        let pos = cron_jobs.fields.len() - 2;
+        cron_jobs.fields.splice(
+            pos..pos,
+            [
+                text("name"),
+                text("expression"),
+                text("sql"),
+                enabled,
+                last_run_at,
+                last_status,
+                last_message,
+            ],
+        );
+
+        // Superuser-only end to end, same reasoning as `_cron_jobs` above:
+        // a webhook's `url`/`secret` are operator-configured integration
+        // points, not something a non-superuser record should ever read
+        // or edit. `_webhooks` itself is deliberately never a valid
+        // `collectionRef` target (see `crate::webhooks` in the server
+        // crate) so a write to a webhook row can never re-trigger a
+        // webhook dispatch for `_webhooks` writes.
+        let mut webhooks = Collection::new("_webhooks", CollectionType::Base);
+        webhooks.system = true;
+        let mut w_enabled = Field::new("enabled", FieldKind::Bool {});
+        w_enabled.system = true;
+        w_enabled.required = true;
+        let mut w_secret = text("secret");
+        w_secret.required = false;
+        w_secret.hidden = true;
+        let mut w_last_triggered_at = Field::new(
+            "lastTriggeredAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        w_last_triggered_at.system = true;
+        w_last_triggered_at.required = false;
+        let mut w_last_status = text("lastStatus");
+        w_last_status.required = false;
+        let mut w_last_message = text("lastMessage");
+        w_last_message.required = false;
+        let pos = webhooks.fields.len() - 2;
+        webhooks.fields.splice(
+            pos..pos,
+            [
+                text("name"),
+                text("collectionRef"),
+                text("events"),
+                text("url"),
+                w_secret,
+                w_enabled,
+                w_last_triggered_at,
+                w_last_status,
+                w_last_message,
+            ],
+        );
+
+        // Ordinary application-level multi-user workspaces (a Slack
+        // workspace shape), *not* a way to reach the admin dashboard —
+        // membership in `_team_members` says nothing about superuser
+        // access. `_teams` is listable/viewable by its own members via a
+        // `@collection._team_members` back-reference (see
+        // `crate::teams`'s module doc in the server crate for the exact
+        // pattern any third-party collection should copy to scope itself
+        // to a team). Creating a team is open to any authenticated user,
+        // who must submit `ownerRef` as their own id; `crate::teams`'s
+        // reactive hook then inserts the first `_team_members` owner row
+        // so a team is never left ownerless. Update/delete stay
+        // superuser-only (rule `None`, `Collection::new`'s default) for
+        // this pass.
+        let team_member_rule = Some(
+            "@collection._team_members.userRef ?= @request.auth.id && @collection._team_members.teamRef ?= id"
+                .to_string(),
+        );
+        let mut teams = Collection::new("_teams", CollectionType::Base);
+        teams.system = true;
+        teams.list_rule = team_member_rule.clone();
+        teams.view_rule = team_member_rule;
+        teams.create_rule =
+            Some("@request.auth.id != '' && ownerRef = @request.auth.id".to_string());
+        let mut owner_ref = Field::new(
+            "ownerRef",
+            FieldKind::Relation {
+                collection_id: crate::USERS_COLLECTION_ID.into(),
+                cascade_delete: false,
+                min_select: 0,
+                max_select: 1,
+            },
+        );
+        owner_ref.required = true;
+        let pos = teams.fields.len() - 2;
+        teams.fields.splice(pos..pos, [text("name"), owner_ref]);
+
+        // Membership rows: listable/viewable by any member of the same
+        // team (a self-referencing `@collection._team_members` check —
+        // the joined row need not be *this* row, just some row proving
+        // the caller belongs to the same `teamRef`), but only creatable
+        // by the team's own owner. The very first, bootstrap owner row
+        // for a brand-new team is inserted directly by
+        // `crate::teams::bind_hooks`, not through this rule — a team has
+        // no owner row yet at the moment it is created, so no caller
+        // could ever satisfy `create_rule` for it.
+        let same_team_rule = Some(
+            "@collection._team_members.userRef ?= @request.auth.id && @collection._team_members.teamRef ?= teamRef"
+                .to_string(),
+        );
+        let mut team_members = Collection::new("_team_members", CollectionType::Base);
+        team_members.system = true;
+        team_members.list_rule = same_team_rule.clone();
+        team_members.view_rule = same_team_rule;
+        team_members.create_rule = Some(
+            "@collection._team_members.userRef ?= @request.auth.id && @collection._team_members.teamRef ?= teamRef && @collection._team_members.role ?= 'owner'"
+                .to_string(),
+        );
+        let mut team_ref = Field::new(
+            "teamRef",
+            FieldKind::Relation {
+                collection_id: teams.id.clone(),
+                cascade_delete: true,
+                min_select: 0,
+                max_select: 1,
+            },
+        );
+        team_ref.required = true;
+        let mut user_ref = Field::new(
+            "userRef",
+            FieldKind::Relation {
+                collection_id: crate::USERS_COLLECTION_ID.into(),
+                cascade_delete: true,
+                min_select: 0,
+                max_select: 1,
+            },
+        );
+        user_ref.required = true;
+        let pos = team_members.fields.len() - 2;
+        team_members
+            .fields
+            .splice(pos..pos, [team_ref, user_ref, text("role")]);
+        team_members.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_team_members_unique_pairs` ON `_team_members` (teamRef, userRef)".into(),
+        ];
+
+        // Superuser-only end to end, same trust tier as `_cron_jobs` and
+        // `_webhooks` above: a per-request token ledger is an operator
+        // audit trail, not something a non-superuser record should ever
+        // read (it would leak other callers' usage) or write (a forged
+        // row would corrupt the ledger). See `crate::llm` in the server
+        // crate for the writer — a best-effort insert after each
+        // `POST /api/llm/chat` completes, bypassing this rule the same
+        // way `_cron_jobs`'s status write-back bypasses its own.
+        let mut llm_usage = Collection::new("_llm_usage", CollectionType::Base);
+        llm_usage.system = true;
+        let mut caller_id = text("callerId");
+        caller_id.required = false;
+        let model = text("model");
+        let mut prompt_tokens = Field::new(
+            "promptTokens",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        prompt_tokens.system = true;
+        let mut completion_tokens = Field::new(
+            "completionTokens",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        completion_tokens.system = true;
+        let pos = llm_usage.fields.len() - 2;
+        llm_usage.fields.splice(
+            pos..pos,
+            [caller_id, model, prompt_tokens, completion_tokens],
+        );
+
+        vec![
+            external,
+            mfas,
+            otps,
+            origins,
+            cron_jobs,
+            webhooks,
+            teams,
+            team_members,
+            llm_usage,
+        ]
     }
 }
 
@@ -737,6 +990,42 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_a_vector_field_through_json() {
+        let mut c = Collection::new("chunks", CollectionType::Base);
+        let pos = c.fields.len() - 2;
+        c.fields.insert(
+            pos,
+            Field::new(
+                "embedding",
+                FieldKind::Vector {
+                    dimensions: 4,
+                    embedding: Some(crate::field::EmbeddingConfig {
+                        provider: "echo".into(),
+                        model: String::new(),
+                        source_field: "body".into(),
+                    }),
+                },
+            ),
+        );
+        let v = c.to_json();
+        assert_eq!(v["fields"][pos]["type"], "vector");
+        assert_eq!(v["fields"][pos]["dimensions"], 4);
+        assert_eq!(v["fields"][pos]["embedding"]["sourceField"], "body");
+        let back: Collection = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(back.to_json(), v);
+        match &back.fields[pos].kind {
+            FieldKind::Vector {
+                dimensions,
+                embedding: Some(cfg),
+            } => {
+                assert_eq!(*dimensions, 4);
+                assert_eq!(cfg.source_field, "body");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn lenient_input_for_new_base_collection() {
         let mut c: Collection =
             serde_json::from_str(r#"{"name":"posts","type":"base","fields":[{"name":"title","type":"text","required":true}]}"#)
@@ -758,7 +1047,12 @@ mod tests {
                 crate::ids::collection_id("base", "_externalAuths").as_str(),
                 "pbc_2279338944",
                 "pbc_1638494021",
-                crate::ids::collection_id("base", "_authOrigins").as_str()
+                crate::ids::collection_id("base", "_authOrigins").as_str(),
+                crate::ids::collection_id("base", "_cron_jobs").as_str(),
+                crate::ids::collection_id("base", "_webhooks").as_str(),
+                crate::ids::collection_id("base", "_teams").as_str(),
+                crate::ids::collection_id("base", "_team_members").as_str(),
+                crate::ids::collection_id("base", "_llm_usage").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

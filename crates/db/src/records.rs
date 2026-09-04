@@ -84,7 +84,10 @@ pub fn is_hash(value: &Value) -> bool {
 /// Whether a field's stored column holds JSON text.
 fn stores_json(field: &Field) -> bool {
     schema::is_multiple(field)
-        || matches!(field.field_type(), FieldType::Json | FieldType::GeoPoint)
+        || matches!(
+            field.field_type(),
+            FieldType::Json | FieldType::GeoPoint | FieldType::Vector
+        )
 }
 
 /// Encode a JSON value for its physical column. Multi-valued fields and
@@ -108,9 +111,9 @@ pub fn column_value(field: &Field, value: &Value) -> Sql {
     match field.field_type() {
         FieldType::Number => Sql::Real(value.as_f64().unwrap_or(0.0)),
         FieldType::Bool => Sql::Int(i64::from(value.as_bool().unwrap_or(false))),
-        FieldType::Json | FieldType::GeoPoint => match value {
+        FieldType::Json | FieldType::GeoPoint | FieldType::Vector => match value {
             Value::Null => Sql::Null,
-            // A json field submitted as text keeps its own encoding.
+            // A json/vector field submitted as text keeps its own encoding.
             Value::String(s) => Sql::Text(s.clone()),
             other => Sql::Text(other.to_string()),
         },

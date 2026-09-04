@@ -366,13 +366,14 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
         [
             "backups",
             "batch",
+            "llm",
             "logs",
             "meta",
             "rateLimits",
             "s3",
             "smtp",
             "superuserIPs",
-            "trustedProxy"
+            "trustedProxy",
         ]
     );
     assert!(body["smtp"].get("password").is_none());

@@ -57,6 +57,11 @@ zero-code-change option** for when SQLite stops being enough.
   [RustFS](https://rustfs.com)/MinIO) with three environment variables.
 - **Realtime** — subscribe to a collection or a single record over SSE;
   get `create`/`update`/`delete` events as they happen.
+- **Custom cron jobs** — schedule a raw SQL statement to run on a cron
+  expression from the dashboard's Cron jobs screen, no redeploy: a
+  `_cron_jobs` record is the whole job (name, expression, SQL), reactive
+  (a dashboard edit takes effect immediately), with the last run's
+  status and error written back for you to see.
 - **One binary** — the admin dashboard is embedded at compile time
   (`rust-embed`). `cratebase serve` is the whole deployment.
 - **PocketBase-compatible API** — the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client (and PocketBase's other official SDKs) work against Cratebase unchanged. Verified against the
@@ -134,6 +139,41 @@ const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.l
 Full API reference: [openapi.yaml](./openapi.yaml). Quick orientation for
 humans or LLMs: [llms.txt](./llms.txt).
 
+## Server-side rendering
+
+No code gap here either: the official [`pocketbase`](https://www.npmjs.com/package/pocketbase)
+SDK already supports the standard SSR pattern used by meta-frameworks
+like TanStack Start, Next.js, and SvelteKit — a fresh client instance
+per request, with the auth store hydrated from (and re-serialized back
+into) a cookie. Nothing Cratebase-specific is required beyond pointing
+`PocketBase` at your server URL.
+
+```ts
+// inside a TanStack Start server function / loader (same shape for any
+// Node-based SSR framework — swap getCookie/setCookie for your
+// framework's request/response cookie helpers)
+import PocketBase from "pocketbase";
+
+const pb = new PocketBase(process.env.CRATEBASE_URL);
+pb.autoCancellation(false); // see below
+pb.authStore.loadFromCookie(getCookie("pb_auth") ?? "");
+
+const posts = await pb.collection("posts").getList(1, 20);
+
+setCookie("pb_auth", pb.authStore.exportToCookie());
+```
+
+> **`autoCancellation(false)` is required in every server context.** By
+> default the SDK cancels an in-flight request when an identical one is
+> issued again — a de-duplication behavior meant for client-side UI
+> (e.g. a component re-rendering mid-fetch). On the server, each
+> incoming request gets its own `PocketBase` instance, but the SDK has
+> no way of knowing that two loaders calling the same endpoint at the
+> same time are actually two independent requests, not one UI component
+> re-firing — with auto-cancellation left on, it can silently cancel one
+> of them. Call `pb.autoCancellation(false)` on every server-side client
+> you construct.
+
 ## Examples
 
 Four runnable apps in [examples/](./examples), each with its own
@@ -181,12 +221,11 @@ Extend the server without forking it: implement the `Plugin` trait
 under `/api/plugins/<name>`, and fixed-interval background jobs, then
 register it in a `PluginRegistry` — including from a downstream binary
 that depends on `cratebase-server` as a library, not just this repo's own
-`cratebase` binary. Three real examples ship in
-`crates/server/src/plugins/`: `cron_jobs.rs` (calendar cron via
-`croner`, reading a `_cron_jobs` collection), `feature_flags.rs` (a
-`_feature_flags` collection + the existing rule engine), and
-`queue.rs` (a durable job queue with retry/reclaim) — `example.rs` is
-the minimal reference to copy from.
+`cratebase` binary. See `crate::plugin`'s module doc for the trait shape;
+there is no bundled example plugin in this repo yet — `crates/server/src/cron_jobs.rs`
+is the closest reference for the "reactive system collection" shape a
+plugin author would follow, even though it isn't built on the `Plugin`
+trait itself.
 
 ## Development
 

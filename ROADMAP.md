@@ -21,12 +21,17 @@ land.
   `plugins/example.rs` is a working reference (a `/stats` route + a
   5-minute logging job) to copy from.
   **Shipped on this foundation:**
-  - **Cron jobs as a plugin** (`plugins/cron_jobs.rs`) — real calendar
-    cron expressions (`croner`), reading job definitions from a
-    `_cron_jobs` collection instead of being hardcoded, with
-    `lastRunAt`/`lastStatus` written back per run. Job bodies are a small
-    built-in registry (`run_job`), not scripted — add a match arm and
-    ship your own binary for a new job type.
+  - **Custom SQL cron jobs** (`crates/server/src/cron_jobs.rs`, not a
+    plugin) — a `_cron_jobs` system collection: name, a 5-field cron
+    expression, and a raw SQL statement to run on it, editable from the
+    dashboard's Cron jobs screen or the generic Records API. No match-arm
+    registry, no rebuild for a new job type — the SQL itself is the job
+    body. Superuser-only end to end (no rule enforcement bypasses it —
+    same trust tier as a collection schema edit), validated as a real
+    cron expression before the row is even written, and reactive: a
+    create/update/delete takes effect on the live scheduler immediately,
+    no restart. `lastRunAt`/`lastStatus`/`lastMessage` are written back
+    after every run, including the real driver error on failure.
   - **Feature flags as a plugin** (`plugins/feature_flags.rs`) — a
     self-contained `_feature_flags` collection + an `evaluation rule`
     (reuses the existing filter/rule engine, evaluated against

@@ -178,6 +178,9 @@ mod tests {
             "_mfas",
             "_otps",
             "_authOrigins",
+            "_cron_jobs",
+            "_webhooks",
+            "_llm_usage",
         ] {
             assert!(names.contains(&n), "{n} missing from {names:?}");
         }

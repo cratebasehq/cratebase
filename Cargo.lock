@@ -616,6 +616,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "clap",
@@ -629,16 +630,19 @@ dependencies = [
  "croner",
  "dotenvy",
  "futures",
+ "hmac 0.12.1",
  "http-body-util",
  "image",
  "jsonwebtoken",
  "mimalloc",
  "mime_guess",
  "parking_lot",
+ "qrcode",
  "reqwest",
  "rust-embed",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -2156,6 +2160,12 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

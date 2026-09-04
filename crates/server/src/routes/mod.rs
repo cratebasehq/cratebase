@@ -9,12 +9,17 @@ pub mod batch;
 pub mod collections;
 pub mod common;
 pub mod crons;
+pub mod file_manager;
 pub mod files;
 pub mod health;
+pub mod llm;
 pub mod logs;
 pub mod records;
 pub mod settings;
 pub mod setup;
+pub mod sql_console;
+pub mod tool_schema;
+pub mod utils;
 
 use axum::Router;
 
@@ -39,7 +44,16 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(files::router())
         .merge(crate::realtime::router())
         .merge(batch::router())
-        .merge(setup::router());
+        .merge(setup::router())
+        .merge(utils::router())
+        .merge(file_manager::router())
+        .merge(sql_console::router())
+        .merge(llm::router())
+        .merge(tool_schema::router())
+        // MCP lives in its own top-level module (like `realtime`), not
+        // under `routes`, because it is a protocol server (JSON-RPC +
+        // SSE) rather than a plain REST route table.
+        .merge(crate::mcp::router());
 
     // Plugin routes live inside this nest so they inherit request logging
     // and rate limiting (see `crate::plugin`).
