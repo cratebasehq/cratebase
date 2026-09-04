@@ -563,7 +563,10 @@ impl Collection {
         c.fields.insert(pos, name);
         c.fields.insert(pos + 1, avatar);
         c.indexes = vec![
-            format!("CREATE UNIQUE INDEX `idx_tokenKey_{}` ON `users` (`tokenKey`)", c.id),
+            format!(
+                "CREATE UNIQUE INDEX `idx_tokenKey_{}` ON `users` (`tokenKey`)",
+                c.id
+            ),
             format!(
                 "CREATE UNIQUE INDEX `idx_email_{}` ON `users` (`email`) WHERE `email` != ''",
                 c.id
@@ -643,7 +646,8 @@ impl Collection {
             [text("collectionRef"), text("recordRef"), text("method")],
         );
         mfas.indexes = vec![
-            "CREATE INDEX `idx_mfas_collectionRef_recordRef` ON `_mfas` (collectionRef,recordRef)".into(),
+            "CREATE INDEX `idx_mfas_collectionRef_recordRef` ON `_mfas` (collectionRef,recordRef)"
+                .into(),
         ];
 
         let mut otps = Collection::new("_otps", CollectionType::Base);
@@ -666,7 +670,8 @@ impl Collection {
             [text("collectionRef"), text("recordRef"), password, sent_to],
         );
         otps.indexes = vec![
-            "CREATE INDEX `idx_otps_collectionRef_recordRef` ON `_otps` (collectionRef, recordRef)".into(),
+            "CREATE INDEX `idx_otps_collectionRef_recordRef` ON `_otps` (collectionRef, recordRef)"
+                .into(),
         ];
 
         let mut origins = Collection::new("_authOrigins", CollectionType::Base);
@@ -677,7 +682,11 @@ impl Collection {
         let pos = origins.fields.len() - 2;
         origins.fields.splice(
             pos..pos,
-            [text("collectionRef"), text("recordRef"), text("fingerprint")],
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                text("fingerprint"),
+            ],
         );
         origins.indexes = vec![
             "CREATE UNIQUE INDEX `idx_authOrigins_unique_pairs` ON `_authOrigins` (collectionRef, recordRef, fingerprint)".into(),
@@ -770,9 +779,6 @@ mod tests {
                 crate::ids::collection_id("base", "_authOrigins").as_str()
             ]
         );
-        assert_eq!(
-            Collection::default_superusers().id,
-            "pbc_3142635823"
-        );
+        assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
     }
 }

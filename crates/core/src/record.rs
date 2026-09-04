@@ -33,9 +33,13 @@ pub struct Record {
     expand: IndexMap<String, Value>,
     custom: IndexMap<String, Value>,
     is_new: bool,
-    /// The original values loaded from the database, kept so update
-    /// hooks can diff. Empty for new records.
-    original: IndexMap<String, Value>,
+    /// Values as they were loaded, kept so an update can write only the
+    /// columns that actually changed. `None` means "nothing has been
+    /// mutated since load", in which case `data` *is* the original — a
+    /// list of 200 rows would otherwise clone 200 whole value maps for
+    /// change tracking that read paths never consult. The snapshot is
+    /// taken lazily on the first mutation of a loaded record.
+    original: Option<IndexMap<String, Value>>,
 }
 
 impl Record {
@@ -51,32 +55,47 @@ impl Record {
             expand: IndexMap::new(),
             custom: IndexMap::new(),
             is_new: true,
-            original: IndexMap::new(),
+            original: None,
+        }
+    }
+
+    /// Snapshot `data` before the first mutation of a loaded record, so
+    /// [`Record::original`] keeps reporting the loaded values.
+    fn snapshot_original(&mut self) {
+        if !self.is_new && self.original.is_none() {
+            self.original = Some(self.data.clone());
         }
     }
 
     /// A record loaded from storage (`is_new == false`). `data` keys that
     /// are not fields are ignored.
-    pub fn from_loaded(collection: Arc<Collection>, data: Map<String, Value>) -> Self {
+    pub fn from_loaded(collection: Arc<Collection>, mut data: Map<String, Value>) -> Self {
         let mut record = Record::new(collection);
-        for (k, v) in data {
-            if record.collection.has_field(&k) {
-                record.data.insert(k, v);
+        // Walk the schema and pull each field out of `data`, rather than
+        // walking `data` and asking `has_field` per key — the latter is a
+        // linear scan of the schema for every key.
+        let names: Vec<String> = record
+            .collection
+            .fields
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        for name in names {
+            if let Some(v) = data.remove(&name) {
+                record.data.insert(name, v);
             }
         }
-        record.original = record.data.clone();
         record.is_new = false;
+        record.original = None;
         record
     }
 
     pub fn id(&self) -> &str {
-        self.data
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
+        self.data.get("id").and_then(Value::as_str).unwrap_or("")
     }
 
     pub fn set_id(&mut self, id: impl Into<String>) {
+        self.snapshot_original();
         self.data.insert("id".into(), Value::String(id.into()));
     }
 
@@ -84,9 +103,11 @@ impl Record {
         self.is_new
     }
 
+    /// Mark the record as persisted: it is no longer new, and its current
+    /// values become the baseline for the next change diff.
     pub fn mark_saved(&mut self) {
         self.is_new = false;
-        self.original = self.data.clone();
+        self.original = None;
     }
 
     pub fn collection(&self) -> &Arc<Collection> {
@@ -136,6 +157,7 @@ impl Record {
     /// `with_custom_data` is later requested; they never reach storage.
     pub fn set(&mut self, field: &str, value: Value) {
         if self.collection.has_field(field) {
+            self.snapshot_original();
             self.data.insert(field.to_string(), value);
         } else {
             self.custom.insert(field.to_string(), value);
@@ -146,8 +168,25 @@ impl Record {
         self.custom.insert(key.to_string(), value);
     }
 
+    /// The value this field had when the record was loaded. For a record
+    /// that has not been mutated this is simply its current value.
     pub fn original(&self, field: &str) -> Option<&Value> {
-        self.original.get(field)
+        self.original.as_ref().unwrap_or(&self.data).get(field)
+    }
+
+    /// Field names whose value differs from the loaded one. Empty for a
+    /// record that has not been mutated; every field for a new record.
+    pub fn changed_fields(&self) -> Vec<&str> {
+        match &self.original {
+            None if self.is_new => self.data.keys().map(String::as_str).collect(),
+            None => Vec::new(),
+            Some(original) => self
+                .data
+                .iter()
+                .filter(|(k, v)| original.get(*k) != Some(*v))
+                .map(|(k, _)| k.as_str())
+                .collect(),
+        }
     }
 
     pub fn expand(&self) -> &IndexMap<String, Value> {
@@ -167,7 +206,12 @@ impl Record {
         &self.data
     }
 
+    /// Direct access to the field map. This bypasses change tracking's
+    /// normal trigger, so it snapshots eagerly for an already-loaded
+    /// record; filling a fresh `Record::new` (the decode path) costs
+    /// nothing.
     pub fn data_mut(&mut self) -> &mut IndexMap<String, Value> {
+        self.snapshot_original();
         &mut self.data
     }
 
@@ -222,7 +266,10 @@ impl Record {
             let value = self.data.get(&f.name).cloned().unwrap_or(Value::Null);
             m.insert(f.name.clone(), value);
         }
-        m.insert("collectionId".into(), Value::String(self.collection.id.clone()));
+        m.insert(
+            "collectionId".into(),
+            Value::String(self.collection.id.clone()),
+        );
         m.insert(
             "collectionName".into(),
             Value::String(self.collection.name.clone()),
@@ -230,7 +277,12 @@ impl Record {
         if !self.expand.is_empty() {
             m.insert(
                 "expand".into(),
-                Value::Object(self.expand.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
+                Value::Object(
+                    self.expand
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                ),
             );
         }
         if opts.with_custom_data {
@@ -382,12 +434,10 @@ fn project_nested(
     out: &mut Map<String, Value>,
     excerpt: Option<(usize, bool)>,
 ) {
-    let slot = out
-        .entry(key.to_string())
-        .or_insert_with(|| match v {
-            Value::Array(_) => Value::Array(vec![]),
-            _ => Value::Object(Map::new()),
-        });
+    let slot = out.entry(key.to_string()).or_insert_with(|| match v {
+        Value::Array(_) => Value::Array(vec![]),
+        _ => Value::Object(Map::new()),
+    });
     match (v, slot) {
         (Value::Object(inner), Value::Object(target)) => {
             project_into(inner, rest, target, excerpt);
@@ -498,6 +548,51 @@ mod tests {
     }
 
     #[test]
+    fn change_tracking_is_copy_on_write() {
+        let c = posts();
+        let mut r = Record::from_loaded(
+            c,
+            serde_json::json!({"id": "a", "title": "old"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        // Nothing mutated: the loaded values are the current values, and
+        // no snapshot has been taken.
+        assert!(!r.is_new());
+        assert_eq!(r.original("title"), Some(&Value::String("old".into())));
+        assert!(r.changed_fields().is_empty());
+
+        r.set("title", Value::String("new".into()));
+        assert_eq!(r.original("title"), Some(&Value::String("old".into())));
+        assert_eq!(r.get("title"), Some(&Value::String("new".into())));
+        assert_eq!(r.changed_fields(), vec!["title"]);
+
+        // Re-setting keeps the ORIGINAL baseline, not the intermediate.
+        r.set("title", Value::String("newer".into()));
+        assert_eq!(r.original("title"), Some(&Value::String("old".into())));
+
+        // Saving rebaselines.
+        r.mark_saved();
+        assert_eq!(r.original("title"), Some(&Value::String("newer".into())));
+        assert!(r.changed_fields().is_empty());
+    }
+
+    #[test]
+    fn from_loaded_ignores_unknown_keys() {
+        let r = Record::from_loaded(
+            posts(),
+            serde_json::json!({"id": "a", "title": "t", "nope": 1})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let v = r.to_json(SerializeOptions::default());
+        assert_eq!(v["title"], "t");
+        assert!(v.get("nope").is_none());
+    }
+
+    #[test]
     fn hidden_email_is_omitted_not_blanked() {
         let users = Arc::new(Collection::default_users());
         let mut r = Record::new(users);
@@ -522,7 +617,10 @@ mod tests {
     #[test]
     fn multi_field_zero_is_empty_array() {
         let r = Record::new(posts());
-        assert_eq!(r.to_json(SerializeOptions::default())["tags"], serde_json::json!([]));
+        assert_eq!(
+            r.to_json(SerializeOptions::default())["tags"],
+            serde_json::json!([])
+        );
     }
 
     #[test]

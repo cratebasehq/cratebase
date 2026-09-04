@@ -540,8 +540,8 @@ mod tests {
         let f: Field = serde_json::from_str(r#"{"name":"title","type":"text"}"#).unwrap();
         assert_eq!(f.field_type(), FieldType::Text);
         assert!(!f.required);
-        let f: Field = serde_json::from_str(r#"{"name":"tags","type":"select","values":["a"]}"#)
-            .unwrap();
+        let f: Field =
+            serde_json::from_str(r#"{"name":"tags","type":"select","values":["a"]}"#).unwrap();
         assert_eq!(f.max_select(), Some(1));
         let f: Field =
             serde_json::from_str(r#"{"name":"when","type":"date","min":"","max":"2030-01-01"}"#)

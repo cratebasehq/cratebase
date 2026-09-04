@@ -98,7 +98,10 @@ pub fn autogenerate(pattern: &str) -> String {
                     let body: String = chars[i + 1..close].iter().collect();
                     i = close + 1;
                     let mut parts = body.split(',');
-                    let min = parts.next().and_then(|p| p.trim().parse().ok()).unwrap_or(1);
+                    let min = parts
+                        .next()
+                        .and_then(|p| p.trim().parse().ok())
+                        .unwrap_or(1);
                     let max = parts
                         .next()
                         .and_then(|p| p.trim().parse().ok())
@@ -153,7 +156,9 @@ mod tests {
     fn record_ids_are_15_lowercase_alphanumerics() {
         let id = record_id();
         assert_eq!(id.len(), 15);
-        assert!(id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
+        assert!(id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
         assert_ne!(record_id(), record_id());
     }
 
@@ -173,7 +178,9 @@ mod tests {
     fn autogenerate_honours_class_and_quantifier() {
         let s = autogenerate("[a-z0-9]{15}");
         assert_eq!(s.len(), 15);
-        assert!(s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
+        assert!(s
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
 
         let s = autogenerate("[A-Z]{2}-\\d{3}");
         assert_eq!(s.len(), 6);

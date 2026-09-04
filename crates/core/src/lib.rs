@@ -33,8 +33,13 @@ pub use settings::Settings;
 pub const RESERVED_FIELD_NAMES: &[&str] = &["collectionId", "collectionName", "expand"];
 
 /// System-managed field names on every auth collection.
-pub const AUTH_SYSTEM_FIELDS: &[&str] =
-    &["password", "tokenKey", "email", "emailVisibility", "verified"];
+pub const AUTH_SYSTEM_FIELDS: &[&str] = &[
+    "password",
+    "tokenKey",
+    "email",
+    "emailVisibility",
+    "verified",
+];
 
 /// Name of the built-in superusers auth collection.
 pub const SUPERUSERS_COLLECTION: &str = "_superusers";

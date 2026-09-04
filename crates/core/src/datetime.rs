@@ -61,8 +61,7 @@ impl DateTime {
     }
 
     pub fn to_rfc3339(&self) -> String {
-        self.0
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        self.0.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     }
 }
 
@@ -88,7 +87,8 @@ impl Serialize for DateTime {
 impl<'de> Deserialize<'de> for DateTime {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        DateTime::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("invalid datetime {s:?}")))
+        DateTime::parse(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid datetime {s:?}")))
     }
 }
 
