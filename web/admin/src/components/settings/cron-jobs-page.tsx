@@ -3,6 +3,7 @@ import { Clock, Play } from "lucide-react";
 import { toast } from "sonner";
 import { cb } from "@/lib/api";
 import { describeFailure } from "@/lib/api";
+import { describeJob, describeSchedule } from "@/lib/cron";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -34,7 +35,7 @@ export function CronJobsPage() {
     mutationFn: (id: string) =>
       cb.send<void>(`/api/crons/${encodeURIComponent(id)}`, { method: "POST" }),
     onSuccess: (_result, id) => {
-      toast.success(`Ran ${id}`);
+      toast.success(`Ran ${describeJob(id).title}`);
       // A job that touches the log or the database changes what the other
       // settings screens show.
       void queryClient.invalidateQueries({ queryKey: ["request-logs"] });
@@ -84,39 +85,54 @@ export function CronJobsPage() {
           </EmptyHeader>
         </Empty>
       ) : (
-        <Table>
+        <Table className="max-w-4xl">
           <TableHeader>
             <TableRow>
               <TableHead>Job</TableHead>
-              <TableHead>Schedule</TableHead>
+              <TableHead>Runs</TableHead>
               <TableHead className="w-24 text-right">Run</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {jobs.map((job) => (
-              <TableRow key={job.id}>
-                <TableCell className="font-mono text-xs">{job.id}</TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
-                  {job.expression}
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`Run ${job.id}`}
-                    disabled={run.isPending && run.variables === job.id}
-                    onClick={() => run.mutate(job.id)}
-                  >
-                    {run.isPending && run.variables === job.id ? (
-                      <Spinner className="size-3.5" />
-                    ) : (
-                      <Play className="size-3.5" />
+            {jobs.map((job) => {
+              const described = describeJob(job.id);
+              const schedule = describeSchedule(job.expression);
+              const running = run.isPending && run.variables === job.id;
+              return (
+                <TableRow key={job.id} className="align-top">
+                  <TableCell className="py-3">
+                    <div className="font-medium">{described.title}</div>
+                    <div className="text-xs text-muted-foreground">{described.detail}</div>
+                    {/* The id is what `POST /api/crons/{id}` takes, so it stays
+                        visible for anyone scripting against the API — just not
+                        as the thing you read first. */}
+                    <div className="mt-1 font-mono text-[11px] text-muted-foreground/70">
+                      {job.id}
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-3 text-sm">
+                    {schedule}
+                    {schedule === job.expression ? null : (
+                      <div className="font-mono text-[11px] text-muted-foreground/70">
+                        {job.expression}
+                      </div>
                     )}
-                    Run now
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
+                  </TableCell>
+                  <TableCell className="py-3 text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Run ${described.title} now`}
+                      disabled={running}
+                      onClick={() => run.mutate(job.id)}
+                    >
+                      {running ? <Spinner className="size-3.5" /> : <Play className="size-3.5" />}
+                      Run now
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
