@@ -11,6 +11,10 @@
 #
 # Any extra args are forwarded to bench.ts (e.g. --concurrency=1,20,50,100).
 set -euo pipefail
+# Without this a failing curl deep in a pipeline just exits with its own
+# status and prints nothing, which is a miserable way to debug a 40-step
+# script.
+trap 'status=$?; echo "run.sh: failed at line $LINENO with exit $status" >&2' ERR
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PB_BIN="${PB_BIN:-/tmp/pb-bench/pb/pocketbase}"
@@ -76,27 +80,30 @@ wait_for "http://127.0.0.1:$CB_PORT/api/health"
 wait_for "http://127.0.0.1:$PB_PORT/api/health"
 
 # --- provision the posts collection on each ---------------------------------
-CB_TOKEN=$(curl -sf -X POST "http://127.0.0.1:$CB_PORT/api/admins/auth-with-password" \
-  -H 'content-type: application/json' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/')
-curl -sf -X POST "http://127.0.0.1:$CB_PORT/api/collections" \
-  -H "authorization: Bearer $CB_TOKEN" -H 'content-type: application/json' \
-  -d '{"name":"posts","type":"base",
-       "schema":[{"id":"f1","name":"title","type":"text","required":true},
-                 {"id":"f2","name":"content","type":"text"},
-                 {"id":"f3","name":"published","type":"bool"}],
-       "listRule":"","viewRule":"","createRule":"","updateRule":null,"deleteRule":null}' >/dev/null
-
-PB_TOKEN=$(curl -sf -X POST "http://127.0.0.1:$PB_PORT/api/collections/_superusers/auth-with-password" \
-  -H 'content-type: application/json' \
-  -d "{\"identity\":\"$EMAIL\",\"password\":\"$PASS\"}" | sed -E 's/.*"token":"([^"]+)".*/\1/')
-curl -sf -X POST "http://127.0.0.1:$PB_PORT/api/collections" \
-  -H "authorization: Bearer $PB_TOKEN" -H 'content-type: application/json' \
-  -d '{"name":"posts","type":"base",
-       "fields":[{"name":"title","type":"text","required":true},
-                 {"name":"content","type":"text"},
-                 {"name":"published","type":"bool"}],
-       "listRule":"","viewRule":"","createRule":"","updateRule":null,"deleteRule":null}' >/dev/null
+# Both servers speak the same API now, so this is one code path rather than
+# two: superusers are an ordinary auth collection, and fields are `fields`.
+provision() {
+    local port="$1" label="$2"
+    local token
+    token=$(curl -sf -X POST "http://127.0.0.1:$port/api/collections/_superusers/auth-with-password" \
+        -H 'content-type: application/json' \
+        -d "{\"identity\":\"$EMAIL\",\"password\":\"$PASS\"}" |
+        sed -E 's/.*"token":"([^"]+)".*/\1/')
+    if [ -z "$token" ]; then
+        echo "$label: superuser login failed" >&2
+        exit 1
+    fi
+    curl -sf -X POST "http://127.0.0.1:$port/api/collections" \
+        -H "authorization: Bearer $token" -H 'content-type: application/json' \
+        -d '{"name":"posts","type":"base",
+             "fields":[{"name":"title","type":"text","required":true},
+                       {"name":"content","type":"text"},
+                       {"name":"published","type":"bool"}],
+             "listRule":"","viewRule":"","createRule":"","updateRule":null,"deleteRule":null}' \
+        >/dev/null || { echo "$label: creating the posts collection failed" >&2; exit 1; }
+}
+provision "$CB_PORT" Cratebase
+provision "$PB_PORT" PocketBase
 
 # --- run ----------------------------------------------------------------------
 cd "$ROOT"
