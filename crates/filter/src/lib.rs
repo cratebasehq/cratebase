@@ -30,12 +30,23 @@
 //!
 //! * `null` and `""` are the same "empty" value; `!=` also matches
 //!   `NULL` columns.
-//! * `~` wraps the pattern in `%...%` unless it already contains `%`.
-//! * Multi-valued operands: `?op` is any-element, the bare operator is
-//!   every-element (see [`eval`] for the exact rules).
+//! * `~` escapes `\`, `%` and `_` and wraps the pattern in `%...%`,
+//!   emitting `ESCAPE '\'`; an operand that already contains a `%` is a
+//!   hand-written pattern and is used verbatim.
+//! * A multi-valued field is only unpacked by `:each`. Bare, it compares
+//!   as the raw JSON text of the column, so `tags = "a"` is false for
+//!   `["a","b"]` and the `?` prefix changes nothing.
+//! * Element operands (`:each`, paths through a multi relation): `?op` is
+//!   any-element, the bare operator is every-element (see [`eval`] for
+//!   the exact rules).
 //! * Back-relations and `@collection.X` are `LEFT JOIN`s shared by every
 //!   reference to the same collection, so several conditions constrain
-//!   the same joined row.
+//!   the same joined row. A bare operator over one means *every* joined
+//!   row must satisfy it (`?op` is the "at least one" form) — the
+//!   difference matters on an API rule, where "any" is the permissive
+//!   reading.
+//! * `:length` on a single-valued path is ignored rather than rejected,
+//!   which is what PocketBase does.
 //!
 //! The host implements [`Resolver`] to supply the schema and the request
 //! context; [`parse_cached`] keeps parsed rules in a bounded LRU.

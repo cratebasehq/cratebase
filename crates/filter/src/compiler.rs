@@ -11,14 +11,24 @@
 //!   against a value also matches `NULL` columns (PocketBase compiles
 //!   `!=` as `IS NOT`).
 //! * `~`/`!~` are `LIKE` (SQLite, case-insensitive for ASCII) or `ILIKE`
-//!   (Postgres); a pattern without `%` is wrapped in `%...%`.
-//! * Multi-valued operands (multi select/file/relation fields, paths
-//!   through multi relations, `@request.body.x:each`) compile to
-//!   `EXISTS`/`NOT EXISTS` over their elements: `?op` = any element,
-//!   bare op = every element (plus at least one, unless the operator is
-//!   satisfied by the missing row: `!=`, or `= ""`).
+//!   (Postgres) with `ESCAPE '\'`; an operand that already carries a `%`
+//!   is used verbatim, otherwise `\`, `%` and `_` are escaped and it is
+//!   wrapped in `%...%`.
+//! * Element operands (`x:each`, paths through a multi relation,
+//!   `@request.body.x:each`) compile to `EXISTS`/`NOT EXISTS` over their
+//!   elements: `?op` = any element, bare op = every element (plus at
+//!   least one, unless the operator is satisfied by the missing row:
+//!   `!=`, or `= ""`). A *bare* multi-valued column is **not** an element
+//!   operand: like PocketBase it compares as the raw JSON text of the
+//!   column, so `tags = "a"` is false for `["a","b"]` and `:each` is the
+//!   opt-in that unpacks it.
 //! * Back-relations and `@collection.X` produce [`Join`]s the query
-//!   builder appends (deduplicated by key, with `SELECT DISTINCT`).
+//!   builder appends (deduplicated by key, with `SELECT DISTINCT`), so
+//!   several conditions constrain the same joined row. A bare operator
+//!   over such a path additionally requires that *no* joined row fails
+//!   it, via a correlated `NOT EXISTS` over a `__mm_`-aliased copy of the
+//!   path — PocketBase's "multi-match" subquery. `?op` keeps meaning "at
+//!   least one joined row matches".
 //! * `geoDistance(lonA, latA, lonB, latB)` is emitted as a call to the
 //!   `geoDistance` SQL function on SQLite (the engine must register it;
 //!   haversine, kilometers) and as an inline haversine on Postgres.
@@ -28,7 +38,7 @@ use serde_json::Value;
 use crate::ast::{CompareOp, Expr, Modifier, Operand};
 use crate::error::FilterError;
 use crate::eval::{self, is_empty, like_pattern, lowercase, to_text, EvalTerm};
-use crate::path::{FieldRef, Join, PathResolver, SqlType};
+use crate::path::{FieldRef, Join, MultiMatchRef, PathResolver, SqlType};
 use crate::resolver::{Dialect, Resolver};
 use crate::terms::{literal_value, macro_value, number_value, MacroTerm};
 
@@ -43,23 +53,58 @@ pub struct CompiledFilter {
     pub joins: Vec<Join>,
 }
 
+/// The correlated `__mm_`-aliased copy of an operand reached through a
+/// root-level `LEFT JOIN`. A bare operator pairs the joined comparison with
+/// `NOT EXISTS (SELECT 1 FROM {from} WHERE {correlation} AND NOT (<cond on
+/// expr>))`, so it means "and no joined row fails it".
+#[derive(Debug, Clone)]
+struct MultiMatch {
+    from: String,
+    correlation: String,
+    expr: String,
+    ty: SqlType,
+}
+
 /// A resolved operand.
 #[derive(Debug, Clone)]
 enum Term {
     /// A value known at compile time.
     Value { value: Value, each: bool },
     /// A scalar SQL expression.
-    Scalar { sql: String, ty: SqlType },
+    Scalar {
+        sql: String,
+        ty: SqlType,
+        mm: Option<Box<MultiMatch>>,
+    },
     /// A set of elements: `elem` is valid inside `SELECT ... FROM {from}`;
-    /// `empty` tests for "no elements"; `array` is the raw array column
-    /// when the set is a root-level multi-valued field.
+    /// `empty` tests for "no elements".
     Multi {
         from: String,
         elem: String,
         ty: SqlType,
         empty: String,
-        array: Option<String>,
+        mm: Option<Box<MultiMatch>>,
     },
+}
+
+impl Term {
+    fn take_mm(&mut self) -> Option<Box<MultiMatch>> {
+        match self {
+            Term::Value { .. } => None,
+            Term::Scalar { mm, .. } | Term::Multi { mm, .. } => mm.take(),
+        }
+    }
+}
+
+/// The SQL shape a resolved path takes once its modifier is applied.
+struct Shape {
+    /// `FROM`-list producing the rows `expr` refers to, for element
+    /// operands; `None` for a plain scalar expression.
+    from: Option<String>,
+    /// Test for "no rows", used by the any-of quantifier.
+    empty: Option<String>,
+    expr: String,
+    ty: SqlType,
 }
 
 /// One side of a scalar comparison.
@@ -68,12 +113,25 @@ enum Side {
     Val(Value),
 }
 
+/// How [`Compiler::push_param`] behaves while a condition is built twice
+/// (once against the joined column, once inside the multi-match subquery):
+/// the second pass replays the placeholders of the first instead of
+/// binding the same value again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Trace {
+    Off,
+    Record,
+    Replay(usize),
+}
+
 struct Compiler<'a> {
     paths: PathResolver<'a>,
     resolver: &'a dyn Resolver,
     dialect: Dialect,
     offset: usize,
     params: Vec<Value>,
+    trace: Vec<String>,
+    trace_mode: Trace,
 }
 
 impl<'a> Compiler<'a> {
@@ -84,22 +142,41 @@ impl<'a> Compiler<'a> {
             dialect: resolver.dialect(),
             offset,
             params: Vec::new(),
+            trace: Vec::new(),
+            trace_mode: Trace::Off,
         }
     }
 
     fn push_param(&mut self, v: Value) -> String {
+        if let Trace::Replay(i) = self.trace_mode {
+            if let Some(p) = self.trace.get(i) {
+                let p = p.clone();
+                self.trace_mode = Trace::Replay(i + 1);
+                return p;
+            }
+        }
         let v = match v {
             // Structured values travel as JSON text.
             Value::Array(_) | Value::Object(_) => Value::String(v.to_string()),
             other => other,
         };
         self.params.push(v);
-        format!("${}", self.offset + self.params.len())
+        let p = format!("${}", self.offset + self.params.len());
+        if self.trace_mode == Trace::Record {
+            self.trace.push(p.clone());
+        }
+        p
     }
 
     // --- operands ----------------------------------------------------------
 
-    fn resolve_operand(&mut self, operand: &Operand) -> Result<Term, FilterError> {
+    /// `multi_match` asks for the correlated copy a bare operator over a
+    /// joined path needs; `?op` never uses it, so it is not built.
+    fn resolve_operand(
+        &mut self,
+        operand: &Operand,
+        multi_match: bool,
+    ) -> Result<Term, FilterError> {
         match operand {
             Operand::Literal(lit) => Ok(Term::Value {
                 value: literal_value(lit),
@@ -115,31 +192,96 @@ impl<'a> Compiler<'a> {
                             path: rel,
                         } => {
                             let r = self.paths.resolve_collection(&collection, &rel)?;
-                            self.field_term(r, *modifier, path)
+                            self.field_term(
+                                r,
+                                *modifier,
+                                path,
+                                Some(&collection),
+                                &rel,
+                                multi_match,
+                            )
                         }
                     };
                 }
                 let r = self.paths.resolve(path)?;
-                self.field_term(r, *modifier, path)
+                self.field_term(r, *modifier, path, None, path, multi_match)
             }
         }
     }
 
-    /// Apply the modifier and the multi-valued expansion to a resolved
-    /// path.
+    /// Turn a resolved path into a [`Term`], adding the correlated
+    /// multi-match copy when the path went through a root-level join.
+    /// `collection`/`source` re-resolve the same path for that copy.
     fn field_term(
         &mut self,
         r: FieldRef,
         modifier: Option<Modifier>,
         path: &str,
+        collection: Option<&str>,
+        source: &str,
+        multi_match: bool,
     ) -> Result<Term, FilterError> {
+        let joined = r.joined && multi_match;
+        let shape = self.shape(r, modifier, path)?;
+        let mm = if joined {
+            let copy = self.paths.resolve_multi_match(collection, source)?;
+            let MultiMatchRef {
+                mut from,
+                correlation,
+                field,
+            } = copy;
+            let mm = self.shape(field, modifier, path)?;
+            if let Some(f) = mm.from {
+                from.push_str(", ");
+                from.push_str(&f);
+            }
+            Some(Box::new(MultiMatch {
+                from,
+                correlation,
+                expr: mm.expr,
+                ty: mm.ty,
+            }))
+        } else {
+            None
+        };
+        Ok(match (shape.from, shape.empty) {
+            (Some(from), Some(empty)) => Term::Multi {
+                from,
+                elem: shape.expr,
+                ty: shape.ty,
+                empty,
+                mm,
+            },
+            _ => Term::Scalar {
+                sql: shape.expr,
+                ty: shape.ty,
+                mm,
+            },
+        })
+    }
+
+    /// Apply the modifier to a resolved path.
+    ///
+    /// Only `:each` (and a path that already runs through a multi relation)
+    /// produces an element set; a bare multi-valued column stays the raw
+    /// JSON text of the column, like PocketBase. `:length` on a
+    /// single-valued path is silently ignored, also like PocketBase — it is
+    /// not an error, so `comments_via_post.id:length = 0` still compiles.
+    fn shape(
+        &mut self,
+        r: FieldRef,
+        modifier: Option<Modifier>,
+        path: &str,
+    ) -> Result<Shape, FilterError> {
         let FieldRef {
             mut sql,
             mut sql_type,
-            mut multi,
+            multi,
             from,
+            ..
         } = r;
         let mut lower = false;
+        let mut each = false;
         match modifier {
             None => {}
             Some(Modifier::IsSet) => {
@@ -148,14 +290,10 @@ impl<'a> Compiler<'a> {
                 )))
             }
             Some(Modifier::Length) => {
-                if !multi {
-                    return Err(FilterError::InvalidModifier(format!(
-                        "{path}:length requires a multi-valued field"
-                    )));
+                if multi {
+                    sql = self.paths.array_length(&sql);
+                    sql_type = SqlType::Number;
                 }
-                sql = self.paths.array_length(&sql);
-                sql_type = SqlType::Number;
-                multi = false;
             }
             Some(Modifier::Each) => {
                 if !multi {
@@ -163,40 +301,41 @@ impl<'a> Compiler<'a> {
                         "{path}:each requires a multi-valued field"
                     )));
                 }
+                each = true;
             }
             Some(Modifier::Lower) => lower = true,
         }
         let lowered = |s: String| if lower { format!("LOWER({s})") } else { s };
 
-        if multi {
+        if each {
             let alias = self.paths.next_alias("e");
             let (elems, elem) = self.paths.elements(&sql, &alias);
-            let (from, empty, array) = match from {
-                None => (elems, self.paths.array_empty(&sql), Some(sql)),
+            let (from, empty) = match from {
+                None => (elems, self.paths.array_empty(&sql)),
                 Some(f) => {
                     let from = format!("{f}, {elems}");
                     let empty = format!("NOT EXISTS (SELECT 1 FROM {from})");
-                    (from, empty, None)
+                    (from, empty)
                 }
             };
-            return Ok(Term::Multi {
-                from,
-                elem: lowered(elem),
+            return Ok(Shape {
+                from: Some(from),
+                empty: Some(empty),
+                expr: lowered(elem),
                 ty: SqlType::Text,
-                empty,
-                array,
             });
         }
         match from {
-            Some(from) => Ok(Term::Multi {
-                empty: format!("NOT EXISTS (SELECT 1 FROM {from})"),
-                from,
-                elem: lowered(sql),
+            Some(from) => Ok(Shape {
+                empty: Some(format!("NOT EXISTS (SELECT 1 FROM {from})")),
+                from: Some(from),
+                expr: lowered(sql),
                 ty: sql_type,
-                array: None,
             }),
-            None => Ok(Term::Scalar {
-                sql: lowered(sql),
+            None => Ok(Shape {
+                from: None,
+                empty: None,
+                expr: lowered(sql),
                 ty: sql_type,
             }),
         }
@@ -207,7 +346,7 @@ impl<'a> Compiler<'a> {
             "geoDistance" => {
                 let mut parts = Vec::with_capacity(4);
                 for arg in args {
-                    let sql = match self.resolve_operand(arg)? {
+                    let sql = match self.resolve_operand(arg, false)? {
                         Term::Value { value, .. } => {
                             let v = match &value {
                                 Value::Number(_) => value,
@@ -240,6 +379,7 @@ impl<'a> Compiler<'a> {
                 Ok(Term::Scalar {
                     sql,
                     ty: SqlType::Number,
+                    mm: None,
                 })
             }
             other => Err(FilterError::Parse(format!("unknown function '{other}'"))),
@@ -260,7 +400,7 @@ impl<'a> Compiler<'a> {
             from,
             elem,
             ty: SqlType::Text,
-            array: None,
+            mm: None,
         }
     }
 
@@ -378,7 +518,9 @@ impl<'a> Compiler<'a> {
                     (Dialect::Postgres, CompareOp::Like) => "ILIKE",
                     (Dialect::Postgres, _) => "NOT ILIKE",
                 };
-                format!("{subject} {kw} {pattern}")
+                // PocketBase always declares the escape character, so a `_`
+                // or `%` escaped by `like_pattern` is matched literally.
+                format!("{subject} {kw} {pattern} ESCAPE '\\'")
             }
         }
     }
@@ -409,8 +551,8 @@ impl<'a> Compiler<'a> {
         any_of: bool,
         right: &Operand,
     ) -> Result<String, FilterError> {
-        let mut l = self.resolve_operand(left)?;
-        let mut r = self.resolve_operand(right)?;
+        let mut l = self.resolve_operand(left, !any_of)?;
+        let mut r = self.resolve_operand(right, !any_of)?;
 
         // `:lower` on one side lowercases bound strings on the other.
         if has_modifier(left, Modifier::Lower) {
@@ -438,15 +580,63 @@ impl<'a> Compiler<'a> {
             r = self.value_as_multi(value.clone());
         }
 
+        // A bare operator over a joined path means *every* joined row, not
+        // any: build the condition once against the join, then again
+        // against a correlated copy for the `NOT EXISTS` that rejects rows
+        // failing it. `?op` keeps the plain "some joined row" meaning.
+        let mm = if any_of {
+            (None, None)
+        } else {
+            (l.take_mm(), r.take_mm())
+        };
+        if mm.0.is_none() && mm.1.is_none() {
+            return self.build_compare(l, op, any_of, r);
+        }
+
+        self.trace.clear();
+        self.trace_mode = Trace::Record;
+        let mut sql = self.build_compare(l.clone(), op, any_of, r.clone())?;
+        self.trace_mode = Trace::Off;
+        for (i, mm) in [mm.0, mm.1].into_iter().enumerate() {
+            let Some(mm) = mm else { continue };
+            let side = Term::Scalar {
+                sql: mm.expr,
+                ty: mm.ty,
+                mm: None,
+            };
+            let (a, b) = if i == 0 {
+                (side, r.clone())
+            } else {
+                (l.clone(), side)
+            };
+            self.trace_mode = Trace::Replay(0);
+            let cond = self.build_compare(a, op, any_of, b)?;
+            self.trace_mode = Trace::Off;
+            sql = format!(
+                "({sql} AND NOT EXISTS (SELECT 1 FROM {} WHERE {} AND NOT ({cond})))",
+                mm.from, mm.correlation
+            );
+        }
+        self.trace.clear();
+        Ok(sql)
+    }
+
+    fn build_compare(
+        &mut self,
+        l: Term,
+        op: CompareOp,
+        any_of: bool,
+        r: Term,
+    ) -> Result<String, FilterError> {
         match (l, r) {
             (Term::Value { .. }, Term::Value { .. }) => unreachable!("folded above"),
-            (Term::Scalar { sql, ty }, Term::Value { value, .. }) => {
+            (Term::Scalar { sql, ty, .. }, Term::Value { value, .. }) => {
                 Ok(self.build_cond(Side::Sql(sql, ty), op, Side::Val(value)))
             }
-            (Term::Value { value, .. }, Term::Scalar { sql, ty }) => {
+            (Term::Value { value, .. }, Term::Scalar { sql, ty, .. }) => {
                 Ok(self.build_cond(Side::Val(value), op, Side::Sql(sql, ty)))
             }
-            (Term::Scalar { sql: a, ty: ta }, Term::Scalar { sql: b, ty: tb }) => {
+            (Term::Scalar { sql: a, ty: ta, .. }, Term::Scalar { sql: b, ty: tb, .. }) => {
                 Ok(self.build_cond(Side::Sql(a, ta), op, Side::Sql(b, tb)))
             }
             (
@@ -455,13 +645,10 @@ impl<'a> Compiler<'a> {
                     elem,
                     ty,
                     empty,
-                    array,
+                    ..
                 },
                 Term::Value { value, .. },
             ) => {
-                if let Some(sql) = self.multi_empty_shortcut(op, &value, array.as_deref()) {
-                    return Ok(sql);
-                }
                 let null_ok = eval::null_tolerant(op, Some(&value));
                 let cond = self.build_cond(Side::Sql(elem, ty), op, Side::Val(value));
                 Ok(self.multi_cond(&from, &empty, &cond, any_of, null_ok))
@@ -473,12 +660,9 @@ impl<'a> Compiler<'a> {
                     elem,
                     ty,
                     empty,
-                    array,
+                    ..
                 },
             ) => {
-                if let Some(sql) = self.multi_empty_shortcut(op, &value, array.as_deref()) {
-                    return Ok(sql);
-                }
                 let null_ok = eval::null_tolerant(op, Some(&value));
                 let cond = self.build_cond(Side::Val(value), op, Side::Sql(elem, ty));
                 Ok(self.multi_cond(&from, &empty, &cond, any_of, null_ok))
@@ -491,14 +675,14 @@ impl<'a> Compiler<'a> {
                     empty,
                     ..
                 },
-                Term::Scalar { sql, ty: sty },
+                Term::Scalar { sql, ty: sty, .. },
             ) => {
                 let null_ok = eval::null_tolerant(op, None);
                 let cond = self.build_cond(Side::Sql(elem, ty), op, Side::Sql(sql, sty));
                 Ok(self.multi_cond(&from, &empty, &cond, any_of, null_ok))
             }
             (
-                Term::Scalar { sql, ty: sty },
+                Term::Scalar { sql, ty: sty, .. },
                 Term::Multi {
                     from,
                     elem,
@@ -514,25 +698,6 @@ impl<'a> Compiler<'a> {
             (Term::Multi { .. }, Term::Multi { .. }) => Err(FilterError::Unsupported(
                 "comparing two multi-valued operands".into(),
             )),
-        }
-    }
-
-    /// `tags = ""` / `tags != ""` on a root-level multi-valued field is
-    /// simply an emptiness test on the stored array.
-    fn multi_empty_shortcut(
-        &self,
-        op: CompareOp,
-        value: &Value,
-        array: Option<&str>,
-    ) -> Option<String> {
-        let array = array?;
-        if !is_empty(value) {
-            return None;
-        }
-        match op {
-            CompareOp::Eq => Some(self.paths.array_empty(array)),
-            CompareOp::NotEq => Some(format!("NOT {}", self.paths.array_empty(array))),
-            _ => None,
         }
     }
 
