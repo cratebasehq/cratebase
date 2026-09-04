@@ -19,11 +19,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
+/** As the server returns it — PocketBase names the file `key` and its
+ * timestamp `modified`, not `name`/`created`. */
 type BackupInfo = {
-  name: string;
+  key: string;
   size: number;
-  created: string;
+  modified: string;
 };
+
+/** The server writes PocketBase's datetime form (a space, not a `T`),
+ * which `new Date()` does not parse in every browser — Safari returns
+ * Invalid Date. Normalise before parsing. */
+function parseServerDate(value: string): Date {
+  return new Date(value.replace(" ", "T"));
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -44,7 +53,7 @@ function formatBytes(bytes: number): string {
 async function downloadBackup(name: string): Promise<void> {
   const headers: Record<string, string> = {};
   if (cb.authStore.token) headers.authorization = `Bearer ${cb.authStore.token}`;
-  const response = await fetch(`${cb.baseUrl}/api/backups/${encodeURIComponent(name)}/download`, { headers });
+  const response = await fetch(`${cb.baseURL}/api/backups/${encodeURIComponent(name)}/download`, { headers });
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }
@@ -77,7 +86,7 @@ export function BackupsPage() {
     mutationFn: () => cb.send<BackupInfo>("/api/backups", { method: "POST", body: {} }),
     onSuccess: async (backup) => {
       await invalidate();
-      toast.success(`Backup "${backup.name}" created`);
+      toast.success(`Backup "${backup.key}" created`);
     },
     onError: (error) => {
       const failure = describeFailure(error);
@@ -140,26 +149,26 @@ export function BackupsPage() {
         </TableHeader>
         <TableBody>
           {(backups ?? []).map((backup) => (
-            <TableRow key={backup.name}>
-              <TableCell className="font-mono text-xs">{backup.name}</TableCell>
+            <TableRow key={backup.key}>
+              <TableCell className="font-mono text-xs">{backup.key}</TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatBytes(backup.size)}</TableCell>
               <TableCell className="text-xs text-muted-foreground">
-                {new Date(backup.created).toLocaleString()}
+                {parseServerDate(backup.modified).toLocaleString()}
               </TableCell>
               <TableCell>
                 <div className="flex justify-end gap-1">
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`Download ${backup.name}`}
-                    onClick={() => download.mutate(backup.name)}
+                    aria-label={`Download ${backup.key}`}
+                    onClick={() => download.mutate(backup.key)}
                   >
                     <Download className="size-3.5" />
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`Delete ${backup.name}`}
+                    aria-label={`Delete ${backup.key}`}
                     onClick={() => setDeleting(backup)}
                   >
                     <Trash2 className="size-3.5 text-destructive" />
@@ -202,7 +211,7 @@ export function BackupsPage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this backup?</AlertDialogTitle>
             <AlertDialogDescription>
-              <span className="font-mono">{deleting?.name}</span> will be removed from disk permanently. This
+              <span className="font-mono">{deleting?.key}</span> will be removed from disk permanently. This
               cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -213,7 +222,7 @@ export function BackupsPage() {
               onClick={() => {
                 const target = deleting;
                 setDeleting(null);
-                if (target) remove.mutate(target.name);
+                if (target) remove.mutate(target.key);
               }}
             >
               Delete backup

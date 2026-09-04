@@ -22,6 +22,11 @@ const routeTree = rootRoute.addChildren([
 
 export const router = createRouter({
   routeTree,
+  // The server mounts the dashboard at `/_/` (PocketBase's path), so every
+  // route lives under that prefix. Without this the bundle loads and then
+  // renders "No such page", because the router compares `/_/` against a
+  // tree rooted at `/`. Kept in step with `base` in vite.config.ts.
+  basepath: "/_/",
   defaultPreload: "intent",
   // Every route now has a designed failure, loading and 404 state. Before
   // this, a throw in a loader rendered nothing and an unknown URL rendered

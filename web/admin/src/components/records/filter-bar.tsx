@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { CircleAlert, CircleHelp, CornerDownLeft, Filter, X } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { CircleAlert, CircleHelp, CornerDownLeft, Filter, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -64,6 +64,33 @@ function exampleFilters(fields: FieldSchema[]): string[] {
   return out.slice(0, 5);
 }
 
+/** Field types whose values a person would expect a plain word to search. */
+const SEARCHABLE_TYPES = new Set(["text", "editor", "email", "url"]);
+
+function searchableFields(fields: FieldSchema[]): string[] {
+  return fields.filter((f) => SEARCHABLE_TYPES.has(f.type)).map((f) => f.name);
+}
+
+/**
+ * Whether the expression is a bare word rather than a filter.
+ *
+ * The grammar needs a comparison, so typing `greta` is a syntax error and
+ * the server answers with its generic "Something went wrong" — which tells
+ * the person nothing about what they did. Detecting it here lets us do what
+ * they meant instead of round-tripping to a dead end.
+ */
+export function looksLikeBareTerm(expr: string): boolean {
+  const trimmed = expr.trim();
+  if (trimmed.length === 0) return false;
+  return !/[=<>~]|&&|\|\|/.test(trimmed);
+}
+
+/** `title ~ "x" || body ~ "x"` — the expression a bare word stands in for. */
+export function searchExpression(term: string, fields: string[]): string {
+  const escaped = term.trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return fields.map((name) => `${name} ~ "${escaped}"`).join(" || ");
+}
+
 interface FilterBarProps {
   /** The filter currently applied to the query, verbatim. */
   value: string;
@@ -99,6 +126,23 @@ export function FilterBar({ value, onApply, error, collectionName, fields, class
 
   const dirty = draft !== value;
 
+  // A bare word is not a filter, but it is what people type. Rather than
+  // let it 400, expand it into a search across this collection's text
+  // fields — and put that expression in the box afterwards, so the syntax
+  // is learned rather than hidden.
+  const searchable = useMemo(() => searchableFields(fields), [fields]);
+  const bareTerm = looksLikeBareTerm(draft) ? draft.trim() : null;
+  const canSearch = bareTerm !== null && searchable.length > 0;
+
+  function apply(expression: string) {
+    const trimmed = expression.trim();
+    if (looksLikeBareTerm(trimmed) && searchable.length > 0) {
+      onApply(searchExpression(trimmed, searchable));
+      return;
+    }
+    onApply(trimmed);
+  }
+
   function insert(snippet: string) {
     setDraft((prev) => (prev.trim().length === 0 ? snippet : `${prev.trim()} && ${snippet}`));
     inputRef.current?.focus();
@@ -126,7 +170,7 @@ export function FilterBar({ value, onApply, error, collectionName, fields, class
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              onApply(draft.trim());
+              apply(draft);
             }
             if (event.key === "Escape") {
               event.preventDefault();
@@ -140,7 +184,7 @@ export function FilterBar({ value, onApply, error, collectionName, fields, class
         {dirty ? (
           <button
             type="button"
-            onClick={() => onApply(draft.trim())}
+            onClick={() => apply(draft)}
             className="flex h-control-xs shrink-0 items-center gap-1 rounded px-1.5 text-2xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             Apply
@@ -210,7 +254,26 @@ export function FilterBar({ value, onApply, error, collectionName, fields, class
         </Popover>
       </div>
 
-      {error ? (
+      {canSearch ? (
+        <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Search className="mt-px size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">
+            <Kbd>Enter</Kbd> searches{" "}
+            <span className="font-mono text-foreground">{searchable.slice(0, 3).join(", ")}</span>
+            {searchable.length > 3 ? ` and ${searchable.length - 3} more` : ""}. For an exact
+            match write{" "}
+            <span className="font-mono text-foreground">{`${searchable[0]} = "${bareTerm}"`}</span>.
+          </span>
+        </p>
+      ) : bareTerm !== null ? (
+        <p className="flex items-start gap-1.5 text-xs text-destructive">
+          <CircleAlert className="mt-px size-3.5 shrink-0" />
+          <span className="min-w-0 break-words">
+            A filter needs a comparison, and {collectionName} has no text field to search — try{" "}
+            <span className="font-mono">id = "{bareTerm}"</span>.
+          </span>
+        </p>
+      ) : error ? (
         <p className="flex items-start gap-1.5 text-xs text-destructive">
           <CircleAlert className="mt-px size-3.5 shrink-0" />
           <span className="min-w-0 break-words">{error}</span>

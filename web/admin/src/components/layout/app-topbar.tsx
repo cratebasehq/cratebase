@@ -17,18 +17,20 @@ export function AppTopbar({ onOpenSearch }: { onOpenSearch: () => void }) {
       <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
       <Breadcrumbs />
 
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-2">
         {/* Reads as a search field, behaves as the command palette trigger —
-            the palette already worked, it just had no visible affordance. */}
+            the palette already worked, it just had no visible affordance.
+            The label truncates and the shortcut is pinned: the two used to
+            fight over a 224px button, and the ⌘K lost. */}
         <Button
           variant="outline"
           size="sm"
           onClick={onOpenSearch}
-          className="hidden h-control-sm w-56 justify-start gap-2 px-2 font-normal text-muted-foreground md:flex"
+          className="hidden h-control-sm w-64 justify-start gap-2 px-2 font-normal text-muted-foreground md:flex"
         >
-          <Search className="size-3.5" />
-          Search collections and actions
-          <Kbd className="ml-auto">⌘K</Kbd>
+          <Search className="size-3.5 shrink-0" />
+          <span className="min-w-0 truncate">Search collections</span>
+          <Kbd className="ml-auto shrink-0">⌘K</Kbd>
         </Button>
         <Button
           variant="ghost"

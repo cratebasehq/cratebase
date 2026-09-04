@@ -1,14 +1,14 @@
-import { useId } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { Braces, WrapText } from "lucide-react";
 import type { RecordModel } from "pocketbase";
-import { type FieldSchema, isMultiValue, userFields } from "@/lib/field-types";
-import { Checkbox } from "@/components/ui/checkbox";
+import { cn } from "@/lib/utils";
+import { type FieldSchema, isMultiValue } from "@/lib/field-types";
 import { Input } from "@/components/ui/input";
+import { RelationPicker } from "@/components/records/relation-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { TagInput } from "@/components/ui/tag-input";
-import { cb } from "@/lib/api";
 
 interface RecordFieldInputProps {
   field: FieldSchema;
@@ -25,72 +25,78 @@ function toDatetimeLocal(value: unknown): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function useRelationOptions(collectionId?: string) {
-  return useQuery({
-    queryKey: ["relation-options", collectionId],
-    queryFn: async () => {
-      const target = await cb.collections.getOne(collectionId!);
-      const displayField = userFields(target).find((f) => f.type === "text")?.name;
-      const list = await cb.collection(collectionId!).getList(1, 100);
-      return list.items.map((item) => ({
-        id: item.id,
-        label: displayField ? String(item[displayField] ?? item.id) : item.id,
-      }));
-    },
-    enabled: Boolean(collectionId),
-  });
-}
-
-/** Multi-value relations need many ids at once, which a Radix select can't
- * express — a checklist of the same options does, without falling back to
- * a native `<select multiple>` nobody can operate comfortably. */
-function RelationChecklist({
-  options,
-  selected,
+/**
+ * JSON held as text, so a half-typed document survives a re-render, with
+ * the parse result reported as you type and a one-click reformat. The old
+ * control was a bare textarea that handed the server a string whenever it
+ * was touched and the original object whenever it wasn't.
+ */
+function JsonInput({
+  value,
   onChange,
+  invalid,
+  label,
 }: {
-  options: { id: string; label: string }[];
-  selected: string[];
-  onChange: (next: string[]) => void;
+  value: unknown;
+  onChange: (value: unknown) => void;
+  invalid?: boolean;
+  label: string;
 }) {
-  const groupId = useId();
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2);
+  const [parseError, setParseError] = useState<string | null>(null);
+
+  function format() {
+    try {
+      onChange(JSON.stringify(JSON.parse(text), null, 2));
+      setParseError(null);
+    } catch (error) {
+      setParseError(error instanceof Error ? error.message : "Not valid JSON");
+    }
+  }
+
   return (
-    <div
-      role="group"
-      aria-label="Related records"
-      className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-lg border border-input p-2"
-    >
-      {options.length === 0 ? (
-        <p className="text-xs text-muted-foreground">No records to relate to yet.</p>
-      ) : (
-        options.map((option) => {
-          const id = `${groupId}-${option.id}`;
-          const checked = selected.includes(option.id);
-          return (
-            <div key={option.id} className="flex items-center gap-2">
-              <Checkbox
-                id={id}
-                checked={checked}
-                onCheckedChange={(next) =>
-                  onChange(next === true ? [...selected, option.id] : selected.filter((v) => v !== option.id))
-                }
-              />
-              <label htmlFor={id} className="truncate text-sm text-foreground">
-                {option.label}
-              </label>
-            </div>
-          );
-        })
-      )}
+    <div className="flex flex-col gap-1">
+      <Textarea
+        value={text}
+        aria-label={label}
+        spellCheck={false}
+        onChange={(e) => {
+          onChange(e.target.value);
+          try {
+            JSON.parse(e.target.value);
+            setParseError(null);
+          } catch (error) {
+            setParseError(error instanceof Error ? error.message : "Not valid JSON");
+          }
+        }}
+        rows={6}
+        aria-invalid={invalid || (parseError ? true : undefined)}
+        className={cn("font-mono text-sm", parseError && "border-destructive")}
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn("min-w-0 truncate text-2xs", parseError ? "text-destructive" : "text-muted-foreground")}>
+          {parseError ?? (
+            <span className="inline-flex items-center gap-1">
+              <Braces className="size-3" />
+              Valid JSON
+            </span>
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={format}
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <WrapText className="size-3" />
+          Format
+        </button>
+      </div>
     </div>
   );
 }
 
 export function RecordFieldInput({ field, value, onChange, error }: RecordFieldInputProps) {
   const multiple = isMultiValue(field);
-  const relationOptions = useRelationOptions(
-    field.type === "relation" ? (field.collectionId as string | undefined) : undefined,
-  ).data;
   const invalid = error ? true : undefined;
 
   switch (field.type) {
@@ -142,15 +148,7 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
       );
 
     case "json":
-      return (
-        <Textarea
-          value={typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2)}
-          onChange={(e) => onChange(e.target.value)}
-          rows={5}
-          aria-invalid={invalid}
-          className="font-mono text-sm"
-        />
-      );
+      return <JsonInput value={value} onChange={onChange} invalid={invalid} label={field.name} />;
 
     case "select": {
       const values = (field.values as string[] | undefined) ?? [];
@@ -182,31 +180,17 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
     }
 
     case "relation": {
-      if (multiple) {
-        return (
-          <RelationChecklist
-            options={relationOptions ?? []}
-            selected={Array.isArray(value) ? (value as string[]) : []}
-            onChange={onChange}
-          />
-        );
-      }
+      const ids = Array.isArray(value) ? (value as string[]) : value ? [String(value)] : [];
       return (
-        <Select
-          value={typeof value === "string" ? value : ""}
-          onValueChange={(next) => onChange(next || null)}
-        >
-          <SelectTrigger aria-label={field.name} aria-invalid={invalid} className="h-control-md w-full">
-            <SelectValue placeholder="—" />
-          </SelectTrigger>
-          <SelectContent>
-            {(relationOptions ?? []).map((opt) => (
-              <SelectItem key={opt.id} value={opt.id}>
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <RelationPicker
+          collectionId={field.collectionId as string | undefined}
+          fieldName={field.name}
+          value={ids}
+          multiple={multiple}
+          maxSelect={multiple ? Number(field.maxSelect ?? 0) : 1}
+          invalid={invalid}
+          onChange={(next) => onChange(multiple ? next : (next[0] ?? null))}
+        />
       );
     }
 

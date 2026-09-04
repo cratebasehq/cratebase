@@ -85,7 +85,7 @@ export function ConnectionStatus({ className }: { className?: string }) {
       <TooltipTrigger asChild>
         <span
           className={cn(
-            "flex h-control-sm items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground",
+            "flex h-control-sm shrink-0 items-center gap-1.5 rounded-md px-1.5 text-xs whitespace-nowrap text-muted-foreground",
             className,
           )}
         >

@@ -133,6 +133,15 @@ export function RecordsGrid<T>({
     overscan: OVERSCAN,
   });
 
+  // `estimateSize` is read once per measurement pass and the results are
+  // cached, so changing the row height only restyles the rows while every
+  // computed offset — and the scroller's total height — stays at the old
+  // size. The rows then sit at stale positions and the density toggle
+  // looks like it does nothing. Invalidate explicitly.
+  useEffect(() => {
+    virtualizer.measure();
+  }, [rowHeight, virtualizer]);
+
   // A new page, filter or sort resets the cursor: keeping row 12 selected
   // when row 12 is now a different record is worse than losing the cursor.
   useEffect(() => {

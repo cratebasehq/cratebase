@@ -1,167 +1,125 @@
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Clock, Play } from "lucide-react";
 import { toast } from "sonner";
-import { Clock, Pencil, Plus, Trash2 } from "lucide-react";
-import { useRecords, useRecordMutations } from "@/hooks/use-records";
+import { cb } from "@/lib/api";
 import { describeFailure } from "@/lib/api";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Switch } from "@/components/ui/switch";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { CronJobDrawer, type CronJobRecord } from "@/components/settings/cron-job-drawer";
 
-const COLLECTION = "_cron_jobs";
+/** As `GET /api/crons` returns them. */
+type CronJob = {
+  id: string;
+  expression: string;
+};
 
-/** Friendlier front end for the `_cron_jobs` collection the cron-jobs
- * server plugin already reads from — reuses `useRecords`/`useRecordMutations`
- * (the same data layer the generic collection records UI runs on) instead
- * of a parallel fetch path, so this is purely a nicer editor over the same
- * rows `/collections/_cron_jobs` would show. */
+/**
+ * Jobs the server has registered, and a way to run one now.
+ *
+ * These are registered in code, not stored as records — there is no
+ * user-editable cron collection — so this screen lists and triggers
+ * rather than offering CRUD.
+ */
 export function CronJobsPage() {
-  // The audit's "more than 25 jobs are invisible" — one page of 200 covers
-  // any realistic schedule, and the count isn't shown, so skip the COUNT(*).
-  const { data } = useRecords(COLLECTION, {
-    page: 1,
-    perPage: 200,
-    filter: "",
-    sort: "name",
-    expand: "",
-    skipTotal: true,
+  const queryClient = useQueryClient();
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["crons"],
+    queryFn: () => cb.send<CronJob[]>("/api/crons", { method: "GET" }),
   });
-  const { update, remove } = useRecordMutations(COLLECTION);
-  const [editing, setEditing] = useState<CronJobRecord | null | undefined>(undefined);
-  const [deleting, setDeleting] = useState<CronJobRecord | null>(null);
 
-  const jobs = (data?.items ?? []) as CronJobRecord[];
+  const run = useMutation({
+    mutationFn: (id: string) =>
+      cb.send<void>(`/api/crons/${encodeURIComponent(id)}`, { method: "POST" }),
+    onSuccess: (_result, id) => {
+      toast.success(`Ran ${id}`);
+      // A job that touches the log or the database changes what the other
+      // settings screens show.
+      void queryClient.invalidateQueries({ queryKey: ["request-logs"] });
+      void queryClient.invalidateQueries({ queryKey: ["backups"] });
+    },
+    onError: (failure) => {
+      const described = describeFailure(failure);
+      toast.error(described.title, { description: described.detail });
+    },
+  });
 
-  function reportFailure(error: unknown) {
-    const failure = describeFailure(error);
-    toast.error(failure.title, { description: failure.detail || undefined });
-  }
-
-  function toggleEnabled(job: CronJobRecord) {
-    update.mutateAsync({ id: job.id, data: { enabled: !job.enabled } }).catch(reportFailure);
-  }
-
-  function deleteJob(job: CronJobRecord) {
-    remove
-      .mutateAsync(job.id)
-      .then(() => toast.success(`Cron job "${job.name}" deleted`))
-      .catch(reportFailure);
-  }
+  const jobs = data ?? [];
 
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Scheduled jobs the server checks every 30 seconds against their cron expression.
-        </p>
-        <Button onClick={() => setEditing(null)}>
-          <Plus className="size-3.5" />
-          New job
-        </Button>
-      </div>
+    <div className="flex flex-col gap-page">
+      <p className="max-w-measure text-sm text-muted-foreground">
+        Scheduled work the server runs on its own — log trimming, expired
+        one-time codes, database upkeep, and the automatic backup once one is
+        configured. Running a job here executes it immediately without
+        affecting its schedule.
+      </p>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead className="w-[70px]">Enabled</TableHead>
-            <TableHead>Name</TableHead>
-            <TableHead className="w-[140px]">Schedule</TableHead>
-            <TableHead>Job</TableHead>
-            <TableHead className="w-[160px]">Last run</TableHead>
-            <TableHead className="w-[100px]" />
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {jobs.map((job) => (
-            <TableRow key={job.id}>
-              <TableCell>
-                <Switch checked={job.enabled} onCheckedChange={() => toggleEnabled(job)} aria-label={`Toggle ${job.name}`} />
-              </TableCell>
-              <TableCell className="font-medium">{job.name}</TableCell>
-              <TableCell className="font-mono text-xs">{job.schedule}</TableCell>
-              <TableCell className="font-mono text-xs text-muted-foreground">{job.job}</TableCell>
-              <TableCell className="text-xs text-muted-foreground">
-                {job.lastRunAt ? (
-                  <span className="flex items-center gap-1.5">
-                    {new Date(job.lastRunAt).toLocaleString()}
-                    {job.lastStatus ? (
-                      <Badge variant={job.lastStatus === "ok" ? "default" : "destructive"}>{job.lastStatus}</Badge>
-                    ) : null}
-                  </span>
-                ) : (
-                  "never"
-                )}
-              </TableCell>
-              <TableCell>
-                <div className="flex justify-end gap-1">
-                  <Button variant="ghost" size="icon-sm" aria-label={`Edit ${job.name}`} onClick={() => setEditing(job)}>
-                    <Pencil className="size-3.5" />
-                  </Button>
-                  <Button variant="ghost" size="icon-sm" aria-label={`Delete ${job.name}`} onClick={() => setDeleting(job)}>
-                    <Trash2 className="size-3.5 text-destructive" />
-                  </Button>
-                </div>
-              </TableCell>
-            </TableRow>
+      {error ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Clock />
+            </EmptyMedia>
+            <EmptyTitle>Couldn't load the schedule</EmptyTitle>
+            <EmptyDescription>{describeFailure(error).detail}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : isLoading ? (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 4 }, (_, i) => (
+            <Skeleton key={i} className="h-row w-full" />
           ))}
-          {jobs.length === 0 ? (
+        </div>
+      ) : jobs.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Clock />
+            </EmptyMedia>
+            <EmptyTitle>No scheduled jobs</EmptyTitle>
+            <EmptyDescription>Nothing is registered on this server.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <Table>
+          <TableHeader>
             <TableRow>
-              <TableCell colSpan={6} className="py-8">
-                <Empty>
-                  <EmptyHeader>
-                    <EmptyMedia variant="icon">
-                      <Clock />
-                    </EmptyMedia>
-                    <EmptyTitle>No cron jobs configured</EmptyTitle>
-                    <EmptyDescription>
-                      Add one to run a registered job body on a schedule.
-                    </EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              </TableCell>
+              <TableHead>Job</TableHead>
+              <TableHead>Schedule</TableHead>
+              <TableHead className="w-24 text-right">Run</TableHead>
             </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
-
-      <CronJobDrawer job={editing ?? null} open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)} />
-
-      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete this cron job?</AlertDialogTitle>
-            <AlertDialogDescription>
-              <span className="font-mono">{deleting?.name}</span> will stop running and its row will be removed.
-              This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                const target = deleting;
-                setDeleting(null);
-                if (target) deleteJob(target);
-              }}
-            >
-              Delete job
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          </TableHeader>
+          <TableBody>
+            {jobs.map((job) => (
+              <TableRow key={job.id}>
+                <TableCell className="font-mono text-xs">{job.id}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">
+                  {job.expression}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Run ${job.id}`}
+                    disabled={run.isPending && run.variables === job.id}
+                    onClick={() => run.mutate(job.id)}
+                  >
+                    {run.isPending && run.variables === job.id ? (
+                      <Spinner className="size-3.5" />
+                    ) : (
+                      <Play className="size-3.5" />
+                    )}
+                    Run now
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
     </div>
   );
 }
