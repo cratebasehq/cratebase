@@ -424,7 +424,7 @@ impl App {
                 }
             });
 
-        // `_mfas` / `_otps` rows are short-lived; W4b's auth service fills
+        // `_mfas` / `_otps` rows are short-lived; W4b-2's auth service fills
         // these in with the per-collection durations. Until then they are
         // registered (the API lists them) but sweep nothing.
         let app = self.clone();
@@ -434,7 +434,7 @@ impl App {
             .add(cron::JOB_MFA_CLEANUP, "0 * * * *", move || {
                 let app = app.clone();
                 async move {
-                    // W4b: delete expired `_mfas` rows.
+                    // W4b-2: delete expired `_mfas` rows.
                     let _ = &app;
                 }
             });
@@ -445,7 +445,7 @@ impl App {
             .add(cron::JOB_OTP_CLEANUP, "0 * * * *", move || {
                 let app = app.clone();
                 async move {
-                    // W4b: delete expired `_otps` rows.
+                    // W4b-2: delete expired `_otps` rows.
                     let _ = &app;
                 }
             });
@@ -529,8 +529,9 @@ impl App {
 
     /// Look up a `_superusers` row by id, straight through the engine.
     ///
-    /// W4b: replace with `records::find_by_id_raw` once W3 lands — the
-    /// record layer applies hidden-field and rule handling this does not.
+    /// The request path uses `records::find_by_id_raw` instead (it decodes
+    /// into a `Record` and applies the field types); this raw form stays
+    /// for the CLI, which runs before any collection is resolved.
     pub async fn find_superuser_by_id(&self, id: &str) -> Result<Option<Row>, AppError> {
         self.db()
             .query_one(
@@ -542,7 +543,7 @@ impl App {
     }
 
     /// Look up a `_superusers` row by email. See
-    /// [`App::find_superuser_by_id`] for the W4b note.
+    /// [`App::find_superuser_by_id`] for why this stays raw.
     pub async fn find_superuser_by_email(&self, email: &str) -> Result<Option<Row>, AppError> {
         self.db()
             .query_one(
@@ -622,8 +623,9 @@ impl App {
     }
 
     /// Mint a token for a record of `collection_name`, signed with the
-    /// record's own `tokenKey` (spec §2). W4b's auth service builds on
-    /// this rather than re-deriving the key.
+    /// record's own `tokenKey` (spec §2). Note that the claims carry no
+    /// `refreshable` flag; `routes::auth` mints session tokens itself
+    /// with `new_auth_claims` so the SDK sees PocketBase's exact payload.
     pub async fn mint_token(
         &self,
         collection_name: &str,

@@ -23,10 +23,12 @@
 //! and each resolution costs a verify plus a database round trip.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
-use cratebase_core::AppError;
+use cratebase_core::{AppError, Collection, Record, SerializeOptions};
+use cratebase_db::context::{AuthContext, RequestContext};
 use serde_json::{Map, Value};
 
 use crate::app::App;
@@ -41,16 +43,28 @@ pub struct Auth {
     /// and `@request.auth.collectionName` report.
     pub collection_name: String,
     pub is_superuser: bool,
-    /// The record's stored columns. W4b: replace with the decoded
-    /// `cratebase_core::Record` once `cratebase_db::records` lands, so
-    /// rules see typed values rather than raw columns.
-    pub record: Map<String, Value>,
+    /// The auth collection the record belongs to, straight out of the
+    /// in-memory store (no query).
+    pub collection: Arc<Collection>,
+    /// The decoded record. Hidden fields (`password`, `tokenKey`) are
+    /// present here — the auth path needs them — but
+    /// [`cratebase_db::context::auth_value`] resolves them to `null` for
+    /// rules and filters.
+    pub record: Record,
 }
 
 impl Auth {
-    /// `@request.auth` as the filter compiler expects it.
+    /// `@request.auth` as the filter compiler expects it. Hidden fields
+    /// are dropped by `Record::to_json`, per spec §6.
     pub fn to_filter_value(&self) -> Value {
-        let mut map = self.record.clone();
+        let mut map = match self.record.to_json(SerializeOptions {
+            with_hidden: false,
+            show_email: true,
+            with_custom_data: false,
+        }) {
+            Value::Object(m) => m,
+            _ => Map::new(),
+        };
         map.insert("id".into(), Value::String(self.id.clone()));
         map.insert(
             "collectionId".into(),
@@ -60,10 +74,16 @@ impl Auth {
             "collectionName".into(),
             Value::String(self.collection_name.clone()),
         );
-        // Never exposed to rules, per spec §6.
-        map.remove("password");
-        map.remove("tokenKey");
         Value::Object(map)
+    }
+
+    /// The rule-evaluation view of the caller.
+    pub fn to_auth_context(&self) -> AuthContext {
+        AuthContext {
+            record: self.record.clone(),
+            collection: self.collection.clone(),
+            is_superuser: self.is_superuser,
+        }
     }
 }
 
@@ -103,23 +123,16 @@ async fn resolve(parts: &Parts, app: &App) -> Option<Auth> {
         // never authenticate an ordinary request.
         return None;
     }
+    // In-memory store hit; `_collections` is never queried on this path.
     let collection = app.db().collections.get_by_id(&unverified.collection_id)?;
-
-    if collection.name != cratebase_core::SUPERUSERS_COLLECTION {
-        // W4b: load the record through `records::find_by_id_raw`, verify
-        // against its `tokenKey`, and build `Auth` from the decoded
-        // record. Until W3 lands only superusers can authenticate, which
-        // is all the routes live in W4a require.
+    if !collection.is_auth() {
         return None;
     }
 
-    let row = app.find_superuser_by_id(&unverified.id).await.ok()??;
-    let mut record = Map::new();
-    for (column, value) in row.into_pairs() {
-        record.insert(column, sql_to_json(value));
-    }
-    let token_key = record.get("tokenKey").and_then(Value::as_str).unwrap_or("");
-    let key = app.token_signing_key(token_key, &collection.auth.auth_token.secret);
+    let record = cratebase_db::records::find_by_id_raw(app.db(), &collection, &unverified.id)
+        .await
+        .ok()?;
+    let key = app.token_signing_key(&record.token_key(), &collection.auth.auth_token.secret);
     let claims = cratebase_auth::verify(token, &key).ok()?;
     if claims.id != unverified.id {
         return None;
@@ -129,20 +142,10 @@ async fn resolve(parts: &Parts, app: &App) -> Option<Auth> {
         id: claims.id,
         collection_id: collection.id.clone(),
         collection_name: collection.name.clone(),
-        is_superuser: true,
+        is_superuser: collection.is_superusers(),
+        collection,
         record,
     })
-}
-
-fn sql_to_json(value: cratebase_db::Sql) -> Value {
-    use cratebase_db::Sql;
-    match value {
-        Sql::Null => Value::Null,
-        Sql::Int(i) => Value::from(i),
-        Sql::Real(f) => Value::from(f),
-        Sql::Text(t) => Value::String(t),
-        Sql::Blob(b) => Value::from(b.len()),
-    }
 }
 
 impl<S> FromRequestParts<S> for Auth
@@ -225,9 +228,9 @@ where
 
 /// The `@request.*` context an API rule is compiled against.
 ///
-/// W4b: convert into `cratebase_db::context::RequestContext` once W3
-/// lands — the field set here is deliberately the same so the conversion
-/// is a `From` impl and nothing above has to change.
+/// Converted into [`cratebase_db::context::RequestContext`] by
+/// [`RequestInfo::to_context`] — the field set is deliberately the same,
+/// so nothing has to be re-derived per rule.
 #[derive(Clone, Debug, Default)]
 pub struct RequestInfo {
     pub method: String,
@@ -255,6 +258,20 @@ impl RequestInfo {
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = context.into();
         self
+    }
+
+    /// The `crates/db` view of the same request. Cheap enough to build
+    /// per operation; the auth record is cloned once, not per rule.
+    pub fn to_context(&self) -> RequestContext {
+        RequestContext {
+            auth: self.auth.as_ref().map(Auth::to_auth_context),
+            body: self.body.clone(),
+            query: self.query.clone(),
+            headers: self.headers.clone(),
+            method: self.method.clone(),
+            context: self.context.clone(),
+            superuser: false,
+        }
     }
 
     /// `@request.*` as one JSON object, handy for logs and for the JS
@@ -376,15 +393,19 @@ mod tests {
 
     #[test]
     fn auth_filter_value_hides_credentials() {
+        let collection = Arc::new(Collection::default_users());
+        let mut record = Record::new(collection.clone());
+        record.set_id("u1");
+        record.set("password", Value::String("hash".into()));
+        record.set("tokenKey", Value::String("k".into()));
+        record.set("email", Value::String("a@b.c".into()));
         let auth = Auth {
             id: "u1".into(),
             collection_id: "c1".into(),
             collection_name: "users".into(),
             is_superuser: false,
-            record: serde_json::from_value(serde_json::json!({
-                "password": "hash", "tokenKey": "k", "email": "a@b.c"
-            }))
-            .unwrap(),
+            collection,
+            record,
         };
         let v = auth.to_filter_value();
         assert_eq!(v["id"], "u1");
@@ -392,5 +413,6 @@ mod tests {
         assert_eq!(v["email"], "a@b.c");
         assert!(v.get("password").is_none());
         assert!(v.get("tokenKey").is_none());
+        assert!(!auth.to_auth_context().is_superuser);
     }
 }

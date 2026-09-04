@@ -581,31 +581,13 @@ fn field_error(field: &str, code: &str, message: &str) -> ApiError {
 
 /// Verify a `?token=` file token minted for a superuser.
 ///
-/// W4b owns `POST /api/files/token` (the minting side); this is only the
-/// verification, so backups can be downloaded as soon as that route
-/// exists.
+/// Both the minting side (`POST /api/files/token`) and the verification
+/// live in [`crate::routes::files`]; this only adds the extra condition
+/// that a backup needs a *superuser's* token, not just any record's.
 async fn verify_superuser_file_token(app: &App, token: &str) -> bool {
-    if token.is_empty() {
-        return false;
-    }
-    let Ok(unverified) = cratebase_auth::decode_unverified(token) else {
-        return false;
-    };
-    if unverified.token_type != cratebase_auth::TokenType::File {
-        return false;
-    }
-    let Some(collection) = app.db().collections.get_by_id(&unverified.collection_id) else {
-        return false;
-    };
-    if collection.name != cratebase_core::SUPERUSERS_COLLECTION {
-        return false;
-    }
-    let Ok(Some(row)) = app.find_superuser_by_id(&unverified.id).await else {
-        return false;
-    };
-    let token_key = row.get_str("tokenKey").unwrap_or_default();
-    let key = app.token_signing_key(token_key, &collection.auth.file_token.secret);
-    cratebase_auth::verify(token, &key).is_ok()
+    crate::routes::files::file_token_context(app, token)
+        .await
+        .is_some_and(|auth| auth.is_superuser)
 }
 
 /// The path a restore stages into; exposed for tests.

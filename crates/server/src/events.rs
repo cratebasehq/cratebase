@@ -1,10 +1,9 @@
 //! The event payloads carried down the hook chains declared in
 //! [`crate::hooks::Hooks`].
 //!
-//! Payloads are deliberately thin here: W4a only needs the *shape* to be
-//! right so that W4b (records, collections, auth, files, realtime, batch)
-//! and the JS runtime can add fields without renaming a hook or changing
-//! a registration signature. Every struct owns a `hook_chain` cursor and,
+//! Payloads are deliberately thin: the *shape* is what matters, so the
+//! remaining services (realtime, batch) and the JS runtime can add fields
+//! without renaming a hook or changing a registration signature. Every struct owns a `hook_chain` cursor and,
 //! where PocketBase supports tagged hooks, a `tags` list holding the
 //! collection's name and id.
 
@@ -130,8 +129,9 @@ event_struct! {
     /// `onRecord{Create,Update,Delete}Request` and every auth request
     /// variant: the HTTP-facing wrapper around the write path.
     ///
-    /// W4b fills `record`/`result` in; W4a only guarantees the hook and
-    /// the request context exist.
+    /// `record` carries the record the request resolved to (the created
+    /// or updated row, the authenticated record, ...); it is `None` for a
+    /// list, whose page is not a single record.
     RecordRequestEvent tagged {
         pub app: App,
         pub collection: Arc<Collection>,

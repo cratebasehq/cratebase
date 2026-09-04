@@ -11,9 +11,9 @@
 //!   else lives in [`cratebase_core::Settings`].
 //! * [`middleware`] — client-IP resolution, request logging, rate limits,
 //!   CORS.
-//! * [`routes`] — health, settings, logs, backups, crons. The record,
-//!   collection, auth, file, realtime and batch routes are W4b and are
-//!   marked in `routes::api_router`.
+//! * [`routes`] — health, settings, logs, backups, crons,
+//!   collections, records, auth (password) and files. The realtime and
+//!   batch routes are W4b-2 and are marked in `routes::api_router`.
 //! * [`plugin`], [`store`], [`cron`], [`extract`], [`http_error`].
 //!
 //! # Building an app
@@ -34,6 +34,7 @@ pub mod hooks;
 pub mod http_error;
 pub mod middleware;
 pub mod plugin;
+pub mod realtime;
 pub mod routes;
 pub mod store;
 
