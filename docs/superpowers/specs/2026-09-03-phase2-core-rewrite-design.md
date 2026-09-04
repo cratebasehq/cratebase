@@ -600,6 +600,38 @@ unchanged apart from the data dir default.
 5. Request logs on Postgres deployments still go to a local SQLite
    `auxiliary.db`; a Postgres logs table is a later option.
 
+## 15b. Known parity risks in the filter layer (must be closed or accepted)
+
+Surfaced while implementing §6. These are **not** approved divergences —
+each one is a place where a rule copied from a PocketBase app could
+behave differently, so the conformance suite (§14) has to cover them and
+we either match PocketBase or record the decision here.
+
+1. **Multi-valued fields without `:each`.** PocketBase compares the raw
+   JSON text of the column, so `tags = "a"` is false and `tags ~ "a"` is
+   effectively "some element contains a". We always apply element
+   semantics, so `tags ~ "a"` means "every element contains a". Ours is
+   more principled; PocketBase's is what existing rules were written
+   against. **Decision: match PocketBase** — the point of this phase is
+   that a ported app behaves identically.
+2. **Bare operators through a join** (`@collection.X.f = v`,
+   `posts_via_author.f = v`). PocketBase adds a multi-match `NOT EXISTS`
+   so a bare `=` means "all joined rows match", which is why its docs
+   push `?=`. Ours resolves to "any joined row", i.e. more permissive —
+   and *more permissive on an access rule is a security bug*. **Must
+   match PocketBase.**
+3. **`~` escaping.** PocketBase escapes `%` and `_` in the operand and
+   appends `ESCAPE '\'`; we escape neither. A rule filtering on a value
+   containing `_` silently matches too much. **Must match PocketBase.**
+4. `@request.auth.<relation>.<field>` does not traverse into the related
+   record (PocketBase joins). Accepted for now: rules needing it can use
+   `@collection`.
+5. Column-vs-column `=` uses null-safe equality (`IS` /
+   `IS NOT DISTINCT FROM`) rather than PocketBase's
+   `COALESCE(a,'') = COALESCE(b,'')`, so `''` and `NULL` compare unequal
+   in that one shape. Accepted; Postgres type safety makes the
+   `COALESCE` form awkward.
+
 ## 16. Work breakdown (for the implementation plan)
 
 W0 core contracts (model, ids, dates, errors, events, settings types,
