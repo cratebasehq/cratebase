@@ -184,11 +184,14 @@ These are new capabilities, not quirks to match, so they widen the
 expected-value lists in `collections.test.ts`/`settings.test.ts` rather than
 describing a behavioural difference on a shared surface.
 
-43. **Five extra system collections**, all superuser-only end to end (same
-    trust tier as `_superusers`/`_mfas`): `_cron_jobs` (custom scheduled SQL
-    jobs), `_llm_usage` (persisted LLM gateway chat history), `_team_members`
-    and `_teams` (workspace membership), `_webhooks` (outgoing webhook
-    config).
+43. **Seven extra system collections**, all superuser-only end to end
+    unless noted (same trust tier as `_superusers`/`_mfas`): `_cron_jobs`
+    (custom scheduled SQL jobs), `_llm_usage` (persisted LLM gateway chat
+    history), `_team_members`/`_teams` (workspace membership), `_webhooks`
+    (outgoing webhook config), `_api_keys` (superuser-minted Bearer
+    identities, `key` stored hashed), `_push_subscriptions` (self-service —
+    a record manages only its own rows, same owner-rule shape as
+    `_mfas`/`_otps`).
 44. **An extra top-level settings key, `llm`**: the LLM chat gateway's
     provider config (`baseUrl`, `apiKey`, `model`). `apiKey` is stripped from
     `GET /api/settings` the same way `smtp.password`/`s3.secret` are.

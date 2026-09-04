@@ -250,12 +250,14 @@ describe("collections: create", () => {
     const all = await pb.collections.getFullList();
     const sys = all.filter((c) => c.system).map((c) => c.name).sort();
     expect(sys).toEqual([
+      "_api_keys",
       "_authOrigins",
       "_cron_jobs",
       "_externalAuths",
       "_llm_usage",
       "_mfas",
       "_otps",
+      "_push_subscriptions",
       "_superusers",
       "_team_members",
       "_teams",

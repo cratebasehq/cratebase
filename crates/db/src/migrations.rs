@@ -103,6 +103,17 @@ impl Runner {
             Box::new(|db| Box::pin(add_llm_usage_up(db))),
             Box::new(|db| Box::pin(add_llm_usage_down(db))),
         ));
+        // Same story again for `_api_keys` and `_push_subscriptions`.
+        r.register(Migration::new(
+            ADD_API_KEYS,
+            Box::new(|db| Box::pin(add_api_keys_up(db))),
+            Box::new(|db| Box::pin(add_api_keys_down(db))),
+        ));
+        r.register(Migration::new(
+            ADD_PUSH_SUBSCRIPTIONS,
+            Box::new(|db| Box::pin(add_push_subscriptions_up(db))),
+            Box::new(|db| Box::pin(add_push_subscriptions_down(db))),
+        ));
         r
     }
 
@@ -360,6 +371,50 @@ async fn add_llm_usage_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_API_KEYS: &str = "6_add_api_keys.rs";
+
+async fn add_api_keys_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_api_keys").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_api_keys")
+        .expect("_api_keys is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_api_keys_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_api_keys").is_some() {
+        db.collections.delete(&*db.engine, "_api_keys").await?;
+    }
+    Ok(())
+}
+
+pub const ADD_PUSH_SUBSCRIPTIONS: &str = "7_add_push_subscriptions.rs";
+
+async fn add_push_subscriptions_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_push_subscriptions").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_push_subscriptions")
+        .expect("_push_subscriptions is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_push_subscriptions_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_push_subscriptions").is_some() {
+        db.collections
+            .delete(&*db.engine, "_push_subscriptions")
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +441,8 @@ mod tests {
                 ADD_WEBHOOKS.to_string(),
                 ADD_TEAMS.to_string(),
                 ADD_LLM_USAGE.to_string(),
+                ADD_API_KEYS.to_string(),
+                ADD_PUSH_SUBSCRIPTIONS.to_string(),
             ]
         );
         assert_eq!(
@@ -402,6 +459,8 @@ mod tests {
         assert!(db.collections.get("_teams").is_some());
         assert!(db.collections.get("_team_members").is_some());
         assert!(db.collections.get("_llm_usage").is_some());
+        assert!(db.collections.get("_api_keys").is_some());
+        assert!(db.collections.get("_push_subscriptions").is_some());
         assert!(db.collections.get("_superusers").unwrap().system);
         for t in [
             "_superusers",
@@ -415,6 +474,8 @@ mod tests {
             "_teams",
             "_team_members",
             "_llm_usage",
+            "_api_keys",
+            "_push_subscriptions",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
@@ -422,10 +483,12 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 5).await.unwrap();
+        let reverted = Runner::core().down(&db, 7).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_PUSH_SUBSCRIPTIONS.to_string(),
+                ADD_API_KEYS.to_string(),
                 ADD_LLM_USAGE.to_string(),
                 ADD_TEAMS.to_string(),
                 ADD_WEBHOOKS.to_string(),

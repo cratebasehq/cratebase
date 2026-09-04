@@ -700,7 +700,7 @@ impl Collection {
         origins.system = true;
         origins.list_rule = owner_rule.clone();
         origins.view_rule = owner_rule.clone();
-        origins.delete_rule = owner_rule;
+        origins.delete_rule = owner_rule.clone();
         let pos = origins.fields.len() - 2;
         origins.fields.splice(
             pos..pos,
@@ -916,6 +916,79 @@ impl Collection {
             pos..pos,
             [caller_id, model, prompt_tokens, completion_tokens],
         );
+        // Superuser-only end to end, same trust tier as `_cron_jobs`/
+        // `_webhooks`/`_llm_usage` above: an API key is a first-class
+        // identity a superuser mints for a script/agent/MCP client, not
+        // something a non-superuser record should ever list (it would
+        // leak other callers' key material) or write. `key` stores a
+        // salted hash, never the raw key — see `crate::api_keys` in the
+        // server crate for the extractor that hashes an incoming
+        // `Authorization: Bearer <key>` header the same way a password
+        // is checked, and for the one-time plaintext response on
+        // creation. `prefix` is the first 8 characters of the raw key,
+        // stored in the clear so the dashboard can show "cb_a1b2c3d4…"
+        // for identification without ever re-displaying the full value.
+        let mut api_keys = Collection::new("_api_keys", CollectionType::Base);
+        api_keys.system = true;
+        let mut ak_key = text("key");
+        ak_key.system = true;
+        ak_key.hidden = true;
+        let mut ak_prefix = text("prefix");
+        ak_prefix.system = true;
+        let mut ak_enabled = Field::new("enabled", FieldKind::Bool {});
+        ak_enabled.system = true;
+        let mut ak_last_used_at = Field::new(
+            "lastUsedAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        ak_last_used_at.system = true;
+        ak_last_used_at.required = false;
+        let pos = api_keys.fields.len() - 2;
+        api_keys.fields.splice(
+            pos..pos,
+            [text("name"), ak_key, ak_prefix, ak_enabled, ak_last_used_at],
+        );
+        api_keys.indexes =
+            vec!["CREATE UNIQUE INDEX `idx_api_keys_key` ON `_api_keys` (key)".into()];
+
+        // Self-service like `_externalAuths`/`_mfas`/`_otps`: a record
+        // registers its own device token and can list/view/delete only
+        // its own rows. Unlike those three, registration is a normal
+        // client-initiated REST create (there is no separate auth flow
+        // that would insert on the caller's behalf), so `create_rule`
+        // is the owner rule too, not the superuser-only default. `token`
+        // is the opaque platform delivery token (a Web Push endpoint
+        // URL, an FCM registration token, or an APNs device token) —
+        // hidden because it is a bearer credential for sending that
+        // device a notification, not display data.
+        let mut push_subscriptions = Collection::new("_push_subscriptions", CollectionType::Base);
+        push_subscriptions.system = true;
+        push_subscriptions.list_rule = owner_rule.clone();
+        push_subscriptions.view_rule = owner_rule.clone();
+        push_subscriptions.create_rule = owner_rule.clone();
+        push_subscriptions.delete_rule = owner_rule;
+        let mut ps_token = text("token");
+        ps_token.hidden = true;
+        let mut ps_enabled = Field::new("enabled", FieldKind::Bool {});
+        ps_enabled.system = true;
+        let pos = push_subscriptions.fields.len() - 2;
+        push_subscriptions.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                text("platform"),
+                ps_token,
+                ps_enabled,
+            ],
+        );
+        push_subscriptions.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_push_subscriptions_token` ON `_push_subscriptions` (token)"
+                .into(),
+        ];
 
         vec![
             external,
@@ -927,6 +1000,8 @@ impl Collection {
             teams,
             team_members,
             llm_usage,
+            api_keys,
+            push_subscriptions,
         ]
     }
 }
@@ -970,10 +1045,10 @@ mod tests {
                 "name",
                 "avatar",
                 "created",
-                "updated"
+                "updated",
             ]
         );
-        assert_eq!(c.fields[1].id, "password901924565");
+        assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
         assert_eq!(c.fields[2].id, "text2504183744");
         assert_eq!(c.fields[3].id, "email3885137012");
     }
@@ -1053,6 +1128,8 @@ mod tests {
                 crate::ids::collection_id("base", "_teams").as_str(),
                 crate::ids::collection_id("base", "_team_members").as_str(),
                 crate::ids::collection_id("base", "_llm_usage").as_str(),
+                crate::ids::collection_id("base", "_api_keys").as_str(),
+                crate::ids::collection_id("base", "_push_subscriptions").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
