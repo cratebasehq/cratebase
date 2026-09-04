@@ -46,7 +46,13 @@ pub(crate) fn install(ctx: &Ctx<'_>, state: Rc<WorkerState>) -> rquickjs::Result
         "native",
         Function::new(
             ctx.clone(),
-            move |ctx: Ctx<'_>, op: String, args: JsValue<'_>| {
+            // `native_fn` is what makes this compile: `Ctx<'_>` and
+            // `JsValue<'_>` in a closure signature are two *independent*
+            // inferred lifetimes, and `Value<'js>` is invariant, so the
+            // returned value can't be tied back to the incoming context.
+            // Passing the closure through a `for<'js>`-bounded helper
+            // forces one higher-ranked lifetime across all three.
+            native_fn(move |ctx, op: String, args| {
                 let args = match from_js(&ctx, args)? {
                     Value::Array(a) => a,
                     _ => vec![],
@@ -55,25 +61,35 @@ pub(crate) fn install(ctx: &Ctx<'_>, state: Rc<WorkerState>) -> rquickjs::Result
                     Ok(v) => to_js(&ctx, &v),
                     Err(e) => Err(throw_app_error(&ctx, &e)),
                 }
-            },
+            }),
         )?,
     )?;
 
-    cb.set(
-        "compile",
-        Function::new(
-            ctx.clone(),
-            |ctx: Ctx<'_>, path: String, source: String| -> rquickjs::Result<JsValue<'_>> {
-                let wrapped = format!(
-                    "(function (exports, require, module, __filename, __dirname) {{{source}\n}})"
-                );
-                ctx.eval_with_options(wrapped, eval_options(&path, false))
-            },
-        )?,
-    )?;
+    // A free `fn` rather than a closure, for the same reason: an item can
+    // name `'js` and relate its argument and return type to it.
+    cb.set("compile", Function::new(ctx.clone(), compile)?)?;
 
     ctx.globals().set("__cb", cb)?;
     ctx.eval_with_options::<(), _>(PRELUDE, eval_options("<prelude>", true))
+}
+
+/// Pins a closure to a single higher-ranked `'js`, so `Ctx`, the argument
+/// and the return value all share one lifetime instead of three inferred
+/// ones. Identity at runtime; it exists purely to give inference a
+/// `for<'js>` bound to unify against.
+fn native_fn<F>(f: F) -> F
+where
+    F: for<'js> Fn(Ctx<'js>, String, JsValue<'js>) -> rquickjs::Result<JsValue<'js>>,
+{
+    f
+}
+
+/// `__cb.compile(path, source)` — wraps a CommonJS module body in the
+/// standard function shim and evaluates it, yielding the module function.
+fn compile<'js>(ctx: Ctx<'js>, path: String, source: String) -> rquickjs::Result<JsValue<'js>> {
+    let wrapped =
+        format!("(function (exports, require, module, __filename, __dirname) {{{source}\n}})");
+    ctx.eval_with_options(wrapped, eval_options(&path, false))
 }
 
 fn abs(p: &Path) -> String {

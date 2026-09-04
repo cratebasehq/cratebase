@@ -79,7 +79,10 @@ export function BackupsPage() {
   });
   const { data: storageInfo } = useQuery({
     queryKey: ["backups", "storage-info"],
-    queryFn: () => cb.send<{ driver: "local" | "s3"; location: string }>("/api/backups/storage-info"),
+    queryFn: () =>
+      cb.send<{ driver: "local" | "s3"; location: string }>("/api/backups/storage-info", {
+        method: "GET",
+      }),
     staleTime: 5 * 60 * 1000,
   });
 
