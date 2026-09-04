@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
 import type { RecordModel } from "pocketbase";
 import { type FieldSchema, userFields } from "@/lib/field-types";
 import { useNavigate } from "@tanstack/react-router";
@@ -16,6 +15,7 @@ import {
   Copy,
 } from "lucide-react";
 import { cb } from "@/lib/api";
+import { useCollections } from "@/hooks/use-collections";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { Lightbox } from "@/components/ui/lightbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -67,30 +67,33 @@ function formatDateTitle(value: string): string | undefined {
   return `${date.toLocaleString(undefined, { dateStyle: "full", timeStyle: "medium" })} · ${date.toISOString()}`;
 }
 
-/** Resolves relation ids to the target collection's first text field so the
- * grid shows something a human recognizes instead of a bare id, and keeps
- * the target collection's name/schema around for the reference popover
- * ("Open record" link + which fields to preview). One query per (field,
- * page) shared across every row via the react-query cache. */
-function useRelationLabels(collectionId?: string) {
-  return useQuery({
-    queryKey: ["relation-value-labels", collectionId],
-    queryFn: async () => {
-      const target = await cb.collections.getOne(collectionId!);
-      const fields = userFields(target);
-      const displayField = fields.find((f) => f.type === "text")?.name;
-      const list = await cb.collection(collectionId!).getList(1, 200);
-      const labels = new Map<string, string>();
-      const records = new Map<string, RecordModel>();
-      for (const item of list.items) {
-        labels.set(item.id, displayField ? String(item[displayField] ?? item.id) : item.id);
-        records.set(item.id, item);
-      }
-      return { collectionName: target.name, fields, labels, records };
-    },
-    enabled: Boolean(collectionId),
-    staleTime: 60_000,
-  });
+/** The target collection's name, user fields and "what to show instead of
+ * an id" field. Read straight out of the collections list every screen
+ * already holds — no request of its own. */
+function useRelationTarget(collectionId?: string) {
+  const { data: collections } = useCollections();
+  return useMemo(() => {
+    const target = collections?.find((c) => c.id === collectionId);
+    if (!target) return undefined;
+    const fields = userFields(target);
+    return {
+      collectionName: target.name,
+      fields,
+      displayField: fields.find((f) => f.type === "text")?.name,
+    };
+  }, [collections, collectionId]);
+}
+
+/** The records the server already sent back under `expand`, keyed by id.
+ * The grid asks for `?expand=<relation fields>`, so a relation cell has its
+ * referenced record in hand from the same request that fetched the row —
+ * no second query per relation, and no 200-record prefetch to guess from. */
+function expandedById(record: RecordModel, fieldName: string): Map<string, RecordModel> {
+  const expanded = (record.expand as Record<string, RecordModel | RecordModel[]> | undefined)?.[fieldName];
+  const out = new Map<string, RecordModel>();
+  if (Array.isArray(expanded)) for (const item of expanded) out.set(item.id, item);
+  else if (expanded) out.set(expanded.id, expanded);
+  return out;
 }
 
 /** One relation badge: click it to preview the referenced record (its
@@ -150,7 +153,7 @@ function RelationRefValue({
             </dl>
           ) : (
             <p className="border-t border-border pt-2 text-sm text-muted-foreground">
-              Record not found in the last 200 — open it directly instead.
+              This query didn't expand the relation — open the record directly.
             </p>
           )}
           {collectionName ? (
@@ -245,19 +248,26 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
   const value = record[field.name];
   const relationCollectionId =
     field.type === "relation" ? (field.collectionId as string | undefined) : undefined;
-  const relationInfo = useRelationLabels(relationCollectionId).data;
+  const relationInfo = useRelationTarget(relationCollectionId);
 
   if (value === null || value === undefined || value === "") {
     return <span className="text-muted-foreground/60">—</span>;
   }
 
   switch (field.type) {
+    // A boolean is not a status: filling it with a solid badge makes every
+    // `true` in a 500-row grid shout. A glyph plus the literal, weighted
+    // only by contrast, scans far faster down a column.
     case "bool":
       return (
-        <Badge variant={value ? "default" : "secondary"} className="gap-1 font-normal">
-          {value ? <Check className="size-3" /> : <X className="size-3" />}
+        <span
+          className={`inline-flex items-center gap-1 font-mono text-sm ${
+            value ? "text-foreground" : "text-muted-foreground/70"
+          }`}
+        >
+          {value ? <Check className="size-3.5" /> : <X className="size-3.5" />}
           {value ? "true" : "false"}
-        </Badge>
+        </span>
       );
     case "date":
       return (
@@ -307,18 +317,23 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
     case "relation": {
       const ids = Array.isArray(value) ? (value as string[]) : [String(value)];
       const shown = ids.slice(0, 3);
+      const expanded = expandedById(record, field.name);
+      const display = relationInfo?.displayField;
       return (
         <div className="flex flex-wrap items-center gap-1" onClick={(e) => e.stopPropagation()}>
-          {shown.map((id) => (
-            <RelationRefValue
-              key={id}
-              id={id}
-              label={relationInfo?.labels.get(id)}
-              collectionName={relationInfo?.collectionName}
-              fields={relationInfo?.fields}
-              record={relationInfo?.records.get(id)}
-            />
-          ))}
+          {shown.map((id) => {
+            const target = expanded.get(id);
+            return (
+              <RelationRefValue
+                key={id}
+                id={id}
+                label={target && display ? String(target[display] ?? id) : undefined}
+                collectionName={relationInfo?.collectionName}
+                fields={relationInfo?.fields}
+                record={target}
+              />
+            );
+          })}
           {ids.length > shown.length && (
             <span className="font-mono text-xs text-muted-foreground">+{ids.length - shown.length}</span>
           )}

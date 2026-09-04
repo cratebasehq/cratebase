@@ -2,8 +2,14 @@ import PocketBase, { ClientResponseError } from "pocketbase";
 
 /** Single shared client for the whole dashboard. `authStore` persists the
  * superuser session to `localStorage` under this key so a page reload
- * doesn't require logging back in. */
-export const cb = new PocketBase(import.meta.env.VITE_API_URL ?? "");
+ * doesn't require logging back in.
+ *
+ * The default has to be `"/"`, not `""`: a base URL that doesn't start with
+ * a slash is resolved by the SDK against `window.location.pathname`, so on
+ * `/collections/posts` every call would go to
+ * `/collections/posts/api/...`, get the SPA's own `index.html` back, fail
+ * to parse as JSON and resolve to `{}` — a silent, shapeless success. */
+export const cb = new PocketBase(import.meta.env.VITE_API_URL ?? "/");
 
 /** The superuser record returned by `auth-with-password`. Superusers are
  * ordinary auth records in the `_superusers` collection (PocketBase v0.23+),

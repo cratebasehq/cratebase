@@ -28,7 +28,16 @@ const COLLECTION = "_cron_jobs";
  * of a parallel fetch path, so this is purely a nicer editor over the same
  * rows `/collections/_cron_jobs` would show. */
 export function CronJobsPage() {
-  const { data } = useRecords(COLLECTION, 1, "", "name");
+  // The audit's "more than 25 jobs are invisible" — one page of 200 covers
+  // any realistic schedule, and the count isn't shown, so skip the COUNT(*).
+  const { data } = useRecords(COLLECTION, {
+    page: 1,
+    perPage: 200,
+    filter: "",
+    sort: "name",
+    expand: "",
+    skipTotal: true,
+  });
   const { update, remove } = useRecordMutations(COLLECTION);
   const [editing, setEditing] = useState<CronJobRecord | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<CronJobRecord | null>(null);

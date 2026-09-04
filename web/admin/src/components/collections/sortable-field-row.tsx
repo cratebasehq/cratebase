@@ -11,6 +11,8 @@ interface SortableFieldRowProps {
   onRemove: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   nameError?: string | null;
   optionsError?: string | null;
 }
@@ -28,6 +30,8 @@ export function SortableFieldRow({
   onRemove,
   onMoveUp,
   onMoveDown,
+  expanded,
+  onExpandedChange,
   nameError,
   optionsError,
 }: SortableFieldRowProps) {
@@ -50,6 +54,8 @@ export function SortableFieldRow({
         onRemove={onRemove}
         onMoveUp={onMoveUp}
         onMoveDown={onMoveDown}
+        expanded={expanded}
+        onExpandedChange={onExpandedChange}
         dragHandleAttributes={attributes}
         dragHandleListeners={listeners}
         isDragging={isDragging}

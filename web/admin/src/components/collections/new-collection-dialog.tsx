@@ -12,7 +12,8 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { CollectionForm, emptyCollectionForm, type CollectionFormValue } from "@/components/collections/collection-form";
+import { CollectionForm } from "@/components/collections/collection-form";
+import { collectionFormErrors, emptyCollectionForm, type CollectionFormValue } from "@/lib/collection-form-value";
 import { useCollections } from "@/hooks/use-collections";
 import { cb } from "@/lib/api";
 import { defaultTimestampFields } from "@/lib/field-types";
@@ -28,6 +29,10 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
   const { data: collections = [] } = useCollections();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // Same gate as the schema editor: a field with no name or a relation
+  // with no target is a 400 waiting to happen, so Create stays disabled
+  // until the form would actually be accepted.
+  const errors = collectionFormErrors(value, collections);
 
   useEffect(() => {
     if (open) {
@@ -45,6 +50,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
         // server on create — but not `created`/`updated`, so those go in
         // explicitly or the collection ends up with no timestamp columns.
         fields: [...defaultTimestampFields(), ...value.schema],
+        indexes: value.indexes,
         listRule: value.listRule,
         viewRule: value.viewRule,
         createRule: value.createRule,
@@ -65,7 +71,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending || value.name.length === 0) return;
+    if (pending || errors.length > 0) return;
     setPending(true);
     try {
       await create.mutateAsync();
@@ -78,7 +84,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[480px]">
+      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[680px]">
         <form onSubmit={handleSubmit} className="flex h-full min-h-0 flex-col">
           <SheetHeader>
             <SheetTitle>New collection</SheetTitle>
@@ -90,7 +96,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
           </div>
 
           <SheetFooter className="flex-row justify-end border-t border-border">
-            <Button type="submit" disabled={pending || value.name.length === 0}>
+            <Button type="submit" disabled={pending || errors.length > 0} title={errors[0]}>
               {pending ? <Spinner /> : null}
               {pending ? "Creating…" : "Create collection"}
             </Button>
