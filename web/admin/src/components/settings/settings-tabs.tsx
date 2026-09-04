@@ -1,9 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import {
   Archive,
+  BarChart3,
+  Bot,
   Clock,
   Database,
   FolderOpen,
+  KeyRound,
   ListTree,
   Mail,
   Shield,
@@ -22,7 +25,10 @@ const TABS = [
   { to: "/settings/backups", label: "Backups", icon: Archive },
   { to: "/settings/cron", label: "Cron jobs", icon: Clock },
   { to: "/settings/webhooks", label: "Webhooks", icon: Webhook },
+  { to: "/settings/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/settings/llm", label: "LLM", icon: Sparkles },
+  { to: "/settings/api-keys", label: "API keys", icon: KeyRound },
+  { to: "/settings/mcp", label: "MCP", icon: Bot },
   { to: "/settings/sql", label: "SQL console", icon: Database },
   { to: "/settings/file-manager", label: "File manager", icon: FolderOpen },
 ] as const;

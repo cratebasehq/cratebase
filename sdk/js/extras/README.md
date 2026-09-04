@@ -121,6 +121,66 @@ package assigned to `globalThis.EventSource`) — this is the same requirement `
 already has for any other realtime use, not something this package adds. A plain, non-streamed
 `chat()` call (omitting both callbacks) has no such requirement.
 
+## Presence — `trackPresence`
+
+"Who's online right now", built entirely on things Cratebase already ships: an ordinary
+collection plus `GET /api/realtime` (`crates/server/src/realtime.rs`). There is no server-side
+presence feature to enable — you define a `presence` collection in your own schema, and
+`trackPresence` does the client-side heartbeat-and-observe pattern on top of it: it keeps your own
+row's timestamp fresh on an interval, subscribes to every other row's changes, and maintains a
+local `online` set that sweeps out any peer whose heartbeat has gone stale (closed tab, dead
+network — no clean "offline" event ever arrives for those).
+
+Create a `presence` collection first (e.g. via the dashboard or the Admin API) with fields
+matching your own presence data — a minimal shape:
+
+```json
+{
+  "name": "presence",
+  "type": "base",
+  "fields": [
+    { "name": "userRef", "type": "text", "required": true },
+    { "name": "status", "type": "text" },
+    { "name": "lastSeenAt", "type": "date" }
+  ],
+  "listRule": "@request.auth.id != ''",
+  "viewRule": "@request.auth.id != ''",
+  "createRule": "@request.auth.id != '' && userRef = @request.auth.id",
+  "updateRule": "@request.auth.id != '' && userRef = @request.auth.id",
+  "deleteRule": "@request.auth.id != '' && userRef = @request.auth.id"
+}
+```
+
+```ts
+import PocketBase from "pocketbase";
+import { trackPresence } from "@cratebase/extras";
+
+const pb = new PocketBase("http://127.0.0.1:8090");
+await pb.collection("users").authWithPassword(email, password);
+
+const presence = await trackPresence(pb, "presence", {
+  userRef: pb.authStore.record!.id,
+  status: "online",
+});
+
+const unsubscribe = presence.subscribe((online) => {
+  console.log(`${online.size} peers online:`, [...online]);
+});
+
+// later, e.g. on unmount or page unload:
+unsubscribe();
+await presence.stop();
+
+// via the facade
+const viaExtras = await extras.trackPresence("presence", { userRef: pb.authStore.record!.id });
+```
+
+`trackPresence`'s third argument upserts: pass `{ id, ...fields }` to keep refreshing a row you
+already created, or fields with no `id` to create one on the first call and reuse it for every
+heartbeat after. `heartbeatMs` (default 20s), `staleMs` (default `3 * heartbeatMs`) and
+`lastSeenField` (default `"lastSeenAt"`) in the options object tune the timing to your schema and
+how quickly a departed peer should read as offline.
+
 ## Development
 
 ```

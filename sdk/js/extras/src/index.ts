@@ -1,16 +1,16 @@
 /** `@cratebase/extras` — optional client extensions for the handful of
  * Cratebase endpoints the official `pocketbase` npm SDK has no
- * first-class surface for: vector search, MCP tool schemas, and the LLM
- * chat gateway (see
- * `docs/superpowers/specs/2026-09-04-value-add-strategy.md` §1/§1a).
+ * first-class surface for: vector search, MCP tool schemas, the LLM
+ * chat gateway, and a client-side presence pattern (see
+ * `docs/superpowers/specs/2026-09-04-value-add-strategy.md` §1/§1a/§6).
  *
  * This package deliberately does **not** replace or fork the SDK — a
  * project that only wants PocketBase-parity behavior never installs it
  * and pays zero cost. Everything here takes an existing `PocketBase`
  * client instance and bolts extra methods onto it, either through the
  * {@link CratebaseExtras} facade or as the standalone functions it
- * wraps (`nearestTo`, `getToolSchema(s)`, `chat`), for callers who'd
- * rather not carry an extra object around.
+ * wraps (`nearestTo`, `getToolSchema(s)`, `chat`, `trackPresence`), for
+ * callers who'd rather not carry an extra object around.
  */
 
 import type PocketBase from "pocketbase";
@@ -18,9 +18,11 @@ import type { RecordModel } from "pocketbase";
 
 import { nearestTo, type NearestToOptions } from "./vector.js";
 import { getToolSchema, getToolSchemas, type ToolSchema } from "./mcp.js";
+import { trackPresence, type Presence, type PresenceOptions } from "./presence.js";
 
 export { nearestTo, type NearestToOptions } from "./vector.js";
 export { getToolSchema, getToolSchemas, type ToolSchema } from "./mcp.js";
+export { trackPresence, type Presence, type PresenceOptions } from "./presence.js";
 
 /** One turn of a chat exchange, mirroring the server's `WireMessage`
  * (`crates/server/src/routes/llm.rs`). */
@@ -139,6 +141,7 @@ export async function chat(
  * const nearest = await extras.nearestTo("chunks", "embedding", queryVector, { limit: 5 });
  * const schema = await extras.getToolSchema("posts");
  * const reply = await extras.chat([{ role: "user", content: "hi" }]);
+ * const presence = await extras.trackPresence("presence", { userRef: pb.authStore.record!.id });
  * ```
  */
 export class CratebaseExtras {
@@ -167,5 +170,13 @@ export class CratebaseExtras {
 
   chat(messages: ChatMessage[], options?: ChatOptions): Promise<ChatResult> {
     return chat(this.pb, messages, options);
+  }
+
+  trackPresence<T extends RecordModel = RecordModel>(
+    collectionIdOrName: string,
+    record: ({ id: string } | Record<string, unknown>) & Record<string, unknown>,
+    options?: PresenceOptions,
+  ): Promise<Presence> {
+    return trackPresence<T>(this.pb, collectionIdOrName, record, options);
   }
 }

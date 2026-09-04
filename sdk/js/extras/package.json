@@ -1,7 +1,7 @@
 {
   "name": "@cratebase/extras",
   "version": "0.1.0",
-  "description": "Optional client extensions for Cratebase endpoints the official `pocketbase` SDK has no first-class surface for (vector search, MCP tool schemas, the LLM chat gateway). Bolts onto an existing PocketBase client instance rather than replacing it.",
+  "description": "Optional client extensions for Cratebase endpoints the official `pocketbase` SDK has no first-class surface for (vector search, MCP tool schemas, the LLM chat gateway, a client-side presence pattern). Bolts onto an existing PocketBase client instance rather than replacing it.",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,

@@ -49,6 +49,37 @@
 //! traversal, `@collection.X` — stand the snapshot up as a one-row
 //! derived table and run the compiled SQL against that. A deleted record
 //! and an uncommitted one are the same problem.
+//!
+//! # Cross-node fan-out (Postgres only)
+//!
+//! Everything above happens against *this* process's in-memory client
+//! registry, which only ever sees writes this process itself performed.
+//! Behind a load balancer with several app instances sharing one
+//! Postgres database, a client parked on instance A never hears about a
+//! write instance B just committed — unless something bridges them.
+//!
+//! That bridge is `pg_notify`/`LISTEN`. [`publish`] below, after doing
+//! its normal local fan-out, always also calls
+//! [`cratebase_db::Engine::notify_realtime`] with a small JSON payload
+//! (collection id, action, record id — never the full record: Postgres
+//! caps a `NOTIFY` payload at 8000 bytes). `App::bootstrap` starts
+//! [`start_cross_node_listener`] once per process, which
+//! `subscribe_realtime`s for every process's payloads on that channel,
+//! including its own (skipped by an `origin` field — this process's own
+//! local subscribers were already reached synchronously). For anyone
+//! else's payload, [`receive_cross_node`] re-fetches the record with
+//! *this* process's own executor and hands it to the same [`fan_out`]
+//! a local write uses, so rule evaluation runs against this process's
+//! own current settings and rule text, never anything serialized by the
+//! writer. A `delete` is the one exception: the row is gone everywhere
+//! by the time this arrives, so the writer's pre-delete snapshot rides
+//! along in the payload instead (bounded the same way, and rejected by
+//! `notify_realtime` rather than silently dropped if it doesn't fit).
+//!
+//! SQLite is single-node by definition (one file, one process), so
+//! `notify_realtime`/`subscribe_realtime` are no-ops there — see their
+//! doc comments on [`cratebase_db::Engine`] — and this file's behavior
+//! on SQLite is unchanged from before this section existed.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,6 +93,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use cratebase_core::{Collection, Record};
 use cratebase_db::context::{CollectionResolver, RequestContext};
+use cratebase_db::records::find_by_id_raw;
 use futures::stream::Stream;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -428,15 +460,30 @@ async fn submit(
 /// Announce a committed record mutation to realtime subscribers.
 ///
 /// Called **after** the transaction commits, with the post-write record
-/// (for a delete, the row as it was). Returns immediately: the fan-out,
-/// including any `expand` queries, happens on a spawned task so a slow
-/// subscriber can never slow the writer down.
+/// (for a delete, the row as it was). Returns immediately: both the
+/// local fan-out and the cross-node notify below (including any
+/// `expand` queries the former runs) happen on spawned tasks so a slow
+/// subscriber, or a slow Postgres round trip, can never slow the writer
+/// down.
 pub fn publish(
     app: &crate::app::App,
     collection: &Arc<Collection>,
     action: RecordAction,
     record: &Record,
 ) {
+    // Cross-node first, and unconditionally: this process has no way to
+    // know whether some *other* process sharing the database has
+    // watchers for this collection, only whether it does itself. See the
+    // module doc's "Cross-node fan-out" section.
+    {
+        let app = app.clone();
+        let collection = collection.clone();
+        let record = record.clone();
+        tokio::spawn(async move {
+            notify_cross_node(&app, &collection, action, &record).await;
+        });
+    }
+
     let watchers = app.realtime().watchers(collection);
     if watchers.is_empty() {
         return;
@@ -521,6 +568,144 @@ async fn fan_out(
             }
         }
     }
+}
+
+// ----------------------------------------------------------- cross-node
+
+/// Random per-process id embedded in every cross-node payload this
+/// process sends. `subscribe_realtime` sees every notification on the
+/// channel, including its own — Postgres delivers `NOTIFY` to every
+/// currently listening session, sender included — so
+/// [`receive_cross_node`] uses this to recognize and skip them: this
+/// process's own local subscribers were already reached synchronously
+/// by `fan_out` above, straight off the write, never through Postgres.
+fn origin_id() -> &'static str {
+    static ORIGIN: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| cratebase_core::ids::random_string(20, CLIENT_ID_ALPHABET));
+    &ORIGIN
+}
+
+fn parse_action(s: &str) -> Option<RecordAction> {
+    match s {
+        "create" => Some(RecordAction::Create),
+        "update" => Some(RecordAction::Update),
+        "delete" => Some(RecordAction::Delete),
+        _ => None,
+    }
+}
+
+/// Tell every other process sharing this database about a write (see the
+/// module doc's "Cross-node fan-out" section). SQLite: `notify_realtime`
+/// is a no-op there, so this call costs one no-op `await` and nothing
+/// else.
+async fn notify_cross_node(
+    app: &App,
+    collection: &Arc<Collection>,
+    action: RecordAction,
+    record: &Record,
+) {
+    let mut payload = serde_json::json!({
+        "origin": origin_id(),
+        "collection": collection.id,
+        "action": action.as_str(),
+        "id": record.id(),
+    });
+    if action == RecordAction::Delete {
+        // The row won't exist for the receiving process to re-fetch, so
+        // the pre-delete snapshot has to ride along; every other action
+        // sends none and lets the receiver re-`SELECT` its own current
+        // copy instead (see `receive_cross_node`).
+        payload["snapshot"] = record.to_json(cratebase_core::SerializeOptions {
+            with_hidden: true,
+            show_email: true,
+            with_custom_data: false,
+        });
+    }
+    let payload = payload.to_string();
+    if let Err(e) = app.db().engine.notify_realtime(&payload).await {
+        tracing::warn!(
+            error = %e,
+            collection = %collection.name,
+            action = action.as_str(),
+            "cross-node realtime notify failed; other instances won't see this write"
+        );
+    }
+}
+
+/// Handle one payload from [`start_cross_node_listener`]: parse it,
+/// figure out who is even watching this collection *on this process*
+/// (cheap, and skips the rest entirely when nobody is), get a current
+/// copy of the record, and run it through the exact same [`fan_out`] a
+/// local write uses — so rule evaluation happens fresh, here, against
+/// this process's own settings and rule text, never anything the writer
+/// serialized (see the module doc).
+async fn receive_cross_node(app: &App, payload: &str) {
+    let Ok(Value::Object(msg)) = serde_json::from_str::<Value>(payload) else {
+        tracing::warn!("cross-node realtime payload was not a JSON object; dropping");
+        return;
+    };
+    if msg.get("origin").and_then(Value::as_str) == Some(origin_id()) {
+        return;
+    }
+    let (Some(collection_id), Some(action), Some(id)) = (
+        msg.get("collection").and_then(Value::as_str),
+        msg.get("action")
+            .and_then(Value::as_str)
+            .and_then(parse_action),
+        msg.get("id").and_then(Value::as_str),
+    ) else {
+        tracing::warn!("cross-node realtime payload missing collection/action/id; dropping");
+        return;
+    };
+    let Some(collection) = app.db().collections.get(collection_id) else {
+        // A schema change hasn't propagated to this process yet, or the
+        // collection was deleted moments after the write. Either way
+        // there is nothing to deliver.
+        return;
+    };
+
+    let watchers = app.realtime().watchers(&collection);
+    if watchers.is_empty() {
+        return;
+    }
+
+    let record = match action {
+        RecordAction::Delete => {
+            let Some(Value::Object(snapshot)) = msg.get("snapshot").cloned() else {
+                tracing::warn!("cross-node delete payload missing its record snapshot; dropping");
+                return;
+            };
+            Record::from_loaded(collection.clone(), snapshot)
+        }
+        RecordAction::Create | RecordAction::Update => {
+            match find_by_id_raw(app.db(), &collection, id).await {
+                Ok(record) => record,
+                // Already gone again, or replicated late enough that a
+                // later write already superseded it — nothing to show.
+                Err(_) => return,
+            }
+        }
+    };
+
+    fan_out(app.clone(), collection, action, record, watchers).await;
+}
+
+/// Start this process's half of cross-node fan-out: subscribe to every
+/// other process's [`notify_realtime`] calls against the same database
+/// and hand each one to [`receive_cross_node`]. Called once, from
+/// `App::bootstrap`. A no-op on SQLite — see
+/// [`cratebase_db::Engine::subscribe_realtime`]'s doc comment — so a
+/// SQLite deployment's realtime behavior is unaffected by this existing
+/// at all.
+pub fn start_cross_node_listener(app: &App) {
+    let engine = app.db().engine.clone();
+    let app = app.clone();
+    engine.subscribe_realtime(Arc::new(move |payload: String| {
+        let app = app.clone();
+        tokio::spawn(async move {
+            receive_cross_node(&app, &payload).await;
+        });
+    }));
 }
 
 /// Whether this subscriber may see this record: the collection's

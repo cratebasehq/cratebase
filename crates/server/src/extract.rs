@@ -4,8 +4,13 @@
 //!
 //! # Token resolution
 //!
-//! PocketBase signs a record's token with `secret + record.tokenKey`, so
-//! the key cannot be known until the record is loaded — and the record id
+//! Two bearer shapes reach here: a session JWT and an incoming API key
+//! (`cb_...`, see `crate::api_keys`). [`resolve`] tells them apart by
+//! prefix before doing any work, since neither shape can ever pass as
+//! the other.
+//!
+//! A **session JWT** is signed with `secret + record.tokenKey`, so the
+//! key cannot be known until the record is loaded — and the record id
 //! is inside the token. Resolution is therefore three steps:
 //!
 //! 1. decode the JWT **without** verifying, purely to read `id` and
@@ -17,6 +22,12 @@
 //! upside of the scheme is that rotating a record's `tokenKey` (on a
 //! password or email change) invalidates every outstanding session for
 //! it, with no server-side session table.
+//!
+//! An **API key** has no signature to verify — it's a bearer secret
+//! checked against a stored hash, the same shape as a password. See
+//! `crate::api_keys::resolve` for that path; it always resolves to a
+//! superuser identity, since minting one is itself a superuser-only
+//! operation.
 //!
 //! The result is cached in the request extensions, because the logging
 //! and rate-limit layers both resolve the caller before the handler does
@@ -116,6 +127,14 @@ async fn resolve(parts: &Parts, app: &App) -> Option<Auth> {
     // Everything past this point costs a signature check and a query, so
     // this is where "how often did we really resolve?" is counted.
     app.note_auth_resolution();
+
+    // A `cb_...` bearer is an API key (`crate::api_keys`), not a session
+    // JWT — resolve it on its own path rather than handing it to
+    // `decode_unverified`, which would just fail to parse it as one.
+    if crate::api_keys::looks_like_api_key(token) {
+        return crate::api_keys::resolve(app, token).await;
+    }
+
     // Unverified: only ever used to find which record's key to use.
     let unverified = cratebase_auth::decode_unverified(token).ok()?;
     if unverified.token_type != cratebase_auth::TokenType::Auth {

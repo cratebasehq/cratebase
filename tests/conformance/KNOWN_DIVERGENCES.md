@@ -192,8 +192,12 @@ describing a behavioural difference on a shared surface.
     identities, `key` stored hashed), `_push_subscriptions` (self-service —
     a record manages only its own rows, same owner-rule shape as
     `_mfas`/`_otps`).
-44. **An extra top-level settings key, `llm`**: the LLM chat gateway's
-    provider config (`baseUrl`, `apiKey`, `model`). `apiKey` is stripped from
+44. **Three extra top-level settings keys**: `llm` (the LLM chat gateway's
+    provider config — `baseUrl`, `apiKey`, `model`), `sms` (Twilio-compatible
+    provider config — `accountSid`, `authToken`, `fromNumber`), and `push`
+    (Web Push/FCM/APNs provider config). Every provider secret
+    (`llm.apiKey`, `sms.authToken`, `push.vapid.privateKey`,
+    `push.fcm.serviceAccountJson`, `push.apns.key`) is stripped from
     `GET /api/settings` the same way `smtp.password`/`s3.secret` are.
 
 ## Suite-side workarounds (not PocketBase behaviour)

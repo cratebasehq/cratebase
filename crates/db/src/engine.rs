@@ -252,6 +252,51 @@ pub trait Engine: Executor {
     /// Close every connection. Called before a backup restore swaps the
     /// data directory.
     async fn close(&self) -> DbResult<()>;
+
+    /// Best-effort cross-process notification for realtime fan-out (see
+    /// `crates/server/src/realtime.rs`). Called once per committed write
+    /// that might have subscribers *somewhere* — this instance has no
+    /// way to know whether another process shares any given collection's
+    /// watchers. The payload is deliberately small (record id,
+    /// collection id, action, and only for a delete — where the row
+    /// won't exist for anyone else to re-fetch — a snapshot of it),
+    /// never blindly the record: Postgres caps a `NOTIFY` payload at
+    /// 8000 bytes, and an implementation is expected to reject rather
+    /// than silently truncate an oversized one. Every receiving process
+    /// re-fetches the record and re-evaluates rules against its *own*
+    /// current settings and rule text; this only ever says "something
+    /// changed, go look", never "trust this payload".
+    ///
+    /// SQLite is single-node by construction: one file, one process, no
+    /// second engine instance sharing it the way a Postgres connection
+    /// pool is shared across app processes. The default here is a
+    /// no-op — SQLite's synchronous in-process fan-out in
+    /// `crate::realtime::publish` already reaches every subscriber
+    /// there is, so there is nothing further to broadcast, and this
+    /// method existing changes nothing about SQLite's behavior.
+    async fn notify_realtime(&self, _payload: &str) -> DbResult<()> {
+        Ok(())
+    }
+
+    /// Start a background subscription to every process's
+    /// [`notify_realtime`](Engine::notify_realtime) calls against this
+    /// same database — including this process's own, which the caller
+    /// is expected to recognize and skip cheaply (its local subscribers
+    /// were already reached synchronously, straight off the write) —
+    /// invoking `on_notify` with each raw payload as it arrives. Meant
+    /// to be called once, at startup; there is no unsubscribe and no
+    /// readiness signal. Reconnects for the life of the process on
+    /// connection loss, so one dropped connection never permanently
+    /// kills cross-process realtime.
+    ///
+    /// SQLite has no cross-process channel to subscribe to (see
+    /// [`notify_realtime`](Engine::notify_realtime)); the default here
+    /// is a no-op that never calls `on_notify`, so a SQLite deployment's
+    /// realtime behavior is exactly what it was before this method
+    /// existed: whichever process handled a write is the only process
+    /// that can tell its own SSE clients about it — true by definition,
+    /// since SQLite deployments are single-process.
+    fn subscribe_realtime(&self, _on_notify: Arc<dyn Fn(String) + Send + Sync>) {}
 }
 
 /// A write transaction. Dropping without `commit` rolls back.

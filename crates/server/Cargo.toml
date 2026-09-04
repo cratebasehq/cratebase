@@ -47,7 +47,7 @@ tempfile = "3"
 walkdir = "2"
 jsonwebtoken = "9"
 mimalloc = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 hmac = "0.12"
 sha2 = "0.10"
 # Bare module matrix only (no "image" feature) — utils.rs rasterizes the
@@ -55,8 +55,14 @@ sha2 = "0.10"
 # avoid pulling in a second, possibly version-mismatched `image` dep.
 qrcode = { version = "0.14", default-features = false }
 base64 = "0.22"
+# Pure-Rust web-push (VAPID) client for crates/server/src/push.rs — no
+# OpenSSL dependency, unlike the more popular `web-push` crate which
+# shells out to Mozilla's `ece` via openssl bindings.
+http = "1"
+web-push-native = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+rand.workspace = true

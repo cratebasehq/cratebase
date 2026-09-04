@@ -210,11 +210,9 @@ async fn dispatch(
             return;
         }
     };
-    let payload = json!({
-        "event": event,
-        "collection": collection_name,
-        "record": record,
-    });
+    // Note: no shared payload here — each webhook row's `url` may need
+    // a different shape (see `format_payload`), so the payload is built
+    // per row below, after `url` is known.
     for row in &rows {
         let Some(id) = row.get_str("id") else {
             continue;
@@ -233,8 +231,45 @@ async fn dispatch(
             .map(str::to_string);
         let record_id = id.to_string();
         let app = app.clone();
-        let payload = payload.clone();
+        let payload = format_payload(&url, &event, &collection_name, &record);
         tokio::spawn(deliver(app, record_id, url, secret, payload));
+    }
+}
+
+/// Reshapes the generic `{event, collection, record}` notification into
+/// the shape a chat-app incoming webhook expects, detected from `url`'s
+/// own host — not a `_webhooks.format` column, so pointing a webhook at
+/// Slack or Discord "just works" with no schema change and no extra
+/// dashboard field to configure. Anything that doesn't match a known
+/// chat-webhook host keeps today's generic shape unchanged, so this is
+/// purely additive for every existing webhook.
+///
+/// Both known targets get the same human-readable text (event, target
+/// collection, and the record as pretty JSON in a code fence) under the
+/// field name each platform expects: Slack's incoming-webhook payload is
+/// `{"text": "..."}`, Discord's is `{"content": "..."}`.
+fn format_payload(url: &str, event: &str, collection: &str, record: &Value) -> Value {
+    let host = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    let text = || {
+        format!(
+            "*{event}* on `{collection}`\n```{}```",
+            serde_json::to_string_pretty(record).unwrap_or_default()
+        )
+    };
+    match host.as_deref() {
+        Some("hooks.slack.com") => json!({ "text": text() }),
+        // Discord's webhook path is always `/api/webhooks/<id>/<token>`;
+        // gate on that too so a *different* service merely hosted at
+        // `discord.com` (unlikely, but this check is nearly free)
+        // doesn't get mis-shaped.
+        Some("discord.com") if url.contains("/api/webhooks") => json!({ "content": text() }),
+        _ => json!({
+            "event": event,
+            "collection": collection,
+            "record": record,
+        }),
     }
 }
 
@@ -423,6 +458,67 @@ fn is_blocked_v4(v4: Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slack_url_gets_slack_shaped_payload() {
+        let record = json!({"id": "abc123", "title": "hi"});
+        let payload = format_payload(
+            "https://hooks.slack.com/services/T000/B000/XXXX",
+            "create",
+            "posts",
+            &record,
+        );
+        let text = payload["text"].as_str().expect("text field");
+        assert!(text.contains("create"), "{text}");
+        assert!(text.contains("posts"), "{text}");
+        assert!(text.contains("abc123"), "{text}");
+        assert!(payload.get("event").is_none(), "not the generic shape");
+        assert!(payload.get("content").is_none(), "not the discord shape");
+    }
+
+    #[test]
+    fn discord_webhook_url_gets_discord_shaped_payload() {
+        let record = json!({"id": "abc123", "title": "hi"});
+        let payload = format_payload(
+            "https://discord.com/api/webhooks/123456/token-abc",
+            "update",
+            "comments",
+            &record,
+        );
+        let content = payload["content"].as_str().expect("content field");
+        assert!(content.contains("update"), "{content}");
+        assert!(content.contains("comments"), "{content}");
+        assert!(content.contains("abc123"), "{content}");
+        assert!(payload.get("event").is_none(), "not the generic shape");
+        assert!(payload.get("text").is_none(), "not the slack shape");
+    }
+
+    #[test]
+    fn discord_host_without_webhook_path_keeps_generic_shape() {
+        // Guards the path check in `format_payload`: merely being on
+        // `discord.com` isn't enough, it has to be the webhooks path.
+        let record = json!({"id": "abc123"});
+        let payload = format_payload(
+            "https://discord.com/some/other/route",
+            "create",
+            "posts",
+            &record,
+        );
+        assert_eq!(payload["event"], "create");
+        assert_eq!(payload["collection"], "posts");
+        assert_eq!(payload["record"], record);
+    }
+
+    #[test]
+    fn other_urls_keep_generic_shape() {
+        let record = json!({"id": "abc123", "title": "hi"});
+        let payload = format_payload("https://example.com/hook", "delete", "posts", &record);
+        assert_eq!(payload["event"], "delete");
+        assert_eq!(payload["collection"], "posts");
+        assert_eq!(payload["record"], record);
+        assert!(payload.get("text").is_none());
+        assert!(payload.get("content").is_none());
+    }
 
     #[tokio::test]
     async fn public_url_allowed() {

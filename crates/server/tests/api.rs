@@ -369,8 +369,10 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
             "llm",
             "logs",
             "meta",
+            "push",
             "rateLimits",
             "s3",
+            "sms",
             "smtp",
             "superuserIPs",
             "trustedProxy",
@@ -380,6 +382,10 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
     assert!(body["s3"].get("secret").is_none());
     assert!(body["backups"]["s3"].get("secret").is_none());
     assert!(body["llm"].get("apiKey").is_none());
+    assert!(body["sms"].get("authToken").is_none());
+    assert!(body["push"]["vapid"].get("privateKey").is_none());
+    assert!(body["push"]["fcm"].get("serviceAccountJson").is_none());
+    assert!(body["push"]["apns"].get("key").is_none());
 
     // Store a secret, then patch an unrelated key: the secret survives
     // because the merge is deep and the client never echoed it back.

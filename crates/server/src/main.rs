@@ -50,6 +50,41 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// Schema-as-code: pull the live schema into a checked-in JSON
+    /// file, or push that file back as a diff against the live
+    /// database.
+    Schema {
+        #[command(subcommand)]
+        action: SchemaAction,
+        #[arg(long = "dir", global = true)]
+        dir: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SchemaAction {
+    /// Write every non-system collection's schema to a JSON file, in
+    /// the same shape `GET /api/collections` returns.
+    Pull {
+        /// Output file.
+        #[arg(long, default_value = "schema.json")]
+        out: String,
+    },
+    /// Diff a schema-as-code file against the live database and apply
+    /// the difference: new collections and fields are created, changed
+    /// fields are retyped, and — unless `--force` is passed — fields the
+    /// file omits are left in place and only reported.
+    Push {
+        /// The schema-as-code JSON file (as written by `schema pull`).
+        file: String,
+        /// Print the plan without writing anything.
+        #[arg(long = "dry-run", default_value_t = false)]
+        dry_run: bool,
+        /// Actually drop fields the file omits from an existing
+        /// collection.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
 }
 
 #[derive(clap::Args)]
@@ -116,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
             superuser(dir, action).await
         }
         Command::Migrate { action, dir } => migrate(dir, action).await,
+        Command::Schema { action, dir } => schema(dir, action).await,
     }
 }
 
@@ -289,4 +325,73 @@ fn write_migration_stub(app: &App, name: &str) -> anyhow::Result<std::path::Path
         "/// <reference path=\"../pb_data/types.d.ts\" />\nmigrate((app) => {\n  // up\n}, (app) => {\n  // down\n});\n",
     )?;
     Ok(path)
+}
+
+/// Schema-as-code: `pull` snapshots the live non-system collections to a
+/// JSON file in the shape `GET /api/collections` returns; `push` reads
+/// that file back and applies the difference through the exact same
+/// diff/apply logic the `POST /api/schema/apply` endpoint uses (see
+/// `routes::schema::plan_and_apply`), so the CLI and the HTTP surface
+/// never disagree about what "the difference" means.
+async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+
+    match action {
+        SchemaAction::Pull { out } => {
+            let snapshot = app.db().collections.all();
+            let items: Vec<serde_json::Value> = snapshot
+                .all
+                .iter()
+                .filter(|c| !c.system)
+                .map(|c| c.to_json())
+                .collect();
+            let count = items.len();
+            let doc = serde_json::json!({ "collections": items });
+            std::fs::write(&out, serde_json::to_string_pretty(&doc)?)?;
+            println!("wrote {count} collection(s) to {out}");
+        }
+        SchemaAction::Push {
+            file,
+            dry_run,
+            force,
+        } => {
+            let raw = std::fs::read_to_string(&file)
+                .map_err(|e| anyhow::anyhow!("failed to read {file}: {e}"))?;
+            let doc: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| anyhow::anyhow!("{file} is not valid JSON: {e}"))?;
+            let info = cratebase_server::extract::RequestInfo::default();
+            let diff = cratebase_server::routes::schema::plan_and_apply(
+                &app, &doc, dry_run, force, &info, None,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.error))?;
+
+            for c in &diff.collections {
+                println!("{:9} {}", c.action, c.name);
+                for name in &c.fields_added {
+                    println!("           + {name}");
+                }
+                for name in &c.fields_changed {
+                    println!("           ~ {name}");
+                }
+                for name in &c.fields_removed {
+                    let marker = if c.pending_removal {
+                        "- (pending, pass --force to drop)"
+                    } else {
+                        "-"
+                    };
+                    println!("           {marker} {name}");
+                }
+            }
+            if dry_run {
+                println!("dry run: nothing was written");
+            } else {
+                println!("applied");
+            }
+        }
+    }
+
+    app.terminate(false).await;
+    Ok(())
 }

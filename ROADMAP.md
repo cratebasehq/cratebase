@@ -160,6 +160,35 @@ collection has no address to send them to.
   first request and cached to the storage backend) and **protected-file
   access tokens** (`POST /api/files/token`, `?token=`) for embedding a
   gated file where an `Authorization` header can't be sent.
+- **Cross-node realtime (Postgres only).** `GET /api/realtime` SSE
+  subscriptions used to be strictly single-process: `RealtimeService`'s
+  client registry and fan-out (`crates/server/src/realtime.rs`) only
+  ever knew about writes handled by the same process, so a deployment
+  behind a load balancer with more than one app instance would silently
+  drop realtime events for a client parked on a different instance than
+  the one that handled the write. Fixed for Postgres deployments via
+  `pg_notify`/`LISTEN`: every write still does its normal local
+  in-process fan-out, and now also calls the new
+  `Engine::notify_realtime` (`crates/db/src/postgres.rs`) with a small
+  JSON payload — collection id, action, record id, and (only for a
+  delete, where the row won't exist for another process to re-fetch) a
+  snapshot of the record — bounded well under Postgres's 8000-byte
+  `NOTIFY` payload limit and rejected outright rather than silently
+  truncated if it isn't. Every app process sharing that database starts
+  one `Engine::subscribe_realtime` listener at boot
+  (`App::bootstrap` → `realtime::start_cross_node_listener`), on a
+  dedicated (non-pooled) connection that reconnects with backoff on
+  connection loss so one dropped connection can't permanently kill
+  cross-node realtime. A receiving process re-fetches the record and
+  re-evaluates `listRule`/the topic's own filter itself, against its
+  *own* current settings and rule text — never against anything the
+  writer serialized — the same access-decision path a local write
+  already used. SQLite deployments are unaffected: `notify_realtime`/
+  `subscribe_realtime` default to no-ops on any `Engine` that doesn't
+  override them, which is exactly right for a backend that is
+  single-node by construction (one file, one process).
+  See `crates/db/tests/postgres.rs` for a two-connection LISTEN/NOTIFY
+  test proving the plumbing.
 - **Admin dashboard: Settings area** (request logs, backups — including
   upload/restore, cron jobs, and a Network page for rate limits/trusted
   proxy/superuser IPs), **collection export/import**, a **geoPoint field
@@ -171,8 +200,6 @@ collection has no address to send them to.
 
 ## Later
 
-- Realtime beyond a single node (Postgres `LISTEN/NOTIFY` or a queue as the
-  fan-out layer, so `RealtimeHub` isn't in-process-only).
 - Multi-file append/remove semantics on update (today, uploading new files
   for a field replaces the whole value; `field+`/`field-` suffix syntax
   for appending/removing individual files is not implemented).

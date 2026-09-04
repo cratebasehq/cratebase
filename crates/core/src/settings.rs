@@ -1,7 +1,9 @@
 //! App settings, shaped like `GET /api/settings` in PocketBase v0.23+ and
 //! persisted as JSON in `_params`. Secrets (`smtp.password`, `s3.secret`,
-//! `backups.s3.secret`, `llm.apiKey`) are accepted on input and stored,
-//! but stripped from the public JSON by [`Settings::to_public_json`].
+//! `backups.s3.secret`, `llm.apiKey`, `sms.authToken`,
+//! `push.vapid.privateKey`, `push.fcm.serviceAccountJson`, `push.apns.key`)
+//! are accepted on input and stored, but stripped from the public JSON by
+//! [`Settings::to_public_json`].
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -99,6 +101,109 @@ impl Default for Llm {
             model: "gpt-4o-mini".into(),
         }
     }
+}
+
+/// SMS provider config for `cratebase_mailer::sms` (Twilio-compatible REST
+/// API). Mirrors [`Smtp`]'s shape: `enabled` picks between the configured
+/// Twilio backend and the zero-config log fallback, exactly like
+/// `smtp.enabled` picks between `SmtpBackend` and `LogBackend`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Sms {
+    pub enabled: bool,
+    pub account_sid: String,
+    pub auth_token: String,
+    pub from_number: String,
+}
+
+/// Push notification provider config for `POST /api/push/send`
+/// (`crates/server/src/push.rs`). Unlike [`Smtp`]/[`Llm`]/[`Sms`], there is
+/// no single "provider" choice: a caller targets a `_push_subscriptions`
+/// row whose own `platform` field (`web`/`android`/`ios`) picks one of
+/// three independent backends, so each backend gets its own `enabled` flag
+/// rather than sharing one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Push {
+    pub vapid: VapidConfig,
+    pub fcm: FcmConfig,
+    pub apns: ApnsConfig,
+    /// Record-event → push rules, evaluated the same way
+    /// `cratebase_server::webhooks` evaluates `_webhooks` rows, but kept
+    /// here in settings rather than as a new system collection: adding one
+    /// would mean editing `cratebase_core::Collection::default_system_collections`
+    /// and the migration registry, both outside this feature's owned
+    /// files, for a config shape (`collection`/`events`/two templates)
+    /// settings' existing JSON-blob-of-rules pattern (see
+    /// [`RateLimits::rules`]) already covers with zero schema surface.
+    pub triggers: Vec<PushTrigger>,
+}
+
+/// Web Push / VAPID (RFC 8292) — works from any browser with no
+/// per-platform app registration. `private_key`/`public_key` are the raw
+/// P-256 key pair as used by the `web-push generate-vapid-keys` CLI and
+/// every JS web-push library: unpadded base64url, not PEM. `subject` is
+/// the contact URI RFC 8292 requires in every VAPID JWT (`mailto:...` or
+/// `https://...`), so a push service can reach the operator about a
+/// misbehaving sender.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VapidConfig {
+    pub enabled: bool,
+    pub public_key: String,
+    pub private_key: String,
+    pub subject: String,
+}
+
+/// Firebase Cloud Messaging HTTP v1 API, for Android (and web, though this
+/// server only ever selects it for `platform = "android"` —
+/// see `crate::push`). `service_account_json` is the raw contents of the
+/// Firebase service-account key file downloaded from the Firebase console;
+/// the project id, client email and private key used to sign the OAuth2
+/// bearer JWT are all parsed out of it, so there is nothing else to
+/// configure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FcmConfig {
+    pub enabled: bool,
+    pub service_account_json: String,
+}
+
+/// Apple Push Notification service, HTTP/2 provider API, token-based
+/// (`.p8`) auth — no expiring certificate to renew. `key` is the raw `.p8`
+/// file contents (PEM), `key_id`/`team_id` come from the Apple Developer
+/// portal page the key was created on, `bundle_id` is the app's bundle
+/// identifier (sent as `apns-topic`), and `production` picks
+/// `api.push.apple.com` over the `api.sandbox.push.apple.com` used by
+/// development-signed builds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ApnsConfig {
+    pub enabled: bool,
+    pub key: String,
+    pub key_id: String,
+    pub team_id: String,
+    pub bundle_id: String,
+    pub production: bool,
+}
+
+/// One record-event → push rule. `events` is a comma-separated subset of
+/// `create`/`update`/`delete`, same grammar as `_webhooks.events`.
+/// `title`/`body` are `{{field}}`-templated against the triggering
+/// record's JSON. `target_field` picks who receives it: empty broadcasts
+/// to every enabled `_push_subscriptions` row; non-empty names a field on
+/// the triggering record whose value must equal a subscription's
+/// `recordRef` (e.g. a `userRef` field on a `comments` collection, so only
+/// that comment's addressee is notified).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PushTrigger {
+    pub enabled: bool,
+    pub collection: String,
+    pub events: String,
+    pub title: String,
+    pub body: String,
+    pub target_field: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,6 +343,8 @@ pub struct Settings {
     pub batch: Batch,
     pub logs: Logs,
     pub llm: Llm,
+    pub sms: Sms,
+    pub push: Push,
     #[serde(rename = "superuserIPs")]
     pub superuser_ips: Vec<String>,
 }
@@ -254,6 +361,30 @@ impl Settings {
         }
         if let Some(llm) = v.get_mut("llm").and_then(Value::as_object_mut) {
             llm.remove("apiKey");
+        }
+        if let Some(sms) = v.get_mut("sms").and_then(Value::as_object_mut) {
+            sms.remove("authToken");
+        }
+        if let Some(vapid) = v
+            .get_mut("push")
+            .and_then(|p| p.get_mut("vapid"))
+            .and_then(Value::as_object_mut)
+        {
+            vapid.remove("privateKey");
+        }
+        if let Some(fcm) = v
+            .get_mut("push")
+            .and_then(|p| p.get_mut("fcm"))
+            .and_then(Value::as_object_mut)
+        {
+            fcm.remove("serviceAccountJson");
+        }
+        if let Some(apns) = v
+            .get_mut("push")
+            .and_then(|p| p.get_mut("apns"))
+            .and_then(Value::as_object_mut)
+        {
+            apns.remove("key");
         }
         if let Some(s3) = v
             .get_mut("backups")
@@ -314,6 +445,7 @@ mod tests {
         assert!(v["smtp"].get("password").is_none());
         assert!(v["s3"].get("secret").is_none());
         assert!(v["backups"]["s3"].get("secret").is_none());
+        assert!(v["sms"].get("authToken").is_none());
         assert_eq!(v["rateLimits"]["rules"][0]["label"], "*:auth");
         assert_eq!(v["batch"]["maxRequests"], 50);
         assert_eq!(v["logs"]["maxDays"], 5);

@@ -597,7 +597,7 @@ fn import_error(error: ApiError) -> ApiError {
 // ------------------------------------------------------------------- shared
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Change {
+pub(crate) enum Change {
     Create,
     Update,
     Delete,
@@ -606,7 +606,7 @@ enum Change {
 /// Fire the request hook, then the `on_collection_*` chain around the
 /// actual `_collections` write and DDL, all in one transaction, and
 /// refresh the in-memory snapshot afterwards.
-async fn apply(
+pub(crate) async fn apply(
     app: &App,
     next: Collection,
     previous: Option<Collection>,
@@ -785,7 +785,7 @@ fn object(body: Value) -> ApiResult<Map<String, Value>> {
 /// Deserialize a collection payload. An unknown field `type` (or any
 /// other shape error) is a *body-format* error with an empty `data`, not
 /// a per-field one — KNOWN_DIVERGENCES §6.
-fn deserialize(value: Value) -> ApiResult<Collection> {
+pub(crate) fn deserialize(value: Value) -> ApiResult<Collection> {
     serde_json::from_value::<Collection>(value).map_err(|e| {
         tracing::debug!(detail = %e, "rejected collection payload");
         ApiError::bad_request(BAD_PAYLOAD)
@@ -793,7 +793,7 @@ fn deserialize(value: Value) -> ApiResult<Collection> {
 }
 
 /// Everything the server owns on a freshly created collection.
-fn prepare_new(next: &mut Collection) {
+pub(crate) fn prepare_new(next: &mut Collection) {
     next.system = false;
     if next.id.trim().is_empty() {
         next.id = cratebase_core::collection_id(next.collection_type.as_str(), &next.name);
@@ -810,7 +810,7 @@ fn prepare_new(next: &mut Collection) {
 
 /// PocketBase silently collapses duplicate field names, keeping the last
 /// definition (KNOWN_DIVERGENCES §5).
-fn dedupe_fields(collection: &mut Collection) {
+pub(crate) fn dedupe_fields(collection: &mut Collection) {
     let mut seen: Vec<String> = Vec::with_capacity(collection.fields.len());
     let mut deduped: Vec<Field> = Vec::with_capacity(collection.fields.len());
     for field in collection.fields.drain(..) {
@@ -835,7 +835,7 @@ fn default_auth_indexes(table: &str, id: &str) -> Vec<String> {
 
 // -------------------------------------------------------------- validation
 
-fn validate(
+pub(crate) fn validate(
     app: &App,
     next: &Collection,
     previous: Option<&Collection>,
@@ -1096,7 +1096,7 @@ fn indexes_error(message: &str, position: usize, code: &str, detail: &str) -> Ap
 /// (KNOWN_DIVERGENCES §3). This is the same idea, done textually: the
 /// select list gives the column names and aliases, and the first table in
 /// the `FROM` clause supplies the types.
-fn view_fields(app: &App, next: &Collection, message: &str) -> ApiResult<Vec<Field>> {
+pub(crate) fn view_fields(app: &App, next: &Collection, message: &str) -> ApiResult<Vec<Field>> {
     let query = next.view_query.trim();
     let (select, from) = split_select(query).ok_or_else(|| {
         ApiError(AppError::validation(

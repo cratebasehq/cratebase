@@ -392,6 +392,10 @@ impl App {
         crate::cron_jobs::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
         crate::teams::bind_hooks(self);
+        // Postgres only (see `crate::realtime`'s module doc); a no-op on
+        // SQLite because `Engine::subscribe_realtime`'s default is.
+        crate::realtime::start_cross_node_listener(self);
+        crate::push::bind_hooks(self);
 
         let plugins = {
             let guard = self.inner.plugins.lock().expect("plugin registry poisoned");
