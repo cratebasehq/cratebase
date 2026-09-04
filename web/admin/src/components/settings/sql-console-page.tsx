@@ -210,12 +210,12 @@ export function SqlConsolePage() {
           </Empty>
         ) : (
           <div className="flex flex-col gap-2">
-            <div className="overflow-auto rounded-lg border border-border">
+            <div className="max-h-[60vh] overflow-auto rounded-lg border border-border">
               <Table>
-                <TableHeader>
-                  <TableRow>
+                <TableHeader className="sticky top-0 z-sticky bg-surface-sunken/95 backdrop-blur-sm">
+                  <TableRow className="hover:bg-transparent">
                     {result.columns.map((column) => (
-                      <TableHead key={column} className="font-mono text-xs">
+                      <TableHead key={column} className="whitespace-nowrap font-mono text-xs">
                         {column}
                       </TableHead>
                     ))}
@@ -224,9 +224,9 @@ export function SqlConsolePage() {
                 <TableBody>
                   {result.rows.map((row, i) => (
                     // eslint-disable-next-line react/no-array-index-key -- rows have no stable id, this is an ad-hoc result set
-                    <TableRow key={i}>
+                    <TableRow key={i} className="hover:bg-accent/40">
                       {result.columns.map((column) => (
-                        <TableCell key={column}>
+                        <TableCell key={column} className="max-w-xs truncate whitespace-nowrap">
                           <CellValue value={row[column]} />
                         </TableCell>
                       ))}
