@@ -1,0 +1,19 @@
+{
+  "name": "@cratebase/schema-codegen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build-time script: turns a Cratebase schema-as-code JSON file (or a live GET /api/collections response) into a single .d.ts with one TypeScript interface per non-system collection. Run it from a project's own build pipeline, not from this repo's workspace scripts.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "cratebase-codegen": "src/codegen.ts"
+  },
+  "scripts": {
+    "codegen": "bun run src/codegen.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "~6.0.2"
+  }
+}

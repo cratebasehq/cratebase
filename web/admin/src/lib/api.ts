@@ -44,6 +44,16 @@ export function currentSuperuser(): SuperuserRecord | null {
   };
 }
 
+/** `GET /api/utils/avatar/{seed}` — a deterministic, hashed placeholder
+ * avatar (`crates/server/src/routes/utils.rs`) for anywhere a record has
+ * no uploaded avatar file of its own: the sidebar's own-account menu, and
+ * a record table's identity column for an auth collection. The same seed
+ * always draws the same image, so a record's placeholder is stable across
+ * reloads without the server storing anything. */
+export function avatarUrl(seed: string, size = 64): string {
+  return cb.buildURL(`/api/utils/avatar/${encodeURIComponent(seed)}?size=${size}`);
+}
+
 /**
  * Superuser login. PocketBase v0.23+ dropped `/api/admins/*` in favour of
  * the `_superusers` auth collection, and the field is `identity` (an email

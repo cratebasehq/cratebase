@@ -15,6 +15,7 @@
 use std::error::Error as StdError;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -23,7 +24,7 @@ use cratebase_core::DateTime;
 use cratebase_filter::Dialect;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
-use tokio_postgres::NoTls;
+use tokio_postgres::{AsyncMessage, NoTls};
 
 use crate::engine::{Engine, Executor, Row, Sql, Transaction, TransactionImpl};
 use crate::error::{DbError, DbResult};
@@ -34,6 +35,12 @@ pub const DEFAULT_POOL_SIZE: usize = 10;
 #[derive(Clone)]
 pub struct PostgresEngine {
     pool: Pool,
+    /// Kept alongside the pool so [`Engine::subscribe_realtime`] can open
+    /// its own dedicated, unpooled `LISTEN` connections: a pooled
+    /// connection can be recycled out from under a long-lived listener,
+    /// and reconnecting on loss (below) needs a config to reconnect
+    /// *with*.
+    config: tokio_postgres::Config,
 }
 
 impl PostgresEngine {
@@ -43,7 +50,7 @@ impl PostgresEngine {
     pub async fn connect(url: &str, max_size: usize) -> DbResult<Self> {
         let config = tokio_postgres::Config::from_str(url)?;
         let manager = Manager::from_config(
-            config,
+            config.clone(),
             NoTls,
             ManagerConfig {
                 recycling_method: RecyclingMethod::Fast,
@@ -54,7 +61,7 @@ impl PostgresEngine {
             .build()
             .map_err(|e| DbError::Pool(e.to_string()))?;
         drop(pool.get().await.map_err(pool_err)?);
-        Ok(PostgresEngine { pool })
+        Ok(PostgresEngine { pool, config })
     }
 
     pub fn pool(&self) -> &Pool {
@@ -439,7 +446,95 @@ impl Engine for PostgresEngine {
         self.pool.close();
         Ok(())
     }
+
+    async fn notify_realtime(&self, payload: &str) -> DbResult<()> {
+        if payload.len() > NOTIFY_PAYLOAD_LIMIT {
+            return Err(DbError::Other(format!(
+                "realtime NOTIFY payload is {} bytes, over postgres's {NOTIFY_PAYLOAD_LIMIT}-byte \
+                 limit; crate::realtime::publish should only ever send an id/collection/action (and, \
+                 for a delete, one record's snapshot), never an unbounded blob",
+                payload.len()
+            )));
+        }
+        // `pg_notify` rather than a literal `NOTIFY channel, 'payload'`
+        // string: the channel name can't be a bound parameter but the
+        // payload can, which avoids hand-quoting it.
+        self.execute(
+            "SELECT pg_notify($1, $2)",
+            &[Sql::from(REALTIME_CHANNEL), Sql::from(payload)],
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn subscribe_realtime(&self, on_notify: Arc<dyn Fn(String) + Send + Sync>) {
+        let config = self.config.clone();
+        tokio::spawn(async move {
+            loop {
+                let (client, mut connection) = match config.connect(NoTls).await {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "realtime LISTEN connect failed; retrying");
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        continue;
+                    }
+                };
+
+                // Drives the socket *and* surfaces `NOTIFY` payloads.
+                // `Connection::poll_message`'s own docs say to use this
+                // instead of spawning the connection as a bare `Future`
+                // exactly when the caller wants async messages, which is
+                // the whole point here.
+                let on_notify = on_notify.clone();
+                let driver = tokio::spawn(async move {
+                    loop {
+                        match std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                            Some(Ok(AsyncMessage::Notification(n))) => {
+                                on_notify(n.payload().to_string());
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(e)) => {
+                                tracing::warn!(error = %e, "realtime LISTEN connection error");
+                                return;
+                            }
+                            None => return,
+                        }
+                    }
+                });
+
+                if let Err(e) = client
+                    .batch_execute(&format!("LISTEN {REALTIME_CHANNEL}"))
+                    .await
+                {
+                    tracing::warn!(error = %e, "realtime LISTEN setup failed; retrying");
+                    driver.abort();
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    continue;
+                }
+                tracing::debug!("realtime cross-node LISTEN connected");
+
+                // `client` must outlive the driver: `Connection` shuts
+                // itself down once its `Client` has dropped and any
+                // outstanding work finishes, and an idle `LISTEN` isn't
+                // "outstanding work" that would keep it alive on its own.
+                let _client = client;
+                let _ = driver.await;
+                tracing::warn!("realtime LISTEN connection lost; reconnecting");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
 }
+
+/// Channel every `PostgresEngine` publishes realtime events to and
+/// listens on; see `Engine::notify_realtime`/`subscribe_realtime`.
+const REALTIME_CHANNEL: &str = "cratebase_realtime";
+
+/// Postgres's own hard ceiling on a `NOTIFY` payload, enforced
+/// server-side. Checked up front so an oversized payload is a clear
+/// error here rather than an opaque one from the driver (or, worse, a
+/// payload the server truncates without telling us).
+const NOTIFY_PAYLOAD_LIMIT: usize = 8000;
 
 /// A transaction pinned to one pooled connection. Dropping it without
 /// `commit` detaches the connection from the pool and rolls back on a
@@ -624,5 +719,45 @@ mod tests {
         );
         e.optimize().await.unwrap();
         e.execute("DROP TABLE cb_pg_engine_t", &[]).await.unwrap();
+    }
+
+    /// Two independent `PostgresEngine`s against the same database,
+    /// standing in for two app processes: a `notify_realtime` on one
+    /// arrives at the other's `subscribe_realtime` listener. This is the
+    /// plumbing `crates/server/src/realtime.rs` builds cross-node
+    /// fan-out on top of.
+    #[tokio::test]
+    async fn realtime_notify_reaches_a_second_engine() {
+        let Some(sender) = test_engine().await else {
+            return;
+        };
+        let receiver = test_engine().await.expect("second connection");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        receiver.subscribe_realtime(Arc::new(move |payload: String| {
+            let _ = tx.send(payload);
+        }));
+
+        // `subscribe_realtime` has no readiness signal by design (see its
+        // doc comment), so poll rather than guess a fixed delay: keep
+        // notifying until the listener has had time to come up and catch
+        // one.
+        let mut delivered = None;
+        for _ in 0..50 {
+            sender.notify_realtime("hello-from-sender").await.unwrap();
+            if let Ok(Some(payload)) =
+                tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+            {
+                delivered = Some(payload);
+                break;
+            }
+        }
+        assert_eq!(delivered.as_deref(), Some("hello-from-sender"));
+
+        // An oversized payload is rejected up front, not silently
+        // dropped or truncated.
+        let huge = "x".repeat(NOTIFY_PAYLOAD_LIMIT + 1);
+        let err = sender.notify_realtime(&huge).await.unwrap_err();
+        assert!(matches!(err, DbError::Other(_)), "{err:?}");
     }
 }

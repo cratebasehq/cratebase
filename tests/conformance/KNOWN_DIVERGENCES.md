@@ -1,7 +1,10 @@
 # Known divergences, skips and PocketBase surprises
 
 Status against **PocketBase v0.40.2** with the **`pocketbase` JS SDK 0.28.0**:
-**180 passing, 1 skipped, 0 failing** (902 assertions).
+**180 passing, 1 skipped, 0 failing** against a PocketBase server; against a
+Cratebase server, 181 of the same tests pass (the two collection/settings
+list assertions widen for Cratebase's extra system collections/settings key,
+see below) plus the value-add feature suites tracked separately.
 
 ## Skipped tests
 
@@ -174,6 +177,28 @@ These are all asserted by the suite. Several contradict the docs or intuition.
     record id.
 42. `/api/health` is the only endpoint that still uses `code` instead of
     `status` in its envelope.
+
+## Cratebase-only additions (not present in PocketBase)
+
+These are new capabilities, not quirks to match, so they widen the
+expected-value lists in `collections.test.ts`/`settings.test.ts` rather than
+describing a behavioural difference on a shared surface.
+
+43. **Seven extra system collections**, all superuser-only end to end
+    unless noted (same trust tier as `_superusers`/`_mfas`): `_cron_jobs`
+    (custom scheduled SQL jobs), `_llm_usage` (persisted LLM gateway chat
+    history), `_team_members`/`_teams` (workspace membership), `_webhooks`
+    (outgoing webhook config), `_api_keys` (superuser-minted Bearer
+    identities, `key` stored hashed), `_push_subscriptions` (self-service —
+    a record manages only its own rows, same owner-rule shape as
+    `_mfas`/`_otps`).
+44. **Three extra top-level settings keys**: `llm` (the LLM chat gateway's
+    provider config — `baseUrl`, `apiKey`, `model`), `sms` (Twilio-compatible
+    provider config — `accountSid`, `authToken`, `fromNumber`), and `push`
+    (Web Push/FCM/APNs provider config). Every provider secret
+    (`llm.apiKey`, `sms.authToken`, `push.vapid.privateKey`,
+    `push.fcm.serviceAccountJson`, `push.apns.key`) is stripped from
+    `GET /api/settings` the same way `smtp.password`/`s3.secret` are.
 
 ## Suite-side workarounds (not PocketBase behaviour)
 

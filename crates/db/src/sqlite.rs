@@ -662,6 +662,89 @@ impl Executor for SqliteEngine {
         self.on_writer(move |conn| run_execute(conn, &sql, &params))
             .await
     }
+
+    /// Real cancellation, not just a bounded wait — see the trait doc.
+    /// A `SELECT`/`WITH` from the SQL console runs through the reader
+    /// pool everywhere else, but interrupting a *pooled* connection would
+    /// risk aborting whatever unrelated request grabs it next; instead
+    /// this opens one dedicated, one-off reader connection so the
+    /// interrupt handle can only ever touch the statement this call
+    /// itself is running.
+    ///
+    /// `:memory:` is exempt (falls back to the trait default): it is
+    /// private to the connection that opened it (see the module doc's
+    /// "`:memory:`" section), so a second connection here would see an
+    /// *empty* database, not the one the caller means. That only matters
+    /// for tests — an ad-hoc console query against a memory engine is
+    /// never the pathological long-running statement this exists for.
+    async fn query_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: Duration,
+    ) -> DbResult<Vec<Row>> {
+        self.ensure_open()?;
+        if self.is_memory() {
+            return match tokio::time::timeout(timeout, self.query(sql, params)).await {
+                Ok(result) => result,
+                Err(_) => Err(DbError::Other(format!(
+                    "query timed out after {}s (not interrupted: an in-memory database \
+                     has no dedicated connection to interrupt)",
+                    timeout.as_secs()
+                ))),
+            };
+        }
+        let rewritten = self.inner.rewritten(sql);
+        let params = params.to_vec();
+        let path = self.inner.path.clone();
+        let conn =
+            tokio::task::spawn_blocking(move || open_connection(&path, true, false)).await??;
+        let handle = conn.get_interrupt_handle();
+        let timer = tokio::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            handle.interrupt();
+        });
+        let result =
+            tokio::task::spawn_blocking(move || run_query(&conn, &rewritten, &params)).await;
+        timer.abort();
+        result.map_err(DbError::from)?
+    }
+
+    /// The write counterpart of `query_interruptible`. Unlike reads,
+    /// there is exactly one writer connection and it is already
+    /// serialized behind `writer_lock` for the duration of this call, so
+    /// interrupting it can never affect a concurrent statement — the
+    /// handle is taken from the shared writer instead of a dedicated
+    /// connection.
+    async fn execute_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: Duration,
+    ) -> DbResult<u64> {
+        self.ensure_open()?;
+        let rewritten = self.inner.rewritten(sql);
+        let params = params.to_vec();
+        let _guard = self.inner.writer_lock.lock().await;
+        let handle = {
+            let guard = lock(&self.inner.writer);
+            guard.as_ref().map(|c| c.get_interrupt_handle())
+        };
+        let timer = handle.map(|h| {
+            tokio::spawn(async move {
+                tokio::time::sleep(timeout).await;
+                h.interrupt();
+            })
+        });
+        let result = run_on_shared(&self.inner.writer, move |conn| {
+            run_execute(conn, &rewritten, &params)
+        })
+        .await;
+        if let Some(t) = timer {
+            t.abort();
+        }
+        result
+    }
 }
 
 #[async_trait]
@@ -1054,5 +1137,76 @@ mod tests {
             assert_eq!(t.await.unwrap(), Some(20));
         }
         assert_eq!(lock(&e.inner.readers).len(), 3);
+    }
+
+    /// A statement that would otherwise run for a long time (an
+    /// unbounded recursive CTE) is actually stopped when
+    /// `query_interruptible`'s timeout elapses, not merely abandoned by
+    /// the caller while it keeps running on its connection — the whole
+    /// point of the SSRF/cancellation hardening this method exists for.
+    /// A `spawn_blocking`-then-`timeout` race (the old behavior) would
+    /// still return around `timeout`, but the runaway query would still
+    /// be consuming the connection afterward; this asserts the query
+    /// itself reports an interruption, which only real cancellation can
+    /// produce.
+    #[tokio::test]
+    async fn query_interruptible_actually_cancels_a_runaway_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("interrupt.db");
+        let e = SqliteEngine::open(path.to_str().unwrap(), 2).unwrap();
+        let started = std::time::Instant::now();
+        let err = e
+            .query_interruptible(
+                // A recursive CTE with no terminating condition: without
+                // real interruption this runs until OOM or the process is
+                // killed, certainly far longer than 200ms.
+                "WITH RECURSIVE spin(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM spin) \
+                 SELECT COUNT(*) FROM spin",
+                &[],
+                Duration::from_millis(200),
+            )
+            .await
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "query was not actually interrupted, ran for {elapsed:?}"
+        );
+        assert!(
+            matches!(err, DbError::Sqlite(_)),
+            "expected a driver-level interrupt error, got {err:?}"
+        );
+    }
+
+    /// Same guarantee for the write path: a long-running write on the
+    /// single writer connection is interrupted, and the connection is
+    /// left usable afterward (nothing else was serialized behind it).
+    #[tokio::test]
+    async fn execute_interruptible_actually_cancels_a_runaway_statement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("interrupt_write.db");
+        let e = SqliteEngine::open(path.to_str().unwrap(), 2).unwrap();
+        e.execute("CREATE TABLE t (v INTEGER)", &[]).await.unwrap();
+        let started = std::time::Instant::now();
+        let err = e
+            .execute_interruptible(
+                "WITH RECURSIVE spin(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM spin) \
+                 INSERT INTO t SELECT x FROM spin",
+                &[],
+                Duration::from_millis(200),
+            )
+            .await
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "statement was not actually interrupted, ran for {elapsed:?}"
+        );
+        assert!(
+            matches!(err, DbError::Sqlite(_)),
+            "expected a driver-level interrupt error, got {err:?}"
+        );
+        // The writer connection survived the interrupt and is still usable.
+        e.execute("INSERT INTO t VALUES (1)", &[]).await.unwrap();
     }
 }

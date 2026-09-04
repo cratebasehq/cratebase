@@ -3,6 +3,7 @@
 //! Everything under `/api`, mounted inside the logging and rate-limit
 //! layers.
 
+pub mod api_keys;
 pub mod auth;
 pub mod backups;
 pub mod batch;
@@ -14,7 +15,10 @@ pub mod files;
 pub mod health;
 pub mod llm;
 pub mod logs;
+pub mod metrics;
+pub mod push;
 pub mod records;
+pub mod schema;
 pub mod settings;
 pub mod setup;
 pub mod sql_console;
@@ -50,6 +54,9 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(sql_console::router())
         .merge(llm::router())
         .merge(tool_schema::router())
+        .merge(schema::router())
+        .merge(api_keys::router())
+        .merge(push::router())
         // MCP lives in its own top-level module (like `realtime`), not
         // under `routes`, because it is a protocol server (JSON-RPC +
         // SSE) rather than a plain REST route table.

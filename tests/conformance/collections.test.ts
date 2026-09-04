@@ -249,7 +249,20 @@ describe("collections: create", () => {
   test("system collections are listed and cannot be deleted", async () => {
     const all = await pb.collections.getFullList();
     const sys = all.filter((c) => c.system).map((c) => c.name).sort();
-    expect(sys).toEqual(["_authOrigins", "_externalAuths", "_mfas", "_otps", "_superusers"]);
+    expect(sys).toEqual([
+      "_api_keys",
+      "_authOrigins",
+      "_cron_jobs",
+      "_externalAuths",
+      "_llm_usage",
+      "_mfas",
+      "_otps",
+      "_push_subscriptions",
+      "_superusers",
+      "_team_members",
+      "_teams",
+      "_webhooks",
+    ]);
     const users = all.find((c) => c.name === "users");
     expect(users?.id).toBe("_pb_users_auth_");
     expect(users?.type).toBe("auth");

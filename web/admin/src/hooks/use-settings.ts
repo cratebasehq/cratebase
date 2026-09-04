@@ -43,6 +43,13 @@ export interface ServerSettings {
     cronMaxKeep: number;
     s3: ServerSettings["s3"];
   };
+  llm: {
+    enabled: boolean;
+    provider: string;
+    baseUrl: string;
+    model: string;
+    apiKey?: string;
+  };
   rateLimits: {
     enabled: boolean;
     excludedIPs: string[];

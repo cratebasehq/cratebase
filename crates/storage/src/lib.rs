@@ -25,7 +25,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload, WriteMultipart};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload, WriteMultipart};
 
 /// Multipart part size for [`Storage::put_stream`]. S3 requires every
 /// part but the last to be at least 5 MiB; uploads that finish before
@@ -273,7 +273,7 @@ impl Storage {
     /// Size in bytes of the object at `key`, or `None` if it doesn't exist.
     pub async fn size(&self, key: &str) -> StorageResult<Option<u64>> {
         match self.store.head(&ObjectPath::from(key)).await {
-            Ok(meta) => Ok(Some(meta.size as u64)),
+            Ok(meta) => Ok(Some(meta.size)),
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(StorageError::Backend(e)),
         }
@@ -296,7 +296,7 @@ impl Storage {
             .into_iter()
             .map(|m| ObjectInfo {
                 key: m.location.to_string(),
-                size: m.size as u64,
+                size: m.size,
                 last_modified: m.last_modified,
             })
             .collect();

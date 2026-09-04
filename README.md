@@ -62,6 +62,12 @@ zero-code-change option** for when SQLite stops being enough.
   `_cron_jobs` record is the whole job (name, expression, SQL), reactive
   (a dashboard edit takes effect immediately), with the last run's
   status and error written back for you to see.
+- **Self-hosted web analytics** — a `<script>` beacon
+  (`web/beacon/beacon.js`, <2KB, no dependencies) posts pageviews straight
+  to an ordinary collection (`web/beacon/analytics-collection.json`), no
+  new server endpoint. Cookie-free, no localStorage, nothing that could be
+  replayed as a persistent visitor id — see [Web analytics](#web-analytics)
+  below for the trade-off that comes with that.
 - **One binary** — the admin dashboard is embedded at compile time
   (`rust-embed`). `cratebase serve` is the whole deployment.
 - **PocketBase-compatible API** — the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client (and PocketBase's other official SDKs) work against Cratebase unchanged. Verified against the
@@ -173,6 +179,85 @@ setCookie("pb_auth", pb.authStore.exportToCookie());
 > re-firing — with auto-cancellation left on, it can silently cancel one
 > of them. Call `pb.autoCancellation(false)` on every server-side client
 > you construct.
+
+## Web analytics
+
+A self-hosted, cookie-free pageview counter. It needs almost no new
+backend capability — the whole feature is a public collection plus a
+small script:
+
+1. **Create the collection.** In the dashboard, open **Collections →
+   Import**, and paste in
+   [`web/beacon/analytics-collection.json`](./web/beacon/analytics-collection.json).
+   That creates `analytics` with a public `createRule` (`""`) and
+   everything else superuser-only — anyone can write a pageview, only a
+   superuser can list/read them back. This is an ordinary user-owned
+   collection, not a built-in system one: delete it, rename its fields,
+   or add your own if the default shape doesn't fit.
+2. **Install the beacon.** Drop [`web/beacon/beacon.js`](./web/beacon/beacon.js)
+   (under 2KB, zero dependencies) in a `<script>` tag on the site you
+   want to track, pointed at your Cratebase instance:
+
+   ```html
+   <script defer src="/path/to/beacon.js" data-api="https://your-cratebase.example.com"></script>
+   ```
+
+   It fires once per page load: `POST /api/collections/analytics/records`
+   with `{url, referrer, path}` — the same generic records API any other
+   client uses, allowed by the collection's own `createRule`. No cookie,
+   no `localStorage`, nothing that could be replayed as a persistent
+   visitor id.
+3. **View it.** The dashboard's **Settings → Analytics** page reads the
+   same collection back through ordinary list/filter/sort queries: total
+   pageviews, unique paths and top referrer over the last 30 days, a
+   daily chart, and a table of recent pageviews.
+
+**Known limitation: no unique-visitor counting.** A privacy-safe unique
+count (Plausible's approach: a rotating daily hash of IP+User-Agent)
+has to be computed server-side, since the client cannot safely derive it
+itself without sending something identifying. Doing that would need a
+bespoke ingestion endpoint instead of "the generic records API already
+allows this write" — out of scope for this pass. What ships instead is
+an honest count of what the beacon actually sends: raw pageviews,
+distinct paths, and referrers.
+
+## Rate-limiting expensive endpoints
+
+`settings.rateLimits` already supports per-path/per-prefix/per-tag rules —
+each rule's `label` *is* the path/prefix/tag it matches (an exact path, a
+prefix like `/api/`, or a tag like `*:auth`), scoped by `audience`
+(`""`/`@guest`/`@auth`) — but the defaults don't single out two endpoints
+that are meaningfully more expensive than an ordinary record read and are
+worth an explicit rule in production:
+
+- **`POST /api/sql`** — the dashboard SQL console. Superuser-only already,
+  but a single query can still hold a database connection for seconds (see
+  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)'s
+  note on SQLite cancellation limits). A low per-minute cap on this exact
+  path prevents one runaway script or a compromised superuser session from
+  starving every other request.
+- **`POST /api/llm/chat`** — every call spends the operator's own
+  configured LLM provider quota/credits. It requires authentication (any
+  record, not just superusers), but authentication alone doesn't bound
+  *cost* the way it does for an ordinary record write.
+
+```json
+{
+  "rateLimits": {
+    "enabled": true,
+    "rules": [
+      { "label": "/api/sql", "audience": "", "maxRequests": 20, "duration": 60 },
+      { "label": "/api/llm/chat", "audience": "", "maxRequests": 30, "duration": 60 }
+    ]
+  }
+}
+```
+
+`PATCH /api/settings` with the body above (or the dashboard's Network
+settings page) adds both without touching any other rule already
+configured — rules are matched most-specific-first (exact path beats
+prefix beats tag), so an exact-path rule here doesn't affect a broader
+`/api/` prefix rule you may already have.
 
 ## Examples
 

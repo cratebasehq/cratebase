@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
 import { ChevronsUpDown, LogOut, Monitor, Moon, Settings, Sun } from "lucide-react";
 import { toast } from "sonner";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
-import { currentSuperuser, signOut } from "@/lib/api";
+import { avatarUrl, cb, currentSuperuser, signOut } from "@/lib/api";
 
 /**
  * The signed-in superuser, and every account-scoped action, in one place.
@@ -33,6 +33,11 @@ export function AccountMenu() {
   const superuser = currentSuperuser();
   const email = superuser?.email || "Superuser";
   const initials = email.slice(0, 2).toUpperCase();
+  const avatarSrc = superuser
+    ? superuser.avatar
+      ? cb.files.getURL(superuser, superuser.avatar)
+      : avatarUrl(superuser.id)
+    : undefined;
 
   function handleSignOut() {
     signOut();
@@ -48,6 +53,7 @@ export function AccountMenu() {
           <DropdownMenuTrigger asChild>
             <SidebarMenuButton size="lg" className="data-[state=open]:bg-sidebar-accent">
               <Avatar className="size-6 rounded-md">
+                {avatarSrc ? <AvatarImage src={avatarSrc} alt="" /> : null}
                 <AvatarFallback className="rounded-md bg-sidebar-accent text-2xs font-medium text-sidebar-accent-foreground">
                   {initials}
                 </AvatarFallback>

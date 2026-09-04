@@ -51,6 +51,8 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use cratebase_core::AppError;
+
 use crate::app::App;
 use crate::extract::RequestInfo;
 use crate::http_error::{rule_errors, ApiError, ApiResult};
@@ -101,6 +103,15 @@ async fn chat(
     info: RequestInfo,
     Json(body): Json<ChatBody>,
 ) -> ApiResult<Json<ChatResponse>> {
+    // Every call spends the operator's own provider quota/credits; unlike
+    // the record API (where an anonymous caller is ordinary and rules
+    // decide access), this endpoint has no rule of its own to deny an
+    // anonymous request, so the gate is unconditional: any authenticated
+    // record, same tier as an ordinary record write, not superuser-only.
+    if info.auth.is_none() {
+        return Err(ApiError(AppError::unauthorized("")));
+    }
+
     if body.messages.is_empty() {
         return Err(ApiError::bad_request("messages must not be empty."));
     }
