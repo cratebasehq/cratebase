@@ -36,9 +36,9 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(collections::router())
         .merge(records::router())
         .merge(auth::router())
-        .merge(files::router());
+        .merge(files::router())
+        .merge(crate::realtime::router());
 
-    // W4b-2: `.merge(realtime::router())` — GET/POST /api/realtime.
     // W4b-2: `.merge(batch::router())` — POST /api/batch.
 
     // Plugin routes live inside this nest so they inherit request logging
