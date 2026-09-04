@@ -60,7 +60,11 @@ pub fn api_router(app: &App) -> Router<App> {
         // MCP lives in its own top-level module (like `realtime`), not
         // under `routes`, because it is a protocol server (JSON-RPC +
         // SSE) rather than a plain REST route table.
-        .merge(crate::mcp::router());
+        .merge(crate::mcp::router())
+        // Incoming webhooks (verifying an external service's signature,
+        // e.g. Stripe) live in their own top-level module for the same
+        // reason `realtime`/`mcp` do — see `crate::incoming_webhooks`.
+        .merge(crate::incoming_webhooks::router());
 
     // Plugin routes live inside this nest so they inherit request logging
     // and rate limiting (see `crate::plugin`).

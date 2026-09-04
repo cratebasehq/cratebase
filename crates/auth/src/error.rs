@@ -11,6 +11,10 @@ pub enum AuthError {
     /// The claims could not be serialized into a JWT.
     #[error("failed to encode token: {0}")]
     TokenEncode(String),
+    /// An OAuth2 provider's token or userinfo response wasn't the JSON
+    /// shape expected of it.
+    #[error("invalid oauth2 provider response: {0}")]
+    InvalidOAuth2Response(String),
 }
 
 pub type AuthResult<T> = Result<T, AuthError>;

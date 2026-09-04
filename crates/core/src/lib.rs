@@ -17,8 +17,8 @@ pub mod record;
 pub mod settings;
 
 pub use collection::{
-    AuthAlert, Collection, CollectionType, EmailTemplate, Mfa, OAuth2, OAuth2Provider, Otp,
-    PasswordAuth, TokenConfig,
+    AuthAlert, Collection, CollectionType, EmailTemplate, Mfa, OAuth2, OAuth2MappedFields,
+    OAuth2Provider, Otp, PasswordAuth, TokenConfig,
 };
 pub use datetime::DateTime;
 pub use error::{codes, AppError, AppResult, ErrorBody, FieldError};

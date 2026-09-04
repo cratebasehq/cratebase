@@ -212,7 +212,6 @@ impl Subscription {
 
 /// The connected clients, and an index from collection to the clients
 /// watching it.
-#[derive(Default)]
 pub struct RealtimeService {
     clients: parking_lot::RwLock<HashMap<String, Arc<Client>>>,
     /// Collection name **and** id both map to the watching client ids, so
@@ -220,11 +219,31 @@ pub struct RealtimeService {
     /// Rebuilt on every subscription change, which is rare next to
     /// publishing.
     by_collection: parking_lot::RwLock<HashMap<String, HashSet<String>>>,
+    /// Random id identifying *this* `App`'s realtime instance in every
+    /// cross-node payload it sends (Postgres only — see the module
+    /// doc's "Cross-node fan-out" section). Generated once per
+    /// `RealtimeService`, not once per process: one OS process is
+    /// expected to run exactly one `App`, but nothing enforces that
+    /// (tests routinely run several `App`s against one shared database
+    /// in-process, and nor does anything rule it out for an embedder),
+    /// and a process-wide id would make a second in-process instance
+    /// mistake every other instance's writes for its own echo and
+    /// silently drop them.
+    origin: String,
 }
 
 impl RealtimeService {
     pub fn new() -> RealtimeService {
-        RealtimeService::default()
+        RealtimeService {
+            clients: parking_lot::RwLock::new(HashMap::new()),
+            by_collection: parking_lot::RwLock::new(HashMap::new()),
+            origin: cratebase_core::ids::random_string(20, CLIENT_ID_ALPHABET),
+        }
+    }
+
+    /// This instance's [`Self::origin`] field; see its doc comment.
+    fn origin(&self) -> &str {
+        &self.origin
     }
 
     /// Number of connected clients. Exposed for the dashboard and tests.
@@ -321,6 +340,12 @@ impl RealtimeService {
             return false;
         }
         true
+    }
+}
+
+impl Default for RealtimeService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -572,19 +597,6 @@ async fn fan_out(
 
 // ----------------------------------------------------------- cross-node
 
-/// Random per-process id embedded in every cross-node payload this
-/// process sends. `subscribe_realtime` sees every notification on the
-/// channel, including its own — Postgres delivers `NOTIFY` to every
-/// currently listening session, sender included — so
-/// [`receive_cross_node`] uses this to recognize and skip them: this
-/// process's own local subscribers were already reached synchronously
-/// by `fan_out` above, straight off the write, never through Postgres.
-fn origin_id() -> &'static str {
-    static ORIGIN: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| cratebase_core::ids::random_string(20, CLIENT_ID_ALPHABET));
-    &ORIGIN
-}
-
 fn parse_action(s: &str) -> Option<RecordAction> {
     match s {
         "create" => Some(RecordAction::Create),
@@ -605,7 +617,7 @@ async fn notify_cross_node(
     record: &Record,
 ) {
     let mut payload = serde_json::json!({
-        "origin": origin_id(),
+        "origin": app.realtime().origin(),
         "collection": collection.id,
         "action": action.as_str(),
         "id": record.id(),
@@ -644,7 +656,7 @@ async fn receive_cross_node(app: &App, payload: &str) {
         tracing::warn!("cross-node realtime payload was not a JSON object; dropping");
         return;
     };
-    if msg.get("origin").and_then(Value::as_str) == Some(origin_id()) {
+    if msg.get("origin").and_then(Value::as_str) == Some(app.realtime().origin()) {
         return;
     }
     let (Some(collection_id), Some(action), Some(id)) = (

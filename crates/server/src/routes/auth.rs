@@ -43,8 +43,21 @@
 //!   check a password against, so both `token` and `password` fail
 //!   together.
 //!
-//! W4b-2: `auth-with-oauth2` is not implemented (no provider wiring yet).
-//! External auths need no dedicated routes: the SDK's
+//! # OAuth2
+//!
+//! `auth-with-oauth2` is the authorization-code grant the SDK's
+//! `authWithOAuth2Code` expects: the SDK opens the provider's
+//! `authURL` (from `auth-methods`) itself with a redirect URI it
+//! controls, then posts the resulting `code`/`codeVerifier`/`redirectURL`
+//! here. The server exchanges `code` for a token server-side (never
+//! trusting anything the client says about the provider beyond the
+//! code), fetches the provider's userinfo, and either signs in the
+//! `_externalAuths`-linked record or creates one — see
+//! [`resolve_oauth2_record`]. Google and GitHub are recognized presets
+//! ([`cratebase_auth::KnownProvider`]) with baked-in endpoints/scopes; any
+//! other `name` is a hand-configured provider using whatever
+//! `authURL`/`tokenURL`/`userInfoURL` the collection sets. External auths
+//! otherwise need no dedicated routes: the SDK's
 //! `listExternalAuths`/`unlinkExternalAuth` are thin wrappers around the
 //! generic `_externalAuths` collection CRUD, which already works because
 //! it is an ordinary (if system) collection.
@@ -57,7 +70,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cratebase_core::{codes, AppError, Collection, FieldError, Record};
+use cratebase_core::{codes, AppError, Collection, FieldError, OAuth2MappedFields, Record};
 use cratebase_db::records;
 use cratebase_db::Executor;
 use serde::Deserialize;
@@ -76,6 +89,9 @@ const VALIDATION_FAILED: &str = "An error occurred while validating the submitte
 const PASSWORD_DISABLED: &str =
     "The collection is not configured to allow password authentication.";
 const OTP_DISABLED: &str = "The collection is not configured to allow OTP authentication.";
+const OAUTH2_DISABLED: &str = "The collection is not configured to allow OAuth2 authentication.";
+/// PocketBase's exact code for an unrecognized/disabled `provider` name.
+const OAUTH2_INVALID_PROVIDER: &str = "validation_invalid_provider";
 const AUTH_RULE_FAILED: &str =
     "The request doesn't satisfy the collection requirements to authenticate.";
 /// `auth-methods` on a name that is not a collection at all.
@@ -129,7 +145,10 @@ pub fn router() -> Router<App> {
             "/collections/{collection}/impersonate/{id}",
             post(impersonate),
         )
-    // W4b-2: auth-with-oauth2 (no provider wiring yet).
+        .route(
+            "/collections/{collection}/auth-with-oauth2",
+            post(auth_with_oauth2),
+        )
 }
 
 // ------------------------------------------------------- auth-with-password
@@ -400,16 +419,24 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
         ));
     }
     let auth = &collection.auth;
+    let providers = if auth.oauth2.enabled {
+        auth.oauth2
+            .providers
+            .iter()
+            .filter(|p| !p.client_id.is_empty() && !p.client_secret.is_empty())
+            .map(oauth2_provider_info)
+            .collect()
+    } else {
+        Vec::new()
+    };
     Ok(Json(json!({
         "password": {
             "enabled": auth.password_auth.enabled,
             "identityFields": collection.identity_fields(),
         },
-        // W4b-2: list the configured providers with their auth URLs and
-        // PKCE state once the OAuth2 service exists.
         "oauth2": {
             "enabled": auth.oauth2.enabled,
-            "providers": Value::Array(vec![]),
+            "providers": providers,
         },
         // A disabled method reports a zero duration, not its configured
         // one — pinned by `auth.test.ts`.
@@ -422,6 +449,79 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
             "duration": if auth.otp.enabled { auth.otp.duration } else { 0 },
         },
     })))
+}
+
+/// One `oauth2.providers[]` entry — everything the SDK's
+/// `authWithOAuth2` popup flow needs to send the browser to the
+/// provider itself: a fresh `state`, freshly generated PKCE
+/// `codeVerifier`/`codeChallenge` (the SDK echoes `codeVerifier` back
+/// verbatim in the `auth-with-oauth2` POST, so cratebase needs no
+/// server-side session to remember it), and an `authURL` with every
+/// query param except `redirect_uri` already filled in — the SDK
+/// appends its own before sending the browser there, exactly like
+/// PocketBase's own `authURL + "&redirect_uri="`.
+fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
+    let known = cratebase_auth::KnownProvider::from_name(&config.name);
+    let auth_url = if !config.auth_url.is_empty() {
+        config.auth_url.as_str()
+    } else {
+        known
+            .map(cratebase_auth::KnownProvider::auth_url)
+            .unwrap_or("")
+    };
+    let scope = config
+        .extra
+        .get("scope")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| known.map(|k| k.default_scope().to_string()))
+        .unwrap_or_default();
+    let display_name = if !config.display_name.is_empty() {
+        config.display_name.clone()
+    } else {
+        known
+            .map(|k| k.display_name().to_string())
+            .unwrap_or_else(|| config.name.clone())
+    };
+    let state = cratebase_auth::random_state();
+    let pkce = config.pkce.unwrap_or(true);
+    let mut url = reqwest::Url::parse(auth_url).ok();
+    if let Some(url) = url.as_mut() {
+        url.query_pairs_mut()
+            .append_pair("response_type", "code")
+            .append_pair("client_id", &config.client_id)
+            .append_pair("state", &state);
+        if !scope.is_empty() {
+            url.query_pairs_mut().append_pair("scope", &scope);
+        }
+    }
+    let (code_verifier, code_challenge, code_challenge_method) = if pkce {
+        let verifier = cratebase_auth::code_verifier();
+        let challenge = cratebase_auth::code_challenge_s256(&verifier);
+        if let Some(url) = url.as_mut() {
+            url.query_pairs_mut()
+                .append_pair("code_challenge", &challenge)
+                .append_pair("code_challenge_method", "S256");
+        }
+        (verifier, challenge, "S256".to_string())
+    } else {
+        (String::new(), String::new(), String::new())
+    };
+    // Empty `redirect_uri=` left for the SDK to append its own value to,
+    // matching PocketBase's `authURL` shape exactly.
+    let auth_url = url
+        .map(|u| format!("{u}&redirect_uri="))
+        .unwrap_or_default();
+    json!({
+        "name": config.name,
+        "displayName": display_name,
+        "state": state,
+        "authURL": auth_url,
+        "codeVerifier": code_verifier,
+        "codeChallenge": code_challenge,
+        "codeChallengeMethod": code_challenge_method,
+    })
 }
 
 // ------------------------------------------------------------------- shared
@@ -1272,6 +1372,388 @@ async fn auth_with_otp(
     .map(IntoResponse::into_response)
 }
 
+// ------------------------------------------------------------------ OAuth2
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuth2Body {
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    code_verifier: String,
+    /// PocketBase renamed this from `redirectUrl` to `redirectURL`;
+    /// both are accepted since the SDK versions in the wild send either.
+    #[serde(default, rename = "redirectURL", alias = "redirectUrl")]
+    redirect_url: String,
+    /// Extra fields to seed a brand-new record with, same as the field
+    /// of the same name on `authWithOAuth2Code`.
+    #[serde(default)]
+    create_data: Map<String, Value>,
+    /// A pending MFA session id from a previous `401 {mfaId}` response.
+    #[serde(default)]
+    mfa_id: Option<String>,
+}
+
+/// The client for both outbound legs of the flow (token exchange,
+/// userinfo fetch). Provider URLs are admin-configured, not
+/// caller-supplied, so this skips the SSRF host-blocking
+/// `webhooks.rs`'s client needs for untrusted URLs — but still disables
+/// redirects on principle: a provider that answers a token exchange with
+/// a 3xx is not one this request should blindly follow with client
+/// credentials attached.
+fn oauth2_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("static client config is valid")
+    });
+    &CLIENT
+}
+
+/// A configured provider's endpoint, falling back to the
+/// [`cratebase_auth::KnownProvider`] default when the collection left it
+/// blank — an admin enabling "google"/"github" only has to supply
+/// `clientId`/`clientSecret`, exactly like PocketBase's own presets.
+fn effective_url(configured: &str, known: Option<&'static str>) -> String {
+    if !configured.is_empty() {
+        configured.to_string()
+    } else {
+        known.unwrap_or_default().to_string()
+    }
+}
+
+/// GETs `url` with a bearer token, returning its body only on a 2xx.
+async fn get_bearer(client: &reqwest::Client, url: &str, access_token: &str) -> Option<Vec<u8>> {
+    let res = client
+        .get(url)
+        .bearer_auth(access_token)
+        .header("Accept", "application/json")
+        // GitHub's API 403s any request with no User-Agent.
+        .header("User-Agent", "cratebase")
+        .send()
+        .await
+        .ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    res.bytes().await.ok().map(|b| b.to_vec())
+}
+
+/// Fetches the provider's userinfo, plus GitHub's second `/user/emails`
+/// call when that provider's primary response might not carry one (see
+/// [`cratebase_auth::KnownProvider::emails_url`]).
+async fn fetch_oauth2_user(
+    client: &reqwest::Client,
+    user_info_url: &str,
+    known: Option<cratebase_auth::KnownProvider>,
+    access_token: &str,
+) -> ApiResult<cratebase_auth::OAuth2User> {
+    let user_body = get_bearer(client, user_info_url, access_token)
+        .await
+        .ok_or_else(|| ApiError::bad_request("Failed to fetch OAuth2 user."))?;
+    let emails_body = match known.and_then(cratebase_auth::KnownProvider::emails_url) {
+        Some(url) => get_bearer(client, url, access_token).await,
+        None => None,
+    };
+    let parsed = match known {
+        Some(cratebase_auth::KnownProvider::Google) => {
+            cratebase_auth::parse_google_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::GitHub) => {
+            cratebase_auth::parse_github_userinfo(&user_body, emails_body.as_deref())
+        }
+        None => cratebase_auth::parse_generic_userinfo(&user_body),
+    }
+    .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 user."))?;
+    if parsed.id.is_empty() {
+        return Err(ApiError::bad_request("Failed to fetch OAuth2 user."));
+    }
+    Ok(parsed)
+}
+
+async fn auth_with_oauth2(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    caller: MaybeAuth,
+    info: RequestInfo,
+    headers: HeaderMap,
+    peer: crate::middleware::client_ip::PeerAddr,
+    ApiJson(raw): ApiJson<Value>,
+) -> Result<Response, ApiError> {
+    let collection = common::auth_collection_of(&app, &name)?;
+    if !collection.auth.oauth2.enabled {
+        return Err(ApiError::forbidden(OAUTH2_DISABLED));
+    }
+    let body: OAuth2Body = serde_json::from_value(raw.clone())
+        .map_err(|_| ApiError::bad_request(AppError::DEFAULT_BAD_REQUEST))?;
+
+    let mut errors: BTreeMap<String, FieldError> = Default::default();
+    if body.provider.trim().is_empty() {
+        errors.insert(
+            "provider".into(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
+    }
+    if body.code.trim().is_empty() {
+        errors.insert(
+            "code".into(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
+    }
+    if !errors.is_empty() {
+        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
+    }
+
+    let Some(config) = collection
+        .auth
+        .oauth2
+        .providers
+        .iter()
+        .find(|p| p.name == body.provider)
+    else {
+        let mut errors = BTreeMap::new();
+        errors.insert(
+            "provider".into(),
+            FieldError::new(
+                OAUTH2_INVALID_PROVIDER,
+                format!(
+                    "Provider with name \"{}\" is missing or is not enabled.",
+                    body.provider
+                ),
+            ),
+        );
+        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
+    };
+
+    let known = cratebase_auth::KnownProvider::from_name(&body.provider);
+    let token_url = effective_url(
+        &config.token_url,
+        known.map(cratebase_auth::KnownProvider::token_url),
+    );
+    let user_info_url = effective_url(
+        &config.user_info_url,
+        known.map(cratebase_auth::KnownProvider::user_info_url),
+    );
+    if config.client_id.is_empty()
+        || config.client_secret.is_empty()
+        || token_url.is_empty()
+        || user_info_url.is_empty()
+    {
+        return Err(ApiError::internal(
+            "Missing or invalid provider config.".to_string(),
+        ));
+    }
+
+    let exchange = cratebase_auth::TokenExchange {
+        code: &body.code,
+        client_id: &config.client_id,
+        client_secret: &config.client_secret,
+        redirect_uri: &body.redirect_url,
+        code_verifier: (!body.code_verifier.is_empty()).then_some(body.code_verifier.as_str()),
+    };
+    let client = oauth2_client();
+    let token_res = client
+        .post(&token_url)
+        .header("Accept", "application/json")
+        .form(&exchange.form())
+        .send()
+        .await
+        .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
+    if !token_res.status().is_success() {
+        return Err(ApiError::bad_request("Failed to fetch OAuth2 token."));
+    }
+    let token_body = token_res.bytes().await.unwrap_or_default();
+    let token = cratebase_auth::parse_token_response(&token_body)
+        .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
+
+    let oauth_user = fetch_oauth2_user(client, &user_info_url, known, &token.access_token).await?;
+
+    // A caller already signed in to *this* collection links a second
+    // provider onto their own record instead of creating (or matching
+    // by email into) a different one.
+    let fallback = caller
+        .0
+        .as_ref()
+        .filter(|a| a.collection.id == collection.id)
+        .map(|a| a.record.clone());
+
+    let (record, is_new) = resolve_oauth2_record(
+        &app,
+        &collection,
+        &body.provider,
+        &oauth_user,
+        &collection.auth.oauth2.mapped_fields,
+        &body.create_data,
+        fallback.as_ref(),
+    )
+    .await?;
+
+    if !passes_auth_rule(&app, &collection, &record).await? {
+        return Err(ApiError::forbidden(AUTH_RULE_FAILED));
+    }
+
+    match mfa_gate(&app, &collection, &record, "oauth2", body.mfa_id.as_deref()).await? {
+        MfaGate::Pending(mfa_id) => return Ok(mfa_pending_response(mfa_id)),
+        MfaGate::Passed => {}
+    }
+
+    record_login_origin(&app, &collection, &record, &headers, peer).await;
+
+    let response = respond_with_token(&app, &collection, record, info, raw, |hooks| {
+        &hooks.on_record_auth_with_oauth2_request
+    })
+    .await?;
+    let mut rendered = response.0;
+    if let Some(obj) = rendered.as_object_mut() {
+        obj.insert(
+            "meta".into(),
+            json!({
+                "id": oauth_user.id,
+                "name": oauth_user.name,
+                "username": oauth_user.username,
+                "email": oauth_user.email,
+                "avatarURL": oauth_user.avatar_url,
+                "isNew": is_new,
+            }),
+        );
+    }
+    Ok(Json(rendered).into_response())
+}
+
+/// Finds or creates the record `oauth_user` should sign in as, and makes
+/// sure an `_externalAuths` row links `provider`+`oauth_user.id` to it —
+/// PocketBase's exact precedence: an existing link wins outright; then a
+/// record already logged into `collection` in this request (linking a
+/// second provider to one account); then a same-email match in
+/// `collection` (marked verified, since the provider vouches for the
+/// address); and only then a brand-new record via
+/// [`create_oauth2_record`].
+async fn resolve_oauth2_record(
+    app: &App,
+    collection: &Arc<Collection>,
+    provider: &str,
+    oauth_user: &cratebase_auth::OAuth2User,
+    mapped: &OAuth2MappedFields,
+    create_data: &Map<String, Value>,
+    fallback: Option<&Record>,
+) -> ApiResult<(Record, bool)> {
+    let externals = app
+        .db()
+        .collections
+        .get("_externalAuths")
+        .expect("_externalAuths is a default system collection");
+
+    let mut link_params = Map::new();
+    link_params.insert("collectionRef".into(), Value::String(collection.id.clone()));
+    link_params.insert("provider".into(), Value::String(provider.to_string()));
+    link_params.insert("providerId".into(), Value::String(oauth_user.id.clone()));
+    let existing_link = records::find_first_by_filter(
+        app.db(),
+        &app.db().collections,
+        &externals,
+        "collectionRef = {:collectionRef} && provider = {:provider} && providerId = {:providerId}",
+        &link_params,
+    )
+    .await
+    .map_err(|e| ApiError(e.into()))?;
+
+    if let Some(link) = existing_link {
+        let record = records::find_by_id_raw(app.db(), collection, &link.get_string("recordRef"))
+            .await
+            .map_err(|e| ApiError(e.into()))?;
+        return Ok((record, false));
+    }
+
+    let (record, is_new) = if let Some(fallback) = fallback {
+        (fallback.clone(), false)
+    } else if !oauth_user.email.is_empty() {
+        match find_by_email(app, collection, &oauth_user.email).await? {
+            Some(mut found) => {
+                if !found.verified() {
+                    found.set("verified", Value::Bool(true));
+                    records::update(app.db(), &app.db().collections, &mut found)
+                        .await
+                        .map_err(|e| ApiError(e.into()))?;
+                }
+                (found, false)
+            }
+            None => (
+                create_oauth2_record(app, collection, mapped, oauth_user, create_data).await?,
+                true,
+            ),
+        }
+    } else {
+        (
+            create_oauth2_record(app, collection, mapped, oauth_user, create_data).await?,
+            true,
+        )
+    };
+
+    let mut link = Record::new(externals.clone());
+    link.set("collectionRef", Value::String(collection.id.clone()));
+    link.set("recordRef", Value::String(record.id().to_string()));
+    link.set("provider", Value::String(provider.to_string()));
+    link.set("providerId", Value::String(oauth_user.id.clone()));
+    records::create(app.db(), &app.db().collections, &mut link)
+        .await
+        .map_err(|e| ApiError(e.into()))?;
+
+    Ok((record, is_new))
+}
+
+/// Creates a fresh record in `collection` for a first-time OAuth2
+/// sign-in: `create_data` first (caller-supplied, e.g. extra custom
+/// fields), then whichever of the collection's `oauth2.mappedFields`
+/// aren't already set from it, then a random unguessable password (this
+/// record only ever signs back in through OAuth2 or a password reset)
+/// and `verified: true` — the provider vouched for this identity, which
+/// is a stronger claim than cratebase's own click-the-link verification.
+async fn create_oauth2_record(
+    app: &App,
+    collection: &Arc<Collection>,
+    mapped: &OAuth2MappedFields,
+    oauth_user: &cratebase_auth::OAuth2User,
+    create_data: &Map<String, Value>,
+) -> ApiResult<Record> {
+    if collection.name == cratebase_core::SUPERUSERS_COLLECTION {
+        return Err(ApiError::bad_request(
+            "Superusers are not allowed to sign up with OAuth2.",
+        ));
+    }
+    let mut body = create_data.clone();
+    body.entry("email".to_string())
+        .or_insert_with(|| Value::String(oauth_user.email.clone()));
+    let mut assign = |field: &str, value: &str| {
+        if !field.is_empty()
+            && !value.is_empty()
+            && collection.has_field(field)
+            && !body.contains_key(field)
+        {
+            body.insert(field.to_string(), Value::String(value.to_string()));
+        }
+    };
+    assign(&mapped.id, &oauth_user.id);
+    assign(&mapped.name, &oauth_user.name);
+    assign(&mapped.username, &oauth_user.username);
+    assign(&mapped.avatar_url, &oauth_user.avatar_url);
+    body.insert(
+        "password".into(),
+        Value::String(cratebase_auth::random_alphanumeric(40)),
+    );
+    body.insert("verified".into(), Value::Bool(true));
+
+    let mut record = records::from_body(collection.clone(), &body);
+    record.set("tokenKey", Value::String(crate::app::new_token_key()));
+    records::create(app.db(), &app.db().collections, &mut record)
+        .await
+        .map_err(|e| ApiError(e.into()))?;
+    Ok(record)
+}
+
 // --------------------------------------------------------------------- MFA
 
 enum MfaGate {
@@ -1508,4 +1990,247 @@ async fn impersonate(
     let serialized =
         common::enrich_and_serialize(&app, &collection, record, Some(caller), true).await?;
     Ok(Json(json!({ "token": token, "record": serialized })))
+}
+
+#[cfg(test)]
+mod oauth2_tests {
+    //! [`resolve_oauth2_record`] is where the "new record vs. an existing
+    //! linked/matched one" decision actually lives, and it takes an
+    //! already-parsed [`cratebase_auth::OAuth2User`] — no HTTP. Exercising
+    //! it directly against a real (in-memory) database covers the exact
+    //! branching PocketBase's own `oauth2Submit` implements, without
+    //! needing to mock `reqwest` or reach a real provider; the
+    //! token-exchange/userinfo-parsing half of the flow is covered in
+    //! `cratebase_auth::oauth2`'s own tests.
+    use cratebase_core::OAuth2Provider;
+    use serde_json::Map;
+
+    use super::*;
+
+    /// A bootstrapped app over an in-memory database, mirroring
+    /// `api_keys`'s test harness.
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(crate::config::Config::memory(dir.path()));
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    /// Enables OAuth2 on `name` with one hand-configured "custom"
+    /// provider, the way the dashboard's auth-options editor would save
+    /// it, and hands back the updated collection.
+    async fn oauth2_enabled(app: &App, name: &str) -> Arc<Collection> {
+        let mut collection = (*app
+            .db()
+            .collections
+            .get_by_name(name)
+            .unwrap_or_else(|| panic!("{name} is a default collection")))
+        .clone();
+        collection.auth.oauth2.enabled = true;
+        collection.auth.oauth2.providers.push(OAuth2Provider {
+            name: "custom".into(),
+            client_id: "cid".into(),
+            client_secret: "csecret".into(),
+            auth_url: "https://provider.example/authorize".into(),
+            token_url: "https://provider.example/token".into(),
+            user_info_url: "https://provider.example/userinfo".into(),
+            display_name: "Custom".into(),
+            pkce: Some(true),
+            extra: Map::new(),
+        });
+        app.db()
+            .collections
+            .update(&*app.db().engine, &collection)
+            .await
+            .expect("enable oauth2");
+        app.db().collections.get_by_name(name).expect("reload")
+    }
+
+    fn oauth_user(id: &str, email: &str) -> cratebase_auth::OAuth2User {
+        cratebase_auth::OAuth2User {
+            id: id.into(),
+            name: "Jo March".into(),
+            username: String::new(),
+            email: email.into(),
+            avatar_url: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn first_login_creates_a_new_verified_linked_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let (record, is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("provider-1", "jo@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("resolve");
+
+        assert!(is_new);
+        assert_eq!(record.email(), "jo@example.com");
+        assert!(record.verified());
+        // A random password was set, so the OAuth2-only account is still
+        // a well-formed auth record (never left with an empty hash).
+        assert!(!record.password_hash().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repeat_login_from_the_same_provider_reuses_the_linked_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+        let user = oauth_user("provider-1", "jo@example.com");
+
+        let (first, first_is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &user,
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("first login");
+        let (second, second_is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &user,
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("second login");
+
+        assert!(first_is_new);
+        assert!(!second_is_new);
+        assert_eq!(first.id(), second.id());
+    }
+
+    #[tokio::test]
+    async fn a_different_provider_with_the_same_email_links_onto_the_existing_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let (first, _) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("custom-1", "jo@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("first provider");
+        let (second, second_is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "github",
+            &oauth_user("github-1", "jo@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("second provider, same email");
+
+        assert!(!second_is_new);
+        assert_eq!(first.id(), second.id());
+    }
+
+    #[tokio::test]
+    async fn an_already_logged_in_caller_links_a_second_provider_to_their_own_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let (existing, _) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("custom-1", "jo@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("seed record");
+
+        // A different provider *and* a different email — only the fact
+        // that the caller is already signed in as `existing` should
+        // matter here, never the incoming email.
+        let (linked, is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "github",
+            &oauth_user("github-1", "someone-else@example.com"),
+            &mapped,
+            &Map::new(),
+            Some(&existing),
+        )
+        .await
+        .expect("link second provider");
+
+        assert!(!is_new);
+        assert_eq!(linked.id(), existing.id());
+    }
+
+    #[tokio::test]
+    async fn create_data_and_mapped_fields_seed_a_new_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mut mapped = collection.auth.oauth2.mapped_fields.clone();
+        mapped.name = "name".into();
+
+        let mut create_data = Map::new();
+        create_data.insert("name".into(), Value::String("Explicit Name".into()));
+
+        let (record, _) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("provider-2", "explicit@example.com"),
+            &mapped,
+            &create_data,
+            None,
+        )
+        .await
+        .expect("resolve");
+
+        // `createData` wins over the OAuth2-mapped value for a field it
+        // already sets.
+        assert_eq!(record.get_string("name"), "Explicit Name");
+    }
+
+    #[tokio::test]
+    async fn superusers_cannot_sign_up_via_oauth2() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, cratebase_core::SUPERUSERS_COLLECTION).await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let result = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("provider-1", "new-superuser@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
 }

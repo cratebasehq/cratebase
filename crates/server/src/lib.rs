@@ -35,6 +35,7 @@ pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
+pub mod incoming_webhooks;
 pub mod jsvm_host;
 pub mod llm;
 pub mod mcp;

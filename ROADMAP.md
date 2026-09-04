@@ -49,18 +49,6 @@ land.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
-- **OAuth2 (Google, GitHub).** Not wired up despite appearances:
-  `.env.example` documents `OAUTH_GOOGLE_CLIENT_ID`/`_SECRET` and
-  `OAUTH_GITHUB_CLIENT_ID`/`_SECRET` as placeholders, `auth-methods`'
-  response already has an `oauth2: {enabled, providers}` shape, and
-  `AuthOptions.oauth2` exists on every auth collection — but there is no
-  `crates/server/src/oauth2.rs`, no authorization-code exchange, and no
-  `auth-with-oauth2` route; `routes/auth.rs`'s router explicitly comments
-  `// auth-with-oauth2 (no provider wiring yet)`, and `auth-methods`
-  always reports `providers: []`. External auths (`_externalAuths`
-  collection CRUD, `listExternalAuths`/`unlinkExternalAuth` in the SDK)
-  work today for a provider linked by some other means, but nothing in
-  this codebase can create that link yet.
 - **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
   entire `VACUUM INTO` snapshot into a `Vec<u8>` (`tokio::fs::read`)
   before a single `Storage::put`, unlike `download`, which streams
@@ -89,6 +77,18 @@ land.
   `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
   IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
   deliberately excluded — see `routes/auth.rs`'s doc comment for why.
+- **OAuth2 (Google, GitHub, custom).** `crates/auth/src/oauth2.rs` (token
+  exchange body, Google/GitHub userinfo parsing, generic-provider
+  fallback) plus `routes/auth.rs`'s `auth-with-oauth2` and `auth-methods`
+  providers list. Authorization-code + PKCE, matching the SDK's
+  `authWithOAuth2Code`: `auth-methods` hands back a per-provider
+  `authURL`/`state`/`codeVerifier`, and `auth-with-oauth2` exchanges the
+  resulting `code` server-side, fetches userinfo, and either signs in
+  the `_externalAuths`-linked record, links onto a same-email match, or
+  creates a new one (`resolve_oauth2_record`). "google"/"github" only
+  need a client id/secret configured on the collection; any other
+  `name` is a hand-configured provider using its own auth/token/userinfo
+  URLs.
 - **Mailer.** `crates/mailer`: Resend HTTP API, plain SMTP, or a `Log`
   fallback that writes the email to `tracing` instead of delivering it —
   every email-dependent flow below is exercisable with zero external
@@ -190,7 +190,30 @@ collection has no address to send them to.
   override them, which is exactly right for a backend that is
   single-node by construction (one file, one process).
   See `crates/db/tests/postgres.rs` for a two-connection LISTEN/NOTIFY
-  test proving the plumbing.
+  test proving the plumbing, and `crates/server/tests/postgres_multi_node.rs`
+  for the genuine end-to-end proof: two full `App`s, each with its own
+  real `axum::serve` listener on its own port, both against one
+  Postgres database. A real `reqwest` client opens `GET /api/realtime`
+  against instance A and subscribes to a collection; a second real
+  client POSTs a record create to instance B's REST API for that same
+  collection; the test asserts the create event actually arrives on
+  A's SSE stream — a connection B never touched — within a timeout,
+  observing a real round trip through two independent Postgres pools
+  and a dedicated `LISTEN` connection on each side, not an in-process
+  function call. That test caught a real bug in the process:
+  `origin_id()` (the id `notify_cross_node` stamps on every payload so
+  a listener can recognize and skip its own writes) was a
+  process-wide `LazyLock` static rather than per-`App`-instance, so
+  two `App`s sharing one OS process — exactly what an in-process
+  multi-node test needs, and not something the design ruled out for
+  an embedder either — shared one origin and each mistook the other's
+  writes for its own echo, silently dropping every cross-node event.
+  Fixed by moving the origin onto `RealtimeService` itself, generated
+  once per instance instead of once per process. With that fix the
+  observed cross-node latency (HTTP POST on B to SSE frame on A,
+  through commit, `pg_notify`, the dedicated `LISTEN` connection, a
+  fresh `SELECT` on A, and rule re-evaluation) is consistently
+  ~95-100ms against a local Postgres 16 container.
 - **Admin dashboard: Settings area** (request logs, backups — including
   upload/restore, cron jobs, and a Network page for rate limits/trusted
   proxy/superuser IPs), **collection export/import**, a **geoPoint field

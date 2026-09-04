@@ -1,6 +1,5 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
-import { RequestLogsPage } from "@/components/settings/request-logs-page";
 
 export type RequestLogsSearch = {
   page?: number;
@@ -14,5 +13,6 @@ export const settingsLogsRoute = createRoute({
     page: typeof search.page === "number" && search.page > 1 ? search.page : undefined,
     filter: typeof search.filter === "string" ? search.filter : undefined,
   }),
-  component: RequestLogsPage,
+  // Lazy: this tab pulls in recharts for the request-volume chart.
+  component: lazyRouteComponent(() => import("@/components/settings/request-logs-page"), "RequestLogsPage"),
 });
