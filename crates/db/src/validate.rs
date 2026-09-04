@@ -47,6 +47,9 @@ const MIN_DATE: &str = "validation_min_greater_equal_than_required";
 const MAX_DATE: &str = "validation_max_less_equal_than_required";
 /// Files have their own "too many" code, distinct from select's.
 const TOO_MANY_FILES: &str = "validation_too_many_files";
+/// Cratebase-specific: PocketBase has no `vector` field type, so there is
+/// no upstream code to match.
+const VECTOR_DIMENSION_MISMATCH: &str = "validation_vector_dimension_mismatch";
 
 /// Metadata about one file the caller is about to store. `crates/db`
 /// never touches storage, so the server layer supplies this after
@@ -444,6 +447,31 @@ pub fn json(field: &Field, value: &Value) -> Option<FieldError> {
     None
 }
 
+/// `vector`: must be a JSON array of exactly `dimensions` numbers. A
+/// blank value (`null`/missing) already short-circuits in [`record`]
+/// before this runs, same as every other optional field.
+pub fn vector(field: &Field, value: &Value) -> Option<FieldError> {
+    let FieldKind::Vector { dimensions, .. } = &field.kind else {
+        return None;
+    };
+    let Value::Array(items) = value else {
+        return Some(err(codes::INVALID_FORMAT, "Must be a valid vector array."));
+    };
+    if !items.iter().all(Value::is_number) {
+        return Some(err(codes::INVALID_FORMAT, "Must be an array of numbers."));
+    }
+    if items.len() != *dimensions {
+        return Some(err(
+            VECTOR_DIMENSION_MISMATCH,
+            format!(
+                "Must be an array of exactly {dimensions} number(s), got {}.",
+                items.len()
+            ),
+        ));
+    }
+    None
+}
+
 /// Password constraints apply to the *plaintext*; a value that is already
 /// a stored hash is never re-validated (see [`crate::records::is_hash`]).
 pub fn password(field: &Field, value: &Value) -> Option<FieldError> {
@@ -667,9 +695,9 @@ fn coerce_changed(field: &Field, value: &Value) -> Option<Value> {
                 None => Some(Value::String(String::new())),
             }
         }
-        // A json/geoPoint field submitted as text (multipart, or a client
-        // that pre-encodes) is stored decoded.
-        FieldType::Json | FieldType::GeoPoint => match value {
+        // A json/geoPoint/vector field submitted as text (multipart, or
+        // a client that pre-encodes) is stored decoded.
+        FieldType::Json | FieldType::GeoPoint | FieldType::Vector => match value {
             Value::String(s) => serde_json::from_str(s).ok(),
             _ => None,
         },
@@ -798,6 +826,7 @@ pub async fn record(
             }
             FieldType::GeoPoint => geo_point(&value),
             FieldType::Relation => relation(ex, store, field, &value).await?,
+            FieldType::Vector => vector(field, &value),
             FieldType::Autodate => None,
         };
         if let Some(e) = failure {

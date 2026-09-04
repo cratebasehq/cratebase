@@ -48,6 +48,13 @@ walkdir = "2"
 jsonwebtoken = "9"
 mimalloc = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+hmac = "0.12"
+sha2 = "0.10"
+# Bare module matrix only (no "image" feature) — utils.rs rasterizes the
+# QR modules itself with the `image` crate already in this workspace, to
+# avoid pulling in a second, possibly version-mismatched `image` dep.
+qrcode = { version = "0.14", default-features = false }
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

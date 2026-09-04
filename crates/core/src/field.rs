@@ -9,6 +9,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use crate::datetime::DateTime;
 
@@ -29,6 +30,7 @@ pub enum FieldType {
     Json,
     Password,
     GeoPoint,
+    Vector,
 }
 
 impl FieldType {
@@ -48,6 +50,7 @@ impl FieldType {
             FieldType::Json => "json",
             FieldType::Password => "password",
             FieldType::GeoPoint => "geoPoint",
+            FieldType::Vector => "vector",
         }
     }
 
@@ -67,6 +70,7 @@ impl FieldType {
             FieldType::Json,
             FieldType::Password,
             FieldType::GeoPoint,
+            FieldType::Vector,
         ]
     }
 }
@@ -182,6 +186,37 @@ pub enum FieldKind {
         cost: i64,
     },
     GeoPoint {},
+    /// A JSON array of exactly `dimensions` floats, application-side
+    /// cosine similarity (no native ANN index in this pass — see
+    /// `crates/server/src/embeddings.rs`). Either the caller supplies
+    /// the array directly, or (when `embedding` is set) it is computed
+    /// server-side from `embedding.source_field` on save.
+    #[serde(rename_all = "camelCase")]
+    Vector {
+        #[serde(default)]
+        dimensions: usize,
+        #[serde(default)]
+        embedding: Option<EmbeddingConfig>,
+    },
+}
+
+/// Auto-embedding config for a `vector` field: instead of the caller
+/// supplying the float array directly, it is computed server-side from
+/// another field on the same record's current text every time that
+/// source field's value changes (see
+/// `crates/server/src/embeddings.rs::apply_embeddings`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct EmbeddingConfig {
+    /// Which embedding backend computes the vector: `"echo"` selects the
+    /// deterministic, network-free test provider; anything else resolves
+    /// to the configured HTTP provider (OpenAI-compatible `/embeddings`).
+    pub provider: String,
+    /// The model name passed to the HTTP provider (ignored by `"echo"`).
+    pub model: String,
+    /// The name of the text field on the same record whose value is
+    /// embedded on save.
+    pub source_field: String,
 }
 
 fn one() -> i64 {
@@ -223,6 +258,7 @@ impl FieldKind {
             FieldKind::Json { .. } => FieldType::Json,
             FieldKind::Password { .. } => FieldType::Password,
             FieldKind::GeoPoint {} => FieldType::GeoPoint,
+            FieldKind::Vector { .. } => FieldType::Vector,
         }
     }
 
@@ -287,7 +323,111 @@ impl FieldKind {
                 cost: 0,
             },
             FieldType::GeoPoint => FieldKind::GeoPoint {},
+            FieldType::Vector => FieldKind::Vector {
+                dimensions: 0,
+                embedding: None,
+            },
         }
+    }
+
+    /// This field's shape as a JSON-Schema property — the piece
+    /// [`crate::Collection::to_json_schema`] assembles into
+    /// `parameters.properties`, and the same conversion both the MCP
+    /// tool definitions (`crates/server/src/mcp.rs`) and the
+    /// `/tool-schema` REST endpoint
+    /// (`crates/server/src/routes/tool_schema.rs`) call, so the two
+    /// surfaces can never drift apart. `help`, when non-empty, becomes
+    /// the property's `description`; a handful of kinds fall back to a
+    /// fixed note explaining a constraint the schema can't otherwise
+    /// express (e.g. files can't be uploaded through a tool call).
+    pub fn to_json_schema(&self, help: &str) -> Value {
+        let (mut schema, default_note): (Value, &str) = match self {
+            FieldKind::Text {
+                min, max, pattern, ..
+            } => {
+                let mut s = json!({ "type": "string" });
+                if *min > 0 {
+                    s["minLength"] = json!(min);
+                }
+                if *max > 0 {
+                    s["maxLength"] = json!(max);
+                }
+                if !pattern.is_empty() {
+                    s["pattern"] = json!(pattern);
+                }
+                (s, "")
+            }
+            FieldKind::Editor { .. } => (json!({ "type": "string" }), "Rich text/HTML content."),
+            FieldKind::Number { min, max, only_int } => {
+                let mut s = json!({ "type": if *only_int { "integer" } else { "number" } });
+                if let Some(min) = min {
+                    s["minimum"] = json!(min);
+                }
+                if let Some(max) = max {
+                    s["maximum"] = json!(max);
+                }
+                (s, "")
+            }
+            FieldKind::Bool {} => (json!({ "type": "boolean" }), ""),
+            FieldKind::Email { .. } => (json!({ "type": "string", "format": "email" }), ""),
+            FieldKind::Url { .. } => (json!({ "type": "string", "format": "uri" }), ""),
+            FieldKind::Date { .. } | FieldKind::Autodate { .. } => {
+                (json!({ "type": "string", "format": "date-time" }), "")
+            }
+            FieldKind::Select { values, max_select } => {
+                let schema = if *max_select > 1 {
+                    json!({ "type": "array", "items": { "type": "string", "enum": values } })
+                } else {
+                    json!({ "type": "string", "enum": values })
+                };
+                (schema, "")
+            }
+            FieldKind::File { max_select, .. } => {
+                let item = json!({ "type": "string" });
+                let schema = if *max_select != 1 {
+                    json!({ "type": "array", "items": item })
+                } else {
+                    item
+                };
+                (
+                    schema,
+                    "Stored file name; MCP/REST tool calls cannot upload new files.",
+                )
+            }
+            FieldKind::Relation { max_select, .. } => {
+                let item = json!({ "type": "string" });
+                let schema = if *max_select != 1 {
+                    json!({ "type": "array", "items": item })
+                } else {
+                    item
+                };
+                (schema, "Related record id.")
+            }
+            FieldKind::Json { .. } => (json!({}), "Arbitrary JSON value."),
+            FieldKind::Password { .. } => (
+                json!({ "type": "string" }),
+                "Write-only; never returned by reads.",
+            ),
+            FieldKind::GeoPoint {} => (
+                json!({
+                    "type": "object",
+                    "properties": { "lon": {"type": "number"}, "lat": {"type": "number"} },
+                    "required": ["lon", "lat"],
+                }),
+                "",
+            ),
+            FieldKind::Vector { .. } => (
+                json!({ "type": "array", "items": { "type": "number" } }),
+                "Embedding vector; usually computed server-side, not supplied directly.",
+            ),
+        };
+        let description = if !help.is_empty() { help } else { default_note };
+        if !description.is_empty() {
+            if let Value::Object(map) = &mut schema {
+                map.insert("description".into(), json!(description));
+            }
+        }
+        schema
     }
 }
 
@@ -550,6 +690,60 @@ mod tests {
             FieldKind::Date { min, max } => {
                 assert!(min.is_none());
                 assert!(max.is_some());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn vector_field_round_trips_with_and_without_embedding() {
+        let f = Field::new(
+            "embedding",
+            FieldKind::Vector {
+                dimensions: 3,
+                embedding: None,
+            },
+        );
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["type"], "vector");
+        assert_eq!(v["dimensions"], 3);
+        assert!(v["embedding"].is_null());
+        let back: Field = serde_json::from_value(v).unwrap();
+        assert_eq!(back.field_type(), FieldType::Vector);
+        match back.kind {
+            FieldKind::Vector {
+                dimensions,
+                embedding,
+            } => {
+                assert_eq!(dimensions, 3);
+                assert!(embedding.is_none());
+            }
+            _ => panic!(),
+        }
+
+        let f = Field::new(
+            "embedding",
+            FieldKind::Vector {
+                dimensions: 1536,
+                embedding: Some(EmbeddingConfig {
+                    provider: "echo".into(),
+                    model: "text-embedding-3-small".into(),
+                    source_field: "body".into(),
+                }),
+            },
+        );
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["embedding"]["provider"], "echo");
+        assert_eq!(v["embedding"]["sourceField"], "body");
+        let back: Field = serde_json::from_value(v).unwrap();
+        match back.kind {
+            FieldKind::Vector {
+                dimensions,
+                embedding: Some(cfg),
+            } => {
+                assert_eq!(dimensions, 1536);
+                assert_eq!(cfg.provider, "echo");
+                assert_eq!(cfg.source_field, "body");
             }
             _ => panic!(),
         }

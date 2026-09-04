@@ -35,10 +35,10 @@ use axum::extract::{FromRequest, Multipart, Path, Request, State};
 use axum::http::{header, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
-use cratebase_core::{codes, AppError, Collection, FieldError, Record};
+use cratebase_core::{codes, AppError, Collection, FieldError, FieldKind, Record};
 use cratebase_db::context::{CollectionResolver, RequestContext};
 use cratebase_db::engine::Executor;
-use cratebase_db::{records, rules, validate, DbError, FileRef, ListParams, UploadMeta};
+use cratebase_db::{expand, records, rules, validate, DbError, FileRef, ListParams, UploadMeta};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -74,14 +74,23 @@ pub fn router() -> Router<App> {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ListQuery {
-    page: Option<i64>,
-    per_page: Option<i64>,
-    sort: Option<String>,
-    filter: Option<String>,
-    expand: Option<String>,
-    fields: Option<String>,
-    skip_total: Option<String>,
+pub(crate) struct ListQuery {
+    pub(crate) page: Option<i64>,
+    pub(crate) per_page: Option<i64>,
+    pub(crate) sort: Option<String>,
+    pub(crate) filter: Option<String>,
+    pub(crate) expand: Option<String>,
+    pub(crate) fields: Option<String>,
+    pub(crate) skip_total: Option<String>,
+    /// `?nearestTo={field}:{comma-separated floats or another record's
+    /// id}` — switches the list from the normal sort/paginate flow to
+    /// application-side cosine-similarity ranking; see
+    /// [`nearest_list`] and `crate::embeddings`'s module doc for the
+    /// scope this is (and isn't) meant to cover.
+    pub(crate) nearest_to: Option<String>,
+    /// How many ranked results `?nearestTo=` returns; default 20,
+    /// clamped to `records::MAX_PER_PAGE` like a normal `perPage`.
+    pub(crate) nearest_limit: Option<i64>,
 }
 
 /// `?skipTotal=1` / `=true`. Anything else (including its absence) counts
@@ -95,14 +104,14 @@ fn flag(raw: Option<&String>) -> bool {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SingleQuery {
-    expand: Option<String>,
-    fields: Option<String>,
+pub(crate) struct SingleQuery {
+    pub(crate) expand: Option<String>,
+    pub(crate) fields: Option<String>,
 }
 
 /// The envelope PocketBase wraps every list in.
 #[derive(Debug, serde::Serialize)]
-struct Page {
+pub(crate) struct Page {
     page: i64,
     #[serde(rename = "perPage")]
     per_page: i64,
@@ -115,7 +124,7 @@ struct Page {
 
 // --------------------------------------------------------------------- list
 
-async fn list(
+pub(crate) async fn list(
     State(app): State<App>,
     Path(name): Path<String>,
     ApiQuery(query): ApiQuery<ListQuery>,
@@ -125,6 +134,19 @@ async fn list(
     let ctx = info.to_context();
     if rules::is_superuser_only(&collection.list_rule, &ctx) {
         return Err(ApiError(rule_errors::superusers_only()));
+    }
+
+    if let Some(spec) = query.nearest_to.clone() {
+        let result = nearest_list(&app, &collection, &ctx, &query, &spec).await?;
+        return finish_list(
+            &app,
+            &collection,
+            &info,
+            &ctx,
+            result,
+            query.fields.as_deref(),
+        )
+        .await;
     }
 
     let slot: Arc<Mutex<Option<cratebase_db::ListResult>>> = Arc::new(Mutex::new(None));
@@ -192,7 +214,29 @@ async fn list(
                 total_pages: 0,
             });
 
-    let manageable = manageable_ids(&app, &collection, &ctx, &result.items).await?;
+    finish_list(
+        &app,
+        &collection,
+        &info,
+        &ctx,
+        result,
+        query.fields.as_deref(),
+    )
+    .await
+}
+
+/// The manage-access lookup, per-item serialization and `?fields=`
+/// projection every list result goes through, whether it came from the
+/// normal hooked fetch or [`nearest_list`]'s ranking.
+async fn finish_list(
+    app: &App,
+    collection: &Arc<Collection>,
+    info: &RequestInfo,
+    ctx: &RequestContext,
+    result: cratebase_db::ListResult,
+    fields: Option<&str>,
+) -> ApiResult<Json<Page>> {
+    let manageable = manageable_ids(app, collection, ctx, &result.items).await?;
     let mut items = Vec::with_capacity(result.items.len());
     for record in result.items {
         let show_email = common::show_email_for(
@@ -201,12 +245,12 @@ async fn list(
             manageable.contains(record.id()),
         );
         items.push(
-            common::enrich_and_serialize(&app, &collection, record, info.auth.clone(), show_email)
+            common::enrich_and_serialize(app, collection, record, info.auth.clone(), show_email)
                 .await?,
         );
     }
     let mut items = Value::Array(items);
-    common::project(&mut items, query.fields.as_deref());
+    common::project(&mut items, fields);
 
     Ok(Json(Page {
         page: result.page,
@@ -215,6 +259,150 @@ async fn list(
         total_pages: result.total_pages,
         items,
     }))
+}
+
+/// Safety ceiling on how many rule/filter-matching rows `?nearestTo=`
+/// will fetch before ranking. This is the honest "thousands of rows, not
+/// millions" scale limit documented on `crate::embeddings`: there is no
+/// SQL-level ANN index behind a vector field in this pass, so every
+/// candidate row is pulled into memory and ranked in Rust. A collection
+/// with more matching rows than this cap silently ranks only the first
+/// [`NEAREST_CANDIDATE_CAP`] of them rather than trying (and failing) to
+/// load the whole table.
+const NEAREST_CANDIDATE_CAP: usize = 20_000;
+/// Page size used while gathering `?nearestTo=` candidates directly
+/// through [`records::list`], independent of the caller's own `perPage`.
+const NEAREST_FETCH_PAGE: i64 = 1000;
+
+/// `?nearestTo={field}:{target}` — fetch every row the list rule/filter
+/// would normally return (paginated internally up to
+/// [`NEAREST_CANDIDATE_CAP`], ignoring `?sort=`), rank by cosine
+/// similarity to the resolved query vector, and truncate to
+/// `?nearestLimit=` (default 20). See `crate::embeddings`'s module doc
+/// for why this is application-side rather than a native ANN index.
+async fn nearest_list(
+    app: &App,
+    collection: &Arc<Collection>,
+    ctx: &RequestContext,
+    query: &ListQuery,
+    spec: &str,
+) -> ApiResult<cratebase_db::ListResult> {
+    let (field_name, target) = spec
+        .split_once(':')
+        .ok_or_else(|| ApiError::bad_request("nearestTo must be \"field:vector-or-id\""))?;
+    let field = collection
+        .field(field_name)
+        .filter(|f| matches!(f.kind, FieldKind::Vector { .. }))
+        .ok_or_else(|| ApiError::bad_request(format!("'{field_name}' is not a vector field")))?;
+    let FieldKind::Vector { dimensions, .. } = &field.kind else {
+        unreachable!("filtered to Vector above")
+    };
+
+    let query_vector = resolve_query_vector(app, collection, ctx, field_name, target).await?;
+    if query_vector.len() != *dimensions {
+        return Err(ApiError::bad_request(format!(
+            "nearestTo vector must have {dimensions} dimension(s), got {}",
+            query_vector.len()
+        )));
+    }
+    let limit = query
+        .nearest_limit
+        .unwrap_or(20)
+        .clamp(1, records::MAX_PER_PAGE) as usize;
+
+    let mut candidates = Vec::new();
+    let mut page = 1;
+    loop {
+        let batch = records::list(
+            app.db(),
+            &app.db().collections,
+            ctx,
+            collection,
+            ListParams {
+                page,
+                per_page: NEAREST_FETCH_PAGE,
+                sort: None,
+                filter: query.filter.as_deref(),
+                expand: None,
+                skip_total: true,
+            },
+        )
+        .await
+        .map_err(read_error)?;
+        let got = batch.items.len();
+        candidates.extend(batch.items);
+        if got < NEAREST_FETCH_PAGE as usize || candidates.len() >= NEAREST_CANDIDATE_CAP {
+            break;
+        }
+        page += 1;
+    }
+    candidates.truncate(NEAREST_CANDIDATE_CAP);
+
+    let mut ranked: Vec<(f32, Record)> = candidates
+        .into_iter()
+        .filter_map(|r| {
+            let v = crate::embeddings::vector_of(&r, field_name)?;
+            Some((crate::embeddings::cosine_similarity(&query_vector, &v), r))
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    ranked.truncate(limit);
+    let mut items: Vec<Record> = ranked.into_iter().map(|(_, r)| r).collect();
+
+    if let Some(spec) = query
+        .expand
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        expand::resolve(app.db(), &app.db().collections, ctx, &mut items, spec, 0)
+            .await
+            .map_err(read_error)?;
+    }
+
+    Ok(cratebase_db::ListResult {
+        total_items: items.len() as i64,
+        total_pages: 1,
+        page: 1,
+        per_page: limit as i64,
+        items,
+    })
+}
+
+/// Resolve `?nearestTo=`'s target into a query vector: either a
+/// comma-separated list of floats, or another record's id — whose own
+/// `field_name` value (subject to the collection's `viewRule`, so this
+/// cannot be used to probe a hidden record's vector) becomes the vector.
+async fn resolve_query_vector(
+    app: &App,
+    collection: &Arc<Collection>,
+    ctx: &RequestContext,
+    field_name: &str,
+    target: &str,
+) -> ApiResult<Vec<f32>> {
+    let looks_numeric = target.contains(|c: char| c.is_ascii_digit())
+        && target
+            .split(',')
+            .all(|part| part.trim().parse::<f32>().is_ok());
+    if looks_numeric {
+        return Ok(target
+            .split(',')
+            .map(|part| part.trim().parse::<f32>().unwrap_or(0.0))
+            .collect());
+    }
+    let record = records::find_by_id(
+        app.db(),
+        &app.db().collections,
+        ctx,
+        collection,
+        target,
+        None,
+    )
+    .await
+    .map_err(read_error)?;
+    crate::embeddings::vector_of(&record, field_name).ok_or_else(|| {
+        ApiError::bad_request(format!("record '{target}' has no '{field_name}' vector"))
+    })
 }
 
 /// The subset of `items` the caller has `manageRule` access to, resolved
@@ -250,7 +438,7 @@ async fn manageable_ids(
 
 // --------------------------------------------------------------------- view
 
-async fn view(
+pub(crate) async fn view(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
     ApiQuery(query): ApiQuery<SingleQuery>,
@@ -319,7 +507,7 @@ async fn view(
 
 // ------------------------------------------------------------------- create
 
-async fn create_record(
+pub(crate) async fn create_record(
     State(app): State<App>,
     Path(name): Path<String>,
     ApiQuery(query): ApiQuery<SingleQuery>,
@@ -356,6 +544,9 @@ async fn create_record(
     common::apply_number_modifiers(None, &mut input, &collection);
     validate::apply_modifiers(None, &mut input, &collection);
     let mut record = records::from_body(collection.clone(), &input);
+    crate::embeddings::apply_embeddings(&mut record, &input)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
     // The id must exist before the files are stored: the object key is
     // `{collectionId}/{recordId}/{name}`.
     if record.id().is_empty() {
@@ -410,7 +601,7 @@ async fn create_record(
 
 // ------------------------------------------------------------------- update
 
-async fn update_record(
+pub(crate) async fn update_record(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
     ApiQuery(query): ApiQuery<SingleQuery>,
@@ -454,6 +645,9 @@ async fn update_record(
     validate::apply_modifiers(Some(&previous), &mut input, &collection);
     let mut record = previous.clone();
     records::apply_body(&mut record, &input);
+    crate::embeddings::apply_embeddings(&mut record, &input)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
     apply_auth_fields(
         &collection,
         &body.data,
@@ -512,7 +706,7 @@ async fn update_record(
 
 // ------------------------------------------------------------------- delete
 
-async fn delete_record(
+pub(crate) async fn delete_record(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
     info: RequestInfo,

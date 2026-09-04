@@ -27,17 +27,23 @@
 pub mod app;
 pub mod config;
 pub mod cron;
+pub mod cron_jobs;
 mod dashboard;
+pub mod embeddings;
 pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
 pub mod jsvm_host;
+pub mod llm;
+pub mod mcp;
 pub mod middleware;
 pub mod plugin;
 pub mod realtime;
 pub mod routes;
 pub mod store;
+pub mod teams;
+pub mod webhooks;
 
 use axum::extract::DefaultBodyLimit;
 use axum::Router;

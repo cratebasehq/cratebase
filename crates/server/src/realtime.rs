@@ -261,6 +261,35 @@ impl RealtimeService {
             .filter_map(|id| clients.get(id).map(|c| (id.clone(), c.clone())))
             .collect()
     }
+
+    /// Push one addressed frame straight to a connected client, by its
+    /// `GET /api/realtime` client id — the same registry `publish`/
+    /// `fan_out` above use for collection-scoped record events, reused
+    /// here for `crate::llm`'s point-to-point chat chunks rather than
+    /// standing up a second SSE connection/registration/queueing
+    /// implementation.
+    ///
+    /// Unlike a record event, this has no topic to match against a
+    /// subscription list: the caller already knows exactly which client
+    /// it means to reach. Returns `false` if that client id isn't
+    /// connected (it never subscribed, or already disconnected) — the
+    /// caller treats that as "nobody is listening", not an error.
+    pub fn send(&self, client_id: &str, event: &str, data: Value) -> bool {
+        let Some(client) = self.clients.read().get(client_id).cloned() else {
+            return false;
+        };
+        let frame = Event::default().event(event).data(data.to_string());
+        if client.queued.fetch_add(1, Ordering::Relaxed) as usize >= SEND_QUEUE_LIMIT {
+            tracing::debug!(client = %client_id, "realtime client too far behind; dropping");
+            self.unregister(client_id);
+            return false;
+        }
+        if client.tx.send(frame).is_err() {
+            self.unregister(client_id);
+            return false;
+        }
+        true
+    }
 }
 
 /// Percent-decoding for the `?options=` blob. Small and local: the value

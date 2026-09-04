@@ -71,6 +71,36 @@ pub struct S3 {
     pub force_path_style: bool,
 }
 
+/// LLM provider config for `POST /api/llm/chat` (`crates/server/src/llm.rs`).
+/// Mirrors [`Smtp`]'s shape: `enabled` picks between the configured
+/// provider and the zero-config fallback (an echo provider that needs no
+/// network access), exactly like `smtp.enabled` picks between
+/// `SmtpBackend` and `LogBackend` in `cratebase_mailer`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Llm {
+    pub enabled: bool,
+    /// `"openai"` (or any OpenAI-compatible `/chat/completions` API, e.g.
+    /// a local Ollama instance) is the only real provider today;
+    /// anything else falls back to the echo provider.
+    pub provider: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Default for Llm {
+    fn default() -> Self {
+        Llm {
+            enabled: false,
+            provider: "openai".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: String::new(),
+            model: "gpt-4o-mini".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Backups {
@@ -207,6 +237,7 @@ pub struct Settings {
     pub trusted_proxy: TrustedProxy,
     pub batch: Batch,
     pub logs: Logs,
+    pub llm: Llm,
     #[serde(rename = "superuserIPs")]
     pub superuser_ips: Vec<String>,
 }
@@ -220,6 +251,9 @@ impl Settings {
         }
         if let Some(s3) = v.get_mut("s3").and_then(Value::as_object_mut) {
             s3.remove("secret");
+        }
+        if let Some(llm) = v.get_mut("llm").and_then(Value::as_object_mut) {
+            llm.remove("apiKey");
         }
         if let Some(s3) = v
             .get_mut("backups")

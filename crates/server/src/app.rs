@@ -388,6 +388,10 @@ impl App {
         self.inner.rate_limiter.start_sweeper();
         self.register_system_crons();
         self.sync_backup_cron();
+        crate::cron_jobs::bind_hooks(self);
+        crate::cron_jobs::sync_all(self).await;
+        crate::webhooks::bind_hooks(self);
+        crate::teams::bind_hooks(self);
 
         let plugins = {
             let guard = self.inner.plugins.lock().expect("plugin registry poisoned");

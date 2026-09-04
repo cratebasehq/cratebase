@@ -192,7 +192,7 @@ export function DashboardHome() {
   ).length;
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-section p-page">
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-section overflow-y-auto p-page">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
@@ -265,6 +265,7 @@ export function DashboardHome() {
         )}
       </section>
 
+      <div className="grid gap-section lg:grid-cols-2 lg:items-start">
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium">Collections</h2>
         {collectionsPending ? (
@@ -372,6 +373,7 @@ export function DashboardHome() {
           </div>
         </section>
       ) : null}
+      </div>
     </div>
   );
 }

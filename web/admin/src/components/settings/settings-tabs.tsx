@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Archive, Clock, ListTree, Mail, Shield, ShieldUser, SlidersHorizontal } from "lucide-react";
+import { Archive, Clock, Database, FolderOpen, ListTree, Mail, Shield, ShieldUser, SlidersHorizontal } from "lucide-react";
 
 const TABS = [
   { to: "/settings/application", label: "Application", icon: SlidersHorizontal },
@@ -9,6 +9,8 @@ const TABS = [
   { to: "/settings/logs", label: "Request logs", icon: ListTree },
   { to: "/settings/backups", label: "Backups", icon: Archive },
   { to: "/settings/cron", label: "Cron jobs", icon: Clock },
+  { to: "/settings/sql", label: "SQL console", icon: Database },
+  { to: "/settings/file-manager", label: "File manager", icon: FolderOpen },
 ] as const;
 
 /** Sub-navigation for the settings area, mirrors the record/settings tab
