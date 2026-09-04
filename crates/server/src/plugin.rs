@@ -1,96 +1,104 @@
-//! Extension points for code that isn't part of Cratebase's core REST API:
-//! one-time startup setup, extra HTTP routes, and scheduled (cron-like)
-//! background tasks.
+//! Compile-time Rust plugins.
 //!
-//! This is a compile-time Rust trait, not a dynamically loaded plugin
-//! format: "installing a plugin" means implementing [`Plugin`] and
-//! registering it in a [`PluginRegistry`], then shipping your own binary.
-//! That binary doesn't have to be this repo's own `cratebase` binary,
-//! either — `cratebase-server` is a normal library crate. A downstream
-//! project can depend on it, implement its own [`Plugin`], and write a
-//! small `main.rs` of its own:
+//! A plugin is, at its simplest, `fn(&App) -> Result<(), AppError>`: it
+//! is handed the app during bootstrap and does whatever it likes with the
+//! hooks, cron, store and router. Anything that also wants HTTP routes
+//! implements the [`Plugin`] trait instead.
 //!
 //! ```ignore
-//! let state = cratebase_server::build_state(config).await?;
-//! let plugins = cratebase_server::plugin::PluginRegistry::new()
-//!     .register(MyPlugin);
-//! plugins.setup_all(&state.db).await?;
-//! plugins.spawn_tasks(&state);
-//! let app = cratebase_server::build_app(state, &plugins);
-//! axum::serve(listener, app).await?;
+//! fn audit(app: &App) -> Result<(), AppError> {
+//!     app.hooks().on_record_create.bind_func(|e| Box::pin(async move {
+//!         tracing::info!(id = e.record.id(), "creating");
+//!         e.next().await
+//!     }));
+//!     Ok(())
+//! }
+//! app.register_plugin(FnPlugin::new("audit", audit))?;
 //! ```
 //!
-//! without ever touching this repo's own source. `cratebase_server::plugins::registry()`
-//! returns the built-in set (see `crates/server/src/plugins/mod.rs`) if a
-//! downstream binary wants those plus its own — `PluginRegistry::register`
-//! composes.
+//! # Routes live inside `/api`
 //!
-//! See `crates/server/src/plugins/example.rs` for a minimal reference
-//! plugin exercising every extension point, and `feature_flags.rs` /
-//! `cron_jobs.rs` for two that also provision their own collection.
+//! Plugin routers are nested at `/api/plugins/<name>` **inside** the same
+//! nest as the built-in API, so they pass through request logging and the
+//! rate limiter. The Phase 1 registry merged them at the router root,
+//! which the audit flagged: a plugin route was neither logged nor
+//! rate-limited.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::time::Duration;
+use std::sync::Arc;
 
 use axum::Router;
-use cratebase_db::Db;
+use cratebase_core::AppError;
 
-use crate::state::AppState;
+use crate::app::App;
 
-/// A scheduled task run on a fixed interval for as long as the server is
-/// up. Not a full cron expression scheduler (no calendar semantics like
-/// "every Monday at 9am") — just a `(name, interval, async fn(AppState))`
-/// tuple, which covers the overwhelming majority of real maintenance jobs.
-/// A plugin that needs real calendar cron expressions builds it on top of
-/// this primitive (see `crates/server/src/plugins/cron_jobs.rs`) rather
-/// than the trait growing calendar semantics of its own.
-pub struct ScheduledTask {
-    pub name: &'static str,
-    pub interval: Duration,
-    pub run: fn(AppState) -> Pin<Box<dyn Future<Output = ()> + Send>>,
-}
+/// Names a plugin may not take, because they would collide with a
+/// built-in API path or read as one.
+pub const RESERVED_PLUGIN_NAMES: &[&str] = &[
+    "admins",
+    "backups",
+    "batch",
+    "collections",
+    "crons",
+    "files",
+    "health",
+    "logs",
+    "plugins",
+    "realtime",
+    "records",
+    "settings",
+];
 
-/// Implement this to extend the server: provision anything the plugin
-/// needs before it starts serving traffic, mount extra routes, or run
-/// scheduled background work. Every method has a default no-op so a
-/// plugin only needs to implement the extension points it actually uses.
-///
-/// Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are
-/// deliberately not on this trait — add them when a real plugin needs one,
-/// not speculatively.
 pub trait Plugin: Send + Sync {
-    fn name(&self) -> &'static str;
+    /// URL-safe identity; also the mount point (`/api/plugins/<name>`).
+    fn name(&self) -> &str;
 
-    /// One-time async setup run once at startup, before the server starts
-    /// accepting connections — e.g. seeding a collection this plugin's
-    /// routes or scheduled tasks depend on existing. Called by
-    /// [`PluginRegistry::setup_all`].
-    fn setup<'a>(
-        &'a self,
-        _db: &'a Db,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
+    /// One-time setup, run during [`App::bootstrap`] before the listener
+    /// binds. Register hooks, cron jobs and store entries here.
+    fn setup(&self, app: &App) -> Result<(), AppError> {
+        let _ = app;
+        Ok(())
     }
 
-    /// Extra routes mounted under `/api/plugins/<name>/...` by the
-    /// registry — see [`PluginRegistry::router`].
-    fn routes(&self) -> Option<Router<AppState>> {
+    /// Extra routes, mounted at `/api/plugins/<name>`.
+    fn routes(&self) -> Option<Router<App>> {
         None
     }
+}
 
-    /// Background jobs to run on a fixed interval for the life of the
-    /// process. Spawned once at startup by [`PluginRegistry::spawn_tasks`].
-    fn scheduled_tasks(&self) -> Vec<ScheduledTask> {
-        Vec::new()
+/// The bare-function form of a plugin's setup step.
+pub type SetupFn = dyn Fn(&App) -> Result<(), AppError> + Send + Sync;
+
+/// Adapter turning a bare `fn(&App) -> Result<(), AppError>` into a
+/// [`Plugin`].
+pub struct FnPlugin {
+    name: String,
+    setup: Box<SetupFn>,
+}
+
+impl FnPlugin {
+    pub fn new(
+        name: impl Into<String>,
+        setup: impl Fn(&App) -> Result<(), AppError> + Send + Sync + 'static,
+    ) -> Self {
+        FnPlugin {
+            name: name.into(),
+            setup: Box::new(setup),
+        }
     }
 }
 
-/// Collects every registered [`Plugin`] and wires their extension points
-/// into the running server.
+impl Plugin for FnPlugin {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn setup(&self, app: &App) -> Result<(), AppError> {
+        (self.setup)(app)
+    }
+}
+
 #[derive(Default)]
 pub struct PluginRegistry {
-    plugins: Vec<Box<dyn Plugin>>,
+    plugins: Vec<Arc<dyn Plugin>>,
 }
 
 impl PluginRegistry {
@@ -98,51 +106,101 @@ impl PluginRegistry {
         Self::default()
     }
 
-    pub fn register(mut self, plugin: impl Plugin + 'static) -> Self {
-        self.plugins.push(Box::new(plugin));
-        self
+    /// Register `plugin`, rejecting an empty, reserved or duplicate name.
+    pub fn register(&mut self, plugin: impl Plugin + 'static) -> Result<(), AppError> {
+        self.register_arc(Arc::new(plugin))
     }
 
-    /// Runs every plugin's one-time startup setup, in registration order.
-    /// Call once after `build_state`, before `spawn_tasks`/`build_app`.
-    pub async fn setup_all(&self, db: &Db) -> anyhow::Result<()> {
-        for plugin in &self.plugins {
-            plugin.setup(db).await?;
+    pub fn register_arc(&mut self, plugin: Arc<dyn Plugin>) -> Result<(), AppError> {
+        let name = plugin.name().to_string();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(AppError::bad_request(format!(
+                "invalid plugin name '{name}': use ASCII letters, digits, '-' and '_'"
+            )));
         }
+        if RESERVED_PLUGIN_NAMES.contains(&name.as_str()) {
+            return Err(AppError::bad_request(format!(
+                "plugin name '{name}' is reserved"
+            )));
+        }
+        if self.plugins.iter().any(|p| p.name() == name) {
+            return Err(AppError::bad_request(format!(
+                "a plugin named '{name}' is already registered"
+            )));
+        }
+        self.plugins.push(plugin);
         Ok(())
     }
 
-    /// Merges every plugin's routes under `/api/plugins/<plugin-name>`.
-    pub fn router(&self) -> Router<AppState> {
+    pub fn names(&self) -> Vec<String> {
+        self.plugins.iter().map(|p| p.name().to_string()).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.plugins.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty()
+    }
+
+    pub(crate) fn clone_plugins(&self) -> Vec<Arc<dyn Plugin>> {
+        self.plugins.clone()
+    }
+
+    /// Every plugin's routes, nested under `/plugins/<name>`. The caller
+    /// merges this into the `/api` router.
+    pub fn router(&self) -> Router<App> {
         let mut router = Router::new();
         for plugin in &self.plugins {
-            if let Some(plugin_router) = plugin.routes() {
-                router = router.nest(&format!("/api/plugins/{}", plugin.name()), plugin_router);
+            if let Some(routes) = plugin.routes() {
+                router = router.nest(&format!("/plugins/{}", plugin.name()), routes);
             }
         }
         router
     }
+}
 
-    /// Spawns every plugin's scheduled tasks as background tokio tasks.
-    /// Call once at startup after the app state is built; fire-and-forget
-    /// for the life of the process (no cancellation — the whole process
-    /// exits together).
-    pub fn spawn_tasks(&self, state: &AppState) {
-        for plugin in &self.plugins {
-            for task in plugin.scheduled_tasks() {
-                let state = state.clone();
-                tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(task.interval);
-                    // The first tick fires immediately; skip it so a task
-                    // doesn't run at t=0 before the server has accepted any
-                    // traffic, only every `interval` after that.
-                    ticker.tick().await;
-                    loop {
-                        ticker.tick().await;
-                        (task.run)(state.clone()).await;
-                    }
-                });
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Named(&'static str);
+    impl Plugin for Named {
+        fn name(&self) -> &str {
+            self.0
         }
+    }
+
+    #[test]
+    fn names_must_be_unique_valid_and_unreserved() {
+        let mut registry = PluginRegistry::new();
+        registry.register(Named("webhooks")).unwrap();
+        assert_eq!(registry.names(), ["webhooks"]);
+
+        assert_eq!(
+            registry.register(Named("webhooks")).unwrap_err().status(),
+            400
+        );
+        assert_eq!(
+            registry.register(Named("settings")).unwrap_err().status(),
+            400
+        );
+        assert_eq!(
+            registry.register(Named("bad name")).unwrap_err().status(),
+            400
+        );
+        assert_eq!(registry.register(Named("")).unwrap_err().status(), 400);
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn fn_plugins_run_their_closure() {
+        let plugin = FnPlugin::new("noop", |_app| Ok(()));
+        assert_eq!(plugin.name(), "noop");
     }
 }
