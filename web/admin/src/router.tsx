@@ -16,6 +16,8 @@ import { settingsCronRoute } from "@/routes/settings-cron";
 import { settingsNetworkRoute } from "@/routes/settings-network";
 import { settingsSqlConsoleRoute } from "@/routes/settings-sql-console";
 import { settingsFileManagerRoute } from "@/routes/settings-file-manager";
+import { settingsWebhooksRoute } from "@/routes/settings-webhooks";
+import { settingsLlmRoute } from "@/routes/settings-llm";
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -33,6 +35,8 @@ const routeTree = rootRoute.addChildren([
       settingsCronRoute,
       settingsSqlConsoleRoute,
       settingsFileManagerRoute,
+      settingsWebhooksRoute,
+      settingsLlmRoute,
     ]),
   ]),
 ]);

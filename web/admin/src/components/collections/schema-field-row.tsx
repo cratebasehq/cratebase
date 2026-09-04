@@ -169,6 +169,13 @@ function optionsSummary(field: FieldSchema, collections: CollectionModel[]): str
       if (field.onCreate) parts.push("on create");
       if (field.onUpdate) parts.push("on update");
       break;
+    case "vector": {
+      const dimensions = field.dimensions as number | undefined;
+      parts.push(dimensions ? `${dimensions}d` : "no dimensions set");
+      const embedding = field.embedding as { sourceField?: string } | undefined;
+      if (embedding?.sourceField) parts.push(`auto from ${embedding.sourceField}`);
+      break;
+    }
     default:
       break;
   }
@@ -495,6 +502,71 @@ export function SchemaFieldRow({
           <p className="text-2xs leading-snug text-muted-foreground">
             The value is computed by the server; clients can't set it. At least one of the two must be enabled.
           </p>
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "vector" ? (
+        <OptionGroup title="Vector" error={optionsError}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <OptionField label="Dimensions" help="How many floats each stored vector must have. Fixed once records exist.">
+              <NumberInput
+                value={field.dimensions as number | undefined}
+                onChange={(dimensions) => patch({ dimensions: dimensions ?? 0 })}
+                placeholder="e.g. 1536"
+              />
+            </OptionField>
+            <div className="flex items-end pb-5 sm:col-span-2">
+              <CheckboxOption
+                checked={field.embedding != null}
+                onChange={(checked) =>
+                  patch({
+                    embedding: checked
+                      ? { provider: "echo", model: "", sourceField: "" }
+                      : null,
+                  })
+                }
+                label="Compute automatically from another field on save, instead of accepting the array directly"
+              />
+            </div>
+          </div>
+          {field.embedding != null ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <OptionField label="Provider" help='"echo" is a deterministic, network-free test provider. Anything else uses the HTTP provider configured on the server.'>
+                <Input
+                  type="text"
+                  value={((field.embedding as { provider?: string } | undefined)?.provider as string | undefined) ?? ""}
+                  onChange={(e) =>
+                    patch({ embedding: { ...(field.embedding as object), provider: e.target.value } })
+                  }
+                  placeholder="echo"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+              <OptionField label="Model" help="Passed to the HTTP provider. Ignored by the echo provider.">
+                <Input
+                  type="text"
+                  value={((field.embedding as { model?: string } | undefined)?.model as string | undefined) ?? ""}
+                  onChange={(e) => patch({ embedding: { ...(field.embedding as object), model: e.target.value } })}
+                  placeholder="text-embedding-3-small"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+              <OptionField label="Source field" help="Name of the text field on this record whose value is embedded on save.">
+                <Input
+                  type="text"
+                  value={
+                    ((field.embedding as { sourceField?: string } | undefined)?.sourceField as string | undefined) ??
+                    ""
+                  }
+                  onChange={(e) =>
+                    patch({ embedding: { ...(field.embedding as object), sourceField: e.target.value } })
+                  }
+                  placeholder="body"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+            </div>
+          ) : null}
         </OptionGroup>
       ) : null}
 

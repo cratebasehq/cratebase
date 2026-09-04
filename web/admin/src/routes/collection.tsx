@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { MoreHorizontal, Plus, Search, Settings as SettingsIcon, ShieldUser, X } from "lucide-react";
 import { ClientResponseError, type CollectionModel, type RecordModel } from "pocketbase";
-import { cb, describeFailure } from "@/lib/api";
+import { avatarUrl, cb, describeFailure } from "@/lib/api";
 import { userFields, type FieldSchema } from "@/lib/field-types";
 import { appRoute } from "@/routes/app";
 import {
@@ -33,6 +33,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { IdCell } from "@/components/records/record-value-cell";
 import { InlineEditableCell } from "@/components/records/inline-cell";
 import { RecordsGrid, type GridColumn } from "@/components/records/records-grid";
@@ -316,12 +317,25 @@ function CollectionPage() {
     });
 
     if (collection.type === "auth") {
+      const avatarField = fields.find((f) => f.type === "file" && f.name === "avatar");
       byId.set(identityField, {
         id: identityField,
         header: identityField,
         width: COLUMN_WIDTH.email!,
         sortKey: identityField,
-        cell: (row) => <span className="truncate text-sm">{String(row[identityField] ?? "")}</span>,
+        cell: (row) => {
+          const filename = avatarField ? (row[avatarField.name] as string | undefined) : undefined;
+          const avatarSrc = filename ? cb.files.getURL(row, filename) : avatarUrl(row.id);
+          return (
+            <div className="flex min-w-0 items-center gap-2">
+              <Avatar className="size-5 shrink-0 rounded-full">
+                <AvatarImage src={avatarSrc} alt="" />
+                <AvatarFallback className="text-2xs" />
+              </Avatar>
+              <span className="truncate text-sm">{String(row[identityField] ?? "")}</span>
+            </div>
+          );
+        },
       });
     }
 

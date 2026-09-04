@@ -61,8 +61,6 @@ land.
   collection CRUD, `listExternalAuths`/`unlinkExternalAuth` in the SDK)
   work today for a provider linked by some other means, but nothing in
   this codebase can create that link yet.
-- File field constraints in the dashboard UI (`mimeTypes`, `maxSize` are
-  already schema fields but have no editor).
 - **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
   entire `VACUUM INTO` snapshot into a `Vec<u8>` (`tokio::fs::read`)
   before a single `Storage::put`, unlike `download`, which streams

@@ -19,7 +19,8 @@ export type FieldType =
   | "relation"
   | "file"
   | "password"
-  | "geoPoint";
+  | "geoPoint"
+  | "vector";
 
 export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "text", label: "Text" },
@@ -36,6 +37,7 @@ export const FIELD_TYPES: { value: FieldType; label: string }[] = [
   { value: "file", label: "File" },
   { value: "password", label: "Password" },
   { value: "geoPoint", label: "Geo point" },
+  { value: "vector", label: "Vector" },
 ];
 
 /** A collection field, narrowed to this dashboard's `FieldType` union.
