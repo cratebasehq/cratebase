@@ -195,8 +195,16 @@ fn dig_map(map: &Map<String, Value>, path: &str) -> Value {
 
 /// `@request.auth.<path>`. `id`, `collectionId` and `collectionName` are
 /// synthesized; everything else comes from the auth record's fields —
-/// including hidden ones (`tokenKey`, `password`), because rules are
-/// server-side and PocketBase lets them reference those.
+/// except `hidden` ones (`password`, `tokenKey`, and any the operator
+/// marked hidden), which resolve to null.
+///
+/// Rules are server-authored and could safely see those, but the *same*
+/// resolver serves the client-supplied `?filter=`, and a bound
+/// `@request.auth.password` there is an oracle: repeated
+/// `@request.auth.password ~ "$argon2id$...a%"` probes recover the
+/// caller's own hash one character at a time from nothing but whether
+/// rows come back. No legitimate rule references these, so refusing them
+/// costs nothing and closes the oracle.
 fn auth_value(auth: &AuthContext, path: &str) -> Value {
     let (head, rest) = match path.split_once('.') {
         Some((h, r)) => (h, Some(r)),
@@ -206,6 +214,7 @@ fn auth_value(auth: &AuthContext, path: &str) -> Value {
         "id" => Value::String(auth.id().to_string()),
         "collectionId" => Value::String(auth.collection.id.clone()),
         "collectionName" => Value::String(auth.collection.name.clone()),
+        other if auth.collection.field(other).is_some_and(|f| f.hidden) => Value::Null,
         other => auth.record.get(other).cloned().unwrap_or(Value::Null),
     };
     match rest {
@@ -265,15 +274,28 @@ mod tests {
     }
 
     #[test]
-    fn auth_paths_resolve_including_hidden_fields() {
+    fn auth_paths_resolve_visible_fields() {
         let auth = AuthContext::new(users_record());
         assert_eq!(auth_value(&auth, "id"), json!("u1"));
         assert_eq!(auth_value(&auth, "collectionId"), json!("_pb_users_auth_"));
         assert_eq!(auth_value(&auth, "collectionName"), json!("users"));
         assert_eq!(auth_value(&auth, "email"), json!("a@b.co"));
-        assert_eq!(auth_value(&auth, "tokenKey"), json!("tk"));
         assert_eq!(auth_value(&auth, "nope"), Value::Null);
         assert!(!auth.is_superuser);
+    }
+
+    /// A client-supplied `?filter=` goes through this same resolver, so a
+    /// readable `@request.auth.password` would let a caller binary-search
+    /// their own hash out of the server one character at a time.
+    #[test]
+    fn hidden_auth_fields_are_never_readable_by_rules_or_filters() {
+        let mut record = users_record();
+        record.set("password", json!("$argon2id$v=19$secret"));
+        let auth = AuthContext::new(record);
+        assert_eq!(auth_value(&auth, "tokenKey"), Value::Null);
+        assert_eq!(auth_value(&auth, "password"), Value::Null);
+        // The record itself still carries them for the auth path.
+        assert_eq!(auth.record.token_key(), "tk");
     }
 
     #[test]
