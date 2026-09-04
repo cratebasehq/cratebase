@@ -584,8 +584,24 @@ unchanged apart from the data dir default.
   settings, logs, backups list/create, crons, health. CI runs it.
 - JSVM: fixture `pb_hooks` directory with hooks exercising each global;
   asserted through HTTP.
-- Benchmarks: `benchmarks/run.sh` in CI on a schedule; regression gate
-  = no cell below 1.0x of PocketBase.
+- Benchmarks: `benchmarks/run.sh` in CI on a schedule.
+
+### 14b. The benchmark gate (release blocker)
+
+Being faster than PocketBase is the reason to switch, so this is a gate,
+not a metric. `benchmarks/run.sh` must show **no cell below 1.0x** and
+the two categories Phase 1 still lost must flip:
+
+| Cell | Phase 1 | Cause | What Phase 2 does about it |
+|---|---|---|---|
+| `create` c20/50/100 | 0.69-0.74x | Every pooled SQLite connection spun on `busy_timeout` for the one writer lock (the 33ms p99 is that spin) | §5.1's single dedicated writer connection: our own statements never contend, so the spin disappears |
+| `search-wide` c20/50/100 | 0.53-0.75x | `sqlx::Any` decoded every column eagerly and allocated a `String` per text cell, then the record layer allocated it again | §5.1 native drivers + §5.4's single-pass row decode |
+
+If a cell still loses after the rewrite, profile it before shipping —
+the answer is a specific round trip or allocation, as it was every time
+in Phase 1, not "Rust is already fast enough". Record the numbers in
+`benchmarks/README.md` with the same honesty as the Phase 1 table,
+including anything that got worse.
 
 ## 15. Deliberate divergences from PocketBase
 
