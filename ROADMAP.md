@@ -71,18 +71,20 @@ land.
   support it) before this is safe at scale — file uploads have the same
   shape today (bounded by upload size limits) but a backup has no such
   cap.
-- **Write throughput under contention and wide pages.** After the Phase 1
-  performance pass (`benchmarks/README.md`) Cratebase is faster than
-  PocketBase on 19 of 24 measured cells; the two it still loses, `create`
-  at concurrency 20+ and `perPage=200` reads at concurrency 20+, share a
-  cause: every pooled SQLite connection contends for the single writer
-  lock via `busy_timeout`, and every row is decoded twice through
-  `sqlx::Any`. Fixed by the Phase 2 storage engine (single-writer pool +
-  native drivers), not by tuning. The `SELECT COUNT(*)` this entry used to
-  blame was measured at well under 5% of the request.
 
 ## Shipped
 
+- **Write throughput under contention and wide pages.** The single-writer
+  pool + native-driver storage engine (`crates/db`) resolved the
+  contention this item used to track. Measured on an idle host
+  (`benchmarks/run.sh --skip-build`, 0 errors both sides): Cratebase beats
+  PocketBase on 22 of 24 cells, several by an order of magnitude
+  (`search` at concurrency 50: 49986 vs 4774 req/s, 10.47x; `search-auth`
+  at concurrency 100: 38768 vs 3989 req/s, 9.72x). The two remaining
+  cells, `delete` at concurrency 1 and 20, are within noise of parity
+  (0.95x and 0.97x) — not a regression to chase, just not yet a win.
+  Full table: `benchmarks/README.md`; raw numbers:
+  `benchmarks/results/{cratebase,pocketbase}.json`.
 - **Auth rate limiting.** `/collections/{c}/auth-with-password`, and the
   `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
   IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
