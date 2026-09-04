@@ -37,13 +37,25 @@ land.
     mid-run) reclaim. Same "small built-in job registry" trade-off as
     cron jobs. `cb.queue.enqueue(queue, payload)` in the SDK.
   **Still not built on this foundation:**
-  - **Team management as a plugin** — multiple admins with roles is a
-    real data-model change (today there is one `_admins` table, no
-    roles); once record-lifecycle hooks exist on `Plugin` this can enforce
-    role checks without touching the core auth crate.
+  - **Team management as a plugin** — multiple superusers with roles is a
+    real data-model change (today `_superusers` is one flat auth
+    collection, no roles); once record-lifecycle hooks exist on `Plugin`
+    this can enforce role checks without touching the core auth crate.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
+- **OAuth2 (Google, GitHub).** Not wired up despite appearances:
+  `.env.example` documents `OAUTH_GOOGLE_CLIENT_ID`/`_SECRET` and
+  `OAUTH_GITHUB_CLIENT_ID`/`_SECRET` as placeholders, `auth-methods`'
+  response already has an `oauth2: {enabled, providers}` shape, and
+  `AuthOptions.oauth2` exists on every auth collection — but there is no
+  `crates/server/src/oauth2.rs`, no authorization-code exchange, and no
+  `auth-with-oauth2` route; `routes/auth.rs`'s router explicitly comments
+  `// auth-with-oauth2 (no provider wiring yet)`, and `auth-methods`
+  always reports `providers: []`. External auths (`_externalAuths`
+  collection CRUD, `listExternalAuths`/`unlinkExternalAuth` in the SDK)
+  work today for a provider linked by some other means, but nothing in
+  this codebase can create that link yet.
 - File field constraints in the dashboard UI (`mimeTypes`, `maxSize` are
   already schema fields but have no editor).
 - **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
@@ -68,11 +80,10 @@ land.
 
 ## Shipped
 
-- **Auth rate limiting.** `/admins/auth-with-password`,
-  `/collections/{c}/auth-with-password`, and the three `request-*` email
-  flows below are rate-limited per client IP (`AUTH_RATE_LIMIT_ENABLED`,
-  on by default). `auth-refresh` is deliberately excluded — see
-  `routes/auth.rs`'s doc comment for why.
+- **Auth rate limiting.** `/collections/{c}/auth-with-password`, and the
+  `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
+  IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
+  deliberately excluded — see `routes/auth.rs`'s doc comment for why.
 - **Mailer.** `crates/mailer`: Resend HTTP API, plain SMTP, or a `Log`
   fallback that writes the email to `tracing` instead of delivering it —
   every email-dependent flow below is exercisable with zero external
@@ -97,24 +108,43 @@ Password reset and email verification/change are email-identity-only for
 now (`authOptions.identityField == "email"`); a username-identity auth
 collection has no address to send them to.
 
-- **OAuth2 (Google, GitHub).** `crates/server/src/oauth2.rs`: authorization-
-  code exchange + provider-specific userinfo parsing. `GET
-  /collections/{c}/auth-methods?redirectUri=...` returns each configured
-  provider's ready-to-open `authUrl`; `POST
-  /collections/{c}/auth-with-oauth2` does the exchange and signs in — via
-  an existing link (`_external_auths`), an auto-linked matching email, or
-  a newly created (pre-verified) record. Configuring a provider is two env
-  vars (`OAUTH_GOOGLE_CLIENT_ID`/`_SECRET`); unconfigured providers just
-  don't appear in `auth-methods`. Adding a provider beyond Google/GitHub
-  means a branch in `providers_from_env`/`fetch_user`, not a new
-  abstraction — the two providers' userinfo shapes already differ enough
-  (GitHub's email is a separate scoped call) that a generic trait would
-  just wrap a `match`.
 - **OTP (passwordless) login and MFA.** `POST
-  /collections/{c}/request-otp` / `auth-with-otp` for a code-only login;
-  `authOptions.mfaRequired` gates a successful password login behind the
-  same emailed one-time code (`POST /collections/{c}/mfa/confirm`) via a
-  new `_otp_codes` table.
+  /collections/{c}/request-otp` / `auth-with-otp` for a code-only login,
+  backed by a new `_otps` collection (one-time codes, SHA-256 hashed —
+  not Argon2id, since an OTP is single-use and discarded within minutes).
+  `authOptions.mfa.enabled` (with `authOptions.mfa.rule` selecting which
+  records need it) gates a successful first-factor login behind a second
+  one: the first successful credential check opens a pending `_mfas`
+  session and answers `401 {"mfaId": "..."}`; completing it is a second
+  call to `auth-with-password` or `auth-with-otp` with that `mfaId`,
+  using a *different* method than the one that already succeeded — there
+  is no separate `mfa/confirm` endpoint.
+- **Superuser impersonation.** `POST /collections/{c}/impersonate/{id}`
+  (superuser only) mints a non-refreshable session token for another
+  record — a one-shot loan, not a credential the impersonated record can
+  extend itself.
+- **New-location login alerts.** Every successful login records a
+  fingerprint in the `_authOrigins` collection; a genuinely new device for
+  a record that already had a prior origin on file fires an emailed
+  alert (best-effort — never fails the login it rides along with). A
+  record's very first login ever is never alerted.
+- **First-run setup.** `GET /api/setup/status` / `POST /api/setup`
+  (`crates/server/src/routes/setup.rs`) create the first `_superusers`
+  record without a CLI: the dashboard renders an inline setup form
+  instead of a bare login screen until one exists, then logs in through
+  the ordinary `auth-with-password` flow. `cratebase superuser create`
+  still works for scripted/headless setup; the endpoint re-checks "does a
+  superuser exist" at write time and is permanently closed once one does.
+- **JS hooks (PocketBase parity).** A `pb_hooks/*.pb.js` file next to the
+  data directory is evaluated at startup by an embedded QuickJS runtime
+  (`crates/jsvm`): PocketBase-style `onRecordCreate`/`onRecordUpdate`-style
+  lifecycle hooks bound through native hook registration, and `routerAdd`
+  for mounting custom root-level HTTP routes (`cronAdd` for JS-defined
+  cron jobs too). The glue lives in `crates/server/src/jsvm_host.rs`,
+  which implements `cratebase_jsvm::HostApi` once over the plain `App`
+  and once over an open `TxApp` so a hook's own `$app.save`/`$app.delete`
+  inside a record write-path hook joins that write's own transaction. No
+  `pb_hooks/` directory (or an empty one) is a complete no-op.
 - **Batch API.** `POST /api/batch` — transactional multi-record
   create/update/delete in one request, sharing one SQL transaction with
   the same rule/validation logic the individual record routes use.
@@ -127,11 +157,14 @@ collection has no address to send them to.
   first request and cached to the storage backend) and **protected-file
   access tokens** (`POST /api/files/token`, `?token=`) for embedding a
   gated file where an `Authorization` header can't be sent.
-- **Admin dashboard: Settings area** (request logs, backups, cron jobs),
-  **design system pass** (light/dark contrast), **sidebar
-  system-collection grouping**, **type-aware records table**, and
-  **field-editor UX polish** (per-type option panels, inline validation,
-  a syntax-help popover on every rule input).
+- **Admin dashboard: Settings area** (request logs, backups — including
+  upload/restore, cron jobs, and a Network page for rate limits/trusted
+  proxy/superuser IPs), **collection export/import**, a **geoPoint field
+  editor**, **per-collection auth-provider UI**, **design system pass**
+  (light/dark contrast), **sidebar system-collection grouping**,
+  **type-aware records table**, and **field-editor UX polish** (per-type
+  option panels, inline validation, a syntax-help popover on every rule
+  input).
 
 ## Later
 

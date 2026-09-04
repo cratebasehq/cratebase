@@ -1,20 +1,113 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { cb } from "@/lib/api";
+import { settingsLogsRoute } from "@/routes/settings-logs";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Pagination } from "@/components/interior/pagination";
+import { Pagination } from "@/components/ui/pagination";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListTree } from "lucide-react";
 
+/** `GET /api/logs/stats` — hourly request counts for whatever filter the
+ * table itself is showing, so the chart and the rows underneath it always
+ * agree on what "the current view" means. */
+type LogStat = { date: string; total: number };
+
+/** Renders as a plain hour for a bucket less than a day old, and adds the
+ * date once the range spans more than one — the hourly label alone stops
+ * being enough to tell two bars apart once they're a day apart. */
+function bucketLabel(iso: string, spansMultipleDays: boolean): string {
+  const date = new Date(iso);
+  const hour = date.toLocaleTimeString(undefined, { hour: "numeric" });
+  if (!spansMultipleDays) return hour;
+  return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${hour}`;
+}
+
+/** The activity chart above the log table — hourly request volume for the
+ * current filter. Superuser-only like the rest of this screen; there's
+ * nothing here that isn't already visible row-by-row in the table, this
+ * is just the shape of it at a glance. */
+function RequestLogsChart({ filter }: { filter: string }) {
+  const { data: stats } = useQuery({
+    queryKey: ["request-logs", "stats", filter],
+    queryFn: () => cb.send<LogStat[]>("/api/logs/stats", { method: "GET", query: { filter: filter || undefined } }),
+    placeholderData: (previous) => previous,
+  });
+
+  const spansMultipleDays = useMemo(() => {
+    if (!stats || stats.length < 2) return false;
+    const first = new Date(stats[0]!.date).toDateString();
+    const last = new Date(stats[stats.length - 1]!.date).toDateString();
+    return first !== last;
+  }, [stats]);
+
+  const chartData = useMemo(
+    () => (stats ?? []).map((s) => ({ ...s, label: bucketLabel(s.date, spansMultipleDays) })),
+    [stats, spansMultipleDays],
+  );
+
+  if (!stats || stats.length === 0) return null;
+
+  return (
+    <div className="h-32 w-full rounded-lg border border-border bg-card p-2">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+          <XAxis
+            dataKey="label"
+            tick={{ fontSize: 10 }}
+            tickLine={false}
+            axisLine={false}
+            interval="preserveStartEnd"
+            className="fill-muted-foreground"
+          />
+          <YAxis hide allowDecimals={false} />
+          <Tooltip
+            cursor={{ fill: "var(--color-accent)" }}
+            contentStyle={{
+              background: "var(--color-popover)",
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-lg)",
+              fontSize: 12,
+            }}
+            labelFormatter={(label) => label}
+            formatter={(value) => [`${value} request${value === 1 ? "" : "s"}`, undefined]}
+          />
+          <Bar dataKey="total" radius={[2, 2, 0, 0]} className="fill-primary" />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/**
+ * A log row as the server writes it, which is PocketBase's shape: the
+ * request's details live under `data`, not on the row. The row itself
+ * only carries the level, the rendered message and the timestamp.
+ *
+ * `level` is 0 for a 2xx and 8 for a failure, and a failing row also
+ * carries `data.error`.
+ */
 type RequestLogEntry = {
   id: string;
-  method: string;
-  path: string;
-  status: number;
-  durationMs: number;
-  authId: string | null;
-  authCollectionId: string | null;
+  level: number;
+  message: string;
   created: string;
+  data?: {
+    type?: string;
+    method?: string;
+    url?: string;
+    status?: number;
+    execTime?: number;
+    auth?: string;
+    userIP?: string;
+    remoteIP?: string;
+    referer?: string;
+    userAgent?: string;
+    error?: string;
+  };
 };
 
 type RequestLogsResult = {
@@ -31,18 +124,36 @@ function statusVariant(status: number): "default" | "secondary" | "destructive" 
   return "default";
 }
 
+/** `data.auth` is the empty string for a guest, not absent. */
 function callerLabel(entry: RequestLogEntry): string {
-  if (!entry.authId) return "anonymous";
-  return entry.authCollectionId ? `${entry.authId} (${entry.authCollectionId})` : `${entry.authId} (admin)`;
+  const auth = entry.data?.auth;
+  return auth && auth.length > 0 ? auth : "anonymous";
+}
+
+/** The path, without the origin the server records it with. */
+function pathOf(entry: RequestLogEntry): string {
+  const url = entry.data?.url;
+  if (!url) return entry.message ?? "";
+  try {
+    return new URL(url, "http://localhost").pathname + new URL(url, "http://localhost").search;
+  } catch {
+    return url;
+  }
 }
 
 /** Superuser-only view over `_request_logs`, the bounded history the
  * `request_log` middleware writes on every `/api/*` call. Read-only —
  * there's nothing to edit here, just something to search. */
 export function RequestLogsPage() {
-  const [page, setPage] = useState(1);
-  const [filterInput, setFilterInput] = useState("");
-  const [filter, setFilter] = useState("");
+  const urlSearch = settingsLogsRoute.useSearch();
+  const navigate = settingsLogsRoute.useNavigate();
+  const page = urlSearch.page ?? 1;
+  const filter = urlSearch.filter ?? "";
+  const [filterInput, setFilterInput] = useState(filter);
+
+  useEffect(() => {
+    setFilterInput(filter);
+  }, [filter]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["request-logs", page, filter],
@@ -56,12 +167,13 @@ export function RequestLogsPage() {
 
   function submitFilter(e: React.FormEvent) {
     e.preventDefault();
-    setPage(1);
-    setFilter(filterInput.trim());
+    void navigate({ search: { page: undefined, filter: filterInput.trim() || undefined }, replace: true });
   }
 
   return (
     <div className="flex flex-col gap-4 p-6">
+      <RequestLogsChart filter={filter} />
+
       <form onSubmit={submitFilter} className="flex max-w-sm items-center gap-2">
         <Input
           value={filterInput}
@@ -85,22 +197,43 @@ export function RequestLogsPage() {
         <TableBody>
           {(data?.items ?? []).map((entry) => (
             <TableRow key={entry.id}>
-              <TableCell className="font-mono text-xs">{entry.method}</TableCell>
-              <TableCell className="font-mono text-xs">{entry.path}</TableCell>
+              <TableCell className="font-mono text-xs">{entry.data?.method ?? "—"}</TableCell>
+              <TableCell className="font-mono text-xs">{pathOf(entry)}</TableCell>
               <TableCell>
-                <Badge variant={statusVariant(entry.status)}>{entry.status}</Badge>
+                <Badge variant={statusVariant(entry.data?.status ?? 0)}>{entry.data?.status ?? "—"}</Badge>
               </TableCell>
-              <TableCell className="text-xs text-muted-foreground">{entry.durationMs}ms</TableCell>
+              <TableCell className="text-xs text-muted-foreground">
+                  {entry.data?.execTime != null ? `${entry.data.execTime.toFixed(2)}ms` : "—"}
+                </TableCell>
               <TableCell className="text-xs text-muted-foreground">{callerLabel(entry)}</TableCell>
               <TableCell className="text-xs text-muted-foreground">
                 {new Date(entry.created).toLocaleString()}
               </TableCell>
             </TableRow>
           ))}
+          {isLoading ? (
+            Array.from({ length: 5 }).map((_, i) => (
+              <TableRow key={i}>
+                <TableCell colSpan={6}>
+                  <Skeleton className="h-row w-full" />
+                </TableCell>
+              </TableRow>
+            ))
+          ) : null}
           {!isLoading && (data?.items.length ?? 0) === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                No requests logged yet.
+              <TableCell colSpan={6} className="py-8">
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <ListTree />
+                    </EmptyMedia>
+                    <EmptyTitle>No requests logged yet</EmptyTitle>
+                    <EmptyDescription>
+                      Every call to <code className="font-mono">/api/*</code> lands here as it happens.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               </TableCell>
             </TableRow>
           ) : null}
@@ -109,7 +242,14 @@ export function RequestLogsPage() {
 
       {data && data.totalPages > 1 ? (
         <div className="flex justify-center py-2">
-          <Pagination count={data.totalPages} page={page} onPageChange={setPage} label="Request log pages" />
+          <Pagination
+            count={data.totalPages}
+            page={page}
+            onPageChange={(next) =>
+              void navigate({ search: (prev) => ({ ...prev, page: next > 1 ? next : undefined }), replace: true })
+            }
+            label="Request log pages"
+          />
         </div>
       ) : null}
     </div>

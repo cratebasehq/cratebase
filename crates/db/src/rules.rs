@@ -109,6 +109,25 @@ pub async fn check_create_rule(
     resolver: &CollectionResolver<'_>,
     rule: &Option<String>,
 ) -> DbResult<bool> {
+    let body = resolver.ctx().body.clone();
+    check_rule_against_row(ex, resolver, rule, &body).await
+}
+
+/// [`check_create_rule`] generalised to any single row, given as a
+/// PocketBase-shaped JSON map.
+///
+/// The realtime fan-out needs exactly this and cannot use a plain query:
+/// a `delete` event has to be access-checked against a row that is
+/// already gone, so there is nothing to `SELECT`. Feeding the in-memory
+/// snapshot through the same two strategies — evaluate in process, else
+/// stand the row up as a one-row derived table — answers for a deleted
+/// record as readily as for an uncommitted one.
+pub async fn check_rule_against_row(
+    ex: &dyn Executor,
+    resolver: &CollectionResolver<'_>,
+    rule: &Option<String>,
+    row: &serde_json::Map<String, Value>,
+) -> DbResult<bool> {
     if resolver.ctx().is_superuser() {
         return Ok(true);
     }
@@ -118,10 +137,9 @@ pub async fn check_create_rule(
         Some(e) => e,
     };
     let ast = cratebase_filter::parse_cached(expr)?;
-    let body = resolver.ctx().body.clone();
-    match cratebase_filter::evaluate(&ast, &body, resolver) {
+    match cratebase_filter::evaluate(&ast, row, resolver) {
         Ok(passed) => Ok(passed),
-        Err(FilterError::Unsupported(_)) => check_via_sql(ex, resolver, &ast).await,
+        Err(FilterError::Unsupported(_)) => check_via_sql(ex, resolver, &ast, row).await,
         Err(e) => Err(e.into()),
     }
 }
@@ -141,11 +159,12 @@ async fn check_via_sql(
     ex: &dyn Executor,
     resolver: &CollectionResolver<'_>,
     expr: &Expr,
+    row: &serde_json::Map<String, Value>,
 ) -> DbResult<bool> {
     let collection = resolver.root_collection();
     let (from, mut params) = body_row_sql(
         collection,
-        &resolver.ctx().body,
+        row,
         cratebase_filter::Resolver::dialect(resolver),
     );
     let compiled = cratebase_filter::compile(expr, resolver, params.len())?;

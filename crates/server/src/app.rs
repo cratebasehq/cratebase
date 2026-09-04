@@ -52,6 +52,7 @@ pub struct AppInner {
     /// and stop itself when the app goes away.
     rate_limiter: Arc<RateLimiter>,
     cron: CronService,
+    realtime: crate::realtime::RealtimeService,
     hooks: Hooks,
     store: Store,
     plugins: std::sync::Mutex<PluginRegistry>,
@@ -68,11 +69,34 @@ pub struct AppInner {
     /// "exactly one resolution per request" instead of trusting a
     /// comment.
     auth_resolutions: std::sync::atomic::AtomicU64,
+    /// Set once the JS runtime starts (absent `pb_hooks/`, or an empty
+    /// one, means it never does). An `Arc<OnceLock<_>>` rather than a
+    /// plain field so hook bridges bound while the runtime's own hook
+    /// files are still being evaluated (see `register_hook`) can hold a
+    /// handle to it before `Runtime::start` has returned.
+    jsvm: Arc<OnceLock<cratebase_jsvm::Runtime>>,
+    /// Routes a `pb_hooks` file mounted with `routerAdd`, collected while
+    /// the runtime starts and turned into real axum routes by
+    /// `crate::jsvm_host::js_router` once `crate::router` assembles the
+    /// server.
+    js_routes: std::sync::Mutex<Vec<JsRoute>>,
 }
 
 #[derive(Clone)]
 pub struct App {
     inner: Arc<AppInner>,
+}
+
+/// One `routerAdd` registration: a JS-runtime route waiting to be turned
+/// into a real axum route by `crate::jsvm_host::js_router`.
+#[derive(Clone)]
+pub struct JsRoute {
+    /// Upper-case HTTP method, or empty for "any method" (PocketBase
+    /// accepts both from `routerAdd`).
+    pub method: String,
+    /// PocketBase-style path pattern (`/hello/{name}`, `/files/{path...}`).
+    pub pattern: String,
+    pub handler: cratebase_jsvm::RouteHandlerId,
 }
 
 impl std::fmt::Debug for App {
@@ -114,11 +138,14 @@ impl App {
                 logger: OnceLock::new(),
                 rate_limiter: Arc::new(RateLimiter::new()),
                 cron: CronService::new(),
+                realtime: crate::realtime::RealtimeService::new(),
                 hooks: Hooks::new(),
                 store: Store::new(),
                 plugins: std::sync::Mutex::new(PluginRegistry::new()),
                 bootstrapped: std::sync::atomic::AtomicBool::new(false),
                 auth_resolutions: std::sync::atomic::AtomicU64::new(0),
+                jsvm: Arc::new(OnceLock::new()),
+                js_routes: std::sync::Mutex::new(Vec::new()),
             }),
         }
     }
@@ -195,12 +222,53 @@ impl App {
         &self.inner.cron
     }
 
+    /// The realtime (SSE) client registry.
+    pub fn realtime(&self) -> &crate::realtime::RealtimeService {
+        &self.inner.realtime
+    }
+
     pub fn hooks(&self) -> &Hooks {
         &self.inner.hooks
     }
 
     pub fn store(&self) -> &Store {
         &self.inner.store
+    }
+
+    /// The running JS runtime, once `App::bootstrap` has started one.
+    /// `None` when no `pb_hooks` directory exists (or it is empty) — the
+    /// documented zero-cost case, so nothing here ever starts a runtime
+    /// speculatively.
+    pub fn jsvm(&self) -> Option<cratebase_jsvm::Runtime> {
+        self.inner.jsvm.get().cloned()
+    }
+
+    /// A handle a hook bridge can hold onto *before* the runtime it will
+    /// eventually call into has finished starting (see
+    /// `crate::hooks::bind_js_hook`): registration happens synchronously
+    /// while `Runtime::start` evaluates the hook files, which is before
+    /// the `Runtime` value it returns exists.
+    pub(crate) fn jsvm_cell(&self) -> Arc<OnceLock<cratebase_jsvm::Runtime>> {
+        self.inner.jsvm.clone()
+    }
+
+    /// Record a `routerAdd` registration. Turned into a real route by
+    /// `crate::jsvm_host::js_router` when `crate::router` assembles the
+    /// server, which happens once every `pb_hooks` file has already run.
+    pub(crate) fn push_js_route(&self, route: JsRoute) {
+        self.inner
+            .js_routes
+            .lock()
+            .expect("js route registry poisoned")
+            .push(route);
+    }
+
+    pub fn js_routes(&self) -> Vec<JsRoute> {
+        self.inner
+            .js_routes
+            .lock()
+            .expect("js route registry poisoned")
+            .clone()
     }
 
     pub fn is_bootstrapped(&self) -> bool {
@@ -301,6 +369,15 @@ impl App {
         };
         self.apply_settings(Arc::new(settings))?;
 
+        // Starts the JS runtime when `pb_hooks/` exists and has at least
+        // one `*.pb.js` file; a no-op otherwise (spec: absent `pb_hooks`
+        // must cost nothing). Must run before `register_system_crons` /
+        // `plugin.setup` below so a `pb_hooks` file's `cronAdd`/`onRecord*`
+        // registrations are in place before anything can trigger them, and
+        // after settings/collections are loaded so a hook file that reads
+        // `$app.*` at evaluation time sees a working database.
+        crate::jsvm_host::maybe_start(self).await?;
+
         let logger = if config.log_requests {
             LogWriter::spawn(self.db().clone())
         } else {
@@ -364,6 +441,12 @@ impl App {
         if let Err(e) = self.hooks().on_terminate.trigger_bare(&mut event).await {
             tracing::warn!(error = %e, "on_terminate handler failed");
         }
+        // Stopped after `on_terminate` so a JS `onTerminate` handler still
+        // runs, and before the database closes since a worker thread may
+        // still be mid-call.
+        if let Some(rt) = self.jsvm() {
+            rt.stop();
+        }
         self.logger().flush().await;
         if let Some(db) = self.try_db() {
             if let Err(e) = db.close().await {
@@ -424,9 +507,10 @@ impl App {
                 }
             });
 
-        // `_mfas` / `_otps` rows are short-lived; W4b's auth service fills
-        // these in with the per-collection durations. Until then they are
-        // registered (the API lists them) but sweep nothing.
+        // `_mfas` / `_otps` rows are short-lived; each auth collection has
+        // its own configured duration, and both system tables are shared
+        // across every auth collection, so the sweep walks the collection
+        // store rather than issuing one blanket cutoff.
         let app = self.clone();
         let _ = self
             .inner
@@ -434,8 +518,29 @@ impl App {
             .add(cron::JOB_MFA_CLEANUP, "0 * * * *", move || {
                 let app = app.clone();
                 async move {
-                    // W4b: delete expired `_mfas` rows.
-                    let _ = &app;
+                    for collection in app.db().collections.all().all.iter() {
+                        if !collection.is_auth() || !collection.auth.mfa.enabled {
+                            continue;
+                        }
+                        let cutoff = cratebase_core::DateTime::from_utc(
+                            chrono::Utc::now()
+                                - chrono::Duration::seconds(collection.auth.mfa.duration.max(1)),
+                        );
+                        let sql = r#"DELETE FROM "_mfas" WHERE "collectionRef" = $1 AND "created" < $2"#;
+                        if let Err(e) = app
+                            .db()
+                            .execute(
+                                sql,
+                                &[
+                                    Sql::Text(collection.id.clone()),
+                                    Sql::Text(cutoff.to_pb_string()),
+                                ],
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %e, collection = %collection.name, "mfa cleanup failed");
+                        }
+                    }
                 }
             });
         let app = self.clone();
@@ -445,8 +550,29 @@ impl App {
             .add(cron::JOB_OTP_CLEANUP, "0 * * * *", move || {
                 let app = app.clone();
                 async move {
-                    // W4b: delete expired `_otps` rows.
-                    let _ = &app;
+                    for collection in app.db().collections.all().all.iter() {
+                        if !collection.is_auth() || !collection.auth.otp.enabled {
+                            continue;
+                        }
+                        let cutoff = cratebase_core::DateTime::from_utc(
+                            chrono::Utc::now()
+                                - chrono::Duration::seconds(collection.auth.otp.duration.max(1)),
+                        );
+                        let sql = r#"DELETE FROM "_otps" WHERE "collectionRef" = $1 AND "created" < $2"#;
+                        if let Err(e) = app
+                            .db()
+                            .execute(
+                                sql,
+                                &[
+                                    Sql::Text(collection.id.clone()),
+                                    Sql::Text(cutoff.to_pb_string()),
+                                ],
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = %e, collection = %collection.name, "otp cleanup failed");
+                        }
+                    }
                 }
             });
 
@@ -505,9 +631,40 @@ impl App {
         Fut: std::future::Future<Output = Result<T, AppError>> + Send,
         T: Send,
     {
-        let tx = self.db().begin().await.map_err(AppError::from)?;
+        self.run_scoped(true, f).await
+    }
+
+    /// [`run_in_transaction`](App::run_in_transaction) with an opt-out.
+    ///
+    /// When `transactional` is false no transaction is opened and the
+    /// [`TxApp`]'s statements run in autocommit mode on the engine. Only
+    /// pass false when the closure issues **one** statement and nothing
+    /// else (no hook, no cascade) can join or abort it: the whole point
+    /// of the transaction is to make several statements — or a statement
+    /// plus a hook that may fail after it — atomic, and a single
+    /// statement already is.
+    ///
+    /// This is worth an opt-out because the transaction is not free:
+    /// `BEGIN IMMEDIATE` and `COMMIT` are two extra round trips onto the
+    /// blocking pool, with the single writer connection locked across all
+    /// three. Measured straight on the SQLite engine (16 readers, 6000
+    /// rows), one `DELETE` costs 83µs wrapped in a transaction against
+    /// 59µs in autocommit: a writer ceiling of ~12.0k versus ~17.0k
+    /// deletes per second, at every concurrency from 1 to 50.
+    pub async fn run_scoped<F, Fut, T>(&self, transactional: bool, f: F) -> Result<T, AppError>
+    where
+        F: FnOnce(TxApp) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<T, AppError>> + Send,
+        T: Send,
+    {
+        let tx = if transactional {
+            Some(self.db().begin().await.map_err(AppError::from)?)
+        } else {
+            None
+        };
         let handle = Arc::new(TxHandle {
-            tx: tokio::sync::Mutex::new(Some(tx)),
+            tx: tokio::sync::Mutex::new(tx),
+            transactional,
         });
         let tx_app = TxApp {
             app: self.clone(),
@@ -529,8 +686,9 @@ impl App {
 
     /// Look up a `_superusers` row by id, straight through the engine.
     ///
-    /// W4b: replace with `records::find_by_id_raw` once W3 lands — the
-    /// record layer applies hidden-field and rule handling this does not.
+    /// The request path uses `records::find_by_id_raw` instead (it decodes
+    /// into a `Record` and applies the field types); this raw form stays
+    /// for the CLI, which runs before any collection is resolved.
     pub async fn find_superuser_by_id(&self, id: &str) -> Result<Option<Row>, AppError> {
         self.db()
             .query_one(
@@ -542,7 +700,7 @@ impl App {
     }
 
     /// Look up a `_superusers` row by email. See
-    /// [`App::find_superuser_by_id`] for the W4b note.
+    /// [`App::find_superuser_by_id`] for why this stays raw.
     pub async fn find_superuser_by_email(&self, email: &str) -> Result<Option<Row>, AppError> {
         self.db()
             .query_one(
@@ -622,8 +780,9 @@ impl App {
     }
 
     /// Mint a token for a record of `collection_name`, signed with the
-    /// record's own `tokenKey` (spec §2). W4b's auth service builds on
-    /// this rather than re-deriving the key.
+    /// record's own `tokenKey` (spec §2). Note that the claims carry no
+    /// `refreshable` flag; `routes::auth` mints session tokens itself
+    /// with `new_auth_claims` so the SDK sees PocketBase's exact payload.
     pub async fn mint_token(
         &self,
         collection_name: &str,
@@ -681,6 +840,13 @@ pub fn new_token_key() -> String {
 /// `run_in_transaction` scope.
 struct TxHandle {
     tx: tokio::sync::Mutex<Option<Transaction>>,
+    /// False for a scope opened by [`App::run_scoped`] with
+    /// `transactional = false`: `tx` is then permanently `None` and the
+    /// [`TxApp`] executes straight on the engine. Kept as its own flag so
+    /// "no transaction was ever opened" is distinguishable from "the
+    /// transaction has already been committed", which must still be an
+    /// error.
+    transactional: bool,
 }
 
 impl TxHandle {
@@ -729,6 +895,9 @@ impl Executor for TxApp {
     }
 
     async fn query(&self, sql: &str, params: &[Sql]) -> cratebase_db::DbResult<Vec<Row>> {
+        if !self.handle.transactional {
+            return self.app.db().query(sql, params).await;
+        }
         let guard = self.handle.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx.query(sql, params).await,
@@ -737,6 +906,9 @@ impl Executor for TxApp {
     }
 
     async fn execute(&self, sql: &str, params: &[Sql]) -> cratebase_db::DbResult<u64> {
+        if !self.handle.transactional {
+            return self.app.db().execute(sql, params).await;
+        }
         let guard = self.handle.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx.execute(sql, params).await,

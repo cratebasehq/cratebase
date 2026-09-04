@@ -25,9 +25,22 @@ paths:
                 type: object
                 properties: { status: { type: string, example: ok } }
 
-  /admins/auth-with-password:
+  /setup/status:
+    get:
+      summary: Whether the instance still needs its first superuser (first-run only)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { needsSetup: { type: boolean } }
+
+  /setup:
     post:
-      summary: Superuser login
+      summary: Create the first superuser (`_superusers` record). Permanently closed once any superuser exists.
       security: []
       requestBody:
         required: true
@@ -35,36 +48,78 @@ paths:
           application/json:
             schema:
               type: object
-              required: [email, password]
+              required: [email, password, passwordConfirm]
               properties:
                 email: { type: string, format: email }
-                password: { type: string }
+                password: { type: string, minLength: 8 }
+                passwordConfirm: { type: string }
       responses:
-        "200":
-          description: OK
+        "200": { description: Created, content: { application/json: { schema: { type: object } } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "403":
+          description: A superuser already exists
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  token: { type: string }
-                  admin: { $ref: "#/components/schemas/Admin" }
-        "401": { $ref: "#/components/responses/Error" }
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
-  /admins/auth-refresh:
+  /batch:
     post:
-      summary: Refresh a superuser token
+      summary: Run several record create/update/upsert/delete calls in one HTTP round trip and one SQL transaction
+      description: >
+        `application/json` (`{"requests": [...]}`) when no sub-request
+        uploads a file, or `multipart/form-data` with a `@jsonPayload`
+        part plus `requests.<index>.<field>` file parts otherwise — the
+        shape the official SDK's `createBatch()` always sends. Each
+        sub-request is itself one of the record endpoints:
+        `POST .../records` (create), `PATCH .../records/{id}` (update),
+        `PUT .../records` (upsert, id read from the body), or
+        `DELETE .../records/{id}`. All sub-requests commit together or
+        not at all.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requests]
+              properties:
+                requests:
+                  type: array
+                  items:
+                    type: object
+                    required: [method, url]
+                    properties:
+                      method: { type: string, enum: [POST, PATCH, PUT, DELETE] }
+                      url: { type: string, description: "e.g. /collections/posts/records" }
+                      headers: { type: object, additionalProperties: { type: string } }
+                      body: { type: object, additionalProperties: true }
+          multipart/form-data:
+            schema: { type: object, additionalProperties: true }
       responses:
         "200":
-          description: OK
+          description: Every sub-request succeeded
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  token: { type: string }
-                  admin: { $ref: "#/components/schemas/Admin" }
-        "401": { $ref: "#/components/responses/Error" }
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        status: { type: integer }
+                        body: { type: object, nullable: true, additionalProperties: true }
+        "400":
+          description: >
+            The whole batch was rejected, or one sub-request failed and
+            rolled back every other one — the failing sub-request's own
+            `{status, message, data}` is nested at
+            `data.requests["<index>"].response`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /collections:
     get:
@@ -234,7 +289,7 @@ paths:
         required: true
         schema: { type: string }
     post:
-      summary: Log in to an auth collection
+      summary: Log in to an auth collection (superuser login is the same endpoint with idOrName=_superusers)
       security: []
       requestBody:
         required: true
@@ -242,10 +297,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [email, password]
+              required: [identity, password]
               properties:
-                email: { type: string, format: email }
+                identity: { type: string, description: "Matched against passwordAuth.identityFields (email by default)" }
                 password: { type: string }
+                identityField: { type: string, description: "Pin the lookup to one identity field instead of trying each in order" }
+                mfaId: { type: string, description: "A pending MFA session id from a previous 401 {mfaId} response" }
       responses:
         "200":
           description: OK
@@ -256,7 +313,13 @@ paths:
                 properties:
                   token: { type: string }
                   record: { $ref: "#/components/schemas/Record" }
-        "401": { $ref: "#/components/responses/Error" }
+        "401":
+          description: >
+            Wrong credentials, or a pending MFA challenge: `{"mfaId": "..."}`
+            with no `status`/`message`/`data` envelope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
   /collections/{idOrName}/auth-refresh:
     parameters:
@@ -277,6 +340,239 @@ paths:
                   token: { type: string }
                   record: { $ref: "#/components/schemas/Record" }
         "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/auth-methods:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Which auth methods this collection has enabled
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  password: { type: object, properties: { enabled: { type: boolean }, identityFields: { type: array, items: { type: string } } } }
+                  oauth2: { type: object, properties: { enabled: { type: boolean }, providers: { type: array, items: { type: object } } } }
+                  mfa: { type: object, properties: { enabled: { type: boolean }, duration: { type: integer } } }
+                  otp: { type: object, properties: { enabled: { type: boolean }, duration: { type: integer } } }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/request-verification:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Email a one-time link to verify a record's address
+      security: []
+      description: Always answers 204, even for an unknown address, so a caller can't enumerate accounts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+      responses:
+        "204": { description: OK }
+
+  /collections/{idOrName}/confirm-verification:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Consume a verification token and mark the record verified
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [token], properties: { token: { type: string } } }
+      responses:
+        "204": { description: OK }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/request-password-reset:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Email a one-time password-reset link
+      security: []
+      description: Always answers 204, even for an unknown address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+      responses:
+        "204": { description: OK }
+
+  /collections/{idOrName}/confirm-password-reset:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Consume a password-reset token and set a new password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password, passwordConfirm]
+              properties:
+                token: { type: string }
+                password: { type: string }
+                passwordConfirm: { type: string }
+      responses:
+        "204": { description: OK }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/request-email-change:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Email a confirmation link to a pending new address (authenticated)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [newEmail], properties: { newEmail: { type: string, format: email } } }
+      responses:
+        "204": { description: OK }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/confirm-email-change:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Consume an email-change token; the acting record comes from the token, not from Authorization
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, description: "The record's current password, checked as a second factor" }
+      responses:
+        "204": { description: OK }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/request-otp:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Email a one-time login code
+      security: []
+      description: Always returns a well-formed otpId, even for an unknown address.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [email], properties: { email: { type: string, format: email } } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { otpId: { type: string } } }
+
+  /collections/{idOrName}/auth-with-otp:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Complete a one-time-code login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otpId, password]
+              properties:
+                otpId: { type: string }
+                password: { type: string, description: "The emailed one-time code" }
+                mfaId: { type: string, description: "A pending MFA session id from a previous 401 {mfaId} response" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  record: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401":
+          description: 'A pending MFA challenge: `{"mfaId": "..."}` with no status/message/data envelope'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /collections/{idOrName}/impersonate/{id}:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Superuser-only — mint a non-refreshable session token for another record
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                duration: { type: integer, description: "Token lifetime in seconds; defaults to the collection's authToken.duration" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  record: { $ref: "#/components/schemas/Record" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /files/{collection}/{recordId}/{filename}:
     parameters:
@@ -359,13 +655,6 @@ components:
               code: { type: string }
               message: { type: string }
           description: Per-field validation errors, present when code is 400
-    Admin:
-      type: object
-      properties:
-        id: { type: string }
-        email: { type: string }
-        created: { type: string }
-        updated: { type: string }
     Record:
       type: object
       description: Every record has these plus its collection's own schema fields.

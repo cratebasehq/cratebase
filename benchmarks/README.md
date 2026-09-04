@@ -57,59 +57,104 @@ benchmarks/run.sh --concurrency=1,20    # any bench.ts flag is forwarded
 Raw results: [`results/cratebase.json`](./results/cratebase.json),
 [`results/pocketbase.json`](./results/pocketbase.json).
 
-## Results (2026-09-03, after the Phase 1 performance pass)
+## Results (2026-09-04, after the WAL-checkpoint fix)
 
-16 vCPU / 27 GB shared sandbox. 0 errors on either server. Bold ratio =
-Cratebase faster.
+16 vCPU / 27 GB shared sandbox. 0 errors on either server. Median of 3
+runs per cell after a discarded warm-up. Bold ratio = Cratebase faster.
+This is the run in [`results/`](./results/); the host was busy while it
+ran (load average ~7, swap exhausted, ~11% iowait), which is visible in
+the absolute numbers of both servers — see the note at the end.
 
 | Category | Conc | Cratebase req/s | PocketBase req/s | Ratio | Cratebase p50/p99 ms | PocketBase p50/p99 ms |
 |---|---|---|---|---|---|---|
-| create | 1 | 5627 | 3459 | **1.63x** | 0.11 / 0.37 | 0.21 / 0.76 |
-| create | 20 | 4782 | 6463 | 0.74x | 0.34 / 33.79 | 1.84 / 23.76 |
-| create | 50 | 4591 | 6631 | 0.69x | 2.08 / 33.80 | 3.89 / 38.63 |
-| create | 100 | 4736 | 6361 | 0.74x | 6.10 / 39.69 | 9.70 / 56.60 |
-| auth | 1 | 88 | 22 | **4.04x** | 11.26 / 14.68 | 45.71 / 51.29 |
-| auth | 20 | 315 | 261 | **1.21x** | 57.78 / 117.13 | 69.42 / 117.32 |
-| auth | 50 | 303 | 268 | **1.13x** | 147.50 / 346.96 | 149.53 / 424.16 |
-| auth | 100 | 290 | 263 | **1.10x** | 297.92 / 516.47 | 193.25 / 740.62 |
-| search | 1 | 3803 | 1318 | **2.88x** | 0.25 / 0.42 | 0.66 / 1.41 |
-| search | 20 | 9874 | 6711 | **1.47x** | 1.92 / 3.49 | 2.17 / 9.35 |
-| search | 50 | 9842 | 4604 | **2.14x** | 4.82 / 7.33 | 4.59 / 39.23 |
-| search | 100 | 9662 | 4530 | **2.13x** | 9.17 / 12.86 | 7.37 / 65.67 |
-| search-wide | 1 | 842 | 643 | **1.31x** | 1.13 / 1.93 | 1.51 / 2.47 |
-| search-wide | 20 | 1488 | 2793 | 0.53x | 12.95 / 20.70 | 6.10 / 21.01 |
-| search-wide | 50 | 1467 | 2203 | 0.67x | 33.12 / 39.74 | 11.73 / 77.28 |
-| search-wide | 100 | 1461 | 1940 | 0.75x | 66.93 / 73.24 | 32.87 / 142.99 |
-| search-auth | 1 | 3495 | 1175 | **2.97x** | 0.27 / 0.47 | 0.76 / 1.49 |
-| search-auth | 20 | 9419 | 5933 | **1.59x** | 2.00 / 3.16 | 2.54 / 10.87 |
-| search-auth | 50 | 9359 | 5192 | **1.80x** | 5.10 / 7.06 | 5.94 / 31.82 |
-| search-auth | 100 | 9162 | 3683 | **2.49x** | 10.23 / 12.76 | 12.84 / 77.96 |
-| delete | 1 | 3130 | 2678 | **1.17x** | 0.23 / 0.56 | 0.30 / 1.14 |
-| delete | 20 | 7237 | 6483 | **1.12x** | 0.61 / 33.91 | 1.70 / 25.15 |
-| delete | 50 | 8204 | 5913 | **1.39x** | 3.36 / 21.00 | 4.51 / 36.33 |
-| delete | 100 | 7285 | 4783 | **1.52x** | 6.63 / 16.14 | 11.11 / 89.28 |
+| create | 1 | 4995 | 3071 | **1.63x** | 0.19 / 0.32 | 0.24 / 0.75 |
+| create | 20 | 8405 | 6560 | **1.28x** | 2.21 / 4.00 | 1.80 / 20.73 |
+| create | 50 | 8397 | 6566 | **1.28x** | 5.49 / 7.86 | 4.57 / 40.57 |
+| create | 100 | 8823 | 5965 | **1.48x** | 11.00 / 12.59 | 9.57 / 69.07 |
+| auth | 1 | 79 | 21 | **3.68x** | 12.72 / 15.21 | 46.55 / 50.76 |
+| auth | 20 | 297 | 235 | **1.26x** | 62.76 / 125.95 | 78.89 / 133.22 |
+| auth | 50 | 283 | 246 | **1.15x** | 158.25 / 425.29 | 177.27 / 360.35 |
+| auth | 100 | 277 | 250 | **1.11x** | 309.54 / 665.38 | 290.06 / 778.33 |
+| search | 1 | 3550 | 1318 | **2.69x** | 0.23 / 0.86 | 0.66 / 1.38 |
+| search | 20 | 36037 | 4522 | **7.97x** | 0.46 / 1.28 | 3.23 / 17.61 |
+| search | 50 | 48155 | 3598 | **13.38x** | 0.89 / 1.62 | 7.64 / 57.25 |
+| search | 100 | 28624 | 4103 | **6.98x** | 2.98 / 5.97 | 9.56 / 71.86 |
+| search-wide | 1 | 1102 | 635 | **1.74x** | 0.59 / 1.46 | 1.52 / 2.46 |
+| search-wide | 20 | 8459 | 2390 | **3.54x** | 1.85 / 5.74 | 6.22 / 23.01 |
+| search-wide | 50 | 9062 | 1945 | **4.66x** | 4.65 / 10.36 | 18.16 / 76.24 |
+| search-wide | 100 | 7834 | 1770 | **4.43x** | 10.79 / 19.66 | 36.34 / 151.13 |
+| search-auth | 1 | 3085 | 1076 | **2.87x** | 0.32 / 0.57 | 0.86 / 1.61 |
+| search-auth | 20 | 25124 | 5467 | **4.60x** | 0.69 / 1.63 | 2.69 / 10.93 |
+| search-auth | 50 | 13580 | 4255 | **3.19x** | 3.06 / 7.77 | 7.32 / 36.71 |
+| search-auth | 100 | 20721 | 3660 | **5.66x** | 3.48 / 9.28 | 14.15 / 78.93 |
+| delete | 1 | 2264 | 2534 | 0.89x | 0.40 / 1.18 | 0.31 / 0.97 |
+| delete | 20 | 5715 | 6408 | 0.89x | 3.40 / 7.73 | 1.58 / 28.87 |
+| delete | 50 | 11815 | 5555 | **2.13x** | 4.00 / 5.80 | 4.46 / 39.89 |
+| delete | 100 | 11374 | 4628 | **2.46x** | 8.58 / 9.73 | 11.78 / 86.48 |
 
 ### Reading these numbers honestly
 
-- **Reads are decisively faster**: 1.5x to 3x on `search` and
-  `search-auth` at every concurrency level, with a much tighter tail
-  (p99 12.9ms vs 65.7ms at c100).
-- **Single-writer throughput is faster** (`create` c1 1.63x, `delete`
-  everywhere), and **auth is faster** at every level. The c1 auth gap is
-  mostly a hashing-cost difference (Argon2id at OWASP parameters, ~11ms,
-  vs PocketBase's bcrypt cost 12, ~45ms), not an engineering win; the
-  c20+ auth advantage is real and comes from running the hash on the
-  blocking pool instead of the async workers.
-- **Two cells still lose, both for the same structural reason.**
-  `create` at c20+ (0.7x) and `search-wide` at c20+ (0.5-0.75x). Under
-  write contention every pooled SQLite connection spins on
-  `busy_timeout` for the single writer lock (the 33ms p99 is that
-  spin); PocketBase serializes writes through one dedicated connection
-  instead. `search-wide` is bound by per-row decoding cost, which today
-  goes through `sqlx::Any` (an eager decode of every column plus a second
-  copy into JSON). Both are addressed by the Phase 2 storage engine
-  rewrite: a single-writer pool and native drivers. See
-  `docs/superpowers/specs/`.
+**The `delete` blocker is fixed, and the p99 column is where to see it.**
+The regression this table used to record was 0.19-0.30x with a p99 of
+361ms against a p50 of 1.77ms. Cratebase's delete p99 is now 1.18 /
+7.73 / 5.80 / 9.73ms across the four concurrency levels, against
+PocketBase's 0.97 / 28.87 / 39.89 / 86.48ms. Nothing in the delete path
+stalls for hundreds of milliseconds any more.
+
+**What the regression actually was.** Not the double read, and not the
+explicit transaction — both plausible, both wrong, both measured.
+It was SQLite's automatic WAL checkpoint. `wal_autocheckpoint` runs
+*inline, on the connection that commits the transaction which crosses
+the 1000-page threshold*, so roughly one request in five hundred paid to
+fold four megabytes of log back into the database while holding the
+single writer connection. On an idle host that is a ~20ms stall; on a
+host under memory and I/O pressure it was 350-450ms, and a single such
+stall inside a 500-request batch is enough on its own to report 1040
+req/s. That is why the cell swung between 8000 and 1040 req/s from run
+to run while the p50 never moved. The checkpoint now runs on a
+background connection on a timer;
+[`crates/db/src/sqlite.rs`](../crates/db/src/sqlite.rs) carries the
+measurement and the rules that keep the log bounded.
+
+Isolated A/B, same binary, same host, minutes apart, with the old
+behaviour restored by a temporary switch — this is the controlled
+measurement, and the one to trust over any single cell above:
+
+| | delete c1 | c20 | c50 | c100 |
+|---|---|---|---|---|
+| before, req/s | 2698 | 6422 | 6960 | 5422 |
+| after, req/s | 2999 | 10609 | 12191 | 12547 |
+| before, p99 | 0.75ms | 25.33ms | 20.79ms | 37.97ms |
+| after, p99 | 0.53ms | 3.06ms | 4.48ms | 8.58ms |
+
+`create` in the same pair went 7030 to 8840 req/s at c20 (p99 17.60ms to
+3.64ms) and 7196 to 9373 at c100 (p99 25.75ms to 12.08ms). `update` is
+not a benchmark category but shares the writer and the same checkpoint.
+
+**A smaller second fix, worth roughly 10% of the delete path.** A delete
+with no cascade and no bound hook is one `DELETE ... WHERE id = ?`, which
+SQLite already runs atomically; wrapping it in `BEGIN IMMEDIATE`/`COMMIT`
+only adds two round trips onto the blocking pool with the writer locked
+across all three. Measured on the engine alone: 83µs against 59µs per
+delete, a writer ceiling of ~12.0k against ~17.0k per second. A cascade
+or a bound hook still opens the transaction, and a hook that aborts still
+rolls the row back (`crates/server/tests/records_api.rs` pins both).
+
+**The `auth` win is not an engineering win.** Argon2id at OWASP
+parameters is simply cheaper than PocketBase's bcrypt cost-12. It is a
+security-parameter difference and should not be read as throughput
+work.
+
+**Two `delete` cells above read 0.89x, and they are host noise, not
+concurrency.** They are c1 and c20 — the two cells measured first, in a
+window where the host was paging; c50 and c100, measured a minute later,
+are 2.13x and 2.46x with *lower* p50s than c20. A category whose
+throughput falls at c20 and recovers at c100 is not describing its own
+scaling. Every other category in this run is down by a similar factor
+against the quieter run taken an hour earlier (`search-wide` c20: 12540
+then, 8459 here; `search-auth` c50: 35371 then, 13580 here). Trust the
+ratios within a run, the p99 column, and the controlled A/B above — not
+the third digit of any single cell.
 
 ### What changed in Phase 1
 

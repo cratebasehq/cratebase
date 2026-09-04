@@ -1,17 +1,20 @@
 //! The `/api` router.
 //!
-//! Only the services that do not depend on the record layer are mounted
-//! here — W4a's scope. Every `// W4b:` comment marks where a
-//! record-dependent route group will be nested once `cratebase_db`'s
-//! `records`, `expand`, `validate` and `context` modules (W3) land. Those
-//! routes are deliberately *absent* rather than stubbed with `todo!()`,
-//! so a missing endpoint is a clean PocketBase 404 and never a panic.
+//! Everything under `/api`, mounted inside the logging and rate-limit
+//! layers.
 
+pub mod auth;
 pub mod backups;
+pub mod batch;
+pub mod collections;
+pub mod common;
 pub mod crons;
+pub mod files;
 pub mod health;
 pub mod logs;
+pub mod records;
 pub mod settings;
+pub mod setup;
 
 use axum::Router;
 
@@ -25,18 +28,18 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(settings::router())
         .merge(logs::router())
         .merge(backups::router())
-        .merge(crons::router());
-
-    // W4b: `.merge(collections::router())` — /api/collections CRUD,
-    //      import, scaffolds, truncate.
-    // W4b: `.merge(records::router())` — /api/collections/{c}/records...
-    // W4b: `.merge(auth::router())` — auth-with-password / oauth2 / otp /
-    //      mfa / refresh / impersonate / verification / reset / email
-    //      change / external auths, plus /api/collections/{c}/auth-methods.
-    // W4b: `.merge(files::router())` — /api/files/{c}/{id}/{file} and
-    //      /api/files/token.
-    // W4b: `.merge(realtime::router())` — GET/POST /api/realtime.
-    // W4b: `.merge(batch::router())` — POST /api/batch.
+        .merge(crons::router())
+        // `/api/collections/...` is shared by three groups: the schema
+        // API, the record API nested under it, and the auth endpoints.
+        // They are separate modules but one route table, built once at
+        // boot.
+        .merge(collections::router())
+        .merge(records::router())
+        .merge(auth::router())
+        .merge(files::router())
+        .merge(crate::realtime::router())
+        .merge(batch::router())
+        .merge(setup::router());
 
     // Plugin routes live inside this nest so they inherit request logging
     // and rate limiting (see `crate::plugin`).

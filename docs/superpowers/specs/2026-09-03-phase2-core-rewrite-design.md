@@ -352,12 +352,18 @@ Identifiers resolve through an extended `Resolver`:
 | `@collection.name.field` | join against another collection (compiled as `EXISTS (SELECT 1 FROM name WHERE ...)`, with the whole compare inside) |
 | `@now`, `@second`, `@minute`, `@hour`, `@weekday`, `@day`, `@month`, `@year`, `@yesterday`, `@tomorrow`, `@todayStart`, `@todayEnd`, `@monthStart`, `@monthEnd`, `@yearStart`, `@yearEnd` | bound value computed at compile time in UTC, PB formats |
 | `x:isset` | true if key present in `@request.body` (create/update) |
-| `x:length` | `json_array_length(x)` / `jsonb_array_length` |
-| `x:each` | element iteration (forces the EXISTS form even for bare ops) |
+| `x:length` | `json_array_length(x)` / `jsonb_array_length`; **ignored** (not an error) when `x` is single-valued, like PB |
+| `x:each` | element iteration — the *only* way to get element semantics; a bare multi-valued column compares as the raw JSON text of the column |
 | `x:lower` | `LOWER(x)` |
 
 `~` matches PB: if the literal contains `%` it is used as-is, otherwise
-wrapped in `%…%`; `_` is never escaped (PB doesn't).
+`\`, `%` and `_` are escaped (leaving already-escaped sequences alone) and
+it is wrapped in `%…%`. Either way the SQL declares `ESCAPE '\'`.
+
+A bare operator through a join (back-relation, `@collection.X`) means
+*every* joined row, not any: the joined comparison is ANDed with a
+`NOT EXISTS` over a correlated `__mm_`-aliased copy of the path that
+rejects rows failing it. `?op` is the "at least one joined row" form.
 
 `parse(src) -> Arc<Expr>` goes through a bounded LRU (1024 entries) so
 rules are parsed once per process. Compilation to SQL still happens per
@@ -618,27 +624,37 @@ including anything that got worse.
 
 ## 15b. Known parity risks in the filter layer (must be closed or accepted)
 
-Surfaced while implementing §6. These are **not** approved divergences —
-each one is a place where a rule copied from a PocketBase app could
-behave differently, so the conformance suite (§14) has to cover them and
-we either match PocketBase or record the decision here.
+Surfaced while implementing §6. Items 1-3 are **closed** (measured against
+the PocketBase v0.40.2 binary with `--dev` SQL logging and pinned by tests
+in `crates/filter`); 4 and 5 remain accepted divergences.
 
-1. **Multi-valued fields without `:each`.** PocketBase compares the raw
-   JSON text of the column, so `tags = "a"` is false and `tags ~ "a"` is
-   effectively "some element contains a". We always apply element
-   semantics, so `tags ~ "a"` means "every element contains a". Ours is
-   more principled; PocketBase's is what existing rules were written
-   against. **Decision: match PocketBase** — the point of this phase is
-   that a ported app behaves identically.
-2. **Bare operators through a join** (`@collection.X.f = v`,
-   `posts_via_author.f = v`). PocketBase adds a multi-match `NOT EXISTS`
-   so a bare `=` means "all joined rows match", which is why its docs
-   push `?=`. Ours resolves to "any joined row", i.e. more permissive —
-   and *more permissive on an access rule is a security bug*. **Must
-   match PocketBase.**
-3. **`~` escaping.** PocketBase escapes `%` and `_` in the operand and
-   appends `ESCAPE '\'`; we escape neither. A rule filtering on a value
-   containing `_` silently matches too much. **Must match PocketBase.**
+1. ~~**Multi-valued fields without `:each`.**~~ **Closed.** PocketBase
+   compares the raw JSON text of the column: `tags = "a"` is false for
+   `["a","b"]`, `tags ~ "a"` is a substring match on `["a","b"]`, and the
+   `?` prefix is a no-op because there are no elements to quantify over
+   (`WHERE "posts"."tags" = 'rust'` for both `=` and `?=`). Element
+   semantics now require `:each`. Note the knock-on: an empty multi-select
+   is stored as the text `[]`, so `tags = ""` finds nothing and
+   `tags:length = 0` is the way to find empty ones.
+2. ~~**Bare operators through a join.**~~ **Closed, and it was a security
+   bug**: "any joined row" is strictly more permissive than the rule's
+   author intended. A bare operator now emits PocketBase's multi-match
+   form — the joined comparison ANDed with
+   `NOT EXISTS (SELECT 1 FROM "<root>" AS "__mm_<root>" <the same joins>
+   WHERE "__mm_<root>"."id" = "<root>"."id" AND NOT (<cond>))` — so it
+   means "and no joined row fails it". `?op` still means "at least one".
+   The `LEFT JOIN` is kept for the base comparison, which is what makes
+   two `?=` on the same back-relation constrain the *same* joined row
+   (verified: `x_via_y.a ?= "p" && x_via_y.b ?= "q"` needs one row with
+   both). An empty back-relation still compares equal to `""`.
+3. ~~**`~` escaping.**~~ **Closed.** `\`, `%` and `_` are escaped and
+   `ESCAPE '\'` is emitted. Measured detail the docs do not state: the
+   escaping applies *only* on the wrapping branch — an operand that
+   already contains a `%` is a hand-written pattern and is passed through
+   with nothing escaped (`~ "%a_b%"` compiles to `LIKE '%a_b%'`, where the
+   `_` is still a wildcard). And the escaper skips sequences the author
+   escaped: `a\_b` stays `a\_b` (a literal underscore) while a lone
+   `a\b` becomes `a\\b` (a literal backslash).
 4. `@request.auth.<relation>.<field>` does not traverse into the related
    record (PocketBase joins). Accepted for now: rules needing it can use
    `@collection`.
@@ -647,6 +663,25 @@ we either match PocketBase or record the decision here.
    `COALESCE(a,'') = COALESCE(b,'')`, so `''` and `NULL` compare unequal
    in that one shape. Accepted; Postgres type safety makes the
    `COALESCE` form awkward.
+6. ~~**`:length` on a single-valued path was rejected.**~~ **Closed.**
+   PocketBase silently *ignores* `:length` unless the field is
+   multi-valued — `title:length = 3` compiles to `"posts"."title" = 3`
+   and `comments_via_post.id:length = 0` to
+   `"posts_comments_via_post"."id" = 0` (so it finds nothing, and
+   `:length > 0` only "works" because SQLite sorts integers before text).
+   We now ignore it the same way instead of returning a 400.
+
+### Still open, found while closing the above
+
+* **`:each` on the same field twice shares one `json_each` alias in
+  PocketBase**, so `tags:each ?= "a" && tags:each ?= "b"` requires a
+  single element equal to both and can never match. We compile two
+  independent `EXISTS`, so it matches an array holding both. Ours is the
+  useful reading; PocketBase's is an artefact of its alias reuse. Not yet
+  covered by the conformance suite.
+* **`:each` on a single-valued field** is accepted by PocketBase (the
+  value becomes a one-element set, so `title:each = "abc"` behaves like
+  `title = "abc"`); we still reject it with an invalid-modifier error.
 
 ## 16. Work breakdown (for the implementation plan)
 

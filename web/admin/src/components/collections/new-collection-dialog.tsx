@@ -2,11 +2,21 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useNavigate } from "@tanstack/react-router";
-import { Drawer } from "@/components/interior/drawer";
-import { LoadingButton } from "@/components/interior/loading-button";
-import { CollectionForm, emptyCollectionForm, type CollectionFormValue } from "@/components/collections/collection-form";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { CollectionForm } from "@/components/collections/collection-form";
+import { authOptionsPayload, collectionFormErrors, emptyCollectionForm, type CollectionFormValue } from "@/lib/collection-form-value";
 import { useCollections } from "@/hooks/use-collections";
 import { cb } from "@/lib/api";
+import { defaultTimestampFields } from "@/lib/field-types";
 
 interface NewCollectionDialogProps {
   open: boolean;
@@ -15,13 +25,19 @@ interface NewCollectionDialogProps {
 
 export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogProps) {
   const [value, setValue] = useState<CollectionFormValue>(emptyCollectionForm());
+  const [pending, setPending] = useState(false);
   const { data: collections = [] } = useCollections();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // Same gate as the schema editor: a field with no name or a relation
+  // with no target is a 400 waiting to happen, so Create stays disabled
+  // until the form would actually be accepted.
+  const errors = collectionFormErrors(value, collections);
 
   useEffect(() => {
     if (open) {
       setValue(emptyCollectionForm());
+      setPending(false);
     }
   }, [open]);
 
@@ -30,13 +46,17 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
       cb.collections.create({
         name: value.name,
         type: value.type,
-        schema: value.schema,
+        // `id` and, for auth collections, the auth columns are added by the
+        // server on create — but not `created`/`updated`, so those go in
+        // explicitly or the collection ends up with no timestamp columns.
+        fields: [...defaultTimestampFields(), ...value.schema],
+        indexes: value.indexes,
         listRule: value.listRule,
         viewRule: value.viewRule,
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
-        authOptions: undefined,
+        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityField) : {}),
       }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["collections"] });
@@ -49,21 +69,40 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
     },
   });
 
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending || errors.length > 0) return;
+    setPending(true);
+    try {
+      await create.mutateAsync();
+    } catch {
+      // Surfaced as a toast by the mutation's own onError.
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} title="New collection" width={480}>
-      <CollectionForm value={value} onChange={setValue} otherCollections={collections} isNew />
-      <div className="mt-6 flex justify-end">
-        <LoadingButton
-          onAction={() => create.mutateAsync()}
-          pendingLabel="Creating…"
-          successLabel="Created"
-          errorLabel="Failed"
-          disabled={value.name.length === 0}
-          className="!border-primary !bg-primary !px-4 !text-primary-foreground hover:!bg-primary/90 dark:!border-primary dark:!bg-primary dark:!text-primary-foreground dark:hover:!bg-primary/90"
-        >
-          Create collection
-        </LoadingButton>
-      </div>
-    </Drawer>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[680px]">
+        <form onSubmit={handleSubmit} noValidate className="flex h-full min-h-0 flex-col">
+          <SheetHeader>
+            <SheetTitle>New collection</SheetTitle>
+            <SheetDescription>Name it, define its fields, and set who can read and write it.</SheetDescription>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+            <CollectionForm value={value} onChange={setValue} otherCollections={collections} isNew />
+          </div>
+
+          <SheetFooter className="flex-row justify-end border-t border-border">
+            <Button type="submit" disabled={pending || errors.length > 0} title={errors[0]}>
+              {pending ? <Spinner /> : null}
+              {pending ? "Creating…" : "Create collection"}
+            </Button>
+          </SheetFooter>
+        </form>
+      </SheetContent>
+    </Sheet>
   );
 }

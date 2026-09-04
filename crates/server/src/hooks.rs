@@ -482,6 +482,416 @@ hook_set! {
     on_batch_request: BatchRequestEvent,
 }
 
+// ---------------------------------------------------------------------------
+// Bridging native events to the JavaScript runtime (W8).
+// ---------------------------------------------------------------------------
+
+use cratebase_jsvm::{JsEvent, JsEventOutcome};
+use cratebase_mailer::Message;
+use serde_json::Value;
+
+use crate::jsvm_host::{wrap_host, wrap_tx_host};
+
+/// Bridges one native hook event to and from the JavaScript runtime's
+/// snapshot/outcome shapes, so [`bind_js_hook`] can drive any event kind
+/// a [`cratebase_jsvm::HookKind`] can target through one generic body.
+/// Most kinds are notification-only in PocketBase too (only whether the
+/// handler called `next()` matters); the default `apply_js` reflects
+/// that, and only the event kinds carrying a `record`/`collection`/other
+/// mutable payload override it.
+pub trait JsHookEvent: Event {
+    /// Build the snapshot handed to the JavaScript handler, already
+    /// carrying the `HostApi` `$app` calls inside it should join.
+    fn to_js(&self) -> JsEvent;
+    /// Copy back whatever the handler changed.
+    fn apply_js(&mut self, _outcome: &JsEventOutcome) {}
+}
+
+/// Register a JavaScript-runtime handler on a native hook chain. It
+/// receives the same snapshot/outcome shape as `Runtime::call_hook` and
+/// joins the priority-ordered chain exactly like a Rust [`Handler`], so a
+/// `pb_hooks` file and a Rust plugin bound to the same hook run in
+/// priority order relative to each other rather than JS always running
+/// first or last.
+///
+/// Takes the *cell* the runtime will be stored in rather than the
+/// `Runtime` itself: registration happens synchronously while
+/// `Runtime::start` is still evaluating the hook files that produced this
+/// call, which is before `Runtime::start` has returned the handle the
+/// cell will hold (see `crate::jsvm_host`).
+pub fn bind_js_hook<E: JsHookEvent + 'static>(
+    hook: &Hook<E>,
+    jsvm: Arc<std::sync::OnceLock<cratebase_jsvm::Runtime>>,
+    handler: cratebase_jsvm::HookHandlerId,
+    tags: Vec<String>,
+    priority: i32,
+) {
+    let id = handler.to_string();
+    hook.bind(
+        Handler::new(move |e: &mut E| {
+            let jsvm = jsvm.clone();
+            let handler = handler.clone();
+            Box::pin(async move {
+                // The runtime is set before `App::bootstrap` returns, so
+                // it is always present by the time anything can trigger
+                // a hook; missing means the app is mid-shutdown.
+                let Some(runtime) = jsvm.get() else {
+                    return Ok(());
+                };
+                let js_event = e.to_js();
+                let outcome = runtime.call_hook(&handler, js_event).await?;
+                e.apply_js(&outcome);
+                if outcome.next_called {
+                    e.next().await
+                } else {
+                    Ok(())
+                }
+            })
+        })
+        .with_id(id)
+        .with_tags(tags)
+        .with_priority(priority),
+    );
+}
+
+impl JsHookEvent for BootstrapEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new().app(wrap_host(self.app.clone()))
+    }
+}
+
+impl JsHookEvent for ServeEvent {
+    fn to_js(&self) -> JsEvent {
+        // `routerAdd` mounts routes at hook-file evaluation time rather
+        // than by mutating this event, so the (unserializable) `router`
+        // field is never exposed to JavaScript.
+        JsEvent::new().app(wrap_host(self.app.clone()))
+    }
+}
+
+impl JsHookEvent for TerminateEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .with("isRestart", self.is_restart)
+    }
+}
+
+impl JsHookEvent for RecordEnrichEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .record(&self.record)
+            .collection(&self.collection)
+            .auth(self.auth.as_ref().map(|a| &a.record))
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        outcome.apply_to_record(&mut self.record);
+    }
+}
+
+impl JsHookEvent for RecordEvent {
+    fn to_js(&self) -> JsEvent {
+        let mut js = JsEvent::new()
+            .app(wrap_tx_host(self.app.clone()))
+            .record(&self.record)
+            .collection(&self.collection);
+        if let Some(previous) = &self.previous {
+            js = js.with(
+                "previous",
+                previous.to_json(cratebase_jsvm::JS_RECORD_OPTIONS),
+            );
+        }
+        js
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        outcome.apply_to_record(&mut self.record);
+    }
+}
+
+impl JsHookEvent for RecordErrorEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .record(&self.record)
+            .collection(&self.collection)
+            .with("error", self.error.clone())
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        outcome.apply_to_record(&mut self.record);
+    }
+}
+
+impl JsHookEvent for RecordRequestEvent {
+    fn to_js(&self) -> JsEvent {
+        let mut js = JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .collection(&self.collection)
+            .auth(self.auth.as_ref().map(|a| &a.record))
+            .request_info(self.request.to_json());
+        if let Some(record) = &self.record {
+            js = js.record(record);
+        }
+        js
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(record) = self.record.as_mut() {
+            outcome.apply_to_record(record);
+        }
+    }
+}
+
+impl JsHookEvent for CollectionEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_tx_host(self.app.clone()))
+            .collection(&self.collection)
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(v) = &outcome.collection {
+            if let Ok(c) = serde_json::from_value(v.clone()) {
+                self.collection = c;
+            }
+        }
+    }
+}
+
+impl JsHookEvent for CollectionRequestEvent {
+    fn to_js(&self) -> JsEvent {
+        let mut js = JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .auth(self.auth.as_ref().map(|a| &a.record))
+            .request_info(self.request.to_json());
+        if let Some(collection) = &self.collection {
+            js = js.collection(collection);
+        }
+        js
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if self.collection.is_some() {
+            if let Some(v) = &outcome.collection {
+                if let Ok(c) = serde_json::from_value(v.clone()) {
+                    self.collection = Some(c);
+                }
+            }
+        }
+    }
+}
+
+impl JsHookEvent for MailerEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .with("message", message_json(&self.message))
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        apply_message(&mut self.message, outcome);
+    }
+}
+
+impl JsHookEvent for MailerRecordEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .record(&self.record)
+            .collection(&self.collection)
+            .with("message", message_json(&self.message))
+            .with("meta", self.meta.clone())
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        apply_message(&mut self.message, outcome);
+    }
+}
+
+impl JsHookEvent for RealtimeConnectEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .auth(self.auth.as_ref().map(|a| &a.record))
+            .with("clientId", self.client_id.clone())
+            .with("idleTimeoutSecs", self.idle_timeout_secs)
+    }
+}
+
+impl JsHookEvent for RealtimeSubscribeEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .auth(self.auth.as_ref().map(|a| &a.record))
+            .with("clientId", self.client_id.clone())
+            .with("subscriptions", Value::from(self.subscriptions.clone()))
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(subs) = outcome.event.get("subscriptions").and_then(Value::as_array) {
+            self.subscriptions = subs
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+        }
+    }
+}
+
+impl JsHookEvent for RealtimeMessageEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .with("clientId", self.client_id.clone())
+            .with("name", self.name.clone())
+            .with("data", self.data.clone())
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(data) = outcome.event.get("data") {
+            self.data = data.clone();
+        }
+    }
+}
+
+impl JsHookEvent for FileDownloadEvent {
+    fn to_js(&self) -> JsEvent {
+        let mut js = JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .collection(&self.collection)
+            .with("key", self.key.clone())
+            .with("servedName", self.served_name.clone());
+        if let Some(record) = &self.record {
+            js = js.record(record);
+        }
+        js
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(record) = self.record.as_mut() {
+            outcome.apply_to_record(record);
+        }
+        if let Some(name) = outcome.event.get("servedName").and_then(Value::as_str) {
+            self.served_name = name.to_string();
+        }
+    }
+}
+
+impl JsHookEvent for FileTokenEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .auth(self.auth.as_ref().map(|a| &a.record))
+            .with("token", self.token.clone())
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(token) = outcome.event.get("token").and_then(Value::as_str) {
+            self.token = token.to_string();
+        }
+    }
+}
+
+impl JsHookEvent for BackupCreateEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .with("name", self.name.clone())
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(name) = outcome.event.get("name").and_then(Value::as_str) {
+            self.name = name.to_string();
+        }
+    }
+}
+
+impl JsHookEvent for BackupRestoreEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .with("name", self.name.clone())
+    }
+}
+
+impl JsHookEvent for SettingsListEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .request_info(self.request.to_json())
+            .with(
+                "settings",
+                serde_json::to_value(&*self.settings).unwrap_or(Value::Null),
+            )
+    }
+}
+
+impl JsHookEvent for SettingsUpdateEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .request_info(self.request.to_json())
+            .with(
+                "oldSettings",
+                serde_json::to_value(&*self.old_settings).unwrap_or(Value::Null),
+            )
+            .with(
+                "newSettings",
+                serde_json::to_value(&self.new_settings).unwrap_or(Value::Null),
+            )
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(v) = outcome.event.get("newSettings") {
+            if let Ok(settings) = serde_json::from_value(v.clone()) {
+                self.new_settings = settings;
+            }
+        }
+    }
+}
+
+impl JsHookEvent for SettingsReloadEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new().app(wrap_host(self.app.clone())).with(
+            "settings",
+            serde_json::to_value(&*self.settings).unwrap_or(Value::Null),
+        )
+    }
+}
+
+impl JsHookEvent for BatchRequestEvent {
+    fn to_js(&self) -> JsEvent {
+        JsEvent::new()
+            .app(wrap_host(self.app.clone()))
+            .auth(self.auth.as_ref().map(|a| &a.record))
+            .request_info(self.request.to_json())
+            .with("requests", Value::Array(self.requests.clone()))
+    }
+    fn apply_js(&mut self, outcome: &JsEventOutcome) {
+        if let Some(arr) = outcome.event.get("requests").and_then(Value::as_array) {
+            self.requests = arr.clone();
+        }
+    }
+}
+
+fn message_json(m: &Message) -> Value {
+    serde_json::json!({
+        "from": { "address": m.from.0, "name": m.from.1 },
+        "to": m.to.iter().map(|(a, n)| serde_json::json!({"address": a, "name": n})).collect::<Vec<_>>(),
+        "subject": m.subject,
+        "html": m.html,
+        "text": m.text,
+    })
+}
+
+/// Copies back whatever a JS `onMailerSend`/`onMailerRecord*Send` handler
+/// left on `e.message.{subject,html,text}`. `to`/`from` are read-only for
+/// now: rewriting recipients would need `Message::to` to accept
+/// arbitrary JSON shapes back, which is more surface than any hook in
+/// `tests/conformance` currently exercises.
+fn apply_message(message: &mut Message, outcome: &JsEventOutcome) {
+    let Some(v) = outcome.event.get("message") else {
+        return;
+    };
+    if let Some(subject) = v.get("subject").and_then(Value::as_str) {
+        message.subject = subject.to_string();
+    }
+    if let Some(html) = v.get("html").and_then(Value::as_str) {
+        message.html = html.to_string();
+    }
+    if let Some(text) = v.get("text").and_then(Value::as_str) {
+        message.text = Some(text.to_string());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

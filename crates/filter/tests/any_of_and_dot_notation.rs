@@ -94,9 +94,21 @@ fn compile(src: &str) -> CompiledFilter {
     parse_and_compile(src, &TestResolver::sqlite("posts"), 0).unwrap()
 }
 
+/// The `?` prefix only quantifies over something there are several of.
+/// A bare multi-valued column has no elements to quantify — like
+/// PocketBase it compares against the raw JSON text of the column — so
+/// `?=` and `=` compile identically.
 #[test]
-fn any_of_compiles_to_exists_over_json_each() {
+fn any_of_on_a_bare_multi_column_is_a_text_comparison() {
     let c = compile(r#"categories ?= "tech""#);
+    assert_eq!(c.sql, "\"posts\".\"categories\" = $1");
+    assert_eq!(c.params, vec![serde_json::json!("tech")]);
+    assert_eq!(compile(r#"categories = "tech""#).sql, c.sql);
+}
+
+#[test]
+fn any_of_over_each_compiles_to_exists_over_json_each() {
+    let c = compile(r#"categories:each ?= "tech""#);
     assert_eq!(
         c.sql,
         "EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = $1)"
@@ -105,8 +117,8 @@ fn any_of_compiles_to_exists_over_json_each() {
 }
 
 #[test]
-fn bare_operator_on_multi_column_requires_every_element() {
-    let c = compile(r#"categories = "tech""#);
+fn bare_operator_on_each_requires_every_element() {
+    let c = compile(r#"categories:each = "tech""#);
     assert_eq!(
         c.sql,
         "(EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = $1) \

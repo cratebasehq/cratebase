@@ -162,8 +162,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 /// `_superusers` collection, so these commands write straight through the
 /// storage layer.
 ///
-/// W4b: route these through `records::create/update/delete` once W3
-/// lands, so hooks fire and validation is shared with the HTTP path.
+/// Follow-up: route these through `records::create/update/delete` so
+/// the CLI shares the HTTP path's hooks and validation. Kept direct for
+/// now because `superuser create` has to work on a database whose
+/// collections have not been loaded by a server process yet.
 async fn superuser(dir: Option<String>, action: SuperuserAction) -> anyhow::Result<()> {
     let app = App::new(config_for(dir));
     app.bootstrap().await?;
@@ -205,7 +207,7 @@ async fn superuser(dir: Option<String>, action: SuperuserAction) -> anyhow::Resu
                 anyhow::bail!("no superuser with email {email}");
             };
             let code = cratebase_auth::generate_otp(cratebase_auth::DEFAULT_OTP_LENGTH);
-            // W4b: persist the code in `_otps` through the auth service so
+            // W4b-2: persist the code in `_otps` through the auth service so
             // `auth-with-otp` accepts it. Printing it is already useful for
             // an operator locked out of the dashboard.
             format!("one-time code for {email}: {code}")
@@ -253,10 +255,10 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             println!("created {}", path.display());
         }
         MigrateAction::Collections => {
-            // W4b/W7: snapshot the collection set into a JS migration.
-            // Needs the collection service's JSON export, which lands with
-            // the collections routes.
-            anyhow::bail!("`migrate collections` needs the collection service (W4b)");
+            // W7: snapshot the collection set into a JS migration. The
+            // JSON export exists now (`Collection::to_json`); what is
+            // missing is the JS migration file format the runtime reads.
+            anyhow::bail!("`migrate collections` needs the JS migration runtime (W7)");
         }
         MigrateAction::HistorySync => {
             let known: Vec<String> = runner.files().map(str::to_string).collect();

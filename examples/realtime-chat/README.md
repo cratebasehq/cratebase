@@ -6,33 +6,32 @@ and watch it appear instantly in the other with zero polling.
 
 This example is intentionally **not** an auth demo — there's a plain
 display-name field (stored in `localStorage`, no login) so the focus stays
-on realtime record subscriptions. See `examples/auth-demo` for the auth
-flows.
+on realtime record subscriptions. See `examples/todo` for a real
+register/login-gated flow.
 
-## Importing `cratebase` with zero build step
+## Importing `pocketbase` with zero build step
 
-`index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) mapping the bare
-specifier to the already-built local package:
+Cratebase's API is byte-compatible with PocketBase v0.23+, so this example
+uses the official PocketBase JS SDK straight off a CDN instead of a
+bespoke client. `index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+mapping the bare specifier to the published package on esm.sh:
 
 ```html
 <script type="importmap">
-  { "imports": { "cratebase": "../../sdk/js/dist/index.js" } }
+  { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
 </script>
 ```
 
 so `app.js` can just write:
 
 ```js
-import { Cratebase } from "cratebase";
+import PocketBase from "pocketbase";
 ```
 
-`cratebase` isn't published to npm yet, so `https://esm.sh/cratebase` (or
-any other CDN-from-npm-registry URL) would 404 — the import map is what
-makes the bare specifier resolve locally instead, no npm install and no
-bundler step needed. Once `cratebase` is published to npm, swapping the
-import map's one entry for a CDN URL (or dropping the import map
-entirely and using a bundler) is a drop-in change — `app.js` doesn't
-change at all.
+No npm install and no bundler step needed. Swapping the import map's one
+entry for a local `node_modules/pocketbase` resolution (or dropping the
+import map entirely and using a bundler) is a drop-in change if you'd
+rather not depend on a CDN — `app.js` doesn't change at all.
 
 ## 1. Start Cratebase
 
@@ -48,77 +47,52 @@ elsewhere).
 
 ## 2. Create the `messages` collection
 
-Get an admin token, then create a `messages` collection with `author` and
-`content` text fields, and public list/view/create rules so the example
-works with zero auth setup.
+Run the setup script — it upserts an `admin@example.com` / `changeme123`
+superuser (override with `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars) and
+creates the `messages` collection with public list/view/create rules
+(`updateRule`/`deleteRule` stay superuser-only, since this example never
+edits or deletes messages) if it doesn't already exist. Safe to re-run.
 
 ```bash
-# 1. Authenticate as an admin/superuser and capture the token.
-ADMIN_TOKEN=$(curl -s -X POST http://localhost:8090/api/admins/auth-with-password \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"your-admin-password"}' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-
-# 2. Create the collection.
-curl -s -X POST http://localhost:8090/api/collections \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{
-    "name": "messages",
-    "type": "base",
-    "schema": [
-      { "name": "author", "type": "text", "required": true },
-      { "name": "content", "type": "text", "required": true }
-    ],
-    "listRule": "",
-    "viewRule": "",
-    "createRule": "",
-    "updateRule": null,
-    "deleteRule": null
-  }'
+bun run examples:chat:setup
+# or directly: bash examples/realtime-chat/setup.sh
 ```
 
-Notes:
-
-- `listRule`/`viewRule`/`createRule` set to `""` (empty string, not `null`)
-  means "public, no auth required" in Cratebase's rule semantics — anyone
-  can list, view, and create messages. `updateRule`/`deleteRule` are left
-  `null` (superuser-only) since this example never edits or deletes
-  messages.
-- Swap in your real admin email/password from whatever seeded the instance
-  you're running against.
-- If your `cratebase` binary/admin bootstrap flow differs, adjust step 1
-  accordingly — the important part is ending up with a superuser Bearer
-  token for step 2.
+Point at a different instance with `CRATEBASE_URL=http://host:port bun
+run examples:chat:setup`.
 
 ## 3. Serve the example
 
-Any static file server works, from this directory:
-
 ```bash
-cd examples/realtime-chat
-python3 -m http.server 8080
+bun run examples:serve
 ```
 
-Then open `http://localhost:8080` in two browser tabs. Set a display name
-in each tab, send a message from one, and it should appear in the other
-tab immediately via the realtime SSE subscription — no page refresh, no
-polling.
+This serves the whole repo (not just this directory) — required because
+`index.html`'s import map points `"cratebase"` at
+`../../sdk/js/dist/index.js`, a path that only resolves when the server
+is rooted above `examples/`. Serving just this directory (e.g. `cd
+examples/realtime-chat && python3 -m http.server`) 404s on that import;
+the failure is silent in the UI (no JS runs, so the composer form falls
+back to a native GET submit that reloads the page with your message
+stuck in the URL's query string).
 
-> Serving over `http://` (not `file://`) matters: browsers restrict ES
-> module imports and `fetch`/`EventSource` calls from `file://` origins.
+Then open **`http://localhost:4173/examples/realtime-chat/`** in two
+browser tabs. Set a display name in each tab, send a message from one,
+and it should appear in the other tab immediately via the realtime SSE
+subscription — no page refresh, no polling.
 
 ## How it works
 
-- `app.js` creates one `Cratebase` client pointed at `http://localhost:8090`.
+- `app.js` creates one `PocketBase` client pointed at `http://localhost:8090`.
 - On load, it fetches the most recent 50 messages with
   `cb.collection("messages").getList(1, 50, { sort: "created" })` and
   renders them.
-- It then calls `cb.realtime.subscribe("messages", callback)`, which opens
-  an SSE connection to `/api/realtime`, waits for the `PB_CONNECT` event to
-  get a `clientId`, and posts a subscription for the `messages` topic.
-  Every subsequent `create`/`delete` event on that collection calls the
-  callback, which appends or removes the corresponding chat bubble live.
+- It then calls `cb.collection("messages").subscribe("*", callback)`, which
+  opens an SSE connection to `/api/realtime`, waits for the `PB_CONNECT`
+  event to get a `clientId`, and posts a subscription for the
+  `messages/*` topic. Every subsequent `create`/`delete` event on that
+  collection calls the callback, which appends or removes the
+  corresponding chat bubble live.
 - Sending a message is a plain `cb.collection("messages").create({ author,
   content })` — the sender doesn't render its own message from the create
   response; it relies on the realtime event to render it, exactly the same
@@ -127,12 +101,13 @@ polling.
 
 ## Verification status
 
-This was verified with static analysis and a syntax/bundle check only:
-`node --check app.js` and `bun build app.js --outdir /tmp/checkbuild` both
-pass (the latter also confirms the relative import to
-`sdk/js/dist/index.js` resolves correctly). **No live `cratebase serve`
-instance or browser was run in producing this example** — the realtime
-subscribe/publish flow, the collection-creation `curl` commands, and the
-rendered UI have not been exercised end-to-end. Please run through steps
-1–3 above once against a live instance to confirm before relying on this
-in a demo.
+`bun run examples:chat:setup` is verified live against a running server:
+it creates the `messages` collection and its rules, and re-running it is a
+no-op.
+
+The browser half is **not** currently verified. It was driven in headless
+Chromium at one point — submitting the composer appended a message with no
+page reload and no console errors — but that was before `/api/realtime`
+was taken out of the router during the core rewrite. Until realtime lands
+again (see the root README's status section), `connectRealtime()` will
+404 and the page will not live-update.

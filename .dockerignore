@@ -1,7 +1,6 @@
 target
 data
 **/node_modules
-sdk/js/dist
 web/email/dist
 web/admin/dist/*
 !web/admin/dist/.gitkeep

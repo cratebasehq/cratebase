@@ -226,25 +226,56 @@ fn scalar_operators() {
 #[test]
 fn like_wraps_unless_wildcard_present() {
     let c = sqlite("title ~ 'hello'");
-    assert_eq!(c.sql, "\"posts\".\"title\" LIKE $1");
+    assert_eq!(c.sql, "\"posts\".\"title\" LIKE $1 ESCAPE '\\'");
     assert_eq!(c.params, vec![json!("%hello%")]);
     assert_eq!(sqlite("title ~ 'he%'").params, vec![json!("he%")]);
-    assert_eq!(sqlite("title ~ 'a_b'").params, vec![json!("%a_b%")]);
     assert_eq!(
         sqlite("title !~ 'x'").sql,
-        "\"posts\".\"title\" NOT LIKE $1"
+        "\"posts\".\"title\" NOT LIKE $1 ESCAPE '\\'"
     );
-    assert_eq!(postgres("title ~ 'x'").sql, "\"posts\".\"title\" ILIKE $1");
+    assert_eq!(
+        postgres("title ~ 'x'").sql,
+        "\"posts\".\"title\" ILIKE $1 ESCAPE '\\'"
+    );
     assert_eq!(
         postgres("title !~ 'x'").sql,
-        "\"posts\".\"title\" NOT ILIKE $1"
+        "\"posts\".\"title\" NOT ILIKE $1 ESCAPE '\\'"
     );
     assert_eq!(sqlite("title ~ 5").params, vec![json!("%5%")]);
     // Column on the pattern side.
     assert_eq!(
         sqlite("title ~ author.name").sql,
-        "\"posts\".\"title\" LIKE ('%' || (SELECT \"users\".\"name\" FROM \"users\" WHERE \"users\".\"id\" = \"posts\".\"author\") || '%')"
+        "\"posts\".\"title\" LIKE ('%' || (SELECT \"users\".\"name\" FROM \"users\" WHERE \"users\".\"id\" = \"posts\".\"author\") || '%') ESCAPE '\\'"
     );
+}
+
+/// PocketBase escapes the SQL wildcards in a `~` operand and declares
+/// `ESCAPE '\'`, so `title ~ "a_b"` looks for a literal underscore instead
+/// of matching any character. An operand that already carries a `%` is a
+/// hand-written pattern and is passed through untouched — verified against
+/// the v0.40.2 binary, which emits `LIKE '%a\_b%'` for `a_b` but
+/// `LIKE '%a_b%'` for `%a_b%`.
+#[test]
+fn like_escapes_wildcards_unless_the_operand_has_one() {
+    for (src, pattern) in [
+        ("title ~ 'a_b'", "%a\\_b%"),
+        ("title ~ '_b'", "%\\_b%"),
+        ("title ~ 'b_'", "%b\\_%"),
+        ("title ~ '_'", "%\\_%"),
+        // A lone backslash is doubled so it matches a literal one...
+        ("title ~ 'a\\\\b'", "%a\\\\b%"),
+        ("title ~ '\\\\'", "%\\\\%"),
+        // ...but a backslash that already escapes something is left alone.
+        ("title ~ 'a\\\\_b'", "%a\\_b%"),
+        // An explicit `%` means the operand is used verbatim: nothing is
+        // escaped and it is not wrapped.
+        ("title ~ 'a%b'", "a%b"),
+        ("title ~ '%a_b%'", "%a_b%"),
+        ("title !~ 'a_b'", "%a\\_b%"),
+    ] {
+        assert_eq!(sqlite(src).params, vec![json!(pattern)], "{src}");
+        assert!(sqlite(src).sql.ends_with("ESCAPE '\\'"), "{src}");
+    }
 }
 
 #[test]
@@ -318,70 +349,111 @@ fn param_offset_shifts_placeholders() {
 
 // --- multi-valued fields ------------------------------------------------------
 
+/// A multi-valued column without `:each` is the raw JSON text of the
+/// column, exactly as PocketBase compiles it: `tags ?= "rust"` never
+/// matches `["rust","go"]` and the `?` prefix changes nothing, because
+/// there are no elements to quantify over. Verified against the v0.40.2
+/// binary, which emits `WHERE "posts"."tags" = 'rust'` for both.
 #[test]
-fn multi_select_any_of_and_all_of() {
+fn bare_multi_valued_column_compares_as_text() {
+    let plain = "\"posts\".\"categories\" = $1";
+    assert_eq!(sqlite("categories = 'tech'").sql, plain);
+    assert_eq!(sqlite("categories ?= 'tech'").sql, plain);
     assert_eq!(
-        sqlite("categories ?= 'tech'").sql,
-        format!("EXISTS (SELECT 1 FROM {CATS} WHERE \"__e1\".\"value\" = $1)")
+        sqlite("'tech' ?= categories").sql,
+        "$1 = \"posts\".\"categories\""
     );
     assert_eq!(
-        sqlite("categories = 'tech'").sql,
+        sqlite("categories != 'tech'").sql,
+        "(\"posts\".\"categories\" <> $1 OR \"posts\".\"categories\" IS NULL)"
+    );
+    assert_eq!(
+        sqlite("categories ~ 'te'").sql,
+        "\"posts\".\"categories\" LIKE $1 ESCAPE '\\'"
+    );
+    assert_eq!(
+        sqlite("categories ?~ 'te'").sql,
+        sqlite("categories ~ 'te'").sql
+    );
+    // Multi-valued relation and file fields behave the same way.
+    assert_eq!(sqlite("tags ?= 't1'").sql, "\"posts\".\"tags\" = $1");
+    assert_eq!(
+        sqlite("attachments ?= 'a.png'").sql,
+        "\"posts\".\"attachments\" = $1"
+    );
+    // The whole array as text is what does match.
+    assert_eq!(
+        sqlite("categories = '[\"tech\",\"news\"]'").params,
+        vec![json!("[\"tech\",\"news\"]")]
+    );
+    // `:each` is the opt-in that unpacks the column into elements.
+    assert_eq!(
+        sqlite("categories:each ?= 'tech'").sql,
+        format!("EXISTS (SELECT 1 FROM {CATS} WHERE \"__e1\".\"value\" = $1)")
+    );
+    assert!(postgres("categories:each ?= 'tech'").sql.contains(
+        "jsonb_array_elements_text(COALESCE(\"posts\".\"categories\", '[]')::jsonb) AS \"__e1\"(\"value\")"
+    ));
+    assert_eq!(postgres("categories ?= 'tech'").sql, plain);
+}
+
+#[test]
+fn each_elements_any_of_and_all_of() {
+    assert_eq!(
+        sqlite("categories:each = 'tech'").sql,
         format!("(EXISTS (SELECT 1 FROM {CATS} WHERE \"__e1\".\"value\" = $1) AND NOT EXISTS (SELECT 1 FROM {CATS} WHERE NOT (\"__e1\".\"value\" = $1)))")
     );
     // `!=` tolerates the missing row: every element differs (vacuous on empty).
     assert_eq!(
-        sqlite("categories != 'tech'").sql,
+        sqlite("categories:each != 'tech'").sql,
         format!("NOT EXISTS (SELECT 1 FROM {CATS} WHERE NOT ((\"__e1\".\"value\" <> $1 OR \"__e1\".\"value\" IS NULL)))")
     );
     assert_eq!(
-        sqlite("categories ?!= 'tech'").sql,
+        sqlite("categories:each ?!= 'tech'").sql,
         format!("({CATS_EMPTY} OR EXISTS (SELECT 1 FROM {CATS} WHERE (\"__e1\".\"value\" <> $1 OR \"__e1\".\"value\" IS NULL)))")
     );
     assert_eq!(
-        sqlite("categories ?~ 'te'").sql,
-        format!("EXISTS (SELECT 1 FROM {CATS} WHERE \"__e1\".\"value\" LIKE $1)")
+        sqlite("categories:each ?~ 'te'").sql,
+        format!("EXISTS (SELECT 1 FROM {CATS} WHERE \"__e1\".\"value\" LIKE $1 ESCAPE '\\')")
     );
     // Value on the left.
     assert_eq!(
-        sqlite("'tech' ?= categories").sql,
+        sqlite("'tech' ?= categories:each").sql,
         format!("EXISTS (SELECT 1 FROM {CATS} WHERE $1 = \"__e1\".\"value\")")
     );
-    // Multi-valued file fields behave the same.
-    assert!(sqlite("attachments ?= 'a.png'")
-        .sql
-        .contains("json_each(COALESCE(\"posts\".\"attachments\", '[]'))"));
 }
 
+/// `categories = ''` tests the *column*, not the array: PocketBase stores
+/// an empty multi-select as the text `[]`, which is not empty, so
+/// `tags = ""` finds nothing while `tags:length = 0` finds the empty ones.
 #[test]
-fn multi_field_compared_to_empty_is_an_emptiness_test() {
-    assert_eq!(sqlite("categories = ''").sql, CATS_EMPTY);
-    assert_eq!(sqlite("categories = null").sql, CATS_EMPTY);
-    assert_eq!(sqlite("categories ?= ''").sql, CATS_EMPTY);
-    assert_eq!(sqlite("categories != ''").sql, format!("NOT {CATS_EMPTY}"));
+fn multi_field_compared_to_empty_tests_the_column() {
+    let empty = "(\"posts\".\"categories\" = '' OR \"posts\".\"categories\" IS NULL)";
+    assert_eq!(sqlite("categories = ''").sql, empty);
+    assert_eq!(sqlite("categories = null").sql, empty);
+    assert_eq!(sqlite("categories ?= ''").sql, empty);
+    assert_eq!(
+        sqlite("categories != ''").sql,
+        "(\"posts\".\"categories\" <> '' AND \"posts\".\"categories\" IS NOT NULL)"
+    );
     assert_eq!(
         sqlite("categories ?!= null").sql,
-        format!("NOT {CATS_EMPTY}")
+        sqlite("categories != ''").sql
+    );
+    // `:each` against empty is "every element is empty", vacuously true
+    // when there are none.
+    assert_eq!(
+        sqlite("categories:each = ''").sql,
+        format!("NOT EXISTS (SELECT 1 FROM {CATS} WHERE NOT ((\"__e1\".\"value\" = '' OR \"__e1\".\"value\" IS NULL)))")
     );
     assert_eq!(
-        postgres("categories = ''").sql,
-        "(\"posts\".\"categories\" IS NULL OR \"posts\".\"categories\"::text = '' OR \"posts\".\"categories\"::text = '[]')"
-    );
-}
-
-#[test]
-fn postgres_multi_uses_jsonb_array_elements() {
-    assert_eq!(
-        postgres("categories ?= 'tech'").sql,
-        "EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(\"posts\".\"categories\", '[]')::jsonb) AS \"__e1\"(\"value\") WHERE \"__e1\".\"value\" = $1)"
+        sqlite("categories:each ?= ''").sql,
+        format!("({CATS_EMPTY} OR EXISTS (SELECT 1 FROM {CATS} WHERE (\"__e1\".\"value\" = '' OR \"__e1\".\"value\" IS NULL)))")
     );
 }
 
 #[test]
 fn modifiers_each_length_lower_isset() {
-    assert_eq!(
-        sqlite("categories:each ?= 'tech'").sql,
-        sqlite("categories ?= 'tech'").sql
-    );
     assert_eq!(
         sqlite("categories:length > 1").sql,
         "json_array_length(COALESCE(\"posts\".\"categories\", '[]')) > $1"
@@ -398,12 +470,13 @@ fn modifiers_each_length_lower_isset() {
     assert_eq!(c.sql, "LOWER(\"posts\".\"title\") = $1");
     assert_eq!(c.params, vec![json!("foo")]);
     let c = sqlite("title:lower ~ 'FOO'");
-    assert_eq!(c.sql, "LOWER(\"posts\".\"title\") LIKE $1");
+    assert_eq!(c.sql, "LOWER(\"posts\".\"title\") LIKE $1 ESCAPE '\\'");
     assert_eq!(c.params, vec![json!("%foo%")]);
     assert_eq!(sqlite("'FOO' = title:lower").params, vec![json!("foo")]);
+    // Without `:each`, `:lower` lowercases the column text.
     assert_eq!(
         sqlite("categories:lower ?= 'TECH'").sql,
-        format!("EXISTS (SELECT 1 FROM {CATS} WHERE LOWER(\"__e1\".\"value\") = $1)")
+        "LOWER(\"posts\".\"categories\") = $1"
     );
     assert_eq!(
         sqlite("categories:lower ?= 'TECH'").params,
@@ -412,10 +485,6 @@ fn modifiers_each_length_lower_isset() {
 
     assert!(matches!(
         err("title:each = 'a'"),
-        FilterError::InvalidModifier(_)
-    ));
-    assert!(matches!(
-        err("title:length = 1"),
         FilterError::InvalidModifier(_)
     ));
     assert!(matches!(
@@ -447,8 +516,14 @@ fn modifiers_each_length_lower_isset() {
         "EXISTS (SELECT 1 FROM json_each(COALESCE($1, '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" IS \"posts\".\"title\")"
     );
     assert_eq!(c.params, vec![json!("[\"a\",\"b\"]")]);
+    // A bare multi column is a scalar, so it pairs with an element set...
+    assert_eq!(
+        with("@request.body.tags:each ?= categories", &r).sql,
+        "EXISTS (SELECT 1 FROM json_each(COALESCE($1, '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" IS \"posts\".\"categories\")"
+    );
+    // ...but two element sets still cannot be compared.
     assert!(matches!(
-        parse_and_compile("@request.body.tags:each ?= categories", &r, 0).unwrap_err(),
+        parse_and_compile("@request.body.tags:each ?= categories:each", &r, 0).unwrap_err(),
         FilterError::Unsupported(_)
     ));
 }
@@ -508,16 +583,19 @@ fn multi_relation_paths() {
         sqlite("tags.related.name ?= 'x'").sql,
         format!("EXISTS (SELECT 1 FROM {TAGS}, json_each(COALESCE(\"__r2\".\"related\", '[]')) AS \"__e3\" JOIN \"tags\" AS \"__r4\" ON \"__r4\".\"id\" = \"__e3\".\"value\" WHERE \"__r4\".\"name\" = $1)")
     );
-    // Multi relation ending in a multi select.
+    // Multi relation ending in a multi select: the joined rows are
+    // quantified, but the multi column itself is still raw text.
     assert_eq!(
         sqlite("tags.aliases ?= 'a'").sql,
+        format!("EXISTS (SELECT 1 FROM {TAGS} WHERE \"__r2\".\"aliases\" = $1)")
+    );
+    assert_eq!(
+        sqlite("tags.aliases:each ?= 'a'").sql,
         format!("EXISTS (SELECT 1 FROM {TAGS}, json_each(COALESCE(\"__r2\".\"aliases\", '[]')) AS \"__e3\" WHERE \"__e3\".\"value\" = $1)")
     );
-    // Multi relation compared directly: element semantics on the ids.
-    assert_eq!(
-        sqlite("tags ?= 't1'").sql,
-        "EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts\".\"tags\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = $1)"
-    );
+    // Multi relation compared directly is the raw id array, like any other
+    // multi-valued column.
+    assert_eq!(sqlite("tags ?= 't1'").sql, "\"posts\".\"tags\" = $1");
     // Multi relation against a column of the root row.
     assert_eq!(
         sqlite("tags.name ?= title").sql,
@@ -529,7 +607,7 @@ fn multi_relation_paths() {
 
 #[test]
 fn back_relations_emit_one_left_join() {
-    let c = sqlite("comments_via_post.title = 'x' && comments_via_post.author = 'u1'");
+    let c = sqlite("comments_via_post.title ?= 'x' && comments_via_post.author ?= 'u1'");
     assert_eq!(
         c.sql,
         "(\"posts_comments_via_post\".\"title\" = $1 AND \"posts_comments_via_post\".\"author\" = $2)"
@@ -541,17 +619,17 @@ fn back_relations_emit_one_left_join() {
         "LEFT JOIN \"comments\" AS \"posts_comments_via_post\" ON \"posts_comments_via_post\".\"post\" = \"posts\".\"id\""
     );
     // Back-relation through a multi-valued relation field.
-    let c = sqlite("memberships_via_projects.team = 'core'");
+    let c = sqlite("memberships_via_projects.team ?= 'core'");
     assert_eq!(
         c.joins[0].sql,
         "LEFT JOIN \"memberships\" AS \"posts_memberships_via_projects\" ON EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts_memberships_via_projects\".\"projects\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = \"posts\".\"id\")"
     );
-    assert!(postgres("memberships_via_projects.team = 'core'").joins[0]
+    assert!(postgres("memberships_via_projects.team ?= 'core'").joins[0]
         .sql
         .contains("jsonb_array_elements_text"));
     // Continue through forward relations after the join.
     assert_eq!(
-        sqlite("comments_via_post.author.name = 'x'").sql,
+        sqlite("comments_via_post.author.name ?= 'x'").sql,
         "(SELECT \"users\".\"name\" FROM \"users\" WHERE \"users\".\"id\" = \"posts_comments_via_post\".\"author\") = $1"
     );
     assert_eq!(
@@ -559,7 +637,7 @@ fn back_relations_emit_one_left_join() {
         "EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts_comments_via_post\".\"tags\", '[]')) AS \"__e1\" JOIN \"tags\" AS \"__r2\" ON \"__r2\".\"id\" = \"__e1\".\"value\" WHERE \"__r2\".\"name\" = $1)"
     );
     // Back-relation reached through a single relation joins on the subquery.
-    let c = sqlite("author.posts_via_author.title = 'x'");
+    let c = sqlite("author.posts_via_author.title ?= 'x'");
     assert_eq!(c.joins[0].key, "posts_author_posts_via_author");
     assert_eq!(
         c.joins[0].sql,
@@ -596,7 +674,7 @@ fn back_relations_emit_one_left_join() {
 fn collection_macro_shares_one_join() {
     let r = TestResolver::sqlite("posts").with_auth(json!({"id": "u1"}));
     let c = with(
-        "@collection.memberships.user = @request.auth.id && @collection.memberships.team = title",
+        "@collection.memberships.user ?= @request.auth.id && @collection.memberships.team ?= title",
         &r,
     );
     assert_eq!(
@@ -610,9 +688,9 @@ fn collection_macro_shares_one_join() {
         c.joins[0].sql,
         "LEFT JOIN \"memberships\" AS \"__collection_memberships\" ON 1=1"
     );
-    // Lookup by id works too, and multi-valued fields keep element semantics.
+    // Lookup by id works too.
     let by_id = format!(
-        "@collection.{}.roles ?= 'admin'",
+        "@collection.{}.roles:each ?= 'admin'",
         r.collection("memberships").unwrap().id
     );
     assert_eq!(
@@ -620,12 +698,12 @@ fn collection_macro_shares_one_join() {
         "EXISTS (SELECT 1 FROM json_each(COALESCE(\"__collection_memberships\".\"roles\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = $1)"
     );
     assert_eq!(
-        with("@collection.memberships.roles:length > 0", &r).sql,
+        with("@collection.memberships.roles:length ?> 0", &r).sql,
         "json_array_length(COALESCE(\"__collection_memberships\".\"roles\", '[]')) > $1"
     );
     // Relations from the joined collection.
     assert_eq!(
-        with("@collection.memberships.user.name = 'x'", &r).sql,
+        with("@collection.memberships.user.name ?= 'x'", &r).sql,
         "(SELECT \"users\".\"name\" FROM \"users\" WHERE \"users\".\"id\" = \"__collection_memberships\".\"user\") = $1"
     );
     assert_eq!(
@@ -639,6 +717,86 @@ fn collection_macro_shares_one_join() {
     assert_eq!(
         err("@collection.memberships = 1"),
         FilterError::UnknownMacro("@collection.memberships".into())
+    );
+}
+
+/// **Security.** A bare operator through a join means *every* joined row,
+/// not any of them: `teams_via_members.role = "admin"` must not pass for
+/// someone who is an admin of one team out of several. PocketBase expresses
+/// that by pairing the joined comparison with a `NOT EXISTS` over a
+/// correlated `__mm_` copy of the path, which is why its docs push `?=`.
+#[test]
+fn bare_operator_through_a_join_means_every_row() {
+    let c = sqlite("comments_via_post.title = 'x'");
+    assert_eq!(
+        c.sql,
+        "(\"posts_comments_via_post\".\"title\" = $1 \
+         AND NOT EXISTS (SELECT 1 FROM \"posts\" AS \"__mm_posts\" \
+         LEFT JOIN \"comments\" AS \"__mm_posts_comments_via_post\" \
+         ON \"__mm_posts_comments_via_post\".\"post\" = \"__mm_posts\".\"id\" \
+         WHERE \"__mm_posts\".\"id\" = \"posts\".\"id\" \
+         AND NOT (\"__mm_posts_comments_via_post\".\"title\" = $1)))"
+    );
+    // The value is bound once and reused by the subquery.
+    assert_eq!(c.params, vec![json!("x")]);
+    // The copy never leaks into the query's own joins.
+    assert_eq!(c.joins.len(), 1);
+    assert_eq!(c.joins[0].key, "posts_comments_via_post");
+
+    // `?op` keeps the plain "at least one joined row" meaning.
+    assert_eq!(
+        sqlite("comments_via_post.title ?= 'x'").sql,
+        "\"posts_comments_via_post\".\"title\" = $1"
+    );
+
+    // `@collection.X` is a join too.
+    let r = TestResolver::sqlite("posts").with_auth(json!({"id": "u1"}));
+    assert_eq!(
+        with("@collection.memberships.team = 'core'", &r).sql,
+        "(\"__collection_memberships\".\"team\" = $1 \
+         AND NOT EXISTS (SELECT 1 FROM \"posts\" AS \"__mm_posts\" \
+         LEFT JOIN \"memberships\" AS \"__mm___collection_memberships\" ON 1=1 \
+         WHERE \"__mm_posts\".\"id\" = \"posts\".\"id\" \
+         AND NOT (\"__mm___collection_memberships\".\"team\" = $1)))"
+    );
+
+    // A single relation is one row per record, so it needs no multi-match.
+    assert_eq!(
+        sqlite("author.name = 'Alice'").sql,
+        "(SELECT \"users\".\"name\" FROM \"users\" WHERE \"users\".\"id\" = \"posts\".\"author\") = $1"
+    );
+    // Neither does a path that already quantifies over an element set.
+    assert!(!sqlite("tags.name = 'rust'").sql.contains("__mm_"));
+
+    // The copy follows the whole path, including hops taken after the join
+    // and element sets opened on the joined row.
+    assert!(sqlite("comments_via_post.author.name = 'x'").sql.contains(
+        "NOT ((SELECT \"users\".\"name\" FROM \"users\" \
+         WHERE \"users\".\"id\" = \"__mm_posts_comments_via_post\".\"author\") = $1)"
+    ));
+    let c = sqlite("comments_via_post.tags:each = 'x'");
+    assert!(c.sql.contains(
+        "FROM \"posts\" AS \"__mm_posts\" LEFT JOIN \"comments\" AS \
+         \"__mm_posts_comments_via_post\" ON \"__mm_posts_comments_via_post\".\"post\" = \
+         \"__mm_posts\".\"id\", json_each(COALESCE(\"__mm_posts_comments_via_post\".\"tags\", '[]'))"
+    ));
+}
+
+/// PocketBase ignores `:length` on a single-valued path instead of
+/// rejecting it, so `comments_via_post.id:length = 0` compiles (and, like
+/// PocketBase, compares the raw column). Rejecting it turned a filter that
+/// works against PocketBase into a 400.
+#[test]
+fn length_on_a_single_valued_path_is_ignored() {
+    assert_eq!(sqlite("title:length = 3").sql, "\"posts\".\"title\" = $1");
+    assert_eq!(sqlite("views:length = 3").sql, "\"posts\".\"views\" = $1");
+    assert!(sqlite("comments_via_post.id:length = 0")
+        .sql
+        .starts_with("(\"posts_comments_via_post\".\"id\" = $1 AND NOT EXISTS"));
+    // Multi-valued fields still count their elements.
+    assert_eq!(
+        sqlite("categories:length = 2").sql,
+        "json_array_length(COALESCE(\"posts\".\"categories\", '[]')) = $1"
     );
 }
 
@@ -1001,22 +1159,33 @@ fn evaluator_table() {
         ("attachments ?= 'x'", false),
         ("attachments ?!= 'x'", true),
         ("attachments:length = 0", true),
-        ("categories ?= 'tech'", true),
+        // Bare, a multi-valued field is the raw JSON text of the column.
+        ("categories ?= 'tech'", false),
         ("categories = 'tech'", false),
+        ("categories = '[\"tech\",\"news\"]'", true),
         ("categories != 'life'", true),
-        ("categories != 'tech'", false),
+        ("categories != 'tech'", true),
         ("categories ?!= 'tech'", true),
         ("categories ?~ 'ew'", true),
         ("categories ~ 'e'", true),
+        ("categories ~ '[\"tech'", true),
+        ("categories:lower ?= 'TECH'", false),
+        ("'tech' ?= categories", false),
+        ("tags ?= 't2'", false),
+        ("tags = 't1'", false),
+        // `:each` is the opt-in that unpacks it.
         ("categories:each ?= 'news'", true),
+        ("categories:each = 'news'", false),
+        ("categories:each ?~ 'ew'", true),
+        ("categories:each ~ 'e'", true),
         ("categories:length = 2", true),
         ("categories:length > 2", false),
         ("categories = ''", false),
         ("categories != ''", true),
-        ("categories:lower ?= 'TECH'", true),
-        ("'tech' ?= categories", true),
-        ("tags ?= 't2'", true),
-        ("tags = 't1'", false),
+        ("tags:each ?= 't2'", true),
+        // `:length` on a single-valued field is ignored, not an error.
+        ("title:length = 'Hello World'", true),
+        ("views:length = 5", true),
         ("published = true", true),
         ("published != true", false),
         ("published = 1", true),
@@ -1158,6 +1327,34 @@ fn like_matcher_semantics() {
     assert!(like_match("héllo", "H_LLO"));
     assert!(like_match("abcabc", "%abc"));
     assert!(!like_match("abcab", "%abc"));
+    // `\` escapes the next character, matching the `ESCAPE '\'` the
+    // compiler emits.
+    assert!(like_match("a_b", "%a\\_b%"));
+    assert!(!like_match("axb", "%a\\_b%"));
+    assert!(like_match("axb", "%a_b%"));
+    assert!(like_match("50%", "%50\\%%"));
+    assert!(!like_match("50x", "%50\\%%"));
+    assert!(like_match("a\\b", "%a\\\\b%"));
+    assert!(!like_match("ab", "%a\\\\b%"));
+}
+
+/// The escaper is PocketBase's: it leaves a sequence the author already
+/// escaped alone, so `a\_b` still means a literal underscore rather than
+/// a literal backslash followed by one.
+#[test]
+fn escape_like_matches_pocketbase() {
+    use super::eval::{escape_like, like_pattern};
+    assert_eq!(escape_like("a_b"), "a\\_b");
+    assert_eq!(escape_like("_b"), "\\_b");
+    assert_eq!(escape_like("b_"), "b\\_");
+    assert_eq!(escape_like("a\\b"), "a\\\\b");
+    assert_eq!(escape_like("a\\_b"), "a\\_b");
+    assert_eq!(escape_like("50%"), "50\\%");
+    assert_eq!(escape_like("plain"), "plain");
+    assert_eq!(escape_like(""), "");
+    // An operand carrying a `%` is a hand-written pattern: verbatim.
+    assert_eq!(like_pattern("%a_b%"), "%a_b%");
+    assert_eq!(like_pattern("a_b"), "%a\\_b%");
 }
 
 #[test]
@@ -1193,4 +1390,255 @@ fn request_path_parsing() {
     assert_eq!(RequestPath::parse(&["body"]), None);
     assert_eq!(RequestPath::parse(&["nope"]), None);
     assert_eq!(RequestPath::parse(&[]), None);
+}
+
+// --- SQL and the evaluator, on the same cases ---------------------------------
+
+/// The realtime path evaluates filters in-process against a record
+/// snapshot while list queries run the compiled SQL. If the two disagree a
+/// subscriber receives events a list query would not have returned, so the
+/// cases below are asserted *once*, against both: the filter is compiled
+/// and run over a real SQLite row and evaluated over the same record, and
+/// the two answers must be equal (and equal to the expected one).
+fn agreement_db() -> rusqlite::Connection {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE posts (
+            id TEXT PRIMARY KEY, title TEXT, status TEXT, author TEXT,
+            tags TEXT, categories TEXT, attachments TEXT, views NUMERIC,
+            published BOOLEAN, data TEXT, loc TEXT, published_at TEXT,
+            created TEXT, updated TEXT
+         );
+         CREATE TABLE comments (
+            id TEXT PRIMARY KEY, post TEXT, title TEXT, author TEXT,
+            tags TEXT, created TEXT, updated TEXT
+         );",
+    )
+    .unwrap();
+    db
+}
+
+/// Insert a PocketBase-shaped record snapshot: multi-valued fields and
+/// json/geo fields are stored as the JSON text the engine writes.
+fn insert_record(db: &rusqlite::Connection, table: &str, record: &Map<String, Value>) {
+    let cols: Vec<&str> = record.keys().map(String::as_str).collect();
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({})",
+        cols.iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(", "),
+        (1..=cols.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let values: Vec<rusqlite::types::Value> = cols
+        .iter()
+        .map(|c| sql_value(record.get(*c).unwrap()))
+        .collect();
+    db.execute(&sql, rusqlite::params_from_iter(values))
+        .unwrap();
+}
+
+/// `$n` placeholders become SQLite's `?n`, leaving `$` inside JSON path
+/// literals (`'$.a.b'`) alone. Numbered placeholders matter here: the
+/// multi-match subquery reuses the same one as the joined comparison.
+fn to_sqlite_placeholders(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    for (i, c) in sql.char_indices() {
+        if c == '$' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+            out.push('?');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn sql_value(v: &Value) -> rusqlite::types::Value {
+    use rusqlite::types::Value as S;
+    match v {
+        Value::Null => S::Null,
+        Value::Bool(b) => S::Integer(i64::from(*b)),
+        Value::Number(n) => n
+            .as_i64()
+            .map(S::Integer)
+            .unwrap_or_else(|| S::Real(n.as_f64().unwrap_or_default())),
+        Value::String(s) => S::Text(s.clone()),
+        other => S::Text(other.to_string()),
+    }
+}
+
+/// Run a compiled filter against `posts` and report whether the row matched.
+fn run_sql(db: &rusqlite::Connection, c: &CompiledFilter) -> bool {
+    let mut sql = String::from("SELECT 1 FROM \"posts\"");
+    for join in &c.joins {
+        sql.push(' ');
+        sql.push_str(&join.sql);
+    }
+    sql.push_str(" WHERE ");
+    // rusqlite numbers parameters from ?1, matching the compiler's $1.
+    sql.push_str(&to_sqlite_placeholders(&c.sql));
+    let values: Vec<rusqlite::types::Value> = c.params.iter().map(sql_value).collect();
+    let mut stmt = db
+        .prepare(&sql)
+        .unwrap_or_else(|e| panic!("prepare {sql}: {e}"));
+    stmt.exists(rusqlite::params_from_iter(values))
+        .unwrap_or_else(|e| panic!("run {sql}: {e}"))
+}
+
+#[test]
+fn sql_and_evaluator_agree() {
+    let r = TestResolver::sqlite("posts")
+        .with_auth(json!({"id": "u1"}))
+        .with_body(json!({"title": "x", "tags": ["a", "b"]}));
+    let db = agreement_db();
+    let record = record();
+    insert_record(&db, "posts", &record);
+
+    // (filter, expected)
+    let cases: &[(&str, bool)] = &[
+        // Gap 1: a bare multi-valued column is the raw JSON text, and the
+        // `?` prefix does not change that; `:each` unpacks it.
+        ("categories = 'tech'", false),
+        ("categories ?= 'tech'", false),
+        ("'tech' ?= categories", false),
+        ("categories != 'tech'", true),
+        ("categories ?!= 'tech'", true),
+        ("categories = '[\"tech\",\"news\"]'", true),
+        ("categories ~ 'tech'", true),
+        ("categories ?~ 'tech'", true),
+        ("categories !~ 'zzz'", true),
+        ("categories:lower = '[\"TECH\",\"NEWS\"]'", true),
+        ("categories = ''", false),
+        ("categories != ''", true),
+        ("categories:length = 2", true),
+        ("categories:each = 'tech'", false),
+        ("categories:each ?= 'tech'", true),
+        ("categories:each ?= 'zzz'", false),
+        ("categories:each != 'zzz'", true),
+        ("categories:each ~ 'e'", true),
+        ("categories:each ?~ 'ew'", true),
+        ("tags ?= 't1'", false),
+        ("tags = '[\"t1\",\"t2\"]'", true),
+        ("tags:each ?= 't1'", true),
+        ("attachments = ''", true),
+        ("attachments ?= 'x'", false),
+        ("attachments != 'x'", true),
+        ("attachments:length = 0", true),
+        // Gap 3: `~` escapes the SQL wildcards, so `_` is literal...
+        ("title ~ 'H_llo'", false),
+        // ...unless the operand carries a `%`, which makes it a pattern.
+        ("title ~ 'H_llo%'", true),
+        ("title ~ 'Hello_World'", false),
+        ("title ~ 'Hello World'", true),
+        ("title !~ 'Hello_World'", true),
+        ("title ~ '%o W%'", true),
+        // Gap 4: `:length` on a single-valued field is ignored.
+        ("title:length = 'Hello World'", true),
+        ("views:length = 5", true),
+        // Scalars, for the shared baseline.
+        ("title = 'Hello World'", true),
+        ("title:lower = 'hello world'", true),
+        ("status = ''", true),
+        ("status != 'x'", true),
+        ("views > 3", true),
+        ("published = true", true),
+        ("data.a.b = 1", true),
+        ("loc.lat = 2", true),
+        ("author = @request.auth.id", true),
+        ("title = 'a' || views = 5", true),
+    ];
+
+    for (src, expected) in cases {
+        let compiled = parse_and_compile(src, &r, 0).unwrap();
+        let by_sql = run_sql(&db, &compiled);
+        let by_eval = evaluate(&Parser::parse(src).unwrap(), &record, &r).unwrap();
+        assert_eq!(by_sql, by_eval, "SQL and evaluator disagree on `{src}`");
+        assert_eq!(by_sql, *expected, "{src}");
+    }
+}
+
+/// Gap 2, the security one, on real rows: `p1` has two comments and `p2`
+/// has one. A bare operator must require *both* of `p1`'s comments to
+/// match — `?=` is the "any" form. Anything else lets an access rule pass
+/// for a record its author meant to exclude.
+#[test]
+fn bare_join_operator_is_all_rows_not_any() {
+    let r = TestResolver::sqlite("posts");
+    let db = agreement_db();
+    for id in ["p1", "p2", "p3"] {
+        db.execute("INSERT INTO posts (id, title) VALUES (?1, 'x')", [id])
+            .unwrap();
+    }
+    for (id, post, title) in [
+        ("c1", "p1", "admin"),
+        ("c2", "p1", "member"),
+        ("c3", "p2", "admin"),
+    ] {
+        db.execute(
+            "INSERT INTO comments (id, post, title) VALUES (?1, ?2, ?3)",
+            [id, post, title],
+        )
+        .unwrap();
+    }
+
+    let matching = |src: &str| -> Vec<String> {
+        let c = parse_and_compile(src, &r, 0).unwrap();
+        let mut sql = String::from("SELECT DISTINCT \"posts\".\"id\" FROM \"posts\"");
+        for join in &c.joins {
+            sql.push(' ');
+            sql.push_str(&join.sql);
+        }
+        sql.push_str(" WHERE ");
+        sql.push_str(&to_sqlite_placeholders(&c.sql));
+        sql.push_str(" ORDER BY \"posts\".\"id\"");
+        let values: Vec<rusqlite::types::Value> = c.params.iter().map(sql_value).collect();
+        let mut stmt = db.prepare(&sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        rows.map(Result::unwrap).collect()
+    };
+
+    // p1 is "admin" on one comment out of two, so a bare `=` must reject
+    // it; only p2, whose single comment matches, qualifies.
+    assert_eq!(matching("comments_via_post.title = 'admin'"), ["p2"]);
+    // The any-of form is the permissive one, and must stay permissive.
+    assert_eq!(matching("comments_via_post.title ?= 'admin'"), ["p1", "p2"]);
+    // Bare `!=` is "no joined row equals", vacuously true with no rows.
+    assert_eq!(matching("comments_via_post.title != 'admin'"), ["p3"]);
+    assert_eq!(
+        matching("comments_via_post.title ?!= 'admin'"),
+        ["p1", "p3"]
+    );
+    // An empty back-relation compares equal to "" (`:length` does not
+    // report zero for it, which is why this is the documented idiom).
+    assert_eq!(matching("comments_via_post.id = ''"), ["p3"]);
+    assert_eq!(matching("comments_via_post.id != ''"), ["p1", "p2"]);
+    // `~` through a join follows the same all/any split.
+    assert_eq!(matching("comments_via_post.title ~ 'admi'"), ["p2"]);
+    assert_eq!(matching("comments_via_post.title ?~ 'admi'"), ["p1", "p2"]);
+    // Two `?=` share one joined row, so they must hold together on it.
+    assert!(
+        matching("comments_via_post.title ?= 'admin' && comments_via_post.id ?= 'c2'").is_empty()
+    );
+    assert_eq!(
+        matching("comments_via_post.title ?= 'member' && comments_via_post.id ?= 'c2'"),
+        ["p1"]
+    );
+    // The evaluator cannot answer "every joined row" from a snapshot, so
+    // it refuses rather than guessing — that is the agreement here.
+    assert!(matches!(
+        evaluate(
+            &Parser::parse("comments_via_post.title = 'admin'").unwrap(),
+            &record(),
+            &r
+        ),
+        Err(FilterError::Unsupported(_))
+    ));
 }

@@ -392,8 +392,18 @@ fn project_object(value: &mut Value, specs: &[FieldSpec]) {
         return;
     };
     let mut out = Map::new();
+    // Keys that another spec addresses with a deeper path. `*` must not
+    // copy those wholesale: in `?fields=*,expand.author.name` the star
+    // would otherwise emit the entire `expand` object, and the narrower
+    // spec — which merges into what is already there — would have nothing
+    // left to trim.
+    let deep: std::collections::HashSet<&str> = specs
+        .iter()
+        .filter(|s| s.path.len() > 1)
+        .map(|s| s.path[0].as_str())
+        .collect();
     for spec in specs {
-        project_into(map, &spec.path, &mut out, spec.excerpt);
+        project_into(map, &spec.path, &mut out, spec.excerpt, &deep);
     }
     *value = Value::Object(out);
 }
@@ -403,12 +413,16 @@ fn project_into(
     path: &[String],
     out: &mut Map<String, Value>,
     excerpt: Option<(usize, bool)>,
+    deep: &std::collections::HashSet<&str>,
 ) {
     let Some((head, rest)) = path.split_first() else {
         return;
     };
     if head == "*" {
         for (k, v) in src {
+            if deep.contains(k.as_str()) {
+                continue;
+            }
             if rest.is_empty() {
                 out.insert(k.clone(), apply_excerpt(v.clone(), excerpt));
             } else {
@@ -440,7 +454,7 @@ fn project_nested(
     });
     match (v, slot) {
         (Value::Object(inner), Value::Object(target)) => {
-            project_into(inner, rest, target, excerpt);
+            project_into(inner, rest, target, excerpt, &Default::default());
         }
         (Value::Array(items), Value::Array(targets)) => {
             if targets.len() < items.len() {
@@ -448,7 +462,7 @@ fn project_nested(
             }
             for (item, target) in items.iter().zip(targets.iter_mut()) {
                 if let (Value::Object(inner), Value::Object(t)) = (item, target) {
-                    project_into(inner, rest, t, excerpt);
+                    project_into(inner, rest, t, excerpt, &Default::default());
                 }
             }
         }
@@ -479,16 +493,19 @@ fn apply_excerpt(v: Value, excerpt: Option<(usize, bool)>) -> Value {
     }
 }
 
+/// Drop HTML tags and collapse runs of whitespace, the way PocketBase
+/// prepares an `:excerpt` operand.
+///
+/// A tag is removed, not replaced with a space: `Hello <b>world</b>, ...`
+/// must read `Hello world, ...`, and inserting a space would put one in
+/// front of the comma.
 fn strip_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
     for c in s.chars() {
         match c {
             '<' => in_tag = true,
-            '>' if in_tag => {
-                in_tag = false;
-                out.push(' ');
-            }
+            '>' if in_tag => in_tag = false,
             _ if !in_tag => out.push(c),
             _ => {}
         }
@@ -545,6 +562,43 @@ mod tests {
             ..Default::default()
         });
         assert!(v.get("tokenKey").is_some());
+    }
+
+    #[test]
+    fn star_yields_to_a_deeper_spec_for_the_same_key() {
+        // `*` must not emit the whole `expand`, or the narrower spec has
+        // nothing left to trim. Asserted against PocketBase in
+        // tests/conformance/records.test.ts.
+        let mut v = serde_json::json!({
+            "id": "1",
+            "title": "t",
+            "expand": {"author": {"id": "a1", "name": "Ann", "email": "e@x.co"}}
+        });
+        project_fields(&mut v, "*,expand.author.name");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "id": "1",
+                "title": "t",
+                "expand": {"author": {"name": "Ann"}}
+            })
+        );
+
+        // With no deeper spec, `*` still emits everything.
+        let mut v = serde_json::json!({"id": "1", "expand": {"a": {"b": 2}}});
+        project_fields(&mut v, "*");
+        assert_eq!(v, serde_json::json!({"id": "1", "expand": {"a": {"b": 2}}}));
+    }
+
+    #[test]
+    fn excerpt_removes_tags_without_leaving_a_space_before_punctuation() {
+        let mut v = serde_json::json!({"body": "Hello <b>world</b>, this is a post."});
+        project_fields(&mut v, "body:excerpt(17,true)");
+        assert_eq!(v["body"], "Hello world, this...");
+
+        let mut v = serde_json::json!({"body": "<p>Short</p>"});
+        project_fields(&mut v, "body:excerpt(50)");
+        assert_eq!(v["body"], "Short");
     }
 
     #[test]

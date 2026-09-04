@@ -10,15 +10,21 @@
 //! * Ordered comparisons (`<`, `>`, ...) and `~` against an empty value
 //!   are false, like SQL `NULL`.
 //! * `~` / `!~` are case-insensitive `LIKE`: `%` matches any run, `_` a
-//!   single character, and a pattern without `%` is wrapped in `%...%`.
-//! * Multi-valued operands: `?op` is satisfied by any element, the bare
-//!   operator requires every element to match (and at least one element
-//!   unless the operator tolerates the missing row: `!=`, or `=` against
-//!   an empty value).
+//!   single character, `\` escapes the next character, and an operand
+//!   without a `%` is escaped and wrapped in `%...%`.
+//! * A multi-valued field is only unpacked by `:each`; bare, it compares
+//!   as the raw JSON text of the column (`["a","b"]`), matching what
+//!   PocketBase's SQL does.
+//! * Element operands (`:each`): `?op` is satisfied by any element, the
+//!   bare operator requires every element to match (and at least one
+//!   element unless the operator tolerates the missing row: `!=`, or `=`
+//!   against an empty value).
 //!
 //! Relation paths, back-relations, `@collection.*` and function calls need
 //! the database; they return [`FilterError::Unsupported`] so the caller
-//! can fall back to SQL.
+//! can fall back to SQL. That matters for correctness as well as
+//! completeness: a bare operator through a join means "every joined row",
+//! which no record snapshot can answer.
 
 use std::cmp::Ordering;
 
@@ -133,38 +139,101 @@ fn order(l: &Value, r: &Value) -> Ordering {
     }
 }
 
-/// `%`-wrap a LIKE pattern unless it already carries a wildcard.
+/// Escape `\`, `%` and `_` for a `LIKE ... ESCAPE '\'` pattern, leaving
+/// sequences the author already escaped alone.
+///
+/// This is PocketBase's `escapeUnescapedChars`, which decides right to
+/// left: a special character is escaped unless the character in front of it
+/// is a backslash, and that backslash is then not itself escaped. So `a_b`
+/// becomes `a\_b`, `a\b` becomes `a\\b` (a literal backslash) and `a\_b` is
+/// already an escaped `_` and stays as it is.
+pub fn escape_like(raw: &str) -> String {
+    const SPECIAL: [char; 3] = ['\\', '%', '_'];
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = Vec::with_capacity(chars.len() + 2);
+    let mut pending = false;
+    for &c in chars.iter().rev() {
+        if pending {
+            if c != '\\' {
+                out.push('\\');
+            }
+            pending = false;
+        } else {
+            pending = SPECIAL.contains(&c);
+        }
+        out.push(c);
+    }
+    if pending {
+        out.push('\\');
+    }
+    out.iter().rev().collect()
+}
+
+/// PocketBase's LIKE operand normalization: an operand that already carries
+/// a `%` is a hand-written pattern and is used verbatim; anything else is
+/// escaped and wrapped in `%...%`. The compiled SQL always declares
+/// `ESCAPE '\'`.
 pub fn like_pattern(raw: &str) -> String {
     if raw.contains('%') {
         raw.to_string()
     } else {
-        format!("%{raw}%")
+        format!("%{}%", escape_like(raw))
     }
 }
 
-/// Case-insensitive SQL `LIKE` matcher (`%` any run, `_` one char).
+/// Case-insensitive SQL `LIKE` matcher (`%` any run, `_` one char, `\`
+/// escaping the next character as a literal — the `ESCAPE '\'` the
+/// compiler emits).
 pub fn like_match(subject: &str, pattern: &str) -> bool {
     let s: Vec<char> = subject.to_lowercase().chars().collect();
     let p: Vec<char> = pattern.to_lowercase().chars().collect();
     // Classic iterative wildcard matching with backtracking on the last `%`.
+    // `star` remembers the `%` position in the pattern and how far the
+    // subject had been consumed when it was taken.
     let (mut si, mut pi) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None;
+    // The pattern character at `i`, and how many characters it spans: a
+    // backslash makes the next character a literal.
+    let literal = |i: usize| -> Option<(char, usize)> {
+        match p.get(i) {
+            Some('\\') => match p.get(i + 1) {
+                Some(&c) => Some((c, 2)),
+                // A trailing escape has nothing to escape; take it as one.
+                None => Some(('\\', 1)),
+            },
+            Some(&c) if c == '%' || c == '_' => None,
+            Some(&c) => Some((c, 1)),
+            None => None,
+        }
+    };
     while si < s.len() {
-        if pi < p.len() && (p[pi] == '_' || p[pi] == s[si]) {
-            si += 1;
-            pi += 1;
-        } else if pi < p.len() && p[pi] == '%' {
-            star = Some((pi, si));
-            pi += 1;
-        } else if let Some((sp, ss)) = star {
-            pi = sp + 1;
-            si = ss + 1;
-            star = Some((sp, ss + 1));
-        } else {
-            return false;
+        // How far the pattern advances if it consumes `s[si]` here.
+        let step = match literal(pi) {
+            Some((c, width)) => (c == s[si]).then_some(width),
+            None => match p.get(pi) {
+                Some('_') => Some(1),
+                Some('%') => {
+                    star = Some((pi, si));
+                    pi += 1;
+                    continue;
+                }
+                _ => None,
+            },
+        };
+        match (step, star) {
+            (Some(width), _) => {
+                si += 1;
+                pi += width;
+            }
+            (None, Some((sp, ss))) => {
+                pi = sp + 1;
+                si = ss + 1;
+                star = Some((sp, ss + 1));
+            }
+            (None, None) => return false,
         }
     }
-    while pi < p.len() && p[pi] == '%' {
+    while p.get(pi) == Some(&'%') {
         pi += 1;
     }
     pi == p.len()
@@ -417,14 +486,10 @@ fn eval_field(
         Some(Modifier::IsSet) => Err(FilterError::InvalidModifier(format!(
             "{path}:isset is only valid on @request.body fields"
         ))),
-        Some(Modifier::Length) => {
-            if !multi {
-                return Err(FilterError::InvalidModifier(format!(
-                    "{path}:length requires a multi-valued field"
-                )));
-            }
-            Ok(EvalTerm::Scalar(Value::from(length_of(&value))))
-        }
+        // `:length` on a single-valued field is a no-op in PocketBase, not
+        // an error: the raw value is compared.
+        Some(Modifier::Length) if !multi => Ok(EvalTerm::Scalar(value)),
+        Some(Modifier::Length) => Ok(EvalTerm::Scalar(Value::from(length_of(&value)))),
         Some(Modifier::Each) => {
             if !multi {
                 return Err(FilterError::InvalidModifier(format!(
@@ -433,22 +498,35 @@ fn eval_field(
             }
             Ok(EvalTerm::Multi(array_elems(&value)))
         }
-        Some(Modifier::Lower) => Ok(if multi {
-            EvalTerm::Multi(array_elems(&value).into_iter().map(lowercase).collect())
-        } else {
-            EvalTerm::Scalar(lowercase(value))
-        }),
-        None => Ok(if multi {
-            EvalTerm::Multi(array_elems(&value))
+        // Without `:each` a multi-valued field is its raw JSON text, so
+        // `:lower` lowercases that text rather than each element.
+        Some(Modifier::Lower) => Ok(EvalTerm::Scalar(lowercase(as_column_text(&value, multi)))),
+        None => Ok(EvalTerm::Scalar(if multi {
+            as_column_text(&value, true)
         } else if field.field_type() == FieldType::Json && rest.is_empty() {
             // Whole json field: compare its decoded value like
             // `json_extract(col, '$')` does.
-            EvalTerm::Scalar(match &value {
+            match &value {
                 Value::String(s) => serde_json::from_str(s).unwrap_or(value.clone()),
                 other => other.clone(),
-            })
+            }
         } else {
-            EvalTerm::Scalar(value)
-        }),
+            value
+        })),
+    }
+}
+
+/// What the database column holds for a multi-valued field: the JSON text
+/// of the array, which is what a comparison without `:each` sees.
+fn as_column_text(value: &Value, multi: bool) -> Value {
+    if !multi {
+        return value.clone();
+    }
+    match value {
+        // An absent column is `NULL`, which stays "empty"; a stored array
+        // (or a string already holding one) compares as its JSON text.
+        Value::Null => Value::Null,
+        Value::String(s) => Value::String(s.clone()),
+        other => Value::String(other.to_string()),
     }
 }

@@ -78,7 +78,16 @@ pub struct FieldRef {
     /// Set when the path went through a multi-valued relation: the FROM
     /// clause enumerating the related rows that `sql` refers to.
     pub from: Option<String>,
+    /// Whether the path went through a root-level `LEFT JOIN` (a
+    /// back-relation or `@collection.X`), i.e. `sql` can stand for several
+    /// rows. Bare operators over such a path mean *every* row (see
+    /// [`PathResolver::resolve_multi_match`]).
+    pub joined: bool,
 }
+
+/// Prefix PocketBase gives the aliases of the correlated copy of a path it
+/// builds for a multi-match subquery.
+const MM_PREFIX: &str = "__mm_";
 
 /// Whether a segment has the `<collection>_via_<field>` shape.
 pub fn is_back_relation(segment: &str) -> bool {
@@ -151,6 +160,24 @@ pub struct PathResolver<'a> {
     dialect: Dialect,
     pub joins: Vec<Join>,
     alias_seq: usize,
+    /// While `Some`, the resolver is building the correlated `__mm_` copy of
+    /// a path: root-level joins are appended here instead of to `joins`, and
+    /// every root alias is prefixed, so the copy can live inside a
+    /// subquery next to the original.
+    mm: Option<String>,
+}
+
+/// The correlated copy of a path that went through a root-level join,
+/// used to express "*every* joined row satisfies the comparison".
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultiMatchRef {
+    /// `"posts" AS "__mm_posts" LEFT JOIN "comments" AS "__mm_..." ON ...`,
+    /// including any element sets the path needed.
+    pub from: String,
+    /// `"__mm_posts"."id" = "posts"."id"`, tying the copy to the outer row.
+    pub correlation: String,
+    /// The resolved path relative to `from`.
+    pub field: FieldRef,
 }
 
 impl<'a> PathResolver<'a> {
@@ -160,6 +187,7 @@ impl<'a> PathResolver<'a> {
             dialect: resolver.dialect(),
             joins: Vec::new(),
             alias_seq: 0,
+            mm: None,
         }
     }
 
@@ -168,7 +196,20 @@ impl<'a> PathResolver<'a> {
         format!("__{prefix}{}", self.alias_seq)
     }
 
+    /// Root-level alias for `base`, prefixed while building a `__mm_` copy.
+    fn root_alias(&self, base: &str) -> String {
+        match self.mm {
+            Some(_) => format!("{MM_PREFIX}{base}"),
+            None => base.to_string(),
+        }
+    }
+
     fn add_join(&mut self, join: Join) {
+        if let Some(mm) = &mut self.mm {
+            mm.push(' ');
+            mm.push_str(&join.sql);
+            return;
+        }
         if !self.joins.iter().any(|j| j.key == join.key) {
             self.joins.push(join);
         }
@@ -249,14 +290,15 @@ impl<'a> PathResolver<'a> {
     /// Resolve a path rooted at the filter's collection.
     pub fn resolve(&mut self, path: &str) -> Result<FieldRef, FilterError> {
         let root = self.resolver.root();
+        let alias = self.root_alias(root.table_name());
         let cursor = Cursor {
             collection: Coll::Root(root),
             row: Row::Table {
-                alias: root.table_name().to_string(),
+                alias: alias.clone(),
             },
-            name: root.table_name().to_string(),
+            name: alias,
         };
-        self.walk(cursor, path, path, None)
+        self.walk(cursor, path, path, None, false)
     }
 
     /// Resolve `@collection.<name>.<path>`: a `LEFT JOIN "<name>" AS
@@ -266,7 +308,7 @@ impl<'a> PathResolver<'a> {
         let Some(collection) = self.resolver.collection(name) else {
             return Err(FilterError::UnknownField(full));
         };
-        let alias = format!("__collection_{}", collection.table_name());
+        let alias = self.root_alias(&format!("__collection_{}", collection.table_name()));
         self.add_join(Join {
             sql: format!(
                 "LEFT JOIN {} AS {} ON 1=1",
@@ -282,7 +324,36 @@ impl<'a> PathResolver<'a> {
             },
             name: alias,
         };
-        self.walk(cursor, path, &full, None)
+        self.walk(cursor, path, &full, None, true)
+    }
+
+    /// Resolve the same path a second time under `__mm_`-prefixed aliases,
+    /// correlated to the outer row. PocketBase pairs a bare comparison over
+    /// a joined path with a `NOT EXISTS` over this copy so the comparison
+    /// means "and no joined row fails it" rather than "some joined row
+    /// passes it". `self.joins` is left untouched.
+    ///
+    /// `collection` is the `@collection.<name>` prefix, if the path had one.
+    pub fn resolve_multi_match(
+        &mut self,
+        collection: Option<&str>,
+        path: &str,
+    ) -> Result<MultiMatchRef, FilterError> {
+        let table = self.resolver.root().table_name().to_string();
+        let alias = format!("{MM_PREFIX}{table}");
+        let outer = self
+            .mm
+            .replace(format!("{} AS {}", quote(&table), quote(&alias)));
+        let field = match collection {
+            Some(name) => self.resolve_collection(name, path),
+            None => self.resolve(path),
+        };
+        let from = std::mem::replace(&mut self.mm, outer).unwrap_or_default();
+        Ok(MultiMatchRef {
+            from,
+            correlation: format!("{}.\"id\" = {}.\"id\"", quote(&alias), quote(&table)),
+            field: field?,
+        })
     }
 
     fn walk<'c>(
@@ -291,6 +362,7 @@ impl<'a> PathResolver<'a> {
         path: &str,
         full_path: &str,
         mut from: Option<String>,
+        mut joined: bool,
     ) -> Result<FieldRef, FilterError> {
         let segments: Vec<&str> = path.split('.').collect();
         let unknown = || FilterError::UnknownField(full_path.to_string());
@@ -333,10 +405,13 @@ impl<'a> PathResolver<'a> {
                 };
                 let on = self.back_relation_on(&alias, back_field, multi, &key);
                 match &mut from {
-                    None => self.add_join(Join {
-                        sql: format!("LEFT JOIN {table} AS {} ON {on}", quote(&alias)),
-                        key: alias.clone(),
-                    }),
+                    None => {
+                        joined = true;
+                        self.add_join(Join {
+                            sql: format!("LEFT JOIN {table} AS {} ON {on}", quote(&alias)),
+                            key: alias.clone(),
+                        })
+                    }
                     Some(f) => {
                         f.push_str(&format!(" JOIN {table} AS {} ON {on}", quote(&alias)));
                     }
@@ -359,12 +434,14 @@ impl<'a> PathResolver<'a> {
                         sql_type: SqlType::Json,
                         multi: false,
                         from,
+                        joined,
                     },
                     t => FieldRef {
                         sql: col,
                         sql_type: SqlType::of(t),
                         multi: field.is_multiple(),
                         from,
+                        joined,
                     },
                 });
             }
@@ -416,6 +493,7 @@ impl<'a> PathResolver<'a> {
                         sql_type: SqlType::Json,
                         multi: false,
                         from,
+                        joined,
                     });
                 }
                 FieldKind::GeoPoint {} => {
@@ -433,6 +511,7 @@ impl<'a> PathResolver<'a> {
                         sql_type: SqlType::Number,
                         multi: false,
                         from,
+                        joined,
                     });
                 }
                 _ => return Err(unknown()),

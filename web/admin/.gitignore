@@ -8,7 +8,9 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
+# `dist` is deliberately NOT ignored: the server embeds it with rust-embed
+# and `crates/server/build.rs` fails the build without it, so a fresh clone
+# (CI included) has to carry the bundle. See the root .gitignore.
 dist-ssr
 *.local
 

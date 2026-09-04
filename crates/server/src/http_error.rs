@@ -67,8 +67,8 @@ impl ApiError {
 
 /// The statuses PocketBase answers a failed API rule with. Verified
 /// against v0.40.2 by `tests/conformance/errors.test.ts`; they are not
-/// what you would guess, so W4b's record service should use these
-/// constructors rather than inventing its own.
+/// what you would guess, so `routes::records` uses these constructors
+/// rather than inventing its own.
 ///
 /// * a failing `listRule` is **not** an error — return an empty list;
 /// * `viewRule` / `updateRule` / `deleteRule` → 404;

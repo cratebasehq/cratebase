@@ -18,8 +18,50 @@
 //!   reads; a statement that writes must go through `execute` or a
 //!   transaction.
 //!
+//! - **one checkpointer connection**, used by nothing but the background
+//!   WAL checkpointer (see below).
+//!
 //! Every statement runs inside `tokio::task::spawn_blocking` because
 //! rusqlite is synchronous and a page-cache miss is real disk I/O.
+//!
+//! # WAL checkpointing
+//!
+//! SQLite's automatic checkpoint (`wal_autocheckpoint`, 1000 pages by
+//! default) runs *inline, on the connection that commits the transaction
+//! which pushes the WAL past the threshold*. One unlucky request
+//! therefore pays for folding four megabytes of WAL back into the main
+//! database, with our single writer connection locked for the duration.
+//!
+//! That is the whole write-latency tail, and it is not a small part of
+//! it. 500 `DELETE /api/collections/posts/records/:id` at concurrency 20
+//! against 6200 rows, request logging on, six rounds:
+//!
+//! | | req/s | p50 | p99 | max | WAL |
+//! |---|---|---|---|---|---|
+//! | SQLite's automatic checkpoint | 9.3k-10.2k | 1.3ms | 17-21ms | 21ms | 4 MB |
+//! | checkpointed here instead | 14.4k-16.2k | 1.2ms | 1.5-2.8ms | 3.0ms | 28 MB |
+//!
+//! Exactly one request per round of 500 saw the stall, and it was ~20ms
+//! of it — on an *idle* machine. On a host under memory and I/O pressure
+//! the same checkpoint took 350-450ms, which is enough on its own to drag
+//! a 500-request benchmark cell from 8000 req/s to 1040 req/s: one stall
+//! filled the whole batch.
+//!
+//! So on a file database the automatic checkpoint is turned **off** and
+//! [`SqliteEngine::spawn_checkpointer`] runs the checkpoint every
+//! [`CHECKPOINT_INTERVAL`] on a connection of its own instead. What keeps
+//! the log from growing without bound is described on [`checkpoint`]; the
+//! short version is that a passive pass copies the WAL into the database
+//! without blocking anyone, and once the log is past
+//! [`CHECKPOINT_SOFT_LIMIT_PAGES`] a second pass under the writer lock
+//! lets SQLite restart it. [`Engine::close`] then truncates on the way
+//! out, so a restart never replays a large log and a backup never copies
+//! one.
+//!
+//! If there is no Tokio runtime to spawn that task on — a synchronous
+//! test, a CLI subcommand that opens the database and exits — the
+//! automatic checkpoint is left exactly as SQLite ships it. The WAL is
+//! never left with nobody responsible for it.
 //!
 //! # `:memory:`
 //!
@@ -64,6 +106,20 @@ const STATEMENT_CACHE: usize = 256;
 /// from ad-hoc SQL).
 const REWRITE_CACHE_MAX: usize = 1024;
 
+/// How often the background WAL checkpointer wakes up. Short enough that
+/// a burst of writes never accumulates a WAL big enough for one pass to
+/// be expensive, long enough to be free when nothing is writing (a
+/// checkpoint with an empty WAL is a lock acquisition and nothing else).
+const CHECKPOINT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// WAL size, in pages, above which the checkpointer stops letting the log
+/// grow and takes the writer lock so SQLite can restart it (see
+/// [`checkpoint`]). ~16 MB at SQLite's 4 KiB default page size: high
+/// enough that an ordinary burst drains for free at the end of it, low
+/// enough that the log never becomes a liability for crash recovery or
+/// for `VACUUM INTO` during a backup.
+const CHECKPOINT_SOFT_LIMIT_PAGES: i64 = 4_000;
+
 #[derive(Clone)]
 pub struct SqliteEngine {
     inner: Arc<Inner>,
@@ -78,6 +134,11 @@ struct Inner {
     /// Idle reader connections. A reader is popped for the duration of a
     /// blocking query and pushed back afterwards.
     readers: Mutex<Vec<Connection>>,
+    /// The background checkpointer's own connection, so a checkpoint
+    /// never queues behind `writer_lock` and no request ever waits for
+    /// one. `None` when the WAL is not ours to manage (`:memory:`, or no
+    /// runtime to spawn the task on).
+    checkpointer: SharedConn,
     reader_permits: Arc<Semaphore>,
     reader_count: usize,
     rewrites: Mutex<HashMap<String, Arc<str>>>,
@@ -113,24 +174,69 @@ impl SqliteEngine {
                 }
             }
         }
-        let writer = open_connection(path, false)?;
+        // Taking the automatic checkpoint off the request path is only
+        // safe if we can actually run one ourselves, which needs a
+        // runtime to spawn the task on. Outside one (a synchronous test,
+        // a CLI subcommand that opens the database and exits) SQLite's
+        // own automatic checkpoint stays in charge.
+        let manage_wal = !memory && tokio::runtime::Handle::try_current().is_ok();
+        let writer = open_connection(path, false, manage_wal)?;
+        let checkpointer = if manage_wal {
+            Some(open_connection(path, false, manage_wal)?)
+        } else {
+            None
+        };
         let reader_count = if memory { 0 } else { readers };
         let mut reader_conns = Vec::with_capacity(reader_count);
         for _ in 0..reader_count {
-            reader_conns.push(open_connection(path, true)?);
+            reader_conns.push(open_connection(path, true, manage_wal)?);
         }
-        Ok(SqliteEngine {
+        let engine = SqliteEngine {
             inner: Arc::new(Inner {
                 path: path.to_string(),
                 writer: Arc::new(Mutex::new(Some(writer))),
                 writer_lock: Arc::new(tokio::sync::Mutex::new(())),
                 readers: Mutex::new(reader_conns),
+                checkpointer: Arc::new(Mutex::new(checkpointer)),
                 reader_permits: Arc::new(Semaphore::new(reader_count)),
                 reader_count,
                 rewrites: Mutex::new(HashMap::new()),
                 closed: AtomicBool::new(false),
             }),
-        })
+        };
+        if manage_wal {
+            engine.spawn_checkpointer();
+        }
+        Ok(engine)
+    }
+
+    /// Start the background WAL checkpointer described in the module
+    /// docs. It holds a `Weak` to the engine's state, so it stops on its
+    /// own once the last [`SqliteEngine`] clone is dropped — a test that
+    /// opens a hundred temporary databases leaks a hundred tasks for at
+    /// most one tick each, not for the life of the process.
+    fn spawn_checkpointer(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(CHECKPOINT_INTERVAL);
+            // The point of the exercise is to keep checkpoints off the
+            // request path; catching up on missed ticks by running
+            // several back to back would do the opposite.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let Some(inner) = weak.upgrade() else { return };
+                if inner.closed.load(Ordering::Acquire) {
+                    return;
+                }
+                // Sequential by construction: the next tick cannot start
+                // until this checkpoint has finished.
+                if let Err(e) = checkpoint(&inner).await {
+                    tracing::warn!(error = %e, "WAL checkpoint failed");
+                }
+            }
+        });
     }
 
     /// A private in-memory database (tests).
@@ -187,7 +293,9 @@ impl SqliteEngine {
             Some(c) => c,
             None => {
                 let path = self.inner.path.clone();
-                tokio::task::spawn_blocking(move || open_connection(&path, true)).await??
+                let manage_wal = self.inner.manages_wal();
+                tokio::task::spawn_blocking(move || open_connection(&path, true, manage_wal))
+                    .await??
             }
         };
         let inner = self.inner.clone();
@@ -232,10 +340,62 @@ where
     .await?
 }
 
+/// One `PRAGMA wal_checkpoint(<mode>)`, returning the size of the WAL in
+/// pages (`-1` when another connection held the checkpoint lock and this
+/// one backed off). See the module docs for why this is called from a
+/// background task rather than left to SQLite.
+fn wal_checkpoint(conn: &Connection, mode: &str) -> DbResult<i64> {
+    conn.query_row(&format!("PRAGMA wal_checkpoint({mode})"), [], |row| {
+        row.get::<_, i64>(1)
+    })
+    .map_err(map_err)
+}
+
+/// One pass of the background checkpointer.
+///
+/// Two steps, because copying the WAL into the database and *reclaiming*
+/// the file are different things. A `PASSIVE` checkpoint on our own
+/// connection does the copying and blocks nobody, but SQLite only
+/// restarts the log — reusing it from byte zero instead of appending —
+/// when a writer begins a transaction and finds the whole log already
+/// checkpointed. A saturated writer appends new frames faster than a
+/// checkpoint on another connection can catch up, so that condition is
+/// never true and the file grows for as long as the write burst lasts.
+///
+/// That is fine, and deliberately so: a growing WAL is how the checkpoint
+/// stays off the request path during a burst, and it drains for free the
+/// moment the writes pause. Past [`CHECKPOINT_SOFT_LIMIT_PAGES`] the
+/// second step runs the same passive checkpoint *while holding the writer
+/// lock*, which stops the log moving underneath it and lets the next
+/// write restart it. That does make writers wait — for the copy only,
+/// never for a reader, which is what `TRUNCATE` would add — so it happens
+/// only once the log is large enough to be worth it.
+async fn checkpoint(inner: &Arc<Inner>) -> DbResult<i64> {
+    let conn = inner.checkpointer.clone();
+    let pages = tokio::task::spawn_blocking(move || match lock(&conn).as_ref() {
+        Some(conn) => wal_checkpoint(conn, "PASSIVE"),
+        None => Ok(0),
+    })
+    .await??;
+    if pages < CHECKPOINT_SOFT_LIMIT_PAGES {
+        return Ok(pages);
+    }
+    let writer = inner.writer.clone();
+    let _guard = inner.writer_lock.lock().await;
+    run_on_shared(&writer, |conn| wal_checkpoint(conn, "PASSIVE")).await
+}
+
 /// Open one connection and apply the per-connection PRAGMAs. Readers
 /// additionally get `query_only=ON` so a stray write through the read
 /// path fails loudly instead of silently taking the write lock.
-fn open_connection(path: &str, reader: bool) -> DbResult<Connection> {
+///
+/// `manage_wal` turns SQLite's inline automatic checkpoint off because
+/// [`SqliteEngine::spawn_checkpointer`] does the job on a background
+/// connection instead; do not re-enable it without re-reading the
+/// measurement in the module docs. `journal_size_limit` still applies:
+/// it caps the file whenever a checkpoint does reset the log, whoever
+/// ran it.
+fn open_connection(path: &str, reader: bool, manage_wal: bool) -> DbResult<Connection> {
     let conn = if is_memory(path) {
         Connection::open_in_memory()?
     } else {
@@ -257,6 +417,9 @@ fn open_connection(path: &str, reader: bool) -> DbResult<Connection> {
          PRAGMA mmap_size = 268435456;
          PRAGMA journal_size_limit = 200000000;",
     )?;
+    if manage_wal {
+        conn.execute_batch("PRAGMA wal_autocheckpoint = 0;")?;
+    }
     if reader {
         conn.execute_batch("PRAGMA query_only = ON;")?;
     }
@@ -322,6 +485,14 @@ fn haversine_km(lon_a: f64, lat_a: f64, lon_b: f64, lat_b: f64) -> f64 {
 }
 
 impl Inner {
+    /// Whether this engine runs its own WAL checkpoints. Decided once in
+    /// [`SqliteEngine::open`]; the checkpointer connection's presence is
+    /// the record of it, so a connection reopened later gets the same
+    /// `wal_autocheckpoint` setting as the ones opened at startup.
+    fn manages_wal(&self) -> bool {
+        lock(&self.checkpointer).is_some()
+    }
+
     /// `$n` → `?n`, cached per statement string.
     fn rewritten(&self, sql: &str) -> Arc<str> {
         if let Some(hit) = lock(&self.rewrites).get(sql) {
@@ -559,6 +730,11 @@ impl Engine for SqliteEngine {
     }
 
     async fn snapshot_to(&self, dest_path: &str) -> DbResult<()> {
+        // `VACUUM INTO` reads through the connection and so already sees
+        // everything committed to the WAL, but folding the log back first
+        // keeps the copy cheap and means a backup taken right after a
+        // write burst is not paying to walk a 50 MB log.
+        let _ = checkpoint(&self.inner).await;
         let escaped = dest_path.replace('\'', "''");
         self.on_writer(move |conn| {
             conn.execute_batch(&format!("VACUUM INTO '{escaped}'"))
@@ -576,8 +752,26 @@ impl Engine for SqliteEngine {
         self.inner.reader_permits.close();
         let readers: Vec<Connection> = std::mem::take(&mut *lock(&self.inner.readers));
         let writer = self.inner.writer.clone();
+        let checkpointer = self.inner.checkpointer.clone();
+        let manages_wal = self.inner.manages_wal();
         tokio::task::spawn_blocking(move || {
+            // Readers hold marks that stop a checkpoint from reclaiming
+            // the log, so they go first. Then truncate: with the automatic
+            // checkpoint off, whatever is left in the WAL at shutdown
+            // would otherwise be replayed by the next process to open the
+            // file, and a backup of the data directory would need it.
+            // `TRUNCATE` blocks, which is exactly what is wanted here —
+            // there is nothing left to block.
             drop(readers);
+            if manages_wal {
+                let guard = lock(&writer);
+                if let Some(conn) = guard.as_ref() {
+                    if let Err(e) = wal_checkpoint(conn, "TRUNCATE") {
+                        tracing::warn!(error = %e, "final WAL checkpoint failed");
+                    }
+                }
+            }
+            lock(&checkpointer).take();
             lock(&writer).take();
         })
         .await?;

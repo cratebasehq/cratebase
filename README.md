@@ -34,6 +34,24 @@ zero-code-change option** for when SQLite stops being enough.
 - **Auth built in** — any collection can be `type: "auth"` and gets
   `email`/`password`, `POST .../auth-with-password`, and
   `POST .../auth-refresh` for free. Registration is just creating a record.
+  Beyond password login: email verification, password reset, email-change
+  confirmation, OTP (passwordless) login, MFA, OAuth2 (Google/GitHub),
+  superuser impersonation, and new-location login alerts (`_authOrigins`)
+  are all built in — see [ROADMAP.md](./ROADMAP.md) for the endpoint list.
+- **Batch API** — `POST /api/batch` runs several record
+  create/update/upsert/delete calls (JSON or multipart, for file fields)
+  in one HTTP round trip and one SQL transaction: all of them commit or
+  none do.
+- **JS hooks (PocketBase parity)** — drop a `*.pb.js` file in `pb_hooks/`
+  next to your data directory and get PocketBase's own hook API:
+  `onRecordCreate`/`onRecordUpdate`/-style lifecycle hooks and `routerAdd`
+  for custom HTTP endpoints, both backed by an embedded QuickJS runtime
+  (`crates/jsvm`) — no separate process, no restart-to-reload. This is the
+  most-requested PocketBase capability that was previously missing.
+- **First-run setup, no CLI required** — point a browser at a fresh
+  instance and the dashboard shows an inline superuser-creation form
+  (`GET/POST /api/setup`) instead of a bare login screen. The
+  `superuser create` CLI command still works for scripted/headless setup.
 - **File storage** — local disk by default; switch to any S3-compatible
   bucket (AWS S3, Cloudflare R2, Backblaze B2, or self-hosted
   [RustFS](https://rustfs.com)/MinIO) with three environment variables.
@@ -41,7 +59,11 @@ zero-code-change option** for when SQLite stops being enough.
   get `create`/`update`/`delete` events as they happen.
 - **One binary** — the admin dashboard is embedded at compile time
   (`rust-embed`). `cratebase serve` is the whole deployment.
-- **Official TypeScript SDK** — `npm install cratebase`.
+- **PocketBase-compatible API** — the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client (and PocketBase's other official SDKs) work against Cratebase unchanged. Verified against the
+  real SDK: 180/181 conformance tests pass (1 test is skipped because it
+  restarts the server mid-run to test backup restore, which would kill the
+  test harness itself — see
+  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)).
 
 ## Quickstart
 
@@ -51,13 +73,10 @@ zero-code-change option** for when SQLite stops being enough.
 docker compose up
 ```
 
-That's SQLite + local disk storage, listening on `:8090`. Create your first
-superuser and open the dashboard:
-
-```bash
-docker compose exec cratebase cratebase superuser create you@example.com yourpassword
-open http://localhost:8090
-```
+That's SQLite + local disk storage, listening on `:8090`. Open
+`http://localhost:8090` and the dashboard's first-run setup form creates
+your superuser account — no CLI needed. (You can still script it instead:
+`docker compose exec cratebase cratebase superuser create you@example.com yourpassword`.)
 
 Want Postgres and S3-compatible storage instead of the defaults?
 
@@ -71,14 +90,17 @@ See [.env.example](./.env.example) for every configuration option.
 
 ```bash
 cargo build --release -p cratebase-server
-./target/release/cratebase superuser create you@example.com yourpassword
 ./target/release/cratebase serve
 ```
 
-This gets you the API immediately. The admin dashboard needs its frontend
-built once first (`bun install && bun run admin:build` at the repo root,
-then rebuild the Rust binary so it picks up the new `web/admin/dist`) — see
-[ARCHITECTURE.md](./ARCHITECTURE.md) for why it works this way.
+This gets you the API immediately. Open `http://localhost:8090` and the
+dashboard walks you through creating a superuser — or run
+`./target/release/cratebase superuser create you@example.com yourpassword`
+first if you'd rather skip the form. The admin dashboard needs its
+frontend built once first (`bun install && bun run admin:build` at the
+repo root, then rebuild the Rust binary so it picks up the new
+`web/admin/dist`) — see [ARCHITECTURE.md](./ARCHITECTURE.md) for why it
+works this way.
 
 ## Using it
 
@@ -102,15 +124,37 @@ curl "localhost:8090/api/collections/posts/records?filter=published%20%3D%20true
 From TypeScript/JavaScript:
 
 ```ts
-import { Cratebase } from "cratebase";
+import PocketBase from "pocketbase";
 
-const cb = new Cratebase("http://localhost:8090");
+const cb = new PocketBase("http://localhost:8090");
 const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
-const unsubscribe = await cb.realtime.subscribe("posts", (e) => console.log(e.action, e.record));
+const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
 ```
 
 Full API reference: [openapi.yaml](./openapi.yaml). Quick orientation for
 humans or LLMs: [llms.txt](./llms.txt).
+
+## Examples
+
+Four runnable apps in [examples/](./examples), each with its own
+`setup.sh` that provisions the collections it needs:
+
+- [examples/todo](./examples/todo) — the minimal register → login →
+  authenticated CRUD path, zero-build (a single `app.js` loaded via an
+  import map, no bundler).
+- [examples/realtime-chat](./examples/realtime-chat) — a shared chat room
+  built on realtime subscriptions.
+- [examples/realtime-cursors](./examples/realtime-cursors) — live cursor
+  positions broadcast between open tabs over realtime.
+- [examples/kanban](./examples/kanban) — the flagship demo: a shared,
+  realtime, drag-and-drop Kanban board (Vite + React + TypeScript,
+  optimistic updates, FLIP-animated card reflow, and a presence bar)
+  demonstrating auth, API rules, and realtime working together end to
+  end, not each in isolation.
+
+`bun run examples:serve` serves the three zero-build examples from the
+repo root; `examples/kanban` has its own Vite dev server (`npm run dev`
+inside `examples/kanban`) since it has an actual build step.
 
 ## Project layout
 
@@ -120,12 +164,9 @@ crates/filter   filter expression parser + SQL compiler
 crates/db       storage engine: sqlx over sqlite/postgres, collection<->table sync
 crates/storage  file storage: local disk or any S3-compatible bucket
 crates/auth     Argon2id password hashing + JWT sessions, OAuth2, OTP/MFA
+crates/jsvm     embedded QuickJS runtime — pb_hooks/, routerAdd, cronAdd
 crates/mailer   pluggable mail backend (Resend API, SMTP, or log-only for dev)
 crates/server   axum HTTP API, CLI, plugin system, embedded admin dashboard
-sdk/js          official TypeScript client ("cratebase" on npm)
-sdk/dart        Dart client
-sdk/go          Go client
-sdk/python      Python client
 web/admin       admin dashboard source (React + Vite + TanStack + shadcn/ui)
 ```
 
@@ -157,9 +198,6 @@ TEST_S3_ENDPOINT=http://localhost:9000 cargo test -p cratebase-storage  # + real
 
 # admin dashboard (proxies /api to a local `cratebase serve` on :8090)
 bun install && bun run admin:dev
-
-# JS SDK
-bun run sdk:build
 ```
 
 ## License

@@ -59,7 +59,7 @@ use crate::middleware::client_ip;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Extra rate-limit labels a route can attach to its request when the URL
-/// shape alone does not say enough (W4b uses this for anything
+/// shape alone does not say enough (used for anything
 /// [`tags_for`] cannot derive).
 #[derive(Debug, Clone, Default)]
 pub struct RouteTags(pub Vec<String>);
@@ -305,11 +305,11 @@ impl std::fmt::Debug for RateLimiter {
 }
 
 /// The tags a request carries, derived from the URL shape so the limiter
-/// works before W4b registers the record routes.
+/// works independently of which routes are registered.
 ///
 /// PocketBase attaches these at route-registration time; deriving them
 /// from the path gives the same labels (`*:auth`, `posts:list`, ...)
-/// without the routes having to exist yet. W4b may add extra tags through
+/// without the routes having to exist yet. A service may add extra tags through
 /// [`RouteTags`] for anything not visible in the URL.
 pub fn tags_for(method: &axum::http::Method, path: &str) -> Vec<String> {
     use axum::http::Method;

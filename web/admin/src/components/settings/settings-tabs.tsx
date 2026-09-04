@@ -1,7 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { Archive, Clock, ListTree } from "lucide-react";
+import { Archive, Clock, ListTree, Mail, Shield, ShieldUser, SlidersHorizontal } from "lucide-react";
 
 const TABS = [
+  { to: "/settings/application", label: "Application", icon: SlidersHorizontal },
+  { to: "/settings/mail-storage", label: "Mail & storage", icon: Mail },
+  { to: "/settings/superusers", label: "Superusers", icon: ShieldUser },
+  { to: "/settings/network", label: "Network", icon: Shield },
   { to: "/settings/logs", label: "Request logs", icon: ListTree },
   { to: "/settings/backups", label: "Backups", icon: Archive },
   { to: "/settings/cron", label: "Cron jobs", icon: Clock },
@@ -18,8 +22,7 @@ export function SettingsTabs() {
         <Link
           key={to}
           to={to}
-          className="flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-          activeProps={{ className: "!border-primary !text-foreground" }}
+          className="flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground data-[status=active]:border-primary data-[status=active]:text-foreground"
         >
           <Icon className="size-3.5" />
           {label}
