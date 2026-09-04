@@ -17,11 +17,12 @@
 //!   runtime) between statements.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cratebase_filter::Dialect;
 
-use crate::error::DbResult;
+use crate::error::{DbError, DbResult};
 
 /// A bound parameter or a decoded column value.
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +170,56 @@ pub trait Executor: Send + Sync {
             .query_one(sql, params)
             .await?
             .and_then(|r| r.values.into_iter().next()))
+    }
+
+    /// [`query`](Executor::query), but a statement still running when
+    /// `timeout` elapses is *interrupted*, not just abandoned, on every
+    /// backend that can do so. `crates/server/src/routes/sql_console.rs`
+    /// is the only caller today: an ad-hoc statement from a superuser is
+    /// exactly the case where the caller-facing timeout in `query` was
+    /// previously honest about not stopping the underlying work (see
+    /// that module's own doc comment before this method existed).
+    ///
+    /// The default here — used by every [`Executor`] that has no
+    /// cancellation primitive wired up at this layer (Postgres,
+    /// [`Transaction`]) — falls back to exactly that old behavior: it
+    /// only bounds the caller's *wait*, and the statement keeps running
+    /// to completion (or its own driver-level timeout, if any) regardless
+    /// of what this method returns. Only [`crate::sqlite::SqliteEngine`]
+    /// overrides it with real interruption.
+    async fn query_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: Duration,
+    ) -> DbResult<Vec<Row>> {
+        match tokio::time::timeout(timeout, self.query(sql, params)).await {
+            Ok(result) => result,
+            Err(_) => Err(DbError::Other(format!(
+                "query timed out after {}s (not interrupted: this backend has no \
+                 cancellation primitive wired up, see `Executor::query_interruptible`)",
+                timeout.as_secs()
+            ))),
+        }
+    }
+
+    /// The write-statement counterpart of
+    /// [`query_interruptible`](Executor::query_interruptible); same
+    /// default, same caveat.
+    async fn execute_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: Duration,
+    ) -> DbResult<u64> {
+        match tokio::time::timeout(timeout, self.execute(sql, params)).await {
+            Ok(result) => result,
+            Err(_) => Err(DbError::Other(format!(
+                "query timed out after {}s (not interrupted: this backend has no \
+                 cancellation primitive wired up, see `Executor::query_interruptible`)",
+                timeout.as_secs()
+            ))),
+        }
     }
 }
 

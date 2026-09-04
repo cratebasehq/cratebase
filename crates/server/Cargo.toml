@@ -47,7 +47,7 @@ tempfile = "3"
 walkdir = "2"
 jsonwebtoken = "9"
 mimalloc = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 hmac = "0.12"
 sha2 = "0.10"
 # Bare module matrix only (no "image" feature) — utils.rs rasterizes the
