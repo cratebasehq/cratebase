@@ -1,7 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import { Archive, Clock, ListTree } from "lucide-react";
+import { Archive, Clock, ListTree, Mail, ShieldUser, SlidersHorizontal } from "lucide-react";
 
 const TABS = [
+  { to: "/settings/application", label: "Application", icon: SlidersHorizontal },
+  { to: "/settings/mail-storage", label: "Mail & storage", icon: Mail },
+  { to: "/settings/superusers", label: "Superusers", icon: ShieldUser },
   { to: "/settings/logs", label: "Request logs", icon: ListTree },
   { to: "/settings/backups", label: "Backups", icon: Archive },
   { to: "/settings/cron", label: "Cron jobs", icon: Clock },

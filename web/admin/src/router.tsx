@@ -8,6 +8,9 @@ import { collectionRoute } from "@/routes/collection";
 import { settingsRoute } from "@/routes/settings";
 import { settingsIndexRoute } from "@/routes/settings-index";
 import { settingsLogsRoute } from "@/routes/settings-logs";
+import { settingsApplicationRoute } from "@/routes/settings-application";
+import { settingsMailRoute } from "@/routes/settings-mail";
+import { settingsSuperusersRoute } from "@/routes/settings-superusers";
 import { settingsBackupsRoute } from "@/routes/settings-backups";
 import { settingsCronRoute } from "@/routes/settings-cron";
 
@@ -16,7 +19,15 @@ const routeTree = rootRoute.addChildren([
   appRoute.addChildren([
     dashboardIndexRoute,
     collectionRoute,
-    settingsRoute.addChildren([settingsIndexRoute, settingsLogsRoute, settingsBackupsRoute, settingsCronRoute]),
+    settingsRoute.addChildren([
+      settingsIndexRoute,
+      settingsApplicationRoute,
+      settingsMailRoute,
+      settingsSuperusersRoute,
+      settingsLogsRoute,
+      settingsBackupsRoute,
+      settingsCronRoute,
+    ]),
   ]),
 ]);
 

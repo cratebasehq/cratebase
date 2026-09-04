@@ -85,7 +85,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[680px]">
-        <form onSubmit={handleSubmit} className="flex h-full min-h-0 flex-col">
+        <form onSubmit={handleSubmit} noValidate className="flex h-full min-h-0 flex-col">
           <SheetHeader>
             <SheetTitle>New collection</SheetTitle>
             <SheetDescription>Name it, define its fields, and set who can read and write it.</SheetDescription>

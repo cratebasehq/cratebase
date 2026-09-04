@@ -1,14 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Check, Copy, Trash2 } from "lucide-react";
 import type { CollectionModel, RecordModel } from "pocketbase";
 import { isMultiValue, userFields, type FieldSchema } from "@/lib/field-types";
-import {
-  singularize,
-  validateFieldValue,
-  validateRecordDraft,
-  type FileDraft,
-} from "@/lib/record-validation";
+import { singularize, validateRecordDraft, type FileDraft } from "@/lib/record-validation";
 import {
   Sheet,
   SheetContent,
@@ -46,6 +41,30 @@ interface RecordDrawerProps {
 }
 
 type Draft = Record<string, unknown>;
+
+/** How long a value has to hold still before its error is allowed on
+ * screen. Matches the collection form's inline validation. */
+const SETTLE_MS = 450;
+
+/** Field errors plus the two auth-only rules the schema itself can't
+ * express (the identity field and, on create, a password). */
+function allErrors(
+  fields: FieldSchema[],
+  values: Draft,
+  identityField: string | null,
+  isNew: boolean,
+): Record<string, string> {
+  const errors = validateRecordDraft(fields, values);
+  if (identityField) {
+    if (String(values[identityField] ?? "").trim().length === 0) {
+      errors[identityField] = `A ${identityField} is required`;
+    }
+    if (isNew && String(values.password ?? "").length < 8) {
+      errors.password = "At least 8 characters";
+    }
+  }
+  return errors;
+}
 
 /** The form's starting value for one field. `file` fields carry a
  * `{ keep, added }` draft rather than a bare value, because "which of the
@@ -141,26 +160,53 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
   const { create, update, remove } = useRecordMutations(collection.name);
   const pending = create.isPending || update.isPending;
 
-  const clientErrors = useMemo(() => validateRecordDraft(fields, values), [fields, values]);
-  if (identityField && String(values[identityField] ?? "").trim().length === 0) {
-    clientErrors[identityField] = `A ${identityField} is required`;
-  }
-  if (isNew && identityField && String(values.password ?? "").length < 8) {
-    clientErrors.password = "At least 8 characters";
-  }
+  /** Errors as of this keystroke — what gates Save and drives the count. */
+  const clientErrors = useMemo(
+    () => allErrors(fields, values, identityField, isNew),
+    [fields, values, identityField, isNew],
+  );
+
+  /**
+   * Errors as of ~half a second ago, which is what actually gets *shown*.
+   *
+   * Validating on blur would be tidier, but a `focusout` inside a Radix
+   * sheet never reaches React's delegated handler, so a blur-gated error
+   * simply never appears. Settling the message instead means it arrives
+   * when you pause rather than on every keystroke of a value that is only
+   * briefly invalid — the same rule the collection-name field uses.
+   */
+  const [settled, setSettled] = useState<Draft>(values);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(values), SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [values]);
+  const settledErrors = useMemo(
+    () => allErrors(fields, settled, identityField, isNew),
+    [fields, settled, identityField, isNew],
+  );
 
   const dirty = JSON.stringify(serialisableDraft(values)) !== JSON.stringify(serialisableDraft(seed));
   const invalidCount = Object.keys(clientErrors).length;
+  // Save stays live until something on screen explains why it wouldn't
+  // work — a button disabled before you have touched anything just looks
+  // broken, and a record can be invalid the moment it loads if its schema
+  // was tightened after the row was written.
+  const blocked = invalidCount > 0 && (submitted || Object.keys(touched).length > 0);
 
-  /** Show a field's error once it has been touched, or once Save was tried. */
+  /** Show a field's error once Save was tried, or once the value it was
+   * given has settled — never while it is still mid-edit. */
   function errorFor(name: string): string | undefined {
     if (serverErrors[name]) return serverErrors[name];
-    if (!submitted && !touched[name]) return undefined;
-    return clientErrors[name];
+    if (submitted) return clientErrors[name];
+    if (!touched[name]) return undefined;
+    // Only a settled error that is still true of the live value, so a
+    // fixed field clears immediately instead of after the delay.
+    return settledErrors[name] && clientErrors[name] ? clientErrors[name] : undefined;
   }
 
   function setValue(name: string, value: unknown) {
     setValues((v) => ({ ...v, [name]: value }));
+    setTouched((t) => (t[name] ? t : { ...t, [name]: true }));
     setServerErrors(({ [name]: _dropped, ...rest }) => rest);
   }
 
@@ -273,7 +319,11 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
           side="right"
           className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[560px] data-[side=right]:lg:max-w-[640px]"
         >
-          <form onSubmit={handleSubmit} className="flex h-full min-h-0 flex-col">
+          {/* `noValidate` on purpose: an `<input type="url">` with a bad
+              value makes the browser cancel the submit and show its own
+              tooltip, so React's handler never runs and none of the field
+              errors below ever appear. Validation is this form's job. */}
+          <form onSubmit={handleSubmit} noValidate className="flex h-full min-h-0 flex-col">
             <SheetHeader className="gap-1">
               <SheetTitle>{isNew ? `New ${singularize(collection.name)}` : "Edit record"}</SheetTitle>
               <SheetDescription>
@@ -384,7 +434,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
                 </Button>
               ) : null}
 
-              {submitted && invalidCount > 0 ? (
+              {blocked ? (
                 <span className="min-w-0 truncate text-xs text-destructive">
                   {invalidCount} {invalidCount === 1 ? "field needs" : "fields need"} attention
                 </span>
@@ -394,7 +444,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
               <Button type="button" variant="ghost" size="sm" onClick={() => requestClose(false)} disabled={pending}>
                 Cancel
               </Button>
-              <Button type="submit" size="sm" disabled={pending || (submitted && invalidCount > 0)}>
+              <Button type="submit" size="sm" disabled={pending || blocked}>
                 {pending ? <Spinner /> : null}
                 {pending ? "Saving…" : isNew ? "Create record" : "Save changes"}
               </Button>
@@ -485,10 +535,3 @@ function serialisableDraft(draft: Draft): unknown {
   }
   return out;
 }
-
-/** Kept for callers that still seed a form from a saved record. */
-export function existingRecordValue(record: RecordModel | null, field: FieldSchema): unknown {
-  return initialValue(record, field);
-}
-
-export { validateFieldValue };

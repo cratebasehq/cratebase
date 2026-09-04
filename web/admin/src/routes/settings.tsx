@@ -8,7 +8,8 @@ function SettingsLayout() {
       <div className="border-b border-border px-page py-3">
         <h1 className="text-base font-medium tracking-tight">Settings</h1>
         <p className="mt-0.5 max-w-measure text-sm text-muted-foreground">
-          Server-level operations: request history, database backups, and scheduled jobs.
+          How this server identifies itself, who administers it, where mail and files go, and what it has been
+          doing.
         </p>
       </div>
       <SettingsTabs />

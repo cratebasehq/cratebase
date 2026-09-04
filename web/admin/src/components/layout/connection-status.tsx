@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { checkHealth } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -17,50 +18,49 @@ const POLL_MS = 20_000;
  * has usually just been restarted.
  */
 export function useConnectionStatus(): { state: ConnectionState; latencyMs: number | null } {
-  const [state, setState] = useState<ConnectionState>("connecting");
-  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const queryClient = useQueryClient();
+  const [online, setOnline] = useState(() => typeof navigator === "undefined" || navigator.onLine);
+
+  // One shared query, not one poller per caller: the topbar and the
+  // dashboard both want this, and two independent probes would race (and,
+  // sharing a request key, cancel each other).
+  const probe = useQuery({
+    queryKey: ["health"],
+    queryFn: async () => {
+      const startedAt = performance.now();
+      await checkHealth();
+      return Math.round(performance.now() - startedAt);
+    },
+    refetchInterval: POLL_MS,
+    refetchIntervalInBackground: false,
+    retry: false,
+    gcTime: POLL_MS * 3,
+    enabled: online,
+  });
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function ping() {
-      if (cancelled) return;
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        setState("offline");
-        setLatencyMs(null);
-      } else {
-        const startedAt = performance.now();
-        try {
-          await checkHealth();
-          if (cancelled) return;
-          setLatencyMs(Math.round(performance.now() - startedAt));
-          setState("connected");
-        } catch {
-          if (cancelled) return;
-          setLatencyMs(null);
-          setState(typeof navigator !== "undefined" && !navigator.onLine ? "offline" : "degraded");
-        }
-      }
-      timer = setTimeout(ping, POLL_MS);
-    }
-
-    void ping();
-
-    const onOnline = () => void ping();
-    const onOffline = () => setState("offline");
+    const onOnline = () => {
+      setOnline(true);
+      void queryClient.invalidateQueries({ queryKey: ["health"] });
+    };
+    const onOffline = () => setOnline(false);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
-
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
     };
-  }, []);
+  }, [queryClient]);
 
-  return { state, latencyMs };
+  const state: ConnectionState = !online
+    ? "offline"
+    : probe.isSuccess
+      ? "connected"
+      : probe.isError
+        ? "degraded"
+        : "connecting";
+
+  return { state, latencyMs: probe.data ?? null };
 }
 
 const LABEL: Record<ConnectionState, string> = {

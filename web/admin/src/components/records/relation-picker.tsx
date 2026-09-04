@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, Loader2, X } from "lucide-react";
 import type { RecordModel } from "pocketbase";
@@ -20,6 +20,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 /** How many candidates one page of the picker shows. The search runs on the
  * server, so this is a page size, not a ceiling on what can be picked. */
 const PAGE_SIZE = 50;
+
+/** Typing "hana" should be one query, not four. */
+const SEARCH_DEBOUNCE_MS = 200;
 
 interface Option {
   id: string;
@@ -71,7 +74,13 @@ export function RelationPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
+  const [committed, setCommitted] = useState("");
   const { data: collections } = useCollections();
+
+  useEffect(() => {
+    const timer = setTimeout(() => setCommitted(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
 
   const target = collections?.find((c) => c.id === collectionId);
   const targetFields = useMemo(() => (target ? userFields(target) : []), [target]);
@@ -80,9 +89,9 @@ export function RelationPicker({
 
   // Candidates for the dropdown, filtered by the server.
   const candidates = useQuery({
-    queryKey: ["relation-candidates", collectionId, search],
+    queryKey: ["relation-candidates", collectionId, committed],
     queryFn: async () => {
-      const term = search.trim().replace(/"/g, '\\"');
+      const term = committed.trim().replace(/"/g, '\\"');
       const filter = term && display ? `${display} ~ "${term}"` : undefined;
       const list = await cb.collection(collectionId!).getList<RecordModel>(1, PAGE_SIZE, {
         filter,

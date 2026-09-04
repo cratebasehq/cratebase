@@ -62,7 +62,10 @@ export function signOut(): void {
  * running?", which is the failure the old login reported as
  * "Invalid email or password." */
 export async function checkHealth(): Promise<{ message: string }> {
-  return cb.send<{ message: string }>("/api/health", { method: "GET" });
+  // `requestKey: null` disables the SDK's auto-cancellation: two callers
+  // probing health at once would otherwise cancel each other and both
+  // report the server as unreachable.
+  return cb.send<{ message: string }>("/api/health", { method: "GET", requestKey: null });
 }
 
 /* ------------------------------------------------------------------------ *

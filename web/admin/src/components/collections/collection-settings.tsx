@@ -186,7 +186,7 @@ export function CollectionSettings({
         </div>
       ) : null}
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-8">
+      <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-8">
         <CollectionForm
           value={value}
           onChange={setValue}

@@ -10,12 +10,11 @@ node_modules/
 .DS_Store
 *.log
 
-# Built frontend output isn't committed — run `bun run admin:build` to
-# produce it locally, or let the Dockerfile do it.
-# `.gitkeep` keeps the directory present so `cargo build`'s rust-embed
-# `#[folder = "web/admin/dist"]` has somewhere to point at on a fresh clone.
-web/admin/dist/*
-!web/admin/dist/.gitkeep
+# The built dashboard IS committed, the way PocketBase commits `ui/dist`.
+# That is what makes `cargo build` alone produce a working binary from a
+# fresh clone: no bun, no node, no separate frontend step for anyone who
+# only wants to run the server. CI rebuilds it and fails if what is
+# committed has drifted, so a stale bundle cannot ship silently.
 web/admin/node_modules
 web/email/dist/*
 !web/email/dist/.gitkeep

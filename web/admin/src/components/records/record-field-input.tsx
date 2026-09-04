@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Braces, WrapText } from "lucide-react";
-import type { RecordModel } from "pocketbase";
 import { cn } from "@/lib/utils";
 import { type FieldSchema, isMultiValue } from "@/lib/field-types";
 import { Input } from "@/components/ui/input";
@@ -219,9 +218,4 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
         />
       );
   }
-}
-
-export function existingRecordValue(record: RecordModel | null, field: FieldSchema): unknown {
-  if (!record) return field.type === "bool" ? false : null;
-  return record[field.name] ?? null;
 }
