@@ -18,8 +18,7 @@ export function SettingsTabs() {
         <Link
           key={to}
           to={to}
-          className="flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2.5 text-[13px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-          activeProps={{ className: "!border-primary !text-foreground" }}
+          className="flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground data-[status=active]:border-primary data-[status=active]:text-foreground"
         >
           <Icon className="size-3.5" />
           {label}

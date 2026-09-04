@@ -1,9 +1,21 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Clock, Pencil, Plus, Trash2 } from "lucide-react";
 import { useRecords, useRecordMutations } from "@/hooks/use-records";
+import { describeFailure } from "@/lib/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { CronJobDrawer, type CronJobRecord } from "@/components/settings/cron-job-drawer";
@@ -19,26 +31,30 @@ export function CronJobsPage() {
   const { data } = useRecords(COLLECTION, 1, "", "name");
   const { update, remove } = useRecordMutations(COLLECTION);
   const [editing, setEditing] = useState<CronJobRecord | null | undefined>(undefined);
+  const [deleting, setDeleting] = useState<CronJobRecord | null>(null);
 
   const jobs = (data?.items ?? []) as CronJobRecord[];
 
+  function reportFailure(error: unknown) {
+    const failure = describeFailure(error);
+    toast.error(failure.title, { description: failure.detail || undefined });
+  }
+
   function toggleEnabled(job: CronJobRecord) {
-    update
-      .mutateAsync({ id: job.id, data: { enabled: !job.enabled } })
-      .catch((error) => toast.error(error instanceof Error ? error.message : "Failed to update job"));
+    update.mutateAsync({ id: job.id, data: { enabled: !job.enabled } }).catch(reportFailure);
   }
 
   function deleteJob(job: CronJobRecord) {
     remove
       .mutateAsync(job.id)
       .then(() => toast.success(`Cron job "${job.name}" deleted`))
-      .catch((error) => toast.error(error instanceof Error ? error.message : "Failed to delete job"));
+      .catch(reportFailure);
   }
 
   return (
     <div className="flex flex-col gap-4 p-6">
       <div className="flex items-center justify-between">
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           Scheduled jobs the server checks every 30 seconds against their cron expression.
         </p>
         <Button onClick={() => setEditing(null)}>
@@ -84,7 +100,7 @@ export function CronJobsPage() {
                   <Button variant="ghost" size="icon-sm" aria-label={`Edit ${job.name}`} onClick={() => setEditing(job)}>
                     <Pencil className="size-3.5" />
                   </Button>
-                  <Button variant="ghost" size="icon-sm" aria-label={`Delete ${job.name}`} onClick={() => deleteJob(job)}>
+                  <Button variant="ghost" size="icon-sm" aria-label={`Delete ${job.name}`} onClick={() => setDeleting(job)}>
                     <Trash2 className="size-3.5 text-destructive" />
                   </Button>
                 </div>
@@ -93,8 +109,18 @@ export function CronJobsPage() {
           ))}
           {jobs.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                No cron jobs configured.
+              <TableCell colSpan={6} className="py-8">
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <Clock />
+                    </EmptyMedia>
+                    <EmptyTitle>No cron jobs configured</EmptyTitle>
+                    <EmptyDescription>
+                      Add one to run a registered job body on a schedule.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               </TableCell>
             </TableRow>
           ) : null}
@@ -102,6 +128,31 @@ export function CronJobsPage() {
       </Table>
 
       <CronJobDrawer job={editing ?? null} open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)} />
+
+      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this cron job?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono">{deleting?.name}</span> will stop running and its row will be removed.
+              This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = deleting;
+                setDeleting(null);
+                if (target) deleteJob(target);
+              }}
+            >
+              Delete job
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -3,8 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import { cb } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Pagination } from "@/components/interior/pagination";
+import { Pagination } from "@/components/ui/pagination";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListTree } from "lucide-react";
 
 type RequestLogEntry = {
   id: string;
@@ -97,10 +100,29 @@ export function RequestLogsPage() {
               </TableCell>
             </TableRow>
           ))}
+          {isLoading ? (
+            Array.from({ length: 5 }).map((_, i) => (
+              <TableRow key={i}>
+                <TableCell colSpan={6}>
+                  <Skeleton className="h-row w-full" />
+                </TableCell>
+              </TableRow>
+            ))
+          ) : null}
           {!isLoading && (data?.items.length ?? 0) === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                No requests logged yet.
+              <TableCell colSpan={6} className="py-8">
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <ListTree />
+                    </EmptyMedia>
+                    <EmptyTitle>No requests logged yet</EmptyTitle>
+                    <EmptyDescription>
+                      Every call to <code className="font-mono">/api/*</code> lands here as it happens.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               </TableCell>
             </TableRow>
           ) : null}

@@ -131,7 +131,7 @@ export function InlineEditableCell({
         onChange={(e) => commit(e.target.value)}
         onBlur={() => setEditing(false)}
         onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
-        className="h-7 w-full rounded border border-primary bg-background px-1.5 text-[13px] outline-none"
+        className="h-7 w-full rounded border border-primary bg-background px-1.5 text-sm outline-none"
       >
         {!field.required && <option value="">—</option>}
         {values.map((v) => (
@@ -160,7 +160,7 @@ export function InlineEditableCell({
           setEditing(false);
         }
       }}
-      className="h-7 w-full rounded border border-primary bg-background px-1.5 font-mono text-[12.5px] outline-none"
+      className="h-7 w-full rounded border border-primary bg-background px-1.5 font-mono text-sm outline-none"
     />
   );
 }

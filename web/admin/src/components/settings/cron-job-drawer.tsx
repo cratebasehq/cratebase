@@ -2,14 +2,22 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { RecordModel } from "cratebase";
-import { Drawer } from "@/components/interior/drawer";
-import { LoadingButton } from "@/components/interior/loading-button";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useRecordMutations } from "@/hooks/use-records";
-import { cb } from "@/lib/api";
+import { cb, describeFailure } from "@/lib/api";
 
 type AvailableJob = { name: string; description: string };
 
@@ -55,8 +63,11 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
   }, [open, job]);
 
   const pending = create.isPending || update.isPending;
+  const incomplete = name.trim().length === 0 || schedule.trim().length === 0 || jobKey.trim().length === 0;
 
-  async function handleSubmit() {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending || incomplete) return;
     const data = { name, schedule, job: jobKey, enabled };
     try {
       if (isNew) {
@@ -68,13 +79,23 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
       }
       onOpenChange(false);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to save cron job");
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.detail || undefined });
     }
   }
 
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} title={isNew ? "New cron job" : "Edit cron job"} width={420}>
-      <div className="flex flex-col gap-4">
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[420px]">
+        <form onSubmit={handleSubmit} className="flex h-full min-h-0 flex-col">
+          <SheetHeader>
+            <SheetTitle>{isNew ? "New cron job" : "Edit cron job"}</SheetTitle>
+            <SheetDescription>
+              A schedule, and the name of a job body registered in the running server binary.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="cron-name">Name</Label>
           <Input id="cron-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="nightly-stats" />
@@ -89,7 +110,7 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
             placeholder="* * * * *"
             className="font-mono"
           />
-          <p className="text-[12px] text-muted-foreground">Standard 5-field cron syntax, checked every 30s.</p>
+          <p className="text-sm text-muted-foreground">Standard 5-field cron syntax, checked every 30s.</p>
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -111,39 +132,35 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
               ) : null}
             </SelectContent>
           </Select>
-          <p className="text-[12px] text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {availableJobs.find((j) => j.name === jobKey)?.description ??
               "Every job body registered in the running server binary — see crates/server/src/plugins/cron_jobs.rs to add one."}
           </p>
         </div>
 
         <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-          <Label htmlFor="cron-enabled" className="text-[13px] font-normal">
+          <Label htmlFor="cron-enabled" className="text-sm font-normal">
             Enabled
           </Label>
           <Switch id="cron-enabled" checked={enabled} onCheckedChange={setEnabled} />
         </div>
 
-        {!isNew && (job?.lastRunAt || job?.lastStatus) ? (
-          <div className="rounded-lg border border-border px-3 py-2 text-[12px] text-muted-foreground">
-            {job?.lastRunAt ? <p>Last run: {new Date(job.lastRunAt).toLocaleString()}</p> : null}
-            {job?.lastStatus ? <p>Last status: {job.lastStatus}</p> : null}
+            {!isNew && (job?.lastRunAt || job?.lastStatus) ? (
+              <div className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">
+                {job?.lastRunAt ? <p>Last run: {new Date(job.lastRunAt).toLocaleString()}</p> : null}
+                {job?.lastStatus ? <p>Last status: {job.lastStatus}</p> : null}
+              </div>
+            ) : null}
           </div>
-        ) : null}
-      </div>
 
-      <div className="mt-6 flex justify-end">
-        <LoadingButton
-          onAction={handleSubmit}
-          pendingLabel="Saving…"
-          successLabel="Saved"
-          errorLabel="Failed"
-          disabled={pending || name.trim().length === 0 || schedule.trim().length === 0 || jobKey.trim().length === 0}
-          className="!border-primary !bg-primary !px-4 !text-primary-foreground hover:!bg-primary/90 dark:!border-primary dark:!bg-primary dark:!text-primary-foreground dark:hover:!bg-primary/90"
-        >
-          {isNew ? "Create job" : "Save changes"}
-        </LoadingButton>
-      </div>
-    </Drawer>
+          <SheetFooter className="flex-row justify-end border-t border-border">
+            <Button type="submit" disabled={pending || incomplete}>
+              {pending ? <Spinner /> : null}
+              {pending ? "Saving…" : isNew ? "Create job" : "Save changes"}
+            </Button>
+          </SheetFooter>
+        </form>
+      </SheetContent>
+    </Sheet>
   );
 }

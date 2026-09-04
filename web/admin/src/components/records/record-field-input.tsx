@@ -1,8 +1,12 @@
+import { useId } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { FieldSchema, RecordModel } from "cratebase";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { TagInput } from "@/components/interior/tag-input";
+import { TagInput } from "@/components/ui/tag-input";
 import { cb } from "@/lib/api";
 
 interface RecordFieldInputProps {
@@ -36,15 +40,58 @@ function useRelationOptions(collectionId?: string) {
   });
 }
 
+/** Multi-value relations need many ids at once, which a Radix select can't
+ * express — a checklist of the same options does, without falling back to
+ * a native `<select multiple>` nobody can operate comfortably. */
+function RelationChecklist({
+  options,
+  selected,
+  onChange,
+}: {
+  options: { id: string; label: string }[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const groupId = useId();
+  return (
+    <div
+      role="group"
+      aria-label="Related records"
+      className="flex max-h-40 flex-col gap-1.5 overflow-y-auto rounded-lg border border-input p-2"
+    >
+      {options.length === 0 ? (
+        <p className="text-xs text-muted-foreground">No records to relate to yet.</p>
+      ) : (
+        options.map((option) => {
+          const id = `${groupId}-${option.id}`;
+          const checked = selected.includes(option.id);
+          return (
+            <div key={option.id} className="flex items-center gap-2">
+              <Checkbox
+                id={id}
+                checked={checked}
+                onCheckedChange={(next) =>
+                  onChange(next === true ? [...selected, option.id] : selected.filter((v) => v !== option.id))
+                }
+              />
+              <label htmlFor={id} className="truncate text-sm text-foreground">
+                {option.label}
+              </label>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 export function RecordFieldInput({ field, value, onChange, error }: RecordFieldInputProps) {
   const options = field.options ?? {};
   const multiple = Boolean(options.multiple);
   const relationOptions = useRelationOptions(
     field.type === "relation" ? (options.collectionId as string | undefined) : undefined,
   ).data;
-  const inputClass = `h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:bg-card ${
-    error ? "border-destructive" : "border-border focus:border-primary"
-  }`;
+  const invalid = error ? true : undefined;
 
   switch (field.type) {
     case "bool":
@@ -52,33 +99,35 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
 
     case "number":
       return (
-        <input
+        <Input
           type="number"
           value={typeof value === "number" ? value : ""}
           onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
-          className={inputClass}
+          aria-invalid={invalid}
+          className="h-control-md"
         />
       );
 
     case "date":
       return (
-        <input
+        <Input
           type="datetime-local"
           value={toDatetimeLocal(value)}
           onChange={(e) => onChange(e.target.value ? new Date(e.target.value).toISOString() : null)}
-          className={inputClass}
+          aria-invalid={invalid}
+          className="h-control-md"
         />
       );
 
     case "autodate":
       return (
-        <input
+        <Input
           type="text"
           value={typeof value === "string" && value ? new Date(value).toLocaleString() : "Set automatically"}
           disabled
           readOnly
           title="Autodate fields are set by the server and can't be edited here"
-          className={`${inputClass} cursor-not-allowed text-muted-foreground`}
+          className="h-control-md cursor-not-allowed text-muted-foreground"
         />
       );
 
@@ -88,7 +137,7 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
           value={typeof value === "string" ? value : ""}
           onChange={(e) => onChange(e.target.value)}
           rows={6}
-          className={error ? "border-destructive" : undefined}
+          aria-invalid={invalid}
         />
       );
 
@@ -98,7 +147,8 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
           value={typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2)}
           onChange={(e) => onChange(e.target.value)}
           rows={5}
-          className={`font-mono text-[12px] ${error ? "border-destructive" : ""}`}
+          aria-invalid={invalid}
+          className="font-mono text-sm"
         />
       );
 
@@ -116,60 +166,72 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
         );
       }
       return (
-        <select value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} className={inputClass}>
-          <option value="">—</option>
-          {values.map((v) => (
-            <option key={v} value={v}>
-              {v}
-            </option>
-          ))}
-        </select>
+        <Select value={typeof value === "string" ? value : ""} onValueChange={(next) => onChange(next)}>
+          <SelectTrigger aria-label={field.name} aria-invalid={invalid} className="h-control-md w-full">
+            <SelectValue placeholder="—" />
+          </SelectTrigger>
+          <SelectContent>
+            {values.map((v) => (
+              <SelectItem key={v} value={v}>
+                {v}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       );
     }
 
     case "relation": {
       if (multiple) {
-        const selected = Array.isArray(value) ? (value as string[]) : [];
         return (
-          <select
-            multiple
-            value={selected}
-            onChange={(e) => onChange(Array.from(e.target.selectedOptions, (o) => o.value))}
-            className={`${inputClass} h-24`}
-          >
-            {relationOptions?.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+          <RelationChecklist
+            options={relationOptions ?? []}
+            selected={Array.isArray(value) ? (value as string[]) : []}
+            onChange={onChange}
+          />
         );
       }
       return (
-        <select value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value || null)} className={inputClass}>
-          <option value="">—</option>
-          {relationOptions?.map((opt) => (
-            <option key={opt.id} value={opt.id}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={typeof value === "string" ? value : ""}
+          onValueChange={(next) => onChange(next || null)}
+        >
+          <SelectTrigger aria-label={field.name} aria-invalid={invalid} className="h-control-md w-full">
+            <SelectValue placeholder="—" />
+          </SelectTrigger>
+          <SelectContent>
+            {(relationOptions ?? []).map((opt) => (
+              <SelectItem key={opt.id} value={opt.id}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       );
     }
 
     case "password":
-      return <input type="password" value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value)} className={inputClass} />;
+      return (
+        <Input
+          type="password"
+          value={typeof value === "string" ? value : ""}
+          onChange={(e) => onChange(e.target.value)}
+          aria-invalid={invalid}
+          className="h-control-md"
+        />
+      );
 
     case "email":
     case "url":
     case "text":
     default:
       return (
-        <input
+        <Input
           type={field.type === "email" ? "email" : field.type === "url" ? "url" : "text"}
           value={typeof value === "string" ? value : ""}
           onChange={(e) => onChange(e.target.value)}
-          className={inputClass}
+          aria-invalid={invalid}
+          className="h-control-md"
         />
       );
   }

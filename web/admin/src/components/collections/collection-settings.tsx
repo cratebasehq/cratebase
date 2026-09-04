@@ -3,8 +3,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { CollectionModel } from "cratebase";
-import { LoadingButton } from "@/components/interior/loading-button";
-import { HoldToConfirm } from "@/components/interior/hold-to-confirm";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { HoldToConfirm } from "@/components/ui/hold-to-confirm";
 import {
   CollectionForm,
   collectionToFormValue,
@@ -16,6 +17,7 @@ import { cb } from "@/lib/api";
 export function CollectionSettings({ collection }: { collection: CollectionModel }) {
   const { data: collections = [] } = useCollections();
   const [value, setValue] = useState<CollectionFormValue>(() => collectionToFormValue(collection));
+  const [pending, setPending] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -52,26 +54,36 @@ export function CollectionSettings({ collection }: { collection: CollectionModel
     onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to delete"),
   });
 
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) return;
+    setPending(true);
+    try {
+      await save.mutateAsync();
+    } catch {
+      // Surfaced as a toast by the mutation's own onError.
+    } finally {
+      setPending(false);
+    }
+  }
+
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-8 p-6">
-      <CollectionForm value={value} onChange={setValue} otherCollections={collections.filter((c) => c.id !== collection.id)} isNew={false} />
+      <form onSubmit={handleSubmit} className="flex flex-col gap-8">
+        <CollectionForm value={value} onChange={setValue} otherCollections={collections.filter((c) => c.id !== collection.id)} isNew={false} />
 
-      <div className="flex justify-end">
-        <LoadingButton
-          onAction={() => save.mutateAsync()}
-          pendingLabel="Saving…"
-          successLabel="Saved"
-          errorLabel="Failed"
-          className="!border-primary !bg-primary !px-4 !text-primary-foreground hover:!bg-primary/90 dark:!border-primary dark:!bg-primary dark:!text-primary-foreground dark:hover:!bg-primary/90"
-        >
-          Save changes
-        </LoadingButton>
-      </div>
+        <div className="flex justify-end">
+          <Button type="submit" disabled={pending}>
+            {pending ? <Spinner /> : null}
+            {pending ? "Saving…" : "Save changes"}
+          </Button>
+        </div>
+      </form>
 
       {collection.name === "users" ? (
         <div className="rounded-xl border border-border bg-secondary/30 p-4">
-          <p className="text-[13px] font-medium text-foreground">Protected collection</p>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
+          <p className="text-sm font-medium text-foreground">Protected collection</p>
+          <p className="mt-1 text-sm text-muted-foreground">
             <code className="font-mono">users</code> is provisioned automatically on first boot as the
             default auth collection every project needs a working sign-in table for. Deleting it here
             wouldn't recreate itself until the server restarts, breaking sign-in in the meantime — it
@@ -81,16 +93,12 @@ export function CollectionSettings({ collection }: { collection: CollectionModel
         </div>
       ) : (
         <div className="rounded-xl border border-destructive/30 bg-destructive/[0.03] p-4">
-          <p className="text-[13px] font-medium text-destructive">Danger zone</p>
-          <p className="mt-1 text-[12.5px] text-muted-foreground">
+          <p className="text-sm font-medium text-destructive">Danger zone</p>
+          <p className="mt-1 text-sm text-muted-foreground">
             Deleting a collection permanently removes it and every record in it. This cannot be undone.
           </p>
           <div className="mt-3">
-            <HoldToConfirm
-              onConfirm={() => remove.mutate()}
-              confirmLabel="Deleted"
-              className="!border-destructive/40 !text-destructive"
-            >
+            <HoldToConfirm onConfirm={() => remove.mutate()} confirmLabel="Deleted">
               Hold to delete collection
             </HoldToConfirm>
           </div>

@@ -1,162 +1,138 @@
-import { useMemo, useState } from "react";
-import type { CollectionModel } from "cratebase";
-import { Link, Outlet, useNavigate } from "@tanstack/react-router";
-import { Boxes, ChevronRight, Database, LogOut, Moon, Plus, Settings, ShieldUser, Sun } from "lucide-react";
-import { useTheme } from "next-themes";
-import { toast } from "sonner";
-import { useCollections } from "@/hooks/use-collections";
-import { cb } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { createContext, use, useMemo, useState } from "react";
+import { Outlet } from "@tanstack/react-router";
+import { Boxes, Plus, Search } from "lucide-react";
 import { AppCommandPalette } from "@/components/app-command-palette";
 import { NewCollectionDialog } from "@/components/collections/new-collection-dialog";
+import { AppSidebar } from "@/components/layout/app-sidebar";
+import { AppTopbar } from "@/components/layout/app-topbar";
+import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Kbd } from "@/components/ui/kbd";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { useCollections } from "@/hooks/use-collections";
 
+interface ShellActions {
+  openNewCollection: () => void;
+  openSearch: () => void;
+}
+
+const ShellActionsContext = createContext<ShellActions>({
+  openNewCollection: () => {},
+  openSearch: () => {},
+});
+
+/** The two global actions the shell owns, reachable from any screen inside
+ * it — so an empty state can offer a real button instead of describing
+ * where the button lives. */
+export function useShellActions(): ShellActions {
+  return use(ShellActionsContext);
+}
+
+/**
+ * The application frame: a sidebar that collapses to an icon rail on desktop
+ * and becomes a sheet on mobile, a top bar carrying location, search and
+ * connection state, and the routed screen below it.
+ *
+ * `--sidebar-width` is pinned to the `sidebar` density token so the rail
+ * agrees with the rest of the spacing scale rather than shadcn's default.
+ */
 export function AppShell() {
-  const { data: collections } = useCollections();
-  const { resolvedTheme, setTheme } = useTheme();
-  const navigate = useNavigate();
+  const { data: collections, isPending } = useCollections();
   const [newCollectionOpen, setNewCollectionOpen] = useState(false);
-  const [systemOpen, setSystemOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
-  // Collections named with a leading `_` are Cratebase-managed system
-  // collections (auth admins, cron jobs, feature flags, …); the sidebar
-  // groups them behind a collapsed section so it stays focused on the
-  // collections a developer actually created, matching PocketBase's convention.
-  const { userCollections, systemCollections } = useMemo(() => {
-    const all = collections ?? [];
-    return {
-      userCollections: all.filter((c) => !c.name.startsWith("_")),
-      systemCollections: all.filter((c) => c.name.startsWith("_")),
-    };
-  }, [collections]);
-
-  function logout() {
-    cb.authStore.clear();
-    toast.message("Signed out");
-    void navigate({ to: "/login" });
-  }
+  const actions = useMemo<ShellActions>(
+    () => ({
+      openNewCollection: () => setNewCollectionOpen(true),
+      openSearch: () => setSearchOpen(true),
+    }),
+    [],
+  );
 
   return (
-    <div className="flex h-svh overflow-hidden bg-background text-foreground">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-        <div className="flex items-center gap-2 px-4 py-4">
-          <img src="/favicon.svg" alt="" className="size-6" />
-          <span className="text-sm font-semibold tracking-tight">Cratebase</span>
-        </div>
+    <ShellActionsContext value={actions}>
+      <TooltipProvider delayDuration={300}>
+        <SidebarProvider
+          className="h-svh overflow-hidden"
+          style={
+            {
+              "--sidebar-width": "var(--spacing-sidebar)",
+              "--sidebar-width-icon": "var(--spacing-sidebar-icon)",
+            } as React.CSSProperties
+          }
+        >
+          <AppSidebar
+            collections={collections ?? []}
+            loading={isPending}
+            onNewCollection={actions.openNewCollection}
+          />
 
-        <div className="flex items-center justify-between px-4 pb-2">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Collections</span>
-          <button
-            type="button"
-            onClick={() => setNewCollectionOpen(true)}
-            className="grid size-5 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            aria-label="New collection"
-          >
-            <Plus className="size-3.5" />
-          </button>
-        </div>
-
-        <nav className="flex-1 overflow-y-auto px-2">
-          {userCollections.map((collection) => (
-            <CollectionLink key={collection.id} collection={collection} />
-          ))}
-          {collections?.length === 0 ? (
-            <p className="px-2.5 py-4 text-[12px] text-muted-foreground">
-              No collections yet. Create one to start storing data.
-            </p>
-          ) : null}
-
-          {systemCollections.length > 0 ? (
-            <div className="mt-2 border-t border-sidebar-border pt-2">
-              <button
-                type="button"
-                onClick={() => setSystemOpen((open) => !open)}
-                className="flex w-full items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-sidebar-foreground"
-                aria-expanded={systemOpen}
-              >
-                <ChevronRight className={cn("size-3 shrink-0 transition-transform", systemOpen && "rotate-90")} />
-                System
-              </button>
-              {systemOpen
-                ? systemCollections.map((collection) => (
-                    <CollectionLink key={collection.id} collection={collection} muted />
-                  ))
-                : null}
+          <SidebarInset className="flex min-w-0 flex-col overflow-hidden">
+            <AppTopbar onOpenSearch={actions.openSearch} />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <Outlet />
             </div>
-          ) : null}
-        </nav>
+          </SidebarInset>
 
-        <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-2">
-          <button
-            type="button"
-            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            aria-label="Toggle theme"
-          >
-            {resolvedTheme === "dark" ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-          </button>
-          <Link
-            to="/settings/logs"
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-            activeProps={{ className: "!bg-sidebar-accent !text-sidebar-accent-foreground" }}
-          >
-            <Settings className="size-3.5" />
-            Settings
-          </Link>
-        </div>
-        <div className="flex items-center justify-between border-t border-sidebar-border px-3 py-3">
-          <button
-            type="button"
-            onClick={logout}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-          >
-            <LogOut className="size-3.5" />
-            Sign out
-          </button>
-        </div>
-      </aside>
-
-      <main className="flex min-w-0 flex-1 flex-col">
-        <Outlet />
-      </main>
-
-      <AppCommandPalette
-        collections={collections ?? []}
-        onNewCollection={() => setNewCollectionOpen(true)}
-      />
-      <NewCollectionDialog open={newCollectionOpen} onOpenChange={setNewCollectionOpen} />
-    </div>
+          <AppCommandPalette
+            collections={collections ?? []}
+            onNewCollection={actions.openNewCollection}
+            open={searchOpen}
+            onOpenChange={setSearchOpen}
+          />
+          <NewCollectionDialog open={newCollectionOpen} onOpenChange={setNewCollectionOpen} />
+        </SidebarProvider>
+      </TooltipProvider>
+    </ShellActionsContext>
   );
 }
 
-function CollectionLink({ collection, muted }: { collection: CollectionModel; muted?: boolean }) {
-  return (
-    <Link
-      to="/collections/$name"
-      params={{ name: collection.name }}
-      className={cn(
-        "group flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-        muted && "text-sidebar-foreground/60"
-      )}
-      activeProps={{ className: "!bg-sidebar-accent !text-sidebar-accent-foreground font-medium" }}
-    >
-      {collection.type === "auth" ? (
-        <ShieldUser className="size-3.5 shrink-0 opacity-70" />
-      ) : (
-        <Database className="size-3.5 shrink-0 opacity-70" />
-      )}
-      <span className="truncate">{collection.name}</span>
-    </Link>
-  );
-}
-
+/**
+ * The landing screen. An empty state is an invitation to act, so it offers
+ * the action that unblocks the next step rather than describing the absence.
+ */
 export function EmptyDashboard() {
+  const { data: collections } = useCollections();
+  const { openNewCollection, openSearch } = useShellActions();
+  const hasCollections = (collections ?? []).some((c) => !c.name.startsWith("_"));
+
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-      <Boxes className="size-10 text-muted-foreground" />
-      <div>
-        <p className="text-sm font-medium">Select a collection</p>
-        <p className="text-sm text-muted-foreground">or create one from the sidebar to get started.</p>
-      </div>
+    <div className="flex flex-1 items-center justify-center p-page">
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <Boxes />
+          </EmptyMedia>
+          <EmptyTitle>{hasCollections ? "Pick a collection" : "No collections yet"}</EmptyTitle>
+          <EmptyDescription>
+            {hasCollections
+              ? "Choose one to browse and edit its records."
+              : "A collection is a table with an API. Create one and it is readable and writable over REST straight away."}
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          {hasCollections ? (
+            <Button variant="outline" size="sm" onClick={openSearch}>
+              <Search />
+              Search collections
+              <Kbd className="ml-1 hidden sm:inline-flex">⌘K</Kbd>
+            </Button>
+          ) : (
+            <Button size="sm" onClick={openNewCollection}>
+              <Plus />
+              New collection
+            </Button>
+          )}
+        </EmptyContent>
+      </Empty>
     </div>
   );
 }

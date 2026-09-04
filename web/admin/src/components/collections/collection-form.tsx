@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 import type { CollectionModel, FieldSchema } from "cratebase";
 import {
@@ -10,8 +11,9 @@ import {
   type DragEndEvent,
 } from "@dnd-kit/core";
 import { SortableContext, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { InlineValidation } from "@/components/interior/inline-validation";
-import { SegmentedControl } from "@/components/interior/segmented-control";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SortableFieldRow } from "@/components/collections/sortable-field-row";
 import { RuleField } from "@/components/collections/rule-field";
 
@@ -28,6 +30,75 @@ export interface CollectionFormValue {
 }
 
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/** How long an error waits before it appears while the field is still
+ * being typed in. Matches the old inline-validation component: nothing is
+ * shown until the field has been blurred once, and after that a newly
+ * introduced error settles in rather than flashing on every keystroke. */
+const VALIDATION_DEBOUNCE_MS = 400;
+
+/** A text field that validates itself the way the deleted
+ * `InlineValidation` did — quiet until first blur, then debounced while
+ * typing and immediate on blur — built out of the shadcn `Field` set. */
+function ValidatedTextField({
+  label,
+  value,
+  onChange,
+  validate,
+  hint,
+  placeholder,
+  disabled = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  validate: (value: string) => string | null;
+  hint?: string;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const [touched, setTouched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // `validate` is an inline closure at every call site, so it can't be an
+  // effect dependency without restarting the debounce on every render.
+  const check = useRef(validate);
+  useEffect(() => {
+    check.current = validate;
+  });
+
+  useEffect(() => {
+    if (!touched) return;
+    const next = check.current(value);
+    if (next === null) {
+      setError(null);
+      return;
+    }
+    const timer = setTimeout(() => setError(next), VALIDATION_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [value, touched]);
+
+  return (
+    <Field data-invalid={error !== null ? true : undefined}>
+      <FieldLabel htmlFor="collection-name">{label}</FieldLabel>
+      <Input
+        id="collection-name"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => {
+          setTouched(true);
+          setError(check.current(value));
+        }}
+        placeholder={placeholder}
+        disabled={disabled}
+        aria-invalid={error !== null || undefined}
+        className="h-control-md"
+      />
+      {error === null && hint ? <FieldDescription>{hint}</FieldDescription> : null}
+      {error !== null ? <FieldError>{error}</FieldError> : null}
+    </Field>
+  );
+}
 
 /// Mirrors `_collections.name TEXT NOT NULL UNIQUE` (case-sensitive,
 /// SQLite's default BINARY collation — "Posts" and "posts" do NOT
@@ -164,7 +235,7 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
 
   return (
     <div className="flex flex-col gap-6">
-      <InlineValidation
+      <ValidatedTextField
         label="Name"
         value={value.name}
         onChange={(name) => onChange({ ...value, name })}
@@ -177,43 +248,56 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
       {value.type === "auth" ? (
         <div>
           {isNew ? (
-            <SegmentedControl
-              label="Log in with"
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              spacing={0}
+              aria-label="Log in with"
               value={value.identityField}
-              onValueChange={(identityField) => onChange({ ...value, identityField })}
-              options={[
-                { value: "email", label: "Email" },
-                { value: "username", label: "Username" },
-              ]}
-            />
+              // A segmented control always has exactly one option picked —
+              // Radix reports "" when the pressed item is toggled off.
+              onValueChange={(identityField) => {
+                if (identityField) onChange({ ...value, identityField });
+              }}
+            >
+              <ToggleGroupItem value="email">Email</ToggleGroupItem>
+              <ToggleGroupItem value="username">Username</ToggleGroupItem>
+            </ToggleGroup>
           ) : (
-            <SegmentedControl
-              label="Log in with"
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              spacing={0}
+              aria-label="Log in with"
               value={value.identityField}
-              onValueChange={() => {}}
-              options={[{ value: value.identityField, label: value.identityField, disabled: true }]}
-            />
+            >
+              <ToggleGroupItem value={value.identityField} disabled>
+                {value.identityField}
+              </ToggleGroupItem>
+            </ToggleGroup>
           )}
           {!isNew ? (
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">Changing the identity field after creation isn't supported yet.</p>
+            <p className="mt-1.5 text-xs text-muted-foreground">Changing the identity field after creation isn't supported yet.</p>
           ) : null}
         </div>
       ) : null}
 
       <div>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-[13px] font-medium text-foreground">Fields</span>
+          <span className="text-sm font-medium text-foreground">Fields</span>
           <button
             type="button"
             onClick={addField}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-primary transition-colors hover:bg-accent"
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-primary transition-colors hover:bg-accent"
           >
             <Plus className="size-3.5" />
             Add field
           </button>
         </div>
         {value.type === "auth" ? (
-          <p className="mb-2 text-[11.5px] text-muted-foreground">
+          <p className="mb-2 text-xs text-muted-foreground">
             <code className="font-mono">{value.identityField}</code> and <code className="font-mono">password</code> are managed automatically for auth collections.
           </p>
         ) : null}
@@ -234,7 +318,7 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
                 />
               ))}
               {value.schema.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-border p-4 text-center text-[12.5px] text-muted-foreground">
+                <p className="rounded-xl border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
                   No fields yet.
                 </p>
               ) : null}
@@ -244,7 +328,7 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
       </div>
 
       <div className="flex flex-col gap-4">
-        <span className="text-[13px] font-medium text-foreground">API rules</span>
+        <span className="text-sm font-medium text-foreground">API rules</span>
         <RuleField label="List / Search" value={value.listRule} onChange={(listRule) => onChange({ ...value, listRule })} />
         <RuleField label="View" value={value.viewRule} onChange={(viewRule) => onChange({ ...value, viewRule })} />
         <RuleField label="Create" value={value.createRule} onChange={(createRule) => onChange({ ...value, createRule })} />

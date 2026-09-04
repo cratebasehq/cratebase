@@ -15,9 +15,9 @@ import {
   Copy,
 } from "lucide-react";
 import { cb } from "@/lib/api";
-import { useCopyToClipboard } from "@/components/interior/copy-button";
-import { Lightbox } from "@/components/interior/lightbox";
-import { Popover } from "@/components/interior/popover";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { Lightbox } from "@/components/ui/lightbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|svg)$/i;
@@ -30,20 +30,20 @@ const VIDEO_EXT = /\.(mp4|mov|webm|mkv|avi)$/i;
  * option always renders the same color across rows without needing the
  * schema to declare one. */
 const CHIP_PALETTE = [
-  "!bg-blue-500/15 !text-blue-700 dark:!text-blue-300",
-  "!bg-emerald-500/15 !text-emerald-700 dark:!text-emerald-300",
-  "!bg-amber-500/15 !text-amber-700 dark:!text-amber-300",
-  "!bg-violet-500/15 !text-violet-700 dark:!text-violet-300",
-  "!bg-rose-500/15 !text-rose-700 dark:!text-rose-300",
-  "!bg-cyan-500/15 !text-cyan-700 dark:!text-cyan-300",
-  "!bg-orange-500/15 !text-orange-700 dark:!text-orange-300",
-  "!bg-fuchsia-500/15 !text-fuchsia-700 dark:!text-fuchsia-300",
+  "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+  "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+  "bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
+  "bg-orange-500/15 text-orange-700 dark:text-orange-300",
+  "bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-300",
 ];
 
 function chipColor(value: string): string {
   let hash = 0;
   for (let i = 0; i < value.length; i++) hash = (hash * 31 + value.charCodeAt(i)) | 0;
-  return CHIP_PALETTE[Math.abs(hash) % CHIP_PALETTE.length];
+  return CHIP_PALETTE[Math.abs(hash) % CHIP_PALETTE.length] ?? "";
 }
 
 function fileIconFor(filename: string) {
@@ -116,13 +116,8 @@ function RelationRefValue({
     .slice(0, 4);
 
   return (
-    <Popover
-      label={`Preview referenced record ${id}`}
-      side="bottom"
-      align="start"
-      triggerClassName="!h-auto !w-auto !justify-start !border-0 !bg-transparent !p-0"
-      className="!w-72 !p-0"
-      trigger={
+    <Popover>
+      <PopoverTrigger asChild aria-label={`Preview referenced record ${id}`}>
         <Badge
           variant="outline"
           className="max-w-32 cursor-pointer font-normal transition-colors hover:border-primary hover:bg-primary/5"
@@ -130,49 +125,50 @@ function RelationRefValue({
         >
           <span className="truncate">{label ?? id}</span>
         </Badge>
-      }
-    >
-      <div className="flex flex-col gap-2 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            {collectionName ?? "Related record"}
-          </span>
-          <span className="truncate font-mono text-[10.5px] text-muted-foreground/70">{id}</span>
+      </PopoverTrigger>
+      <PopoverContent side="bottom" align="start" className="w-72 gap-0 p-0">
+        <div className="flex flex-col gap-2 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              {collectionName ?? "Related record"}
+            </span>
+            <span className="truncate font-mono text-2xs text-muted-foreground/70">{id}</span>
+          </div>
+          {record ? (
+            <dl className="flex flex-col gap-1.5 border-t border-border pt-2">
+              {previewFields.map((f) => (
+                <div key={f.name} className="flex items-center justify-between gap-3 text-sm">
+                  <dt className="shrink-0 text-muted-foreground">{f.name}</dt>
+                  <dd className="truncate text-right text-foreground">{String(record[f.name] ?? "—")}</dd>
+                </div>
+              ))}
+              {previewFields.length === 0 && (
+                <p className="text-sm text-muted-foreground">No previewable fields on this collection.</p>
+              )}
+            </dl>
+          ) : (
+            <p className="border-t border-border pt-2 text-sm text-muted-foreground">
+              Record not found in the last 200 — open it directly instead.
+            </p>
+          )}
+          {collectionName ? (
+            <button
+              type="button"
+              onClick={() => {
+                void navigate({
+                  to: "/collections/$name",
+                  params: { name: collectionName },
+                  search: { openId: id },
+                });
+              }}
+              className="mt-1 flex items-center justify-center gap-1.5 rounded-md border border-border bg-secondary/60 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-secondary"
+            >
+              Open record
+              <ExternalLink className="size-3" />
+            </button>
+          ) : null}
         </div>
-        {record ? (
-          <dl className="flex flex-col gap-1.5 border-t border-border pt-2">
-            {previewFields.map((f) => (
-              <div key={f.name} className="flex items-center justify-between gap-3 text-[12.5px]">
-                <dt className="shrink-0 text-muted-foreground">{f.name}</dt>
-                <dd className="truncate text-right text-foreground">{String(record[f.name] ?? "—")}</dd>
-              </div>
-            ))}
-            {previewFields.length === 0 && (
-              <p className="text-[12px] text-muted-foreground">No previewable fields on this collection.</p>
-            )}
-          </dl>
-        ) : (
-          <p className="border-t border-border pt-2 text-[12px] text-muted-foreground">
-            Record not found in the last 200 — open it directly instead.
-          </p>
-        )}
-        {collectionName ? (
-          <button
-            type="button"
-            onClick={() => {
-              void navigate({
-                to: "/collections/$name",
-                params: { name: collectionName },
-                search: { openId: id },
-              });
-            }}
-            className="mt-1 flex items-center justify-center gap-1.5 rounded-md border border-border bg-secondary/60 py-1.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-secondary"
-          >
-            Open record
-            <ExternalLink className="size-3" />
-          </button>
-        ) : null}
-      </div>
+      </PopoverContent>
     </Popover>
   );
 }
@@ -180,7 +176,7 @@ function RelationRefValue({
 export function IdCell({ id }: { id: string }) {
   const { copy, status } = useCopyToClipboard();
   return (
-    <div className="group/id flex items-center gap-1.5 whitespace-nowrap font-mono text-[12px] text-muted-foreground">
+    <div className="group/id flex items-center gap-1.5 whitespace-nowrap font-mono text-sm text-muted-foreground">
       <span>{id}</span>
       <button
         type="button"
@@ -212,7 +208,7 @@ function FileValue({ record, field, filename }: { record: RecordModel; field: Fi
         rel="noreferrer"
         onClick={(e) => e.stopPropagation()}
         title={filename}
-        className="flex items-center gap-1 text-[12.5px] text-primary hover:underline"
+        className="flex items-center gap-1 text-sm text-primary hover:underline"
       >
         <Icon className="size-3.5 shrink-0" />
         <span className="max-w-32 truncate">{filename}</span>
@@ -263,34 +259,31 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
       );
     case "date":
       return (
-        <span className="font-mono text-[12px] tabular-nums" title={formatDateTitle(String(value))}>
+        <span className="font-mono text-sm tabular-nums" title={formatDateTitle(String(value))}>
           {formatDate(String(value))}
         </span>
       );
     case "number":
-      return <span className="font-mono text-[12.5px] tabular-nums">{String(value)}</span>;
+      return <span className="font-mono text-sm tabular-nums">{String(value)}</span>;
     case "json": {
       const inline = JSON.stringify(value);
       const pretty = JSON.stringify(value, null, 2);
       const truncated = inline.length > 48;
       return (
         <div onClick={(e) => e.stopPropagation()}>
-          <Popover
-            label={`${field.name} JSON value`}
-            side="bottom"
-            align="start"
-            triggerClassName="!h-auto !w-auto !justify-start !gap-1 !border-0 !bg-transparent !p-0 !font-mono !text-[12px] !text-muted-foreground hover:!text-foreground"
-            className="!w-auto !max-w-[420px] !p-0"
-            trigger={
-              <>
-                <code className="max-w-56 truncate">{truncated ? `${inline.slice(0, 48)}…` : inline}</code>
-                {truncated && <ChevronDown className="size-3 shrink-0" />}
-              </>
-            }
-          >
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[12px] text-foreground">
-              {pretty}
-            </pre>
+          <Popover>
+            <PopoverTrigger
+              aria-label={`${field.name} JSON value`}
+              className="flex items-center gap-1 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <code className="max-w-56 truncate">{truncated ? `${inline.slice(0, 48)}…` : inline}</code>
+              {truncated && <ChevronDown className="size-3 shrink-0" />}
+            </PopoverTrigger>
+            <PopoverContent side="bottom" align="start" className="w-auto max-w-[420px] gap-0 p-0">
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-sm text-foreground">
+                {pretty}
+              </pre>
+            </PopoverContent>
           </Popover>
         </div>
       );
@@ -325,7 +318,7 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
             />
           ))}
           {ids.length > shown.length && (
-            <span className="font-mono text-[11px] text-muted-foreground">+{ids.length - shown.length}</span>
+            <span className="font-mono text-xs text-muted-foreground">+{ids.length - shown.length}</span>
           )}
         </div>
       );
@@ -345,7 +338,7 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
         <a
           href={`mailto:${value}`}
           onClick={(e) => e.stopPropagation()}
-          className="block truncate text-[13px] text-primary hover:underline"
+          className="block truncate text-sm text-primary hover:underline"
         >
           {String(value)}
         </a>
@@ -357,13 +350,13 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
           target="_blank"
           rel="noreferrer"
           onClick={(e) => e.stopPropagation()}
-          className="flex min-w-0 items-center gap-1 text-[13px] text-primary hover:underline"
+          className="flex min-w-0 items-center gap-1 text-sm text-primary hover:underline"
         >
           <span className="truncate">{String(value)}</span>
           <ExternalLink className="size-3 shrink-0" />
         </a>
       );
     default:
-      return <span className="truncate text-[13px]">{String(value)}</span>;
+      return <span className="truncate text-sm">{String(value)}</span>;
   }
 }

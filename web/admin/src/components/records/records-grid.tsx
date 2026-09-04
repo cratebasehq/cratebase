@@ -1,6 +1,7 @@
 import { useCallback, type ReactNode } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
-import { useSortableRows, type SortState } from "@/components/interior/sortable-table";
+import { ChevronDown, ChevronUp, Rows3 } from "lucide-react";
+import { useSortableRows, type SortState } from "@/hooks/use-sortable-rows";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 
 export type GridColumn<T> = {
   id: string;
@@ -48,7 +49,7 @@ export function RecordsGrid<T>({
 
   return (
     <div className="w-full overflow-auto border border-border">
-      <table role="table" aria-label={label} className="w-full border-collapse text-left font-mono text-[12.5px]">
+      <table role="table" aria-label={label} className="w-full border-collapse text-left font-mono text-sm">
         <thead>
           <tr role="row">
             {columns.map((column) => (
@@ -57,13 +58,13 @@ export function RecordsGrid<T>({
                 role="columnheader"
                 aria-sort={column.sortable ? ariaSort(column.id) : undefined}
                 style={{ width: column.width, minWidth: column.width }}
-                className="sticky top-0 z-10 whitespace-nowrap border-b border-r border-border bg-secondary/70 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground last:border-r-0"
+                className="sticky top-0 z-sticky whitespace-nowrap border-b border-r border-border bg-secondary/70 px-3 py-2 text-xs font-medium text-muted-foreground last:border-r-0"
               >
                 {column.sortable ? (
                   <button
                     type="button"
                     onClick={() => toggle(column.id)}
-                    className="flex items-center gap-1 normal-case tracking-normal hover:text-foreground"
+                    className="flex items-center gap-1 hover:text-foreground"
                   >
                     {column.header}
                     {current?.columnId === column.id ? (
@@ -84,19 +85,29 @@ export function RecordsGrid<T>({
         <tbody>
           {rows.length === 0 ? (
             <tr role="row">
-              <td colSpan={columns.length} className="px-3 py-16 text-center font-sans text-[13px] text-muted-foreground">
-                No records yet
+              <td colSpan={columns.length} className="px-3 py-10 font-sans">
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <Rows3 />
+                    </EmptyMedia>
+                    <EmptyTitle>No records yet</EmptyTitle>
+                    <EmptyDescription>
+                      Rows added here — or written through the API — show up in this grid.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               </td>
             </tr>
           ) : (
             ordered.map(({ id, row }) => (
-              <tr key={id} role="row" className="group hover:bg-accent/40">
+              <tr key={id} role="row" className="group h-row hover:bg-accent/40">
                 {columns.map((column) => (
                   <td
                     key={column.id}
                     role="cell"
                     style={{ width: column.width, minWidth: column.width }}
-                    className="border-b border-r border-border px-3 py-1.5 align-middle last:border-r-0"
+                    className="border-b border-r border-border px-3 py-1 align-middle whitespace-nowrap last:border-r-0"
                   >
                     {column.cell(row)}
                   </td>

@@ -1,12 +1,22 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { CollectionModel, RecordModel } from "cratebase";
-import { ClientResponseError } from "cratebase";
-import { Drawer } from "@/components/interior/drawer";
-import { LoadingButton } from "@/components/interior/loading-button";
-import { ProgressBar } from "@/components/interior/progress-bar";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
+import { Spinner } from "@/components/ui/spinner";
 import { RecordFieldInput, existingRecordValue } from "@/components/records/record-field-input";
 import { useRecordMutations } from "@/hooks/use-records";
+import { describeFailure } from "@/lib/api";
 
 interface RecordDrawerProps {
   collection: CollectionModel;
@@ -35,7 +45,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     setValues(initial);
     setFiles({});
     setErrors({});
-  }, [open, record, collection]);
+  }, [open, record, collection, identityField]);
 
   function buildPayload(): Record<string, unknown> | FormData {
     const hasFile = collection.schema.some((f) => f.type === "file");
@@ -56,7 +66,11 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     return form;
   }
 
-  async function handleSubmit() {
+  const pending = create.isPending || update.isPending;
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending) return;
     setErrors({});
     try {
       if (isNew) {
@@ -68,106 +82,106 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
       }
       onOpenChange(false);
     } catch (error) {
-      if (error instanceof ClientResponseError && error.status === 400) {
-        setErrors(
-          Object.fromEntries(Object.entries(error.data).map(([field, err]) => [field, err.message])),
-        );
+      const failure = describeFailure(error);
+      if (Object.keys(failure.fields).length > 0) {
+        setErrors(failure.fields);
         toast.error("Fix the highlighted fields");
       } else {
-        toast.error(error instanceof Error ? error.message : "Something went wrong");
+        toast.error(failure.title, { description: failure.detail || undefined });
       }
-      throw error;
     }
   }
 
-  const pending = create.isPending || update.isPending;
-
   return (
-    <Drawer
-      open={open}
-      onOpenChange={onOpenChange}
-      title={isNew ? `New ${collection.name.replace(/s$/, "")}` : "Edit record"}
-      width={440}
-    >
-      <div className="flex flex-col gap-4">
-        {collection.type === "auth" ? (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground capitalize">{identityField}</label>
-            <input
-              type={identityField === "email" ? "email" : "text"}
-              value={(values[identityField] as string) ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, [identityField]: e.target.value }))}
-              className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                errors[identityField] ? "border-destructive" : "border-border focus:border-primary"
-              }`}
-            />
-            {errors[identityField] ? <p className="text-[11.5px] text-destructive">{errors[identityField]}</p> : null}
-          </div>
-        ) : null}
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[440px]">
+        <form onSubmit={handleSubmit} className="flex h-full min-h-0 flex-col">
+          <SheetHeader>
+            <SheetTitle>{isNew ? `New ${collection.name.replace(/s$/, "")}` : "Edit record"}</SheetTitle>
+            <SheetDescription>
+              {isNew ? `Add a row to ${collection.name}.` : `Editing a row in ${collection.name}.`}
+            </SheetDescription>
+          </SheetHeader>
 
-        {collection.type === "auth" ? (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground">{isNew ? "Password" : "New password"}</label>
-            <input
-              type="password"
-              value={(values.password as string) ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
-              placeholder={isNew ? undefined : "Leave blank to keep current"}
-              className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                errors.password ? "border-destructive" : "border-border focus:border-primary"
-              }`}
-            />
-            {errors.password ? <p className="text-[11.5px] text-destructive">{errors.password}</p> : null}
-          </div>
-        ) : null}
-
-        {collection.schema.map((field) => (
-          <div key={field.id} className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground">
-              {field.name}
-              {field.required ? <span className="text-primary"> *</span> : null}
-            </label>
-            {field.type === "file" ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+            {collection.type === "auth" ? (
               <div className="flex flex-col gap-1.5">
-                <input
-                  type="file"
-                  multiple={Boolean(field.options?.multiple)}
-                  onChange={(e) => setFiles((f) => ({ ...f, [field.name]: Array.from(e.target.files ?? []) }))}
-                  className="text-[12.5px] text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-2.5 file:py-1.5 file:text-[12px] file:font-medium file:text-secondary-foreground"
+                <Label htmlFor="record-identity" className="capitalize">
+                  {identityField}
+                </Label>
+                <Input
+                  id="record-identity"
+                  type={identityField === "email" ? "email" : "text"}
+                  value={(values[identityField] as string) ?? ""}
+                  onChange={(e) => setValues((v) => ({ ...v, [identityField]: e.target.value }))}
+                  aria-invalid={errors[identityField] ? true : undefined}
+                  className="h-control-md"
                 />
-                {!isNew && record && record[field.name] ? (
-                  <p className="text-[11.5px] text-muted-foreground">
-                    Current: {Array.isArray(record[field.name]) ? (record[field.name] as string[]).join(", ") : String(record[field.name])}.
-                    Choosing a new file replaces it.
-                  </p>
-                ) : null}
+                {errors[identityField] ? <p className="text-xs text-destructive">{errors[identityField]}</p> : null}
               </div>
-            ) : (
-              <RecordFieldInput
-                field={field}
-                value={values[field.name]}
-                onChange={(value) => setValues((v) => ({ ...v, [field.name]: value }))}
-                error={errors[field.name]}
-              />
-            )}
-            {errors[field.name] ? <p className="text-[11.5px] text-destructive">{errors[field.name]}</p> : null}
+            ) : null}
+
+            {collection.type === "auth" ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="record-password">{isNew ? "Password" : "New password"}</Label>
+                <Input
+                  id="record-password"
+                  type="password"
+                  value={(values.password as string) ?? ""}
+                  onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
+                  placeholder={isNew ? undefined : "Leave blank to keep current"}
+                  aria-invalid={errors.password ? true : undefined}
+                  className="h-control-md"
+                />
+                {errors.password ? <p className="text-xs text-destructive">{errors.password}</p> : null}
+              </div>
+            ) : null}
+
+            {collection.schema.map((field) => (
+              <div key={field.id} className="flex flex-col gap-1.5">
+                <Label>
+                  {field.name}
+                  {field.required ? <span className="text-primary"> *</span> : null}
+                </Label>
+                {field.type === "file" ? (
+                  <div className="flex flex-col gap-1.5">
+                    <input
+                      type="file"
+                      aria-label={field.name}
+                      multiple={Boolean(field.options?.multiple)}
+                      onChange={(e) => setFiles((f) => ({ ...f, [field.name]: Array.from(e.target.files ?? []) }))}
+                      className="text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-2.5 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground"
+                    />
+                    {!isNew && record && record[field.name] ? (
+                      <p className="text-xs text-muted-foreground">
+                        Current: {Array.isArray(record[field.name]) ? (record[field.name] as string[]).join(", ") : String(record[field.name])}.
+                        Choosing a new file replaces it.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <RecordFieldInput
+                    field={field}
+                    value={values[field.name]}
+                    onChange={(value) => setValues((v) => ({ ...v, [field.name]: value }))}
+                    error={errors[field.name]}
+                  />
+                )}
+                {errors[field.name] ? <p className="text-xs text-destructive">{errors[field.name]}</p> : null}
+              </div>
+            ))}
+
+            {pending ? <Progress value={null} label="Saving" /> : null}
           </div>
-        ))}
 
-        {pending ? <ProgressBar value={null} label="Saving" /> : null}
-      </div>
-
-      <div className="mt-6 flex justify-end">
-        <LoadingButton
-          onAction={handleSubmit}
-          pendingLabel="Saving…"
-          successLabel="Saved"
-          errorLabel="Fix errors"
-          className="!border-primary !bg-primary !px-4 !text-primary-foreground hover:!bg-primary/90 dark:!border-primary dark:!bg-primary dark:!text-primary-foreground dark:hover:!bg-primary/90"
-        >
-          {isNew ? "Create" : "Save changes"}
-        </LoadingButton>
-      </div>
-    </Drawer>
+          <SheetFooter className="flex-row justify-end border-t border-border">
+            <Button type="submit" disabled={pending}>
+              {pending ? <Spinner /> : null}
+              {pending ? "Saving…" : isNew ? "Create" : "Save changes"}
+            </Button>
+          </SheetFooter>
+        </form>
+      </SheetContent>
+    </Sheet>
   );
 }

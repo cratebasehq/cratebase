@@ -1,7 +1,11 @@
+import { useId } from "react";
 import { AlertCircle, GripVertical, Trash2 } from "lucide-react";
 import type { CollectionModel, FieldSchema } from "cratebase";
 import { FIELD_TYPES } from "@/lib/field-types";
-import { TagInput } from "@/components/interior/tag-input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TagInput } from "@/components/ui/tag-input";
 
 interface SchemaFieldRowProps {
   field: FieldSchema;
@@ -32,9 +36,9 @@ function OptionField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[11.5px] font-medium text-foreground/80">{label}</span>
+      <span className="text-xs font-medium text-foreground/80">{label}</span>
       {children}
-      {help ? <span className="text-[10.5px] leading-snug text-muted-foreground">{help}</span> : null}
+      {help ? <span className="text-2xs leading-snug text-muted-foreground">{help}</span> : null}
     </label>
   );
 }
@@ -54,9 +58,9 @@ function OptionGroup({
   return (
     <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-secondary/30 p-2.5">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground/70">{title}</p>
+        <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground/70">{title}</p>
         {error ? (
-          <span className="flex items-center gap-1 text-[10.5px] font-medium text-destructive">
+          <span className="flex items-center gap-1 text-2xs font-medium text-destructive">
             <AlertCircle className="size-3" />
             {error}
           </span>
@@ -77,35 +81,37 @@ function NumberInput({
   placeholder?: string;
 }) {
   return (
-    <input
+    <Input
       type="number"
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
       placeholder={placeholder}
-      className="h-8 w-full rounded-lg border border-border bg-secondary/60 px-2 text-[12.5px] text-foreground outline-none focus:border-primary"
+      className="h-control-md text-sm"
     />
   );
 }
 
-function MultipleValuesCheckbox({
+/** One boolean field option. Radix's checkbox is a `<button>`, so the
+ * label is wired up with `htmlFor` rather than by wrapping it. */
+function CheckboxOption({
   checked,
   onChange,
   label,
+  className = "",
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  className?: string;
 }) {
+  const id = useId();
   return (
-    <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="size-3.5 accent-primary"
-      />
-      {label}
-    </label>
+    <div className={`flex items-center gap-1.5 ${className}`}>
+      <Checkbox id={id} checked={checked} onCheckedChange={(next) => onChange(next === true)} />
+      <label htmlFor={id} className="text-xs text-muted-foreground">
+        {label}
+      </label>
+    </div>
   );
 }
 
@@ -133,7 +139,7 @@ export function SchemaFieldRow({
     <div
       className={`flex flex-col gap-2.5 rounded-xl border bg-card/60 p-3 transition-shadow ${
         isDragging
-          ? "border-primary shadow-[0_8px_24px_-12px_rgba(0,0,0,0.4)]"
+          ? "border-primary shadow-e3"
           : nameError
             ? "border-destructive/50"
             : "border-border"
@@ -162,48 +168,45 @@ export function SchemaFieldRow({
         </button>
 
         <div className="min-w-0 flex-1">
-          <input
+          <Input
             type="text"
             value={field.name}
             onChange={(e) => onChange({ ...field, name: e.target.value })}
             placeholder="field_name"
+            aria-label="Field name"
             aria-invalid={nameError ? true : undefined}
-            className={`h-8 w-full rounded-lg border bg-secondary/60 px-2 font-mono text-[12.5px] text-foreground outline-none ${
-              nameError ? "border-destructive/60 focus:border-destructive" : "border-border focus:border-primary"
-            }`}
+            className="h-control-md font-mono text-sm"
           />
         </div>
 
-        <select
+        <Select
           value={field.type}
-          onChange={(e) => onChange({ ...field, type: e.target.value as FieldSchema["type"], options: {} })}
-          className="h-8 shrink-0 rounded-lg border border-border bg-secondary/60 px-2 text-[12.5px] text-foreground outline-none focus:border-primary"
+          onValueChange={(type) => onChange({ ...field, type: type as FieldSchema["type"], options: {} })}
         >
-          {FIELD_TYPES.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger aria-label="Field type" className="h-control-md shrink-0 text-sm">
+            <SelectValue placeholder="Type…" />
+          </SelectTrigger>
+          <SelectContent>
+            {FIELD_TYPES.map((t) => (
+              <SelectItem key={t.value} value={t.value}>
+                {t.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-        <label className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={field.required ?? false}
-            onChange={(e) => onChange({ ...field, required: e.target.checked })}
-            className="size-3.5 accent-primary"
-          />
-          Required
-        </label>
-        <label className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={field.unique ?? false}
-            onChange={(e) => onChange({ ...field, unique: e.target.checked })}
-            className="size-3.5 accent-primary"
-          />
-          Unique
-        </label>
+        <CheckboxOption
+          checked={field.required ?? false}
+          onChange={(required) => onChange({ ...field, required })}
+          label="Required"
+          className="shrink-0"
+        />
+        <CheckboxOption
+          checked={field.unique ?? false}
+          onChange={(unique) => onChange({ ...field, unique })}
+          label="Unique"
+          className="shrink-0"
+        />
 
         <button
           type="button"
@@ -216,7 +219,7 @@ export function SchemaFieldRow({
       </div>
 
       {nameError ? (
-        <p className="-mt-1 flex items-center gap-1 pl-9 text-[11px] font-medium text-destructive">
+        <p className="-mt-1 flex items-center gap-1 pl-9 text-xs font-medium text-destructive">
           <AlertCircle className="size-3 shrink-0" />
           {nameError}
         </p>
@@ -241,12 +244,12 @@ export function SchemaFieldRow({
             </OptionField>
           </div>
           <OptionField label="Pattern" help="A regular expression the value must fully match. Leave blank to skip.">
-            <input
+            <Input
               type="text"
               value={(options.pattern as string | undefined) ?? ""}
               onChange={(e) => patch({ pattern: e.target.value || undefined })}
               placeholder="e.g. ^[a-z0-9-]+$"
-              className="h-8 w-full rounded-lg border border-border bg-secondary/60 px-2 font-mono text-[12px] text-foreground outline-none focus:border-primary"
+              className="h-control-md font-mono text-sm"
             />
           </OptionField>
         </OptionGroup>
@@ -270,15 +273,11 @@ export function SchemaFieldRow({
               />
             </OptionField>
           </div>
-          <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={(options.onlyInt as boolean | undefined) ?? false}
-              onChange={(e) => patch({ onlyInt: e.target.checked })}
-              className="size-3.5 accent-primary"
-            />
-            Integer only — reject decimal values
-          </label>
+          <CheckboxOption
+            checked={(options.onlyInt as boolean | undefined) ?? false}
+            onChange={(onlyInt) => patch({ onlyInt })}
+            label="Integer only — reject decimal values"
+          />
         </OptionGroup>
       ) : null}
 
@@ -291,7 +290,7 @@ export function SchemaFieldRow({
             placeholder="Add an option and press Enter"
             hint="Records can only store one of these values per selection"
           />
-          <MultipleValuesCheckbox
+          <CheckboxOption
             checked={multiple}
             onChange={(checked) => patch({ multiple: checked })}
             label="Allow multiple selections"
@@ -314,20 +313,23 @@ export function SchemaFieldRow({
             label="Target collection"
             help="Values stored here must be the id of an existing record in this collection."
           >
-            <select
+            <Select
               value={(options.collectionId as string | undefined) ?? ""}
-              onChange={(e) => patch({ collectionId: e.target.value || undefined })}
-              className="h-8 w-full rounded-lg border border-border bg-secondary/60 px-2 text-[12.5px] text-foreground outline-none focus:border-primary"
+              onValueChange={(collectionId) => patch({ collectionId: collectionId || undefined })}
             >
-              <option value="">Select target collection…</option>
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger aria-label="Target collection" className="h-control-md w-full text-sm">
+                <SelectValue placeholder="Select target collection…" />
+              </SelectTrigger>
+              <SelectContent>
+                {collections.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </OptionField>
-          <MultipleValuesCheckbox
+          <CheckboxOption
             checked={multiple}
             onChange={(checked) => patch({ multiple: checked })}
             label="Allow multiple related records"
@@ -351,7 +353,7 @@ export function SchemaFieldRow({
               placeholder="No limit"
             />
           </OptionField>
-          <MultipleValuesCheckbox
+          <CheckboxOption
             checked={multiple}
             onChange={(checked) => patch({ multiple: checked })}
             label="Allow multiple files"
@@ -362,26 +364,18 @@ export function SchemaFieldRow({
       {field.type === "autodate" ? (
         <OptionGroup title="Timing" error={optionsError}>
           <div className="flex items-center gap-4">
-            <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={(options.onCreate as boolean | undefined) ?? false}
-                onChange={(e) => patch({ onCreate: e.target.checked })}
-                className="size-3.5 accent-primary"
-              />
-              Set on create
-            </label>
-            <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={(options.onUpdate as boolean | undefined) ?? false}
-                onChange={(e) => patch({ onUpdate: e.target.checked })}
-                className="size-3.5 accent-primary"
-              />
-              Set on update
-            </label>
+            <CheckboxOption
+              checked={(options.onCreate as boolean | undefined) ?? false}
+              onChange={(onCreate) => patch({ onCreate })}
+              label="Set on create"
+            />
+            <CheckboxOption
+              checked={(options.onUpdate as boolean | undefined) ?? false}
+              onChange={(onUpdate) => patch({ onUpdate })}
+              label="Set on update"
+            />
           </div>
-          <p className="text-[10.5px] leading-snug text-muted-foreground">
+          <p className="text-2xs leading-snug text-muted-foreground">
             The value is computed by the server; clients can't set it. At least one of the two must be enabled.
           </p>
         </OptionGroup>

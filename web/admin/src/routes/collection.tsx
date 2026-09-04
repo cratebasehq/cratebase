@@ -2,22 +2,37 @@ import { useEffect, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { MoreHorizontal, Plus, Settings as SettingsIcon, ShieldUser } from "lucide-react";
+import { MoreHorizontal, Plus, Search, Settings as SettingsIcon, ShieldUser } from "lucide-react";
 import type { RecordModel } from "cratebase";
 import { cb } from "@/lib/api";
 import { appRoute } from "@/routes/app";
 import { useRecords, useRecordMutations } from "@/hooks/use-records";
-import { ExpandingSearch } from "@/components/interior/expanding-search";
-import { Pagination } from "@/components/interior/pagination";
-import type { SortState } from "@/components/interior/sortable-table";
-import { NewItemsPill } from "@/components/interior/new-items-pill";
+import { Pagination } from "@/components/ui/pagination";
+import type { SortState } from "@/hooks/use-sortable-rows";
+import { NewItemsPill } from "@/components/ui/new-items-pill";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { IdCell } from "@/components/records/record-value-cell";
 import { InlineEditableCell } from "@/components/records/inline-cell";
 import { RecordsGrid, type GridColumn } from "@/components/records/records-grid";
 import { RecordDrawer } from "@/components/records/record-drawer";
 import { CollectionSettings } from "@/components/collections/collection-settings";
+
+/** Matches the debounce the old expanding-search field committed its
+ * query with, so typing still doesn't fire a request per keystroke. */
+const SEARCH_DEBOUNCE_MS = 220;
 
 type CollectionSearch = {
   page?: number;
@@ -55,7 +70,9 @@ function CollectionPage() {
   const search = urlSearch.q ?? "";
   const sort = parseSortParam(urlSearch.sort);
   const [editing, setEditing] = useState<RecordModel | null | undefined>(undefined);
+  const [deleting, setDeleting] = useState<RecordModel | null>(null);
   const [newSince, setNewSince] = useState(0);
+  const [searchInput, setSearchInput] = useState(search);
 
   // A relation-value popover elsewhere in the dashboard links here with
   // `?openId=<id>` instead of a full record — fetch it once, pop the
@@ -81,6 +98,22 @@ function CollectionPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlSearch.openId, name]);
+
+  // The URL is the source of truth for the query; the field keeps its own
+  // state so typing stays responsive and only the committed value lands in
+  // the URL (and therefore in the records query).
+  useEffect(() => {
+    setSearchInput(search);
+  }, [search]);
+
+  useEffect(() => {
+    if (searchInput === search) return;
+    const timer = setTimeout(() => {
+      updateSearch({ q: searchInput || undefined, page: undefined });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput, search]);
 
   const { data: collection } = useQuery({
     queryKey: ["collections", name],
@@ -118,7 +151,13 @@ function CollectionPage() {
   }, [collection, name, page, sort, queryClient]);
 
   if (!collection) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="flex flex-col gap-2 p-6">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Skeleton key={i} className="h-row w-full" />
+        ))}
+      </div>
+    );
   }
 
   const columns: GridColumn<RecordModel>[] = [
@@ -136,7 +175,7 @@ function CollectionPage() {
             header: identityField,
             sortable: true,
             value: (row: RecordModel) => String(row[identityField] ?? ""),
-            cell: (row: RecordModel) => <span className="text-[13px]">{String(row[identityField] ?? "")}</span>,
+            cell: (row: RecordModel) => <span className="text-sm">{String(row[identityField] ?? "")}</span>,
           },
         ]
       : []),
@@ -160,7 +199,7 @@ function CollectionPage() {
           tabIndex={0}
           onClick={() => setEditing(row)}
           onKeyDown={(e) => e.key === "Enter" && setEditing(row)}
-          className="block w-full cursor-pointer text-left font-mono text-[11.5px] text-muted-foreground"
+          className="block w-full cursor-pointer text-left font-mono text-xs text-muted-foreground"
         >
           {new Date(row.created).toLocaleString()}
         </div>
@@ -174,19 +213,13 @@ function CollectionPage() {
       cell: (row: RecordModel) => (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="size-7" onClick={(e) => e.stopPropagation()}>
+            <Button variant="ghost" size="icon-sm" onClick={(e) => e.stopPropagation()}>
               <MoreHorizontal className="size-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
             <DropdownMenuItem onClick={() => setEditing(row)}>Edit</DropdownMenuItem>
-            <DropdownMenuItem
-              variant="destructive"
-              onClick={async () => {
-                await remove.mutateAsync(row.id);
-                toast.success("Record deleted");
-              }}
-            >
+            <DropdownMenuItem variant="destructive" onClick={() => setDeleting(row)}>
               Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -200,11 +233,10 @@ function CollectionPage() {
       <header className="flex items-center justify-between gap-3 border-b border-border px-6 py-4">
         <div className="flex shrink-0 items-center gap-2">
           {collection.type === "auth" ? <ShieldUser className="size-4 text-muted-foreground" /> : null}
-          <h1 className="text-[15px] font-semibold tracking-tight">{collection.name}</h1>
+          <h1 className="text-base font-semibold tracking-tight">{collection.name}</h1>
           <Button
             variant={tab === "settings" ? "secondary" : "ghost"}
-            size="icon"
-            className="size-7"
+            size="icon-sm"
             aria-label="Collection settings"
             aria-pressed={tab === "settings"}
             onClick={() => updateSearch({ tab: tab === "settings" ? undefined : "settings" })}
@@ -215,24 +247,30 @@ function CollectionPage() {
 
         {tab === "records" ? (
           <div className="flex flex-1 items-center justify-end gap-3">
-            <ExpandingSearch
-              className="max-w-sm flex-1"
-              value={search}
-              onChange={(next) => updateSearch({ q: next || undefined, page: undefined })}
-              placeholder={`Search ${collection.name}…`}
-              resultCount={result?.totalItems}
-            />
-            <Button
-              size="sm"
-              onClick={() => setEditing(null)}
-              className="h-10 gap-1.5 bg-primary text-primary-foreground hover:bg-primary/90"
-            >
+            <InputGroup className="h-control-sm w-56">
+              <InputGroupAddon>
+                <Search className="size-3.5" />
+              </InputGroupAddon>
+              <InputGroupInput
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder={`Search ${collection.name}…`}
+                aria-label={`Search ${collection.name}`}
+              />
+              {searchInput.length > 0 && result ? (
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText className="font-tabular text-2xs">{result.totalItems}</InputGroupText>
+                </InputGroupAddon>
+              ) : null}
+            </InputGroup>
+            <Button size="sm" onClick={() => setEditing(null)} className="gap-1.5">
               <Plus className="size-3.5" />
               New record
             </Button>
           </div>
         ) : (
-          <span className="text-[13px] text-muted-foreground">Settings</span>
+          <span className="text-sm text-muted-foreground">Settings</span>
         )}
       </header>
 
@@ -244,7 +282,7 @@ function CollectionPage() {
         <>
           <div className="relative flex-1 overflow-y-auto">
             {newSince > 0 ? (
-              <div className="sticky top-11 z-10 flex justify-center">
+              <div className="sticky top-11 z-raised flex justify-center">
                 <NewItemsPill
                   count={newSince}
                   onJump={() => {
@@ -256,8 +294,10 @@ function CollectionPage() {
             ) : null}
 
             {!result ? (
-              <div className="px-6">
-                <TableSkeleton />
+              <div className="flex flex-col gap-2 px-6 py-3">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-row w-full" />
+                ))}
               </div>
             ) : (
               <RecordsGrid
@@ -282,16 +322,33 @@ function CollectionPage() {
       {editing !== undefined ? (
         <RecordDrawer collection={collection} record={editing} open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)} />
       ) : null}
-    </div>
-  );
-}
 
-function TableSkeleton() {
-  return (
-    <div className="flex flex-col gap-2 py-3">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="h-9 w-full animate-pulse rounded-lg bg-muted" />
-      ))}
+      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono">{deleting?.id}</span> will be permanently removed from{" "}
+              <span className="font-mono">{collection.name}</span>. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={async () => {
+                const target = deleting;
+                setDeleting(null);
+                if (!target) return;
+                await remove.mutateAsync(target.id);
+                toast.success("Record deleted");
+              }}
+            >
+              Delete record
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
