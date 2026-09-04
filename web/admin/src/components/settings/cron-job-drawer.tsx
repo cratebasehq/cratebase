@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { RecordModel } from "cratebase";
+import type { RecordModel } from "pocketbase";
 import {
   Sheet,
   SheetContent,
@@ -49,7 +49,8 @@ export function CronJobDrawer({ job, open, onOpenChange }: CronJobDrawerProps) {
   const { create, update } = useRecordMutations("_cron_jobs");
   const { data: availableJobs = [] } = useQuery({
     queryKey: ["cron-jobs", "available"],
-    queryFn: () => cb.send<{ jobs: AvailableJob[] }>("/api/plugins/cron-jobs/available").then((r) => r.jobs),
+    queryFn: () =>
+      cb.send<{ jobs: AvailableJob[] }>("/api/plugins/cron-jobs/available", { method: "GET" }).then((r) => r.jobs),
     enabled: open,
     staleTime: 5 * 60 * 1000,
   });

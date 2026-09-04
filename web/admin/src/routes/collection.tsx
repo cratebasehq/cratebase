@@ -3,8 +3,9 @@ import { createRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { MoreHorizontal, Plus, Search, Settings as SettingsIcon, ShieldUser } from "lucide-react";
-import type { RecordModel } from "cratebase";
+import type { RecordModel } from "pocketbase";
 import { cb } from "@/lib/api";
+import { userFields } from "@/lib/field-types";
 import { appRoute } from "@/routes/app";
 import { useRecords, useRecordMutations } from "@/hooks/use-records";
 import { Pagination } from "@/components/ui/pagination";
@@ -121,11 +122,11 @@ function CollectionPage() {
   });
 
   const sortParam = urlSearch.sort ?? "-created";
-  const identityField = (collection?.authOptions?.identityField as string | undefined) ?? "email";
+  const identityField = (collection?.type === "auth" ? collection.passwordAuth?.identityFields?.[0] : undefined) ?? "email";
   const filter = collection
     ? buildSearchFilter(
         search,
-        collection.schema.filter((f) => ["text", "email", "url"].includes(f.type)),
+        userFields(collection).filter((f) => ["text", "email", "url"].includes(f.type)),
         collection.type === "auth" ? identityField : undefined,
       )
     : "";
@@ -138,7 +139,7 @@ function CollectionPage() {
   useEffect(() => {
     if (!collection) return;
     let unsubscribe: (() => void) | undefined;
-    cb.realtime.subscribe(collection.name, (event) => {
+    cb.collection(collection.name).subscribe("*", (event) => {
       if (event.action === "create" && page === 1 && sort?.columnId === "created" && sort.direction === "desc") {
         setNewSince((n) => n + 1);
       } else {
@@ -179,7 +180,7 @@ function CollectionPage() {
           },
         ]
       : []),
-    ...collection.schema.map((field) => ({
+    ...userFields(collection).map((field) => ({
       id: field.name,
       header: field.name,
       sortable: !["json", "relation", "file"].includes(field.type),

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { FieldSchema, RecordModel } from "cratebase";
+import type { RecordModel } from "pocketbase";
 import { toast } from "sonner";
+import { type FieldSchema, isMultiValue } from "@/lib/field-types";
 import { useRecordMutations } from "@/hooks/use-records";
 import { RecordValueCell } from "./record-value-cell";
 
@@ -11,7 +12,7 @@ const INLINE_SCALAR_TYPES = new Set(["text", "email", "url", "number", "date"]);
  * (json, relation, file, editor, password, multi-select) still need the drawer. */
 export function isInlineEditable(field: FieldSchema): boolean {
   if (field.type === "bool") return true;
-  if (field.type === "select") return !field.options?.multiple;
+  if (field.type === "select") return !isMultiValue(field);
   return INLINE_SCALAR_TYPES.has(field.type);
 }
 
@@ -123,7 +124,7 @@ export function InlineEditableCell({
   }
 
   if (field.type === "select") {
-    const values = (field.options?.values as string[] | undefined) ?? [];
+    const values = (field.values as string[] | undefined) ?? [];
     return (
       <select
         ref={inputRef as React.RefObject<HTMLSelectElement>}

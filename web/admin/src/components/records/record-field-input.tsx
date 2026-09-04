@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { FieldSchema, RecordModel } from "cratebase";
+import type { RecordModel } from "pocketbase";
+import { type FieldSchema, isMultiValue, userFields } from "@/lib/field-types";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -29,7 +30,7 @@ function useRelationOptions(collectionId?: string) {
     queryKey: ["relation-options", collectionId],
     queryFn: async () => {
       const target = await cb.collections.getOne(collectionId!);
-      const displayField = target.schema.find((f) => f.type === "text")?.name;
+      const displayField = userFields(target).find((f) => f.type === "text")?.name;
       const list = await cb.collection(collectionId!).getList(1, 100);
       return list.items.map((item) => ({
         id: item.id,
@@ -86,10 +87,9 @@ function RelationChecklist({
 }
 
 export function RecordFieldInput({ field, value, onChange, error }: RecordFieldInputProps) {
-  const options = field.options ?? {};
-  const multiple = Boolean(options.multiple);
+  const multiple = isMultiValue(field);
   const relationOptions = useRelationOptions(
-    field.type === "relation" ? (options.collectionId as string | undefined) : undefined,
+    field.type === "relation" ? (field.collectionId as string | undefined) : undefined,
   ).data;
   const invalid = error ? true : undefined;
 
@@ -153,7 +153,7 @@ export function RecordFieldInput({ field, value, onChange, error }: RecordFieldI
       );
 
     case "select": {
-      const values = (options.values as string[] | undefined) ?? [];
+      const values = (field.values as string[] | undefined) ?? [];
       if (multiple) {
         return (
           <TagInput

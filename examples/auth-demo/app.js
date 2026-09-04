@@ -1,8 +1,11 @@
-// Cratebase auth demo — mirrors the official JS SDK's shape 1:1 against the
-// default `users` auth collection. Imported via the bare specifier
-// "cratebase" (resolved by the import map in index.html/oauth-callback.html
-// to the built local package, sdk/js/dist) — zero build step, zero npm publish needed.
-import { Cratebase, ClientResponseError } from "cratebase";
+// Cratebase auth demo — mirrors the official PocketBase JS SDK's shape 1:1
+// against the default `users` auth collection. Imported via the bare
+// specifier "pocketbase" (resolved by the import map in
+// index.html/oauth-callback.html to the published package on esm.sh) —
+// zero build step, zero npm install needed. Cratebase's API is
+// byte-compatible with PocketBase v0.23+, so the official client works
+// unchanged.
+import PocketBase, { ClientResponseError } from "pocketbase";
 
 const SERVER_URL_KEY = "cratebase_demo_server_url";
 const DEFAULT_SERVER_URL = "http://localhost:8090";
@@ -16,7 +19,7 @@ function setServerUrl(url) {
   localStorage.setItem(SERVER_URL_KEY, url);
 }
 
-let cb = new Cratebase(getServerUrl());
+let cb = new PocketBase(getServerUrl());
 let users = cb.collection(COLLECTION);
 
 const serverUrlInput = document.getElementById("server-url");
@@ -26,7 +29,7 @@ serverUrlInput.addEventListener("change", () => {
   setServerUrl(url);
   // Re-create the client against the new base URL, preserving the current
   // session (authStore persists to localStorage independently of this).
-  cb = new Cratebase(url, cb.authStore);
+  cb = new PocketBase(url, cb.authStore);
   users = cb.collection(COLLECTION);
   loadOAuthMethods();
 });
@@ -85,7 +88,7 @@ async function handleForm(formId, statusId, successMessage, action) {
 function renderAuthState() {
   const guestView = document.getElementById("view-guest");
   const authView = document.getElementById("view-auth");
-  const record = cb.authStore.model;
+  const record = cb.authStore.record;
 
   if (cb.authStore.isValid && record) {
     guestView.classList.add("hidden");
@@ -149,7 +152,7 @@ document.getElementById("btn-logout").addEventListener("click", () => {
 
 document.getElementById("btn-request-verification").addEventListener("click", async () => {
   clearStatus("status-request-verification");
-  const email = cb.authStore.model?.email;
+  const email = cb.authStore.record?.email;
   if (!email) return;
   try {
     await users.requestVerification(email);
@@ -169,7 +172,10 @@ handleForm("form-request-email-change", "status-request-email-change", "Confirma
 });
 
 handleForm("form-confirm-email-change", "status-confirm-email-change", "Email changed.", async (data) => {
-  await users.confirmEmailChange(data.token);
+  // PocketBase requires the current password to confirm an email change,
+  // not just the token — it's the one auth action that mutates the login
+  // identity, so it re-checks who's asking.
+  await users.confirmEmailChange(data.token, data.password);
   await users.authRefresh(); // pull the updated `email`
 });
 
@@ -194,7 +200,10 @@ async function loadOAuthMethods() {
   list.innerHTML = "";
 
   try {
-    const methods = await users.listAuthMethods(oauthRedirectUri());
+    // PocketBase's listAuthMethods() takes no redirect argument — the
+    // redirect target is appended to each provider's `authURL` by the
+    // caller instead (see the click handler below).
+    const methods = await users.listAuthMethods();
     if (!methods.oauth2.enabled || methods.oauth2.providers.length === 0) {
       badge.textContent = "not configured";
       list.innerHTML = '<p class="hint" style="margin: 0">No OAuth2 providers are configured on the server (see README).</p>';
@@ -208,13 +217,15 @@ async function loadOAuthMethods() {
       button.textContent = PROVIDER_LABELS[provider.name] || `Sign in with ${provider.name}`;
       button.addEventListener("click", () => {
         // The callback page runs after a full-page redirect and has no
-        // memory of which provider's authUrl was clicked, so stash it
-        // (plus the exact redirectUri we used to build the authUrl) before
-        // navigating away.
+        // memory of which provider was clicked, so stash its name and PKCE
+        // `codeVerifier` (plus the exact redirectUri we used to build the
+        // authUrl) before navigating away — authWithOAuth2Code() needs all
+        // three to exchange the returned `code` for a session.
         sessionStorage.setItem("cratebase_oauth_provider", provider.name);
+        sessionStorage.setItem("cratebase_oauth_code_verifier", provider.codeVerifier);
         sessionStorage.setItem("cratebase_oauth_redirect_uri", oauthRedirectUri());
         sessionStorage.setItem("cratebase_oauth_server_url", getServerUrl());
-        window.location.href = provider.authUrl;
+        window.location.href = provider.authURL + encodeURIComponent(oauthRedirectUri());
       });
       list.appendChild(button);
     }

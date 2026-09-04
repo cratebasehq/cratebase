@@ -15,6 +15,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { CollectionForm, emptyCollectionForm, type CollectionFormValue } from "@/components/collections/collection-form";
 import { useCollections } from "@/hooks/use-collections";
 import { cb } from "@/lib/api";
+import { defaultTimestampFields } from "@/lib/field-types";
 
 interface NewCollectionDialogProps {
   open: boolean;
@@ -40,13 +41,16 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
       cb.collections.create({
         name: value.name,
         type: value.type,
-        schema: value.schema,
+        // `id` and, for auth collections, the auth columns are added by the
+        // server on create — but not `created`/`updated`, so those go in
+        // explicitly or the collection ends up with no timestamp columns.
+        fields: [...defaultTimestampFields(), ...value.schema],
         listRule: value.listRule,
         viewRule: value.viewRule,
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
-        authOptions: undefined,
+        ...(value.type === "auth" ? { passwordAuth: { identityFields: [value.identityField] } } : {}),
       }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["collections"] });

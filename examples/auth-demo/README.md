@@ -4,13 +4,19 @@ Static ESM app (no build step) exercising every auth flow Cratebase exposes
 on the default `users` auth collection: register, password login, OAuth2
 (Google/GitHub), password reset, email verification, and email change.
 
+> **OAuth2 login doesn't complete yet.** Cratebase's API is byte-compatible
+> with PocketBase v0.23+, but the server's OAuth2/OTP/MFA routes
+> (`auth-with-oauth2`, `request-otp`, `auth-with-otp`, `impersonate`) are
+> still being implemented — `listAuthMethods()` works, so the OAuth2
+> buttons render, but clicking one through to a real provider and back
+> will 404 on the token exchange. Register, password login, password
+> reset, and email verification/change all work today.
+
 `index.html` and `oauth-callback.html` both declare an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
-mapping the bare specifier `"cratebase"` to the already-built local
-package (`../../sdk/js/dist/index.js`, run `npm run build` inside
-`sdk/js/` if `dist/` doesn't exist yet), so both `app.js` and
-`oauth-callback.js` can write `import { Cratebase, ClientResponseError }
-from "cratebase";` — the same zero-build-step approach every other
-`examples/*` app uses.
+mapping the bare specifier `"pocketbase"` to the official PocketBase JS
+SDK on esm.sh, so both `app.js` and `oauth-callback.js` can write
+`import PocketBase, { ClientResponseError } from "pocketbase";` — the
+same zero-build-step approach every other `examples/*` app uses.
 
 Files:
 
@@ -18,8 +24,8 @@ Files:
   OAuth2 buttons, forgot-password) and authenticated view (profile,
   logout, verification, email change).
 - `oauth-callback.html` / `oauth-callback.js` — the OAuth2 redirect
-  target. Reads `?code=` off the URL, exchanges it via `authWithOAuth2`,
-  and bounces back to `index.html`.
+  target. Reads `?code=` off the URL, exchanges it via
+  `authWithOAuth2Code`, and bounces back to `index.html`.
 - `style.css` — shared styling for both pages.
 
 ## 1. Configure the `users` collection
@@ -29,28 +35,28 @@ Cratebase ships a default `users` auth collection with `identityField:
 superuser and `PATCH` the collection:
 
 ```bash
-# Superuser/admin login — replace with your own admin credentials.
-ADMIN_TOKEN=$(curl -s http://localhost:8090/api/admins/auth-with-password \
+# Superuser login — replace with your own superuser credentials.
+# PocketBase v0.23+ dropped /api/admins/* in favour of the _superusers
+# auth collection.
+ADMIN_TOKEN=$(curl -s http://localhost:8090/api/collections/_superusers/auth-with-password \
   -H 'content-type: application/json' \
-  -d '{"email":"admin@example.com","password":"adminpassword"}' | jq -r .token)
+  -d '{"identity":"admin@example.com","password":"adminpassword"}' | jq -r .token)
 
-# Inspect the current schema.
+# Inspect the current collection.
 curl -s http://localhost:8090/api/collections/users \
   -H "authorization: Bearer $ADMIN_TOKEN" | jq .
 
-# Make sure identityField is "email" (the default — only needed if you
-# changed it) and, optionally, flip requireEmailVerification on to see
-# unverified users blocked from features that check `record.verified`
-# (this demo never blocks login on it — it just displays the flag — but
-# flipping this toggle is a good way to observe `verified` flipping to
-# `true` after the confirm-verification step below).
+# Make sure identityFields includes "email" (the default — only needed if
+# you changed it). This demo never blocks login on `verified`, so there's
+# no requireEmailVerification toggle here — the "confirm verification"
+# step below just flips `record.verified` to `true` and this page
+# displays it.
 curl -s -X PATCH http://localhost:8090/api/collections/users \
   -H "authorization: Bearer $ADMIN_TOKEN" \
   -H 'content-type: application/json' \
   -d '{
-        "authOptions": {
-          "identityField": "email",
-          "requireEmailVerification": false
+        "passwordAuth": {
+          "identityFields": ["email"]
         }
       }'
 ```
@@ -106,15 +112,11 @@ to copy the token into this demo's "confirm" forms.
 ## 4. Serve it locally
 
 This is a static site with ESM imports resolved via the import map (bare
-specifier `"cratebase"` → `../../sdk/js/dist/index.js`), so it must be
-served over `http://`, not opened as a `file://` URL (browsers block ES
-module imports from `file://`).
-From the repo root:
+specifier `"pocketbase"` → `https://esm.sh/pocketbase@0.28`), so it must
+be served over `http://`, not opened as a `file://` URL (browsers block
+ES module imports from `file://`).
 
 ```bash
-# build the SDK once so dist/index.js exists
-cd sdk/js && npm install && npm run build && cd ../..
-
 # serve the example (any static file server works)
 npx serve examples/auth-demo -l 4173
 # or: python3 -m http.server 4173 --directory examples/auth-demo
@@ -133,12 +135,12 @@ demo's origin (default `*` already does).
 | --- | --- |
 | Register | `collection('users').create({ email, password, passwordConfirm })` then `authWithPassword` |
 | Log in | `collection('users').authWithPassword(identity, password)` |
-| OAuth2 button | `listAuthMethods(redirectUri)` → render a button per `providers[].authUrl`; click navigates to it |
-| OAuth2 callback | `authWithOAuth2(provider, code, redirectUri)` |
+| OAuth2 button | `listAuthMethods()` → render a button per provider; click navigates to `provider.authURL + encodeURIComponent(redirectUri)` (PKCE `codeVerifier` stashed alongside for the callback) |
+| OAuth2 callback | `authWithOAuth2Code(provider, code, codeVerifier, redirectUri)` |
 | Forgot password | `requestPasswordReset(email)` then `confirmPasswordReset(token, password, passwordConfirm)` |
 | Resend verification | `requestVerification(email)` |
 | Confirm verification | `confirmVerification(token)` then `authRefresh()` to pick up `verified: true` |
-| Change email | `requestEmailChange(newEmail)` (authenticated) then `confirmEmailChange(token)` then `authRefresh()` |
+| Change email | `requestEmailChange(newEmail)` (authenticated) then `confirmEmailChange(token, currentPassword)` then `authRefresh()` |
 | Logout | `authStore.clear()` |
 
 `authStore` persists the token/record to `localStorage` and its
@@ -150,17 +152,15 @@ is designed for.
 
 - `node --check app.js` and `node --check oauth-callback.js` both pass
   (syntax only — see below).
-- Manually traced every code path against `sdk/js/src/record-service.ts`,
-  `client.ts`, `auth-store.ts`, and `error.ts` to match method names,
-  argument order, and response shapes exactly (`AuthResponse<T>`,
-  `AuthMethodsResponse`, `ClientResponseError.data` field errors, etc.).
-- Confirmed `sdk/js/dist/index.js` exports `Cratebase` and
-  `ClientResponseError` (the two imports this demo uses) via
-  `sdk/js/src/index.ts`.
+- Manually traced every code path against the official `pocketbase` npm
+  package's own type declarations and README to match method names,
+  argument order, and response shapes exactly (`RecordAuthResponse<T>`,
+  `AuthMethodsList`, `ClientResponseError.data` field errors, etc.).
 
 **Not verified**: no browser was used, and no real Google/GitHub OAuth2
 app or SMTP/Resend mailer was configured, so the live register → login →
-OAuth2-redirect → callback → email-verification/reset round trips were
-**not exercised end to end**. Correctness there rests on code review
-against the SDK source and the API contract in `openapi.yaml`, not on an
-observed run.
+password-reset/email-verification round trips were **not exercised end
+to end**, and the OAuth2 redirect → callback exchange can't be exercised
+at all yet — the server doesn't implement those routes (see the note at
+the top of this file). Correctness rests on code review against the
+`pocketbase` SDK and Cratebase's own route table, not on an observed run.

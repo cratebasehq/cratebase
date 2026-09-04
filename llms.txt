@@ -57,9 +57,11 @@ Error bodies are always `{ "code": 400, "message": "...", "data": { field: { cod
 
 ## Client SDK
 
-`npm install cratebase` — a typed TS client (`sdk/js`) covering every
-endpoint above, with a persisted `authStore`, multipart file upload
-helpers, and realtime subscriptions. See [sdk/js/README.md](./sdk/js/README.md).
+Cratebase's API is byte-compatible with PocketBase v0.23+, so there's no
+bespoke client to install: `npm install pocketbase` (or any of
+PocketBase's other official SDKs) works unchanged — persisted
+`authStore`, multipart file upload helpers, and realtime subscriptions
+included. See the [pocketbase package](https://www.npmjs.com/package/pocketbase).
 
 ## Source map
 

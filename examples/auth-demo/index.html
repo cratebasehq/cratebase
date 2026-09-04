@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cratebase — Auth Demo</title>
     <script type="importmap">
-      { "imports": { "cratebase": "../../sdk/js/dist/index.js" } }
+      { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
     </script>
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -140,8 +140,10 @@
           <hr class="split" />
           <form id="form-confirm-email-change">
             <label>Email-change token (from the email)</label>
+            <input name="token" type="text" required />
+            <label>Current password (required to confirm the change)</label>
             <div class="row">
-              <input name="token" type="text" required />
+              <input name="password" type="password" required />
               <button type="submit" style="flex: 0 0 auto">Confirm</button>
             </div>
           </form>

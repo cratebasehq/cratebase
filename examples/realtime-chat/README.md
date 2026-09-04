@@ -9,30 +9,29 @@ display-name field (stored in `localStorage`, no login) so the focus stays
 on realtime record subscriptions. See `examples/auth-demo` for the auth
 flows.
 
-## Importing `cratebase` with zero build step
+## Importing `pocketbase` with zero build step
 
-`index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) mapping the bare
-specifier to the already-built local package:
+Cratebase's API is byte-compatible with PocketBase v0.23+, so this example
+uses the official PocketBase JS SDK straight off a CDN instead of a
+bespoke client. `index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+mapping the bare specifier to the published package on esm.sh:
 
 ```html
 <script type="importmap">
-  { "imports": { "cratebase": "../../sdk/js/dist/index.js" } }
+  { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
 </script>
 ```
 
 so `app.js` can just write:
 
 ```js
-import { Cratebase } from "cratebase";
+import PocketBase from "pocketbase";
 ```
 
-`cratebase` isn't published to npm yet, so `https://esm.sh/cratebase` (or
-any other CDN-from-npm-registry URL) would 404 — the import map is what
-makes the bare specifier resolve locally instead, no npm install and no
-bundler step needed. Once `cratebase` is published to npm, swapping the
-import map's one entry for a CDN URL (or dropping the import map
-entirely and using a bundler) is a drop-in change — `app.js` doesn't
-change at all.
+No npm install and no bundler step needed. Swapping the import map's one
+entry for a local `node_modules/pocketbase` resolution (or dropping the
+import map entirely and using a bundler) is a drop-in change if you'd
+rather not depend on a CDN — `app.js` doesn't change at all.
 
 ## 1. Start Cratebase
 
@@ -53,22 +52,27 @@ Get an admin token, then create a `messages` collection with `author` and
 works with zero auth setup.
 
 ```bash
-# 1. Authenticate as an admin/superuser and capture the token.
-ADMIN_TOKEN=$(curl -s -X POST http://localhost:8090/api/admins/auth-with-password \
+# 1. Authenticate as a superuser and capture the token. PocketBase v0.23+
+#    dropped /api/admins/* in favour of the _superusers auth collection.
+ADMIN_TOKEN=$(curl -s -X POST http://localhost:8090/api/collections/_superusers/auth-with-password \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"your-admin-password"}' \
+  -d '{"identity":"admin@example.com","password":"your-admin-password"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 
-# 2. Create the collection.
+# 2. Create the collection. PocketBase v0.23+ uses "fields" (not "schema"),
+#    and every collection needs its own id/created/updated fields spelled
+#    out explicitly — the server only fills in auth columns for you.
 curl -s -X POST http://localhost:8090/api/collections \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -d '{
     "name": "messages",
     "type": "base",
-    "schema": [
+    "fields": [
       { "name": "author", "type": "text", "required": true },
-      { "name": "content", "type": "text", "required": true }
+      { "name": "content", "type": "text", "required": true },
+      { "name": "created", "type": "autodate", "onCreate": true },
+      { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
     ],
     "listRule": "",
     "viewRule": "",
@@ -110,15 +114,16 @@ polling.
 
 ## How it works
 
-- `app.js` creates one `Cratebase` client pointed at `http://localhost:8090`.
+- `app.js` creates one `PocketBase` client pointed at `http://localhost:8090`.
 - On load, it fetches the most recent 50 messages with
   `cb.collection("messages").getList(1, 50, { sort: "created" })` and
   renders them.
-- It then calls `cb.realtime.subscribe("messages", callback)`, which opens
-  an SSE connection to `/api/realtime`, waits for the `PB_CONNECT` event to
-  get a `clientId`, and posts a subscription for the `messages` topic.
-  Every subsequent `create`/`delete` event on that collection calls the
-  callback, which appends or removes the corresponding chat bubble live.
+- It then calls `cb.collection("messages").subscribe("*", callback)`, which
+  opens an SSE connection to `/api/realtime`, waits for the `PB_CONNECT`
+  event to get a `clientId`, and posts a subscription for the
+  `messages/*` topic. Every subsequent `create`/`delete` event on that
+  collection calls the callback, which appends or removes the
+  corresponding chat bubble live.
 - Sending a message is a plain `cb.collection("messages").create({ author,
   content })` — the sender doesn't render its own message from the create
   response; it relies on the realtime event to render it, exactly the same
@@ -127,12 +132,9 @@ polling.
 
 ## Verification status
 
-This was verified with static analysis and a syntax/bundle check only:
-`node --check app.js` and `bun build app.js --outdir /tmp/checkbuild` both
-pass (the latter also confirms the relative import to
-`sdk/js/dist/index.js` resolves correctly). **No live `cratebase serve`
-instance or browser was run in producing this example** — the realtime
-subscribe/publish flow, the collection-creation `curl` commands, and the
-rendered UI have not been exercised end-to-end. Please run through steps
-1–3 above once against a live instance to confirm before relying on this
-in a demo.
+This was verified with static analysis only: `node --check app.js` passes.
+**No live `cratebase serve` instance or browser was run in producing this
+example** — the realtime subscribe/publish flow, the collection-creation
+`curl` commands, and the rendered UI have not been exercised end-to-end.
+Please run through steps 1–3 above once against a live instance to
+confirm before relying on this in a demo.

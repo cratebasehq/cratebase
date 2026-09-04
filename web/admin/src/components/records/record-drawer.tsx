@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { CollectionModel, RecordModel } from "cratebase";
+import type { CollectionModel, RecordModel } from "pocketbase";
+import { isMultiValue, userFields } from "@/lib/field-types";
 import {
   Sheet,
   SheetContent,
@@ -29,26 +30,28 @@ type FileFieldState = Record<string, File[]>;
 
 export function RecordDrawer({ collection, record, open, onOpenChange }: RecordDrawerProps) {
   const isNew = record === null;
-  const identityField = (collection.authOptions?.identityField as string | undefined) ?? "email";
+  const identityField = (collection.type === "auth" ? collection.passwordAuth?.identityFields?.[0] : undefined) ?? "email";
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [files, setFiles] = useState<FileFieldState>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const { create, update } = useRecordMutations(collection.name);
+  const fields = userFields(collection);
 
   useEffect(() => {
     if (!open) return;
     const initial: Record<string, unknown> = {};
-    for (const field of collection.schema) initial[field.name] = existingRecordValue(record, field);
+    for (const field of fields) initial[field.name] = existingRecordValue(record, field);
     if (collection.type === "auth") {
       initial[identityField] = (record?.[identityField] as string | undefined) ?? "";
     }
     setValues(initial);
     setFiles({});
     setErrors({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, record, collection, identityField]);
 
   function buildPayload(): Record<string, unknown> | FormData {
-    const hasFile = collection.schema.some((f) => f.type === "file");
+    const hasFile = fields.some((f) => f.type === "file");
     if (!hasFile) return values;
 
     const form = new FormData();
@@ -137,7 +140,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
               </div>
             ) : null}
 
-            {collection.schema.map((field) => (
+            {fields.map((field) => (
               <div key={field.id} className="flex flex-col gap-1.5">
                 <Label>
                   {field.name}
@@ -148,7 +151,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
                     <input
                       type="file"
                       aria-label={field.name}
-                      multiple={Boolean(field.options?.multiple)}
+                      multiple={isMultiValue(field)}
                       onChange={(e) => setFiles((f) => ({ ...f, [field.name]: Array.from(e.target.files ?? []) }))}
                       className="text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-2.5 file:py-1.5 file:text-sm file:font-medium file:text-secondary-foreground"
                     />

@@ -41,27 +41,11 @@ jobs:
         env:
           TEST_POSTGRES_URL: postgres://cratebase:cratebase@localhost:5432/cratebase_test
 
-  sdk:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install
-        working-directory: sdk/js
-      - run: bun run typecheck
-        working-directory: sdk/js
-      - run: bun run build
-        working-directory: sdk/js
-
   dashboard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
-      - run: bun install
-        working-directory: sdk/js
-      - run: bun run build
-        working-directory: sdk/js
       - run: bun install
         working-directory: web/admin
       - run: bunx tsc -b
@@ -81,7 +65,7 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
-    needs: [rust, sdk, dashboard, email]
+    needs: [rust, dashboard, email]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

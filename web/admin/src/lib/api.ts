@@ -1,9 +1,9 @@
-import { Cratebase, ClientResponseError } from "cratebase";
+import PocketBase, { ClientResponseError } from "pocketbase";
 
 /** Single shared client for the whole dashboard. `authStore` persists the
  * superuser session to `localStorage` under this key so a page reload
  * doesn't require logging back in. */
-export const cb = new Cratebase(import.meta.env.VITE_API_URL ?? "");
+export const cb = new PocketBase(import.meta.env.VITE_API_URL ?? "");
 
 /** The superuser record returned by `auth-with-password`. Superusers are
  * ordinary auth records in the `_superusers` collection (PocketBase v0.23+),
@@ -19,29 +19,22 @@ export interface SuperuserRecord {
   avatar?: string;
 }
 
-interface AuthWithPasswordResponse {
-  token: string;
-  record: SuperuserRecord;
-}
-
 export function isLoggedIn(): boolean {
-  return cb.authStore.isValid && cb.authStore.model !== null;
+  return cb.authStore.isValid && cb.authStore.record !== null;
 }
 
 /** The signed-in superuser, or `null`. Reads straight off the auth store so
  * it stays correct after a login, a logout, or a page reload. */
 export function currentSuperuser(): SuperuserRecord | null {
-  const model = cb.authStore.model;
-  if (!model || typeof model !== "object") return null;
-  const id = model["id"];
-  if (typeof id !== "string") return null;
+  const record = cb.authStore.record;
+  if (!record) return null;
   return {
-    id,
-    email: typeof model["email"] === "string" ? model["email"] : "",
-    collectionName: typeof model["collectionName"] === "string" ? model["collectionName"] : undefined,
-    created: typeof model["created"] === "string" ? model["created"] : undefined,
-    verified: model["verified"] === true,
-    avatar: typeof model["avatar"] === "string" ? model["avatar"] : undefined,
+    id: record.id,
+    email: typeof record["email"] === "string" ? record["email"] : "",
+    collectionName: typeof record["collectionName"] === "string" ? record["collectionName"] : undefined,
+    created: typeof record["created"] === "string" ? record["created"] : undefined,
+    verified: record["verified"] === true,
+    avatar: typeof record["avatar"] === "string" ? record["avatar"] : undefined,
   };
 }
 
@@ -50,13 +43,8 @@ export function currentSuperuser(): SuperuserRecord | null {
  * the `_superusers` auth collection, and the field is `identity` (an email
  * *or* username) rather than `email`.
  */
-export async function authWithPassword(identity: string, password: string): Promise<AuthWithPasswordResponse> {
-  const result = await cb.send<AuthWithPasswordResponse>(
-    "/api/collections/_superusers/auth-with-password",
-    { method: "POST", body: { identity, password } },
-  );
-  cb.authStore.save(result.token, result.record as unknown as Record<string, unknown>);
-  return result;
+export async function authWithPassword(identity: string, password: string) {
+  return cb.collection("_superusers").authWithPassword<SuperuserRecord>(identity, password);
 }
 
 export function signOut(): void {
@@ -68,7 +56,7 @@ export function signOut(): void {
  * running?", which is the failure the old login reported as
  * "Invalid email or password." */
 export async function checkHealth(): Promise<{ message: string }> {
-  return cb.send<{ message: string }>("/api/health");
+  return cb.send<{ message: string }>("/api/health", { method: "GET" });
 }
 
 /* ------------------------------------------------------------------------ *
@@ -199,7 +187,7 @@ export function describeFailure(error: unknown, context: "auth" | "generic" = "g
 }
 
 function serverOrigin(): string {
-  if (cb.baseUrl) return cb.baseUrl;
+  if (cb.baseURL) return cb.baseURL;
   return typeof window === "undefined" ? "the API" : window.location.origin;
 }
 

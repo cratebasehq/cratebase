@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { CollectionModel } from "cratebase";
+import type { CollectionModel } from "pocketbase";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { ChevronRight, Database, LayoutGrid, Plus, Settings, ShieldUser } from "lucide-react";
 import { CratebaseMark } from "@/components/brand/cratebase-mark";

@@ -6,21 +6,20 @@ else's screen — the smallest possible demo of Cratebase's realtime
 record CRUD together.
 
 Plain HTML/CSS + one ES module (`app.js`). No build step, no framework —
-it imports the real `cratebase` JS SDK via a bare specifier:
+Cratebase's API is byte-compatible with PocketBase v0.23+, so it imports
+the official PocketBase JS SDK via a bare specifier:
 
 ```js
-import { ClientResponseError, Cratebase } from "cratebase";
+import PocketBase, { ClientResponseError } from "pocketbase";
 ```
 
 resolved by an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) in `index.html` pointing
-`"cratebase"` at the already-built local package
-(`../../sdk/js/dist/index.js`) — `cratebase` isn't published to npm yet,
-so a CDN import (`https://esm.sh/cratebase`) would 404, and the import
-map is what makes the bare specifier resolve locally instead, with no
-npm install and no bundler step. One deliberate exception: the
-best-effort cursor cleanup on tab close uses raw `fetch(..., {keepalive:
-true})` directly, since `RecordService.delete` doesn't expose that fetch
-option — see the comment above `deleteOwnCursor` in `app.js`.
+`"pocketbase"` at the published package on esm.sh
+(`https://esm.sh/pocketbase@0.28`) — no npm install and no bundler step.
+One deliberate exception: the best-effort cursor cleanup on tab close
+uses raw `fetch(..., {keepalive: true})` directly, since
+`RecordService.delete` doesn't expose that fetch option — see the
+comment above `deleteOwnCursor` in `app.js`.
 
 ## 1. Start Cratebase
 
@@ -43,22 +42,30 @@ rules (`""` = anyone, no auth needed) so the demo works with zero client
 setup:
 
 ```bash
-ADMIN_TOKEN=$(curl -s -X POST localhost:8090/api/admins/auth-with-password \
+# PocketBase v0.23+ dropped /api/admins/* in favour of the _superusers
+# auth collection.
+ADMIN_TOKEN=$(curl -s -X POST localhost:8090/api/collections/_superusers/auth-with-password \
   -H 'content-type: application/json' \
-  -d '{"email":"you@example.com","password":"yourpassword"}' | jq -r .token)
+  -d '{"identity":"you@example.com","password":"yourpassword"}' | jq -r .token)
 
+# PocketBase v0.23+ uses "fields" (not "schema"); every collection needs
+# its own id/created/updated fields spelled out. Per-field "unique" is
+# gone too — uniqueness is a collection-level index instead.
 curl -X POST localhost:8090/api/collections \
   -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
   -d '{
     "name": "cursors",
     "type": "base",
-    "schema": [
-      {"id": "f1", "name": "clientId", "type": "text", "required": true, "unique": true},
-      {"id": "f2", "name": "x", "type": "number", "required": true},
-      {"id": "f3", "name": "y", "type": "number", "required": true},
-      {"id": "f4", "name": "color", "type": "text", "required": true},
-      {"id": "f5", "name": "label", "type": "text"}
+    "fields": [
+      {"name": "clientId", "type": "text", "required": true},
+      {"name": "x", "type": "number", "required": true},
+      {"name": "y", "type": "number", "required": true},
+      {"name": "color", "type": "text", "required": true},
+      {"name": "label", "type": "text"},
+      {"name": "created", "type": "autodate", "onCreate": true},
+      {"name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true}
     ],
+    "indexes": ["CREATE UNIQUE INDEX `idx_cursors_clientId` ON `cursors` (`clientId`)"],
     "listRule": "",
     "viewRule": "",
     "createRule": "",
@@ -107,7 +114,7 @@ own real system cursor is never duplicated with a rendered dot.
   already exists server-side but the local id was lost.
 - **Realtime**: on load the page opens `GET /api/realtime` (SSE), waits
   for the `PB_CONNECT` event to learn its `clientId`, then
-  `POST /api/realtime` with `{"clientId", "subscriptions": ["cursors"]}`.
+  `POST /api/realtime` with `{"clientId", "subscriptions": ["cursors/*"]}`.
   Every subsequent `create`/`update`/`delete` event for any record in the
   collection arrives as an SSE `message` event and moves (or removes) the
   matching dot. Events for our own `clientId` are ignored — we already
@@ -124,8 +131,7 @@ own real system cursor is never duplicated with a rendered dot.
   needed).
 - **Not verified**: actual multi-tab live behavior in a browser — this
   sandbox has no browser available. The realtime/CRUD flow was checked
-  against `openapi.yaml`, `sdk/js/src/record-service.ts`, and
-  `sdk/js/src/realtime.ts` line-by-line instead (same request shapes,
-  same SSE event names, same subscribe-after-`PB_CONNECT` sequencing).
-  Please smoke-test with two real browser tabs before relying on this
-  as a finished demo.
+  against the official `pocketbase` JS SDK's own source instead (same
+  request shapes, same SSE event names, same subscribe-after-`PB_CONNECT`
+  sequencing). Please smoke-test with two real browser tabs before
+  relying on this as a finished demo.

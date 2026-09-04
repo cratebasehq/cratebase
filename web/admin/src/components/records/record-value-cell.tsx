@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { FieldSchema, RecordModel } from "cratebase";
+import type { RecordModel } from "pocketbase";
+import { type FieldSchema, userFields } from "@/lib/field-types";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Check,
@@ -76,7 +77,8 @@ function useRelationLabels(collectionId?: string) {
     queryKey: ["relation-value-labels", collectionId],
     queryFn: async () => {
       const target = await cb.collections.getOne(collectionId!);
-      const displayField = target.schema.find((f) => f.type === "text")?.name;
+      const fields = userFields(target);
+      const displayField = fields.find((f) => f.type === "text")?.name;
       const list = await cb.collection(collectionId!).getList(1, 200);
       const labels = new Map<string, string>();
       const records = new Map<string, RecordModel>();
@@ -84,7 +86,7 @@ function useRelationLabels(collectionId?: string) {
         labels.set(item.id, displayField ? String(item[displayField] ?? item.id) : item.id);
         records.set(item.id, item);
       }
-      return { collectionName: target.name, schema: target.schema, labels, records };
+      return { collectionName: target.name, fields, labels, records };
     },
     enabled: Boolean(collectionId),
     staleTime: 60_000,
@@ -101,17 +103,17 @@ function RelationRefValue({
   id,
   label,
   collectionName,
-  schema,
+  fields,
   record,
 }: {
   id: string;
   label: string | undefined;
   collectionName: string | undefined;
-  schema: FieldSchema[] | undefined;
+  fields: FieldSchema[] | undefined;
   record: RecordModel | undefined;
 }) {
   const navigate = useNavigate();
-  const previewFields = (schema ?? [])
+  const previewFields = (fields ?? [])
     .filter((f) => !["relation", "file", "json", "editor", "password"].includes(f.type))
     .slice(0, 4);
 
@@ -242,7 +244,7 @@ function FileValue({ record, field, filename }: { record: RecordModel; field: Fi
 export function RecordValueCell({ record, field }: { record: RecordModel; field: FieldSchema }) {
   const value = record[field.name];
   const relationCollectionId =
-    field.type === "relation" ? (field.options?.collectionId as string | undefined) : undefined;
+    field.type === "relation" ? (field.collectionId as string | undefined) : undefined;
   const relationInfo = useRelationLabels(relationCollectionId).data;
 
   if (value === null || value === undefined || value === "") {
@@ -313,7 +315,7 @@ export function RecordValueCell({ record, field }: { record: RecordModel; field:
               id={id}
               label={relationInfo?.labels.get(id)}
               collectionName={relationInfo?.collectionName}
-              schema={relationInfo?.schema}
+              fields={relationInfo?.fields}
               record={relationInfo?.records.get(id)}
             />
           ))}

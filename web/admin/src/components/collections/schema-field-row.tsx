@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { AlertCircle, GripVertical, Trash2 } from "lucide-react";
-import type { CollectionModel, FieldSchema } from "cratebase";
-import { FIELD_TYPES } from "@/lib/field-types";
+import type { CollectionModel } from "pocketbase";
+import { FIELD_TYPES, type FieldSchema, isMultiValue, newField } from "@/lib/field-types";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -128,11 +128,17 @@ export function SchemaFieldRow({
   nameError,
   optionsError,
 }: SchemaFieldRowProps) {
-  const options = field.options ?? {};
-  const multiple = (options.multiple as boolean | undefined) ?? false;
+  const multiple = isMultiValue(field);
 
-  function patch(patchOptions: Record<string, unknown>) {
-    onChange({ ...field, options: { ...options, ...patchOptions } });
+  // select/relation/file express "allow more than one" as `maxSelect > 1`
+  // rather than a boolean, flat on the field object — there's no `options`
+  // wrapper on the wire.
+  function patch(patch: Record<string, unknown>) {
+    onChange({ ...field, ...patch } as FieldSchema);
+  }
+
+  function toggleMultiple(checked: boolean) {
+    patch({ maxSelect: checked ? Math.max(field.maxSelect as number | undefined ?? 0, 2) : 1 });
   }
 
   return (
@@ -181,7 +187,11 @@ export function SchemaFieldRow({
 
         <Select
           value={field.type}
-          onValueChange={(type) => onChange({ ...field, type: type as FieldSchema["type"], options: {} })}
+          onValueChange={(type) =>
+            // Type-specific settings (min/max, values, collectionId, ...) don't
+            // carry over to a different type — start that type fresh.
+            onChange(newField({ id: field.id, name: field.name, required: field.required, type: type as FieldSchema["type"] }))
+          }
         >
           <SelectTrigger aria-label="Field type" className="h-control-md shrink-0 text-sm">
             <SelectValue placeholder="Type…" />
@@ -199,12 +209,6 @@ export function SchemaFieldRow({
           checked={field.required ?? false}
           onChange={(required) => onChange({ ...field, required })}
           label="Required"
-          className="shrink-0"
-        />
-        <CheckboxOption
-          checked={field.unique ?? false}
-          onChange={(unique) => onChange({ ...field, unique })}
-          label="Unique"
           className="shrink-0"
         />
 
@@ -230,14 +234,14 @@ export function SchemaFieldRow({
           <div className="grid grid-cols-2 gap-2">
             <OptionField label="Min length" help="Minimum character count. Leave blank for no minimum.">
               <NumberInput
-                value={options.min as number | undefined}
+                value={field.min as number | undefined}
                 onChange={(min) => patch({ min })}
                 placeholder="No minimum"
               />
             </OptionField>
             <OptionField label="Max length" help="Maximum character count. Leave blank for no maximum.">
               <NumberInput
-                value={options.max as number | undefined}
+                value={field.max as number | undefined}
                 onChange={(max) => patch({ max })}
                 placeholder="No maximum"
               />
@@ -246,7 +250,7 @@ export function SchemaFieldRow({
           <OptionField label="Pattern" help="A regular expression the value must fully match. Leave blank to skip.">
             <Input
               type="text"
-              value={(options.pattern as string | undefined) ?? ""}
+              value={(field.pattern as string | undefined) ?? ""}
               onChange={(e) => patch({ pattern: e.target.value || undefined })}
               placeholder="e.g. ^[a-z0-9-]+$"
               className="h-control-md font-mono text-sm"
@@ -260,21 +264,21 @@ export function SchemaFieldRow({
           <div className="grid grid-cols-2 gap-2">
             <OptionField label="Min value" help="Reject values below this. Leave blank for no minimum.">
               <NumberInput
-                value={options.min as number | undefined}
+                value={field.min as number | undefined}
                 onChange={(min) => patch({ min })}
                 placeholder="No minimum"
               />
             </OptionField>
             <OptionField label="Max value" help="Reject values above this. Leave blank for no maximum.">
               <NumberInput
-                value={options.max as number | undefined}
+                value={field.max as number | undefined}
                 onChange={(max) => patch({ max })}
                 placeholder="No maximum"
               />
             </OptionField>
           </div>
           <CheckboxOption
-            checked={(options.onlyInt as boolean | undefined) ?? false}
+            checked={(field.onlyInt as boolean | undefined) ?? false}
             onChange={(onlyInt) => patch({ onlyInt })}
             label="Integer only — reject decimal values"
           />
@@ -285,22 +289,22 @@ export function SchemaFieldRow({
         <OptionGroup title="Choices" error={optionsError}>
           <TagInput
             label="Allowed values"
-            value={(options.values as string[] | undefined) ?? []}
+            value={(field.values as string[] | undefined) ?? []}
             onChange={(values) => patch({ values })}
             placeholder="Add an option and press Enter"
             hint="Records can only store one of these values per selection"
           />
           <CheckboxOption
             checked={multiple}
-            onChange={(checked) => patch({ multiple: checked })}
+            onChange={toggleMultiple}
             label="Allow multiple selections"
           />
           {multiple ? (
-            <OptionField label="Max selections" help="Cap how many values can be selected at once. Leave blank for no cap.">
+            <OptionField label="Max selections" help="Cap how many values can be selected at once.">
               <NumberInput
-                value={options.maxSelect as number | undefined}
-                onChange={(maxSelect) => patch({ maxSelect })}
-                placeholder="Unlimited"
+                value={field.maxSelect as number | undefined}
+                onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                placeholder="e.g. 3"
               />
             </OptionField>
           ) : null}
@@ -314,7 +318,7 @@ export function SchemaFieldRow({
             help="Values stored here must be the id of an existing record in this collection."
           >
             <Select
-              value={(options.collectionId as string | undefined) ?? ""}
+              value={(field.collectionId as string | undefined) ?? ""}
               onValueChange={(collectionId) => patch({ collectionId: collectionId || undefined })}
             >
               <SelectTrigger aria-label="Target collection" className="h-control-md w-full text-sm">
@@ -331,9 +335,18 @@ export function SchemaFieldRow({
           </OptionField>
           <CheckboxOption
             checked={multiple}
-            onChange={(checked) => patch({ multiple: checked })}
+            onChange={toggleMultiple}
             label="Allow multiple related records"
           />
+          {multiple ? (
+            <OptionField label="Max related records" help="Cap how many records can be related at once.">
+              <NumberInput
+                value={field.maxSelect as number | undefined}
+                onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                placeholder="e.g. 3"
+              />
+            </OptionField>
+          ) : null}
         </OptionGroup>
       ) : null}
 
@@ -341,23 +354,32 @@ export function SchemaFieldRow({
         <OptionGroup title="File constraints" error={optionsError}>
           <TagInput
             label="Allowed MIME types"
-            value={(options.mimeTypes as string[] | undefined) ?? []}
+            value={(field.mimeTypes as string[] | undefined) ?? []}
             onChange={(mimeTypes) => patch({ mimeTypes })}
             placeholder="e.g. image/png"
             hint="Leave empty to allow any file type"
           />
           <OptionField label="Max file size (bytes)" help="Reject uploads larger than this. e.g. 5242880 = 5 MB. Leave blank for no limit.">
             <NumberInput
-              value={options.maxSize as number | undefined}
+              value={field.maxSize as number | undefined}
               onChange={(maxSize) => patch({ maxSize })}
               placeholder="No limit"
             />
           </OptionField>
           <CheckboxOption
             checked={multiple}
-            onChange={(checked) => patch({ multiple: checked })}
+            onChange={toggleMultiple}
             label="Allow multiple files"
           />
+          {multiple ? (
+            <OptionField label="Max files" help="Cap how many files can be uploaded at once.">
+              <NumberInput
+                value={field.maxSelect as number | undefined}
+                onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                placeholder="e.g. 3"
+              />
+            </OptionField>
+          ) : null}
         </OptionGroup>
       ) : null}
 
@@ -365,12 +387,12 @@ export function SchemaFieldRow({
         <OptionGroup title="Timing" error={optionsError}>
           <div className="flex items-center gap-4">
             <CheckboxOption
-              checked={(options.onCreate as boolean | undefined) ?? false}
+              checked={(field.onCreate as boolean | undefined) ?? false}
               onChange={(onCreate) => patch({ onCreate })}
               label="Set on create"
             />
             <CheckboxOption
-              checked={(options.onUpdate as boolean | undefined) ?? false}
+              checked={(field.onUpdate as boolean | undefined) ?? false}
               onChange={(onUpdate) => patch({ onUpdate })}
               label="Set on update"
             />

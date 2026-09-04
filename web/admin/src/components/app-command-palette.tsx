@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Archive, Clock, Database, ListTree, Plus, ShieldUser } from "lucide-react";
-import type { CollectionModel } from "cratebase";
+import type { CollectionModel } from "pocketbase";
 import {
   Command,
   CommandDialog,

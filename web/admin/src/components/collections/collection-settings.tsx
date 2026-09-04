@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { CollectionModel } from "cratebase";
+import type { CollectionModel } from "pocketbase";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { HoldToConfirm } from "@/components/ui/hold-to-confirm";
@@ -13,6 +13,7 @@ import {
 } from "@/components/collections/collection-form";
 import { useCollections } from "@/hooks/use-collections";
 import { cb } from "@/lib/api";
+import { managedFields } from "@/lib/field-types";
 
 export function CollectionSettings({ collection }: { collection: CollectionModel }) {
   const { data: collections = [] } = useCollections();
@@ -30,12 +31,16 @@ export function CollectionSettings({ collection }: { collection: CollectionModel
       cb.collections.update(collection.id, {
         name: value.name,
         type: value.type,
-        schema: value.schema,
+        // Update replaces the whole `fields` array — splice the edited
+        // fields back in around the id/created/updated/auth columns this
+        // form never shows, or saving would delete them.
+        fields: [...managedFields(collection), ...value.schema],
         listRule: value.listRule,
         viewRule: value.viewRule,
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
+        ...(value.type === "auth" ? { passwordAuth: { identityFields: [value.identityField] } } : {}),
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["collections"] });

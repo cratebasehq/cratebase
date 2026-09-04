@@ -19,7 +19,6 @@ crates/
   auth     — Argon2id password hashing, HS256 JWT session tokens.
   server   — axum HTTP API + CLI (`cratebase serve` / `superuser ...`) +
              the embedded admin dashboard.
-sdk/js     — official TypeScript client ("cratebase" on npm).
 web/admin  — the admin dashboard (React + Vite), embedded into the server
              binary at compile time via rust-embed.
 ```

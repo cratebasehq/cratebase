@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
-import type { CollectionModel, FieldSchema } from "cratebase";
+import type { CollectionModel } from "pocketbase";
+import { type FieldSchema, newField, userFields } from "@/lib/field-types";
 import {
   DndContext,
   KeyboardSensor,
@@ -139,17 +140,16 @@ function validateFieldName(field: FieldSchema, schema: FieldSchema[]): string | 
  * on save (a missing relation target, an empty select, an inverted
  * min/max range) — everything else is genuinely optional. */
 function validateFieldOptions(field: FieldSchema): string | null {
-  const options = field.options ?? {};
-  if (field.type === "relation" && !options.collectionId) return "Choose a target collection";
-  if (field.type === "select" && ((options.values as string[] | undefined)?.length ?? 0) === 0) {
+  if (field.type === "relation" && !field.collectionId) return "Choose a target collection";
+  if (field.type === "select" && ((field.values as string[] | undefined)?.length ?? 0) === 0) {
     return "Add at least one option value";
   }
-  if (field.type === "autodate" && !options.onCreate && !options.onUpdate) {
+  if (field.type === "autodate" && !field.onCreate && !field.onUpdate) {
     return 'Enable "Set on create" or "Set on update"';
   }
   if (["text", "editor", "password", "number"].includes(field.type)) {
-    const min = options.min as number | undefined;
-    const max = options.max as number | undefined;
+    const min = field.min as number | undefined;
+    const max = field.max as number | undefined;
     if (typeof min === "number" && typeof max === "number" && min > max) {
       return field.type === "number" ? "Min value can't exceed max value" : "Min length can't exceed max length";
     }
@@ -175,13 +175,13 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
   return {
     name: collection.name,
     type: collection.type === "auth" ? "auth" : "base",
-    identityField: (collection.authOptions?.identityField as string | undefined) ?? "email",
-    schema: collection.schema,
-    listRule: collection.listRule,
-    viewRule: collection.viewRule,
-    createRule: collection.createRule,
-    updateRule: collection.updateRule,
-    deleteRule: collection.deleteRule,
+    identityField: (collection.type === "auth" ? collection.passwordAuth?.identityFields?.[0] : undefined) ?? "email",
+    schema: userFields(collection),
+    listRule: collection.listRule ?? null,
+    viewRule: collection.viewRule ?? null,
+    createRule: collection.createRule ?? null,
+    updateRule: collection.updateRule ?? null,
+    deleteRule: collection.deleteRule ?? null,
   };
 }
 
@@ -198,7 +198,7 @@ export function CollectionForm({ value, onChange, otherCollections, isNew }: Col
       ...value,
       schema: [
         ...value.schema,
-        { id: crypto.randomUUID(), name: "", type: "text", required: false, unique: false, options: {} },
+        newField({ id: crypto.randomUUID(), name: "", type: "text" }),
       ],
     });
   }
