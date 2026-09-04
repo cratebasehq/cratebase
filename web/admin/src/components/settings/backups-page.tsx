@@ -1,16 +1,38 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Download, Trash2 } from "lucide-react";
-import { cb } from "@/lib/api";
-import { LoadingButton } from "@/components/interior/loading-button";
+import { Archive, Download, Trash2 } from "lucide-react";
+import { cb, describeFailure } from "@/lib/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
+/** As the server returns it — PocketBase names the file `key` and its
+ * timestamp `modified`, not `name`/`created`. */
 type BackupInfo = {
-  name: string;
+  key: string;
   size: number;
-  created: string;
+  modified: string;
 };
+
+/** The server writes PocketBase's datetime form (a space, not a `T`),
+ * which `new Date()` does not parse in every browser — Safari returns
+ * Invalid Date. Normalise before parsing. */
+function parseServerDate(value: string): Date {
+  return new Date(value.replace(" ", "T"));
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -31,7 +53,7 @@ function formatBytes(bytes: number): string {
 async function downloadBackup(name: string): Promise<void> {
   const headers: Record<string, string> = {};
   if (cb.authStore.token) headers.authorization = `Bearer ${cb.authStore.token}`;
-  const response = await fetch(`${cb.baseUrl}/api/backups/${encodeURIComponent(name)}/download`, { headers });
+  const response = await fetch(`${cb.baseURL}/api/backups/${encodeURIComponent(name)}/download`, { headers });
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }
@@ -48,6 +70,8 @@ async function downloadBackup(name: string): Promise<void> {
  * `crate::routes::backups`'s doc comment for why this is SQLite-only. */
 export function BackupsPage() {
   const queryClient = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const [deleting, setDeleting] = useState<BackupInfo | null>(null);
 
   const { data: backups, isLoading } = useQuery({
     queryKey: ["backups"],
@@ -67,16 +91,20 @@ export function BackupsPage() {
     mutationFn: () => cb.send<BackupInfo>("/api/backups", { method: "POST", body: {} }),
     onSuccess: async (backup) => {
       await invalidate();
-      toast.success(`Backup "${backup.name}" created`);
+      toast.success(`Backup "${backup.key}" created`);
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Failed to create backup");
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.detail || undefined });
     },
   });
 
   const download = useMutation({
     mutationFn: downloadBackup,
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to download backup"),
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.detail || undefined });
+    },
   });
 
   const remove = useMutation({
@@ -85,13 +113,28 @@ export function BackupsPage() {
       await invalidate();
       toast.success("Backup deleted");
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : "Failed to delete backup"),
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.detail || undefined });
+    },
   });
+
+  async function handleCreate() {
+    if (pending) return;
+    setPending(true);
+    try {
+      await create.mutateAsync();
+    } catch {
+      // Surfaced as a toast by the mutation's own onError.
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4 p-6">
       <div className="flex items-center justify-between">
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           Full-database snapshots, stored alongside your uploaded files. SQLite only.
           {storageInfo ? (
             <>
@@ -104,14 +147,10 @@ export function BackupsPage() {
             </>
           ) : null}
         </p>
-        <LoadingButton
-          onAction={() => create.mutateAsync()}
-          pendingLabel="Creating…"
-          successLabel="Created"
-          errorLabel="Failed"
-        >
-          Create backup
-        </LoadingButton>
+        <Button onClick={handleCreate} disabled={pending}>
+          {pending ? <Spinner /> : null}
+          {pending ? "Creating…" : "Create backup"}
+        </Button>
       </div>
 
       <Table>
@@ -125,27 +164,27 @@ export function BackupsPage() {
         </TableHeader>
         <TableBody>
           {(backups ?? []).map((backup) => (
-            <TableRow key={backup.name}>
-              <TableCell className="font-mono text-xs">{backup.name}</TableCell>
+            <TableRow key={backup.key}>
+              <TableCell className="font-mono text-xs">{backup.key}</TableCell>
               <TableCell className="text-xs text-muted-foreground">{formatBytes(backup.size)}</TableCell>
               <TableCell className="text-xs text-muted-foreground">
-                {new Date(backup.created).toLocaleString()}
+                {parseServerDate(backup.modified).toLocaleString()}
               </TableCell>
               <TableCell>
                 <div className="flex justify-end gap-1">
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`Download ${backup.name}`}
-                    onClick={() => download.mutate(backup.name)}
+                    aria-label={`Download ${backup.key}`}
+                    onClick={() => download.mutate(backup.key)}
                   >
                     <Download className="size-3.5" />
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`Delete ${backup.name}`}
-                    onClick={() => remove.mutate(backup.name)}
+                    aria-label={`Delete ${backup.key}`}
+                    onClick={() => setDeleting(backup)}
                   >
                     <Trash2 className="size-3.5 text-destructive" />
                   </Button>
@@ -153,15 +192,59 @@ export function BackupsPage() {
               </TableCell>
             </TableRow>
           ))}
+          {isLoading ? (
+            Array.from({ length: 3 }).map((_, i) => (
+              <TableRow key={i}>
+                <TableCell colSpan={4}>
+                  <Skeleton className="h-row w-full" />
+                </TableCell>
+              </TableRow>
+            ))
+          ) : null}
           {!isLoading && (backups?.length ?? 0) === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
-                No backups yet.
+              <TableCell colSpan={4} className="py-8">
+                <Empty>
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <Archive />
+                    </EmptyMedia>
+                    <EmptyTitle>No backups yet</EmptyTitle>
+                    <EmptyDescription>
+                      Create one above to snapshot the database as it stands right now.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               </TableCell>
             </TableRow>
           ) : null}
         </TableBody>
       </Table>
+
+      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this backup?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono">{deleting?.key}</span> will be removed from disk permanently. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const target = deleting;
+                setDeleting(null);
+                if (target) remove.mutate(target.key);
+              }}
+            >
+              Delete backup
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

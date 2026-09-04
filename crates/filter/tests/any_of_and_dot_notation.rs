@@ -1,10 +1,10 @@
 //! Lexer/parser coverage for the "any of" operators (`?=`, `?!=`, ...) and
 //! dotted identifiers (relation dot-notation), plus compiler coverage for
-//! how a resolver-declared multi-valued column changes the compiled SQL.
+//! how a multi-valued column changes the compiled SQL.
 
+use cratebase_filter::testing::TestResolver;
 use cratebase_filter::{
-    parse_and_compile, CompareOp, CompiledFilter, Dialect, Expr, FilterError, Literal, Operand,
-    Parser, Resolved, Resolver,
+    parse_and_compile, CompareOp, CompiledFilter, Expr, FilterError, Literal, Operand, Parser,
 };
 
 #[test]
@@ -22,12 +22,12 @@ fn lexes_any_of_operators() {
         let expr = Parser::parse(src).unwrap();
         match expr {
             Expr::Compare {
-                left: Operand::Ident(name),
+                left: Operand::Ident { path, .. },
                 op: parsed_op,
                 any_of,
                 ..
             } => {
-                assert_eq!(name, "a");
+                assert_eq!(path, "a");
                 assert_eq!(parsed_op, op);
                 assert!(any_of, "expected any_of=true for {src:?}");
             }
@@ -50,12 +50,16 @@ fn parses_dotted_identifiers_as_single_ident() {
     let expr = Parser::parse(r#"author.name = "Alice""#).unwrap();
     match expr {
         Expr::Compare {
-            left: Operand::Ident(name),
+            left:
+                Operand::Ident {
+                    path,
+                    modifier: None,
+                },
             op: CompareOp::Eq,
             any_of: false,
             right: Operand::Literal(Literal::Str(s)),
         } => {
-            assert_eq!(name, "author.name");
+            assert_eq!(path, "author.name");
             assert_eq!(s, "Alice");
         }
         other => panic!("unexpected parse: {other:?}"),
@@ -63,66 +67,67 @@ fn parses_dotted_identifiers_as_single_ident() {
 }
 
 #[test]
-fn relation_idents_finds_dotted_field_heads() {
-    let idents = cratebase_filter::relation_idents(
-        r#"author.name = "Alice" && @request.auth.id != "" && category.slug ~ "x""#,
+fn relation_dot_notation_resolves_through_the_schema() {
+    let r = TestResolver::sqlite("posts");
+    let c = parse_and_compile(
+        r#"author.name = "Alice" && @request.auth.id != "" && tags.name ~ "x""#,
+        &r,
+        0,
     )
     .unwrap();
-    assert_eq!(idents, vec!["author".to_string(), "category".to_string()]);
-}
-
-#[test]
-fn relation_idents_ignores_plain_and_request_fields() {
-    let idents =
-        cratebase_filter::relation_idents(r#"status = "active" && @request.auth.id = owner"#)
-            .unwrap();
-    assert!(idents.is_empty());
+    assert!(c.sql.contains(
+        r#"(SELECT "users"."name" FROM "users" WHERE "users"."id" = "posts"."author") = $1"#
+    ));
+    assert!(c.sql.contains(r#"JOIN "tags" AS"#));
+    assert!(
+        c.joins.is_empty(),
+        "forward relations need no top-level join"
+    );
 }
 
 #[test]
 fn any_of_operator_errors_on_invalid_syntax() {
-    assert!(matches!(Parser::parse("a ? 1"), Err(FilterError::Lex(_))));
-}
-
-/// A resolver that treats `tags` as a multi-valued JSON-array column and
-/// every other identifier as a plain scalar column, mirroring how
-/// `cratebase-db`'s `CollectionResolver` distinguishes them.
-struct MultiValueResolver;
-
-impl Resolver for MultiValueResolver {
-    fn resolve(&self, ident: &str) -> Result<Resolved, FilterError> {
-        match ident {
-            "tags" => Ok(Resolved::MultiColumn("\"tags\"".to_string())),
-            other => Ok(Resolved::Column(format!("\"{other}\""))),
-        }
-    }
+    assert!(matches!(Parser::parse("a ? 1"), Err(FilterError::Lex(..))));
 }
 
 fn compile(src: &str) -> CompiledFilter {
-    parse_and_compile(src, &MultiValueResolver, Dialect::Sqlite, 0).unwrap()
+    parse_and_compile(src, &TestResolver::sqlite("posts"), 0).unwrap()
+}
+
+/// The `?` prefix only quantifies over something there are several of.
+/// A bare multi-valued column has no elements to quantify — like
+/// PocketBase it compares against the raw JSON text of the column — so
+/// `?=` and `=` compile identically.
+#[test]
+fn any_of_on_a_bare_multi_column_is_a_text_comparison() {
+    let c = compile(r#"categories ?= "tech""#);
+    assert_eq!(c.sql, "\"posts\".\"categories\" = $1");
+    assert_eq!(c.params, vec![serde_json::json!("tech")]);
+    assert_eq!(compile(r#"categories = "tech""#).sql, c.sql);
 }
 
 #[test]
-fn any_of_compiles_to_exists_over_json_each() {
-    let c = compile(r#"tags ?= "rust""#);
+fn any_of_over_each_compiles_to_exists_over_json_each() {
+    let c = compile(r#"categories:each ?= "tech""#);
     assert_eq!(
         c.sql,
-        "EXISTS (SELECT 1 FROM json_each(COALESCE(\"tags\", '[]')) AS __elem WHERE __elem.value = $1)"
+        "EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = $1)"
     );
-    assert_eq!(c.params, vec![serde_json::json!("rust")]);
+    assert_eq!(c.params, vec![serde_json::json!("tech")]);
 }
 
 #[test]
-fn bare_operator_on_multi_column_requires_every_element() {
-    let c = compile(r#"tags = "rust""#);
+fn bare_operator_on_each_requires_every_element() {
+    let c = compile(r#"categories:each = "tech""#);
     assert_eq!(
         c.sql,
-        "NOT EXISTS (SELECT 1 FROM json_each(COALESCE(\"tags\", '[]')) AS __elem WHERE NOT (__elem.value = $1))"
+        "(EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\" WHERE \"__e1\".\"value\" = $1) \
+         AND NOT EXISTS (SELECT 1 FROM json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\" WHERE NOT (\"__e1\".\"value\" = $1)))"
     );
 }
 
 #[test]
 fn plain_scalar_field_unaffected_by_any_of_support() {
     let c = compile(r#"status = "active""#);
-    assert_eq!(c.sql, "\"status\" = $1");
+    assert_eq!(c.sql, "\"posts\".\"status\" = $1");
 }

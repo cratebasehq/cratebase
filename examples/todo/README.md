@@ -15,30 +15,29 @@ small ticker pinned to the bottom of the page (`POST
 /collections/todos/records · 201 · 8ms`), so none of this is a black box:
 you see the literal HTTP call behind every click.
 
-## Importing `cratebase` with zero build step
+## Importing `pocketbase` with zero build step
 
-`index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) mapping the bare
-specifier to the already-built local package:
+Cratebase's API is byte-compatible with PocketBase v0.23+, so this example
+uses the official PocketBase JS SDK straight off a CDN instead of a
+bespoke client. `index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+mapping the bare specifier to the published package on esm.sh:
 
 ```html
 <script type="importmap">
-  { "imports": { "cratebase": "../../sdk/js/dist/index.js" } }
+  { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
 </script>
 ```
 
 so `app.js` can just write:
 
 ```js
-import { Cratebase } from "cratebase";
+import PocketBase from "pocketbase";
 ```
 
-`cratebase` isn't published to npm yet, so `https://esm.sh/cratebase` (or
-any other CDN-from-npm-registry URL) would 404 — the import map is what
-makes the bare specifier resolve locally instead, no npm install and no
-bundler step needed. Once `cratebase` is published to npm, swapping the
-import map's one entry for a CDN URL (or dropping the import map
-entirely and using a bundler) is a drop-in change — `app.js` doesn't
-change at all.
+No npm install and no bundler step needed. Swapping the import map's one
+entry for a local `node_modules/pocketbase` resolution (or dropping the
+import map entirely and using a bundler) is a drop-in change if you'd
+rather not depend on a CDN — `app.js` doesn't change at all.
 
 ## 1. Start Cratebase
 
@@ -57,8 +56,8 @@ elsewhere).
 Run the setup script — it upserts an `admin@example.com` / `changeme123`
 superuser (override with `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars) and
 creates (or updates) the `todos` collection, gated to signed-in users
-only. Safe to re-run — it PATCHes the collection back in line if it
-already exists with different rules/schema.
+only. Safe to re-run — if the collection already exists it PATCHes the
+rules back in line and leaves the fields (and your todos) alone.
 
 ```bash
 bun run examples:todo:setup
@@ -112,7 +111,7 @@ watch them sync live in the other.
   skips straight to the todo list.
 - **Auth-gated CRUD**: the `todos` collection's rules are
   `@request.auth.id != ""`. Since `cb.collection("todos")` shares the
-  same `Cratebase` client (and therefore the same `authStore`) as
+  same `PocketBase` client (and therefore the same `authStore`) as
   `cb.collection("users")`, every `todos` request automatically carries
   the `Authorization: Bearer <token>` header once signed in — no manual
   header wiring in `app.js`. Signed-out requests to `todos` get rejected
@@ -139,12 +138,15 @@ watch them sync live in the other.
 
 ## Verification status
 
-Verified live end-to-end in a real browser (headless Chromium) against a
-freshly seeded instance (`bun run examples:todo:setup`, `cargo run --bin
-cratebase -- serve`, `bun run examples:serve`): registering an account
-signs in immediately and reveals the todo view; adding a todo persists it
-with no page reload and no console/network errors. Two-tab realtime
-propagation and the sign-out → guest-view path were not re-verified after
-the auth-gating rewrite — the realtime subscribe path itself was already
-exercised by the same add flow (the list loads via the same
-`connectRealtime()` call `main()` uses on sign-in).
+`bun run examples:todo:setup` is verified live against a running server:
+it creates the `todos` collection with its auth-gated rules, and
+re-running it is a no-op.
+
+The browser half is **partly stale**. Registering, signing in, and
+add/toggle/delete were all driven in headless Chromium and worked with no
+page reload and no console errors — but that run predates the core
+rewrite, which took `/api/realtime` out of the router. Until realtime
+lands again (see the root README's status section),
+`cb.realtime.subscribe()` will 404: everything still works within one
+tab, since each action renders its own result optimistically, but a
+second tab will not see the first tab's changes until it reloads.

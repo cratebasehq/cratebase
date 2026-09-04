@@ -6,21 +6,20 @@ else's screen — the smallest possible demo of Cratebase's realtime
 record CRUD together.
 
 Plain HTML/CSS + one ES module (`app.js`). No build step, no framework —
-it imports the real `cratebase` JS SDK via a bare specifier:
+Cratebase's API is byte-compatible with PocketBase v0.23+, so it imports
+the official PocketBase JS SDK via a bare specifier:
 
 ```js
-import { ClientResponseError, Cratebase } from "cratebase";
+import PocketBase, { ClientResponseError } from "pocketbase";
 ```
 
 resolved by an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) in `index.html` pointing
-`"cratebase"` at the already-built local package
-(`../../sdk/js/dist/index.js`) — `cratebase` isn't published to npm yet,
-so a CDN import (`https://esm.sh/cratebase`) would 404, and the import
-map is what makes the bare specifier resolve locally instead, with no
-npm install and no bundler step. One deliberate exception: the
-best-effort cursor cleanup on tab close uses raw `fetch(..., {keepalive:
-true})` directly, since `RecordService.delete` doesn't expose that fetch
-option — see the comment above `deleteOwnCursor` in `app.js`.
+`"pocketbase"` at the published package on esm.sh
+(`https://esm.sh/pocketbase@0.28`) — no npm install and no bundler step.
+One deliberate exception: the best-effort cursor cleanup on tab close
+uses raw `fetch(..., {keepalive: true})` directly, since
+`RecordService.delete` doesn't expose that fetch option — see the
+comment above `deleteOwnCursor` in `app.js`.
 
 ## 1. Start Cratebase
 
@@ -99,7 +98,7 @@ duplicated with a rendered dot.
   already exists server-side but the local id was lost.
 - **Realtime**: on load the page opens `GET /api/realtime` (SSE), waits
   for the `PB_CONNECT` event to learn its `clientId`, then
-  `POST /api/realtime` with `{"clientId", "subscriptions": ["cursors"]}`.
+  `POST /api/realtime` with `{"clientId", "subscriptions": ["cursors/*"]}`.
   Every subsequent `create`/`update`/`delete` event for any record in the
   collection arrives as an SSE `message` event and moves (or removes) the
   matching dot. Events for our own `clientId` are ignored — we already
@@ -112,17 +111,17 @@ duplicated with a rendered dot.
 
 ## Verification
 
-Verified live: `bun run examples:cursors:setup` against a fresh `cargo
-run --bin cratebase -- serve` instance, served via `bun run
-examples:serve`, loaded in a real browser (headless Chromium) — no
-console/network errors, the identity/upsert/realtime-subscribe flow all
-ran (`GET /api/realtime` connects, own cursor upserts via
-PATCH-then-POST-fallback exactly as designed). Multi-tab peer-dot
-rendering across two simultaneous tabs was not re-verified after this
-pass.
+- `bun run examples:cursors:setup` is verified live against a running
+  server: it creates `cursors`, its unique `clientId` index and its rules,
+  and re-running it is a no-op.
+- **Not currently verified**: the browser half. It ran clean in headless
+  Chromium at one point — identity, upsert, and subscribe all fired — but
+  that was before `/api/realtime` was taken out of the router during the
+  core rewrite. Until realtime lands again, `GET /api/realtime` 404s and
+  no cursor, own or peer, will move.
 
 **Fixed since the original version of this README**: `index.html` was
-missing the import map entirely (bare specifier `"cratebase"` had
-nothing to resolve it to), so `app.js` failed to load at all — no
-cursors, no realtime, silently. It now declares the same import map
-every other `examples/*` app uses.
+missing the import map entirely, so the bare specifier in `app.js` had
+nothing to resolve to and the module failed to load at all — no cursors,
+no realtime, silently. It now declares the same import map every other
+`examples/*` app uses.

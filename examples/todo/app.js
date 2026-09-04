@@ -4,16 +4,17 @@
 // != ""`), so this one page exercises both the auth API and record CRUD +
 // realtime end to end.
 //
-// Imported via the bare specifier "cratebase", resolved by the import map
-// in index.html to the built local package (sdk/js/dist) — no npm publish
-// or build step needed. See README.md.
-import { Cratebase } from "cratebase";
+// Imported via the bare specifier "pocketbase", resolved by the import map
+// in index.html to the official PocketBase JS SDK on esm.sh — no npm
+// install or build step needed. Cratebase's API is byte-compatible with
+// PocketBase v0.23+, so the official client works unchanged. See README.md.
+import PocketBase from "pocketbase";
 
 const BASE_URL = "http://localhost:8090";
 const COLLECTION = "todos";
 const REMOVE_ANIMATION_MS = 220;
 
-const cb = new Cratebase(BASE_URL);
+const cb = new PocketBase(BASE_URL);
 const users = cb.collection("users");
 const todos = cb.collection(COLLECTION);
 
@@ -299,7 +300,7 @@ async function loadTodos() {
 async function connectRealtime() {
   setStatus("connecting", "connecting…");
   try {
-    await cb.realtime.subscribe(COLLECTION, (event) => {
+    await cb.collection(COLLECTION).subscribe("*", (event) => {
       if (event.action === "create") {
         renderTodo(event.record, { prepend: true });
       } else if (event.action === "update") {
@@ -340,7 +341,9 @@ function renderAuthState() {
   whoamiEl.classList.toggle("hidden", !authed);
 
   if (authed) {
-    whoamiEmailEl.textContent = (cb.authStore.model && cb.authStore.model.email) || "";
+    // `.record`, not the older `.model` — the official SDK renamed it and
+    // the alias is gone in the v0.28 the import map pins.
+    whoamiEmailEl.textContent = cb.authStore.record?.email || "";
   } else {
     setStatus("disconnected", "signed out");
     listEl.innerHTML = "";

@@ -44,9 +44,11 @@ ensure_superuser_and_login() {
   (cd "$repo_root" && cargo run -q -p cratebase-server --bin cratebase -- \
     superuser upsert "$ADMIN_EMAIL" "$ADMIN_PASSWORD" >/dev/null)
 
-  ADMIN_TOKEN="$(curl -fsS -X POST "${CRATEBASE_URL}/api/admins/auth-with-password" \
+  # `/api/admins/*` is gone as of PocketBase v0.23 — superusers are an
+  # ordinary auth collection now, and the field is `identity`, not `email`.
+  ADMIN_TOKEN="$(curl -fsS -X POST "${CRATEBASE_URL}/api/collections/_superusers/auth-with-password" \
     -H 'content-type: application/json' \
-    -d "$(jq -nc --arg email "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" '{email:$email,password:$password}')" \
+    -d "$(jq -nc --arg identity "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" '{identity:$identity,password:$password}')" \
     | jq -r .token)"
 
   if [ -z "$ADMIN_TOKEN" ] || [ "$ADMIN_TOKEN" = "null" ]; then
@@ -57,9 +59,13 @@ ensure_superuser_and_login() {
 }
 
 # Args: $1 = collection name, $2 = JSON body for POST/PATCH /api/collections.
-# Creates the collection if missing; PATCHes it to match `body` if it
-# already exists (so a stale schema/rules from an older run of this
-# script — or a manual edit — gets brought back in line). Idempotent.
+# Creates the collection if missing; if it already exists, PATCHes only the
+# API rules so a manual edit gets brought back in line. Idempotent.
+#
+# `fields` is deliberately stripped from the update: the server matches
+# fields by their generated `id`, so PATCHing the id-less definitions below
+# reads as "delete every existing field, add these" and would drop the
+# example's data on a re-run. Creating carries them; updating does not.
 ensure_collection() {
   local name="$1" body="$2"
   local status
@@ -72,6 +78,7 @@ ensure_collection() {
     url="${CRATEBASE_URL}/api/collections/${name}"
     verb=Updated
     gerund=Updating
+    body="$(printf '%s' "$body" | jq -c 'del(.fields)')"
   fi
 
   echo "==> ${gerund} collection '${name}' ..."

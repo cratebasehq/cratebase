@@ -41,7 +41,7 @@ zero-code-change option** for when SQLite stops being enough.
   get `create`/`update`/`delete` events as they happen.
 - **One binary** — the admin dashboard is embedded at compile time
   (`rust-embed`). `cratebase serve` is the whole deployment.
-- **Official TypeScript SDK** — `npm install cratebase`.
+- **PocketBase-compatible API** — the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client (and PocketBase's other official SDKs) work against Cratebase unchanged.
 
 ## Quickstart
 
@@ -102,11 +102,11 @@ curl "localhost:8090/api/collections/posts/records?filter=published%20%3D%20true
 From TypeScript/JavaScript:
 
 ```ts
-import { Cratebase } from "cratebase";
+import PocketBase from "pocketbase";
 
-const cb = new Cratebase("http://localhost:8090");
+const cb = new PocketBase("http://localhost:8090");
 const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
-const unsubscribe = await cb.realtime.subscribe("posts", (e) => console.log(e.action, e.record));
+const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
 ```
 
 Full API reference: [openapi.yaml](./openapi.yaml). Quick orientation for
@@ -122,10 +122,6 @@ crates/storage  file storage: local disk or any S3-compatible bucket
 crates/auth     Argon2id password hashing + JWT sessions, OAuth2, OTP/MFA
 crates/mailer   pluggable mail backend (Resend API, SMTP, or log-only for dev)
 crates/server   axum HTTP API, CLI, plugin system, embedded admin dashboard
-sdk/js          official TypeScript client ("cratebase" on npm)
-sdk/dart        Dart client
-sdk/go          Go client
-sdk/python      Python client
 web/admin       admin dashboard source (React + Vite + TanStack + shadcn/ui)
 ```
 
@@ -157,9 +153,6 @@ TEST_S3_ENDPOINT=http://localhost:9000 cargo test -p cratebase-storage  # + real
 
 # admin dashboard (proxies /api to a local `cratebase serve` on :8090)
 bun install && bun run admin:dev
-
-# JS SDK
-bun run sdk:build
 ```
 
 ## License

@@ -1,6 +1,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { CollectionModel, FieldSchema } from "cratebase";
+import type { CollectionModel } from "pocketbase";
+import type { FieldSchema } from "@/lib/field-types";
 import { SchemaFieldRow } from "@/components/collections/schema-field-row";
 
 interface SortableFieldRowProps {
@@ -10,6 +11,8 @@ interface SortableFieldRowProps {
   onRemove: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   nameError?: string | null;
   optionsError?: string | null;
 }
@@ -27,6 +30,8 @@ export function SortableFieldRow({
   onRemove,
   onMoveUp,
   onMoveDown,
+  expanded,
+  onExpandedChange,
   nameError,
   optionsError,
 }: SortableFieldRowProps) {
@@ -49,6 +54,8 @@ export function SortableFieldRow({
         onRemove={onRemove}
         onMoveUp={onMoveUp}
         onMoveDown={onMoveDown}
+        expanded={expanded}
+        onExpandedChange={onExpandedChange}
         dragHandleAttributes={attributes}
         dragHandleListeners={listeners}
         isDragging={isDragging}

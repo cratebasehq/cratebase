@@ -1,0 +1,5 @@
+[test]
+# The harness starts (and later kills) the server once per `bun test` run when
+# SERVER_BIN / PB_BIN is set, and exposes BASE_URL to every test file.
+preload = ["./harness.ts"]
+timeout = 30000

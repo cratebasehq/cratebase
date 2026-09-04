@@ -1,9 +1,19 @@
+//! Collection field definitions, shaped exactly like PocketBase v0.23+'s
+//! `fields[]` entries: every type-specific option lives flat on the
+//! field object next to the common attributes, e.g.
+//!
+//! ```json
+//! {"id":"text724990059","name":"title","type":"text","system":false,
+//!  "hidden":false,"presentable":false,"required":true,"help":"",
+//!  "min":0,"max":0,"pattern":"","autogeneratePattern":"","primaryKey":false}
+//! ```
+
 use serde::{Deserialize, Serialize};
 
-/// The primitive type of a collection field. Each variant maps to a concrete
-/// SQL column type in the storage backend (see `cratebase-db`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+use crate::datetime::DateTime;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum FieldType {
     Text,
     Editor,
@@ -14,14 +24,15 @@ pub enum FieldType {
     Date,
     Autodate,
     Select,
-    Json,
-    Relation,
     File,
+    Relation,
+    Json,
     Password,
+    GeoPoint,
 }
 
 impl FieldType {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             FieldType::Text => "text",
             FieldType::Editor => "editor",
@@ -32,85 +43,515 @@ impl FieldType {
             FieldType::Date => "date",
             FieldType::Autodate => "autodate",
             FieldType::Select => "select",
-            FieldType::Json => "json",
-            FieldType::Relation => "relation",
             FieldType::File => "file",
+            FieldType::Relation => "relation",
+            FieldType::Json => "json",
             FieldType::Password => "password",
+            FieldType::GeoPoint => "geoPoint",
         }
     }
 
-    /// Whether the field can natively hold multiple values (arrays).
-    /// Controlled per-field via `FieldOptions::max_select` / `multiple`.
-    pub fn supports_multiple(&self) -> bool {
-        matches!(
-            self,
-            FieldType::Select | FieldType::Relation | FieldType::File
-        )
+    pub fn all() -> &'static [FieldType] {
+        &[
+            FieldType::Text,
+            FieldType::Editor,
+            FieldType::Number,
+            FieldType::Bool,
+            FieldType::Email,
+            FieldType::Url,
+            FieldType::Date,
+            FieldType::Autodate,
+            FieldType::Select,
+            FieldType::File,
+            FieldType::Relation,
+            FieldType::Json,
+            FieldType::Password,
+            FieldType::GeoPoint,
+        ]
     }
 }
 
-/// Extra, type-specific configuration for a [`Field`].
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct FieldOptions {
-    // text / editor
-    pub min: Option<f64>,
-    pub max: Option<f64>,
-    pub pattern: Option<String>,
-    // select
-    pub values: Option<Vec<String>>,
-    // relation
-    pub collection_id: Option<String>,
-    // relation / select / file: allow storing more than one value
-    pub multiple: Option<bool>,
-    // file
-    pub mime_types: Option<Vec<String>>,
-    pub max_select: Option<u32>,
-    pub max_size: Option<u64>,
-    // number
-    pub only_int: Option<bool>,
-    // autodate: set the stored value to the current time on record
-    // create/update. At least one must be `true`; enforced by
-    // `cratebase-server`'s collection input validation, not here (this
-    // struct has no error path of its own).
-    pub on_create: Option<bool>,
-    pub on_update: Option<bool>,
+/// Type-specific options. Internally tagged on `type` and flattened into
+/// [`Field`], which produces PocketBase's flat layout.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum FieldKind {
+    #[serde(rename_all = "camelCase")]
+    Text {
+        #[serde(default)]
+        min: i64,
+        #[serde(default)]
+        max: i64,
+        #[serde(default)]
+        pattern: String,
+        #[serde(default)]
+        autogenerate_pattern: String,
+        #[serde(default)]
+        primary_key: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Editor {
+        #[serde(default)]
+        max_size: i64,
+        #[serde(default, rename = "convertURLs")]
+        convert_urls: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Number {
+        #[serde(default)]
+        min: Option<f64>,
+        #[serde(default)]
+        max: Option<f64>,
+        #[serde(default)]
+        only_int: bool,
+    },
+    Bool {},
+    #[serde(rename_all = "camelCase")]
+    Email {
+        #[serde(default)]
+        except_domains: Vec<String>,
+        #[serde(default)]
+        only_domains: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Url {
+        #[serde(default)]
+        except_domains: Vec<String>,
+        #[serde(default)]
+        only_domains: Vec<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Date {
+        #[serde(default, with = "empty_datetime")]
+        min: Option<DateTime>,
+        #[serde(default, with = "empty_datetime")]
+        max: Option<DateTime>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Autodate {
+        #[serde(default)]
+        on_create: bool,
+        #[serde(default)]
+        on_update: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Select {
+        #[serde(default)]
+        values: Vec<String>,
+        #[serde(default = "one")]
+        max_select: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    File {
+        #[serde(default = "one")]
+        max_select: i64,
+        #[serde(default)]
+        max_size: i64,
+        #[serde(default)]
+        mime_types: Vec<String>,
+        #[serde(default)]
+        thumbs: Vec<String>,
+        #[serde(default)]
+        protected: bool,
+    },
+    #[serde(rename_all = "camelCase")]
+    Relation {
+        #[serde(default)]
+        collection_id: String,
+        #[serde(default)]
+        cascade_delete: bool,
+        #[serde(default)]
+        min_select: i64,
+        #[serde(default = "one")]
+        max_select: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Json {
+        #[serde(default)]
+        max_size: i64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Password {
+        #[serde(default)]
+        min: i64,
+        #[serde(default)]
+        max: i64,
+        #[serde(default)]
+        pattern: String,
+        #[serde(default)]
+        cost: i64,
+    },
+    GeoPoint {},
 }
 
-/// A single field (column) definition inside a [`crate::Collection`] schema.
+fn one() -> i64 {
+    1
+}
+
+/// PocketBase serializes an unset date bound as `""`.
+mod empty_datetime {
+    use super::DateTime;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<DateTime>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(dt) => dt.serialize(s),
+            None => s.serialize_str(""),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DateTime>, D::Error> {
+        let raw = Option::<String>::deserialize(d)?;
+        Ok(raw.and_then(|s| DateTime::parse(&s)))
+    }
+}
+
+impl FieldKind {
+    pub fn field_type(&self) -> FieldType {
+        match self {
+            FieldKind::Text { .. } => FieldType::Text,
+            FieldKind::Editor { .. } => FieldType::Editor,
+            FieldKind::Number { .. } => FieldType::Number,
+            FieldKind::Bool {} => FieldType::Bool,
+            FieldKind::Email { .. } => FieldType::Email,
+            FieldKind::Url { .. } => FieldType::Url,
+            FieldKind::Date { .. } => FieldType::Date,
+            FieldKind::Autodate { .. } => FieldType::Autodate,
+            FieldKind::Select { .. } => FieldType::Select,
+            FieldKind::File { .. } => FieldType::File,
+            FieldKind::Relation { .. } => FieldType::Relation,
+            FieldKind::Json { .. } => FieldType::Json,
+            FieldKind::Password { .. } => FieldType::Password,
+            FieldKind::GeoPoint {} => FieldType::GeoPoint,
+        }
+    }
+
+    /// The default options for a type, as the scaffold endpoint returns.
+    pub fn default_for(t: FieldType) -> FieldKind {
+        match t {
+            FieldType::Text => FieldKind::Text {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                autogenerate_pattern: String::new(),
+                primary_key: false,
+            },
+            FieldType::Editor => FieldKind::Editor {
+                max_size: 0,
+                convert_urls: false,
+            },
+            FieldType::Number => FieldKind::Number {
+                min: None,
+                max: None,
+                only_int: false,
+            },
+            FieldType::Bool => FieldKind::Bool {},
+            FieldType::Email => FieldKind::Email {
+                except_domains: vec![],
+                only_domains: vec![],
+            },
+            FieldType::Url => FieldKind::Url {
+                except_domains: vec![],
+                only_domains: vec![],
+            },
+            FieldType::Date => FieldKind::Date {
+                min: None,
+                max: None,
+            },
+            FieldType::Autodate => FieldKind::Autodate {
+                on_create: true,
+                on_update: false,
+            },
+            FieldType::Select => FieldKind::Select {
+                values: vec![],
+                max_select: 1,
+            },
+            FieldType::File => FieldKind::File {
+                max_select: 1,
+                max_size: 0,
+                mime_types: vec![],
+                thumbs: vec![],
+                protected: false,
+            },
+            FieldType::Relation => FieldKind::Relation {
+                collection_id: String::new(),
+                cascade_delete: false,
+                min_select: 0,
+                max_select: 1,
+            },
+            FieldType::Json => FieldKind::Json { max_size: 0 },
+            FieldType::Password => FieldKind::Password {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                cost: 0,
+            },
+            FieldType::GeoPoint => FieldKind::GeoPoint {},
+        }
+    }
+}
+
+/// A single field (column) definition inside a [`crate::Collection`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Field {
+    #[serde(default)]
     pub id: String,
     pub name: String,
-    #[serde(rename = "type")]
-    pub field_type: FieldType,
+    #[serde(default)]
+    pub system: bool,
+    #[serde(default)]
+    pub hidden: bool,
+    #[serde(default)]
+    pub presentable: bool,
     #[serde(default)]
     pub required: bool,
     #[serde(default)]
-    pub unique: bool,
-    #[serde(default)]
-    pub options: FieldOptions,
+    pub help: String,
+    #[serde(flatten)]
+    pub kind: FieldKind,
 }
 
-/// Field/collection names reserved by the system and unavailable to users.
-pub const RESERVED_FIELD_NAMES: &[&str] = &[
-    "id",
-    "created",
-    "updated",
-    "collectionId",
-    "collectionName",
-    "expand",
-];
+impl Field {
+    pub fn new(name: impl Into<String>, kind: FieldKind) -> Self {
+        let name = name.into();
+        Field {
+            id: crate::ids::field_id(kind.field_type().as_str(), &name),
+            name,
+            system: false,
+            hidden: false,
+            presentable: false,
+            required: false,
+            help: String::new(),
+            kind,
+        }
+    }
 
-pub fn is_valid_identifier(name: &str) -> bool {
-    if name.is_empty() || name.len() > 64 {
-        return false;
+    pub fn system(mut self) -> Self {
+        self.system = true;
+        self
     }
-    let mut chars = name.chars();
-    let first = chars.next().unwrap();
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return false;
+
+    pub fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
     }
-    name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    pub fn field_type(&self) -> FieldType {
+        self.kind.field_type()
+    }
+
+    /// Whether the field stores a JSON array of values (select/file/
+    /// relation with `maxSelect > 1`).
+    pub fn is_multiple(&self) -> bool {
+        match &self.kind {
+            FieldKind::Select { max_select, .. }
+            | FieldKind::File { max_select, .. }
+            | FieldKind::Relation { max_select, .. } => *max_select > 1,
+            _ => false,
+        }
+    }
+
+    pub fn max_select(&self) -> Option<i64> {
+        match &self.kind {
+            FieldKind::Select { max_select, .. }
+            | FieldKind::File { max_select, .. }
+            | FieldKind::Relation { max_select, .. } => Some(*max_select),
+            _ => None,
+        }
+    }
+
+    pub fn is_primary_key(&self) -> bool {
+        matches!(
+            &self.kind,
+            FieldKind::Text {
+                primary_key: true,
+                ..
+            }
+        )
+    }
+
+    /// For relation fields, the target collection id.
+    pub fn relation_collection_id(&self) -> Option<&str> {
+        match &self.kind {
+            FieldKind::Relation { collection_id, .. } => Some(collection_id.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn cascade_delete(&self) -> bool {
+        matches!(
+            &self.kind,
+            FieldKind::Relation {
+                cascade_delete: true,
+                ..
+            }
+        )
+    }
+
+    // --- PocketBase's standard system fields -------------------------------
+
+    /// The `id` primary key field every collection has.
+    pub fn id_field() -> Field {
+        let mut f = Field::new(
+            "id",
+            FieldKind::Text {
+                min: 15,
+                max: 15,
+                pattern: "^[a-z0-9]+$".into(),
+                autogenerate_pattern: "[a-z0-9]{15}".into(),
+                primary_key: true,
+            },
+        );
+        f.system = true;
+        f.required = true;
+        f
+    }
+
+    pub fn created_field() -> Field {
+        Field::new(
+            "created",
+            FieldKind::Autodate {
+                on_create: true,
+                on_update: false,
+            },
+        )
+    }
+
+    pub fn updated_field() -> Field {
+        Field::new(
+            "updated",
+            FieldKind::Autodate {
+                on_create: true,
+                on_update: true,
+            },
+        )
+    }
+
+    pub fn password_field() -> Field {
+        let mut f = Field::new(
+            "password",
+            FieldKind::Password {
+                min: 8,
+                max: 0,
+                pattern: String::new(),
+                cost: 0,
+            },
+        );
+        f.system = true;
+        f.hidden = true;
+        f.required = true;
+        f
+    }
+
+    pub fn token_key_field() -> Field {
+        let mut f = Field::new(
+            "tokenKey",
+            FieldKind::Text {
+                min: 30,
+                max: 60,
+                pattern: String::new(),
+                autogenerate_pattern: "[a-zA-Z0-9]{50}".into(),
+                primary_key: false,
+            },
+        );
+        f.system = true;
+        f.hidden = true;
+        f.required = true;
+        f
+    }
+
+    pub fn email_field() -> Field {
+        let mut f = Field::new(
+            "email",
+            FieldKind::Email {
+                except_domains: vec![],
+                only_domains: vec![],
+            },
+        );
+        f.system = true;
+        f.required = true;
+        f
+    }
+
+    pub fn email_visibility_field() -> Field {
+        let mut f = Field::new("emailVisibility", FieldKind::Bool {});
+        f.system = true;
+        f
+    }
+
+    pub fn verified_field() -> Field {
+        let mut f = Field::new("verified", FieldKind::Bool {});
+        f.system = true;
+        f
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_flat_like_pocketbase() {
+        let f = Field::id_field();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["type"], "text");
+        assert_eq!(v["id"], "text3208210256");
+        assert_eq!(v["primaryKey"], true);
+        assert_eq!(v["autogeneratePattern"], "[a-z0-9]{15}");
+        assert_eq!(v["max"], 15);
+        assert_eq!(v["system"], true);
+        assert!(v.get("options").is_none());
+    }
+
+    #[test]
+    fn deserializes_pocketbase_fixture_field() {
+        let raw = r#"{
+            "help": "", "hidden": false, "id": "file376926767", "maxSelect": 1,
+            "maxSize": 0, "mimeTypes": ["image/jpeg"], "name": "avatar",
+            "presentable": false, "protected": false, "required": false,
+            "system": false, "thumbs": [], "type": "file"
+        }"#;
+        let f: Field = serde_json::from_str(raw).unwrap();
+        assert_eq!(f.field_type(), FieldType::File);
+        assert!(!f.is_multiple());
+        match f.kind {
+            FieldKind::File { mime_types, .. } => assert_eq!(mime_types, vec!["image/jpeg"]),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn geo_point_tag_is_camel_case() {
+        let f = Field::new("loc", FieldKind::GeoPoint {});
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["type"], "geoPoint");
+        let back: Field = serde_json::from_value(v).unwrap();
+        assert_eq!(back.field_type(), FieldType::GeoPoint);
+    }
+
+    #[test]
+    fn lenient_input_fills_defaults() {
+        let f: Field = serde_json::from_str(r#"{"name":"title","type":"text"}"#).unwrap();
+        assert_eq!(f.field_type(), FieldType::Text);
+        assert!(!f.required);
+        let f: Field =
+            serde_json::from_str(r#"{"name":"tags","type":"select","values":["a"]}"#).unwrap();
+        assert_eq!(f.max_select(), Some(1));
+        let f: Field =
+            serde_json::from_str(r#"{"name":"when","type":"date","min":"","max":"2030-01-01"}"#)
+                .unwrap();
+        match f.kind {
+            FieldKind::Date { min, max } => {
+                assert!(min.is_none());
+                assert!(max.is_some());
+            }
+            _ => panic!(),
+        }
+    }
 }

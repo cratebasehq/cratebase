@@ -1,7 +1,12 @@
-import { AlertCircle, GripVertical, Trash2 } from "lucide-react";
-import type { CollectionModel, FieldSchema } from "cratebase";
-import { FIELD_TYPES } from "@/lib/field-types";
-import { TagInput } from "@/components/interior/tag-input";
+import { useId } from "react";
+import { AlertCircle, ChevronRight, GripVertical, Trash2 } from "lucide-react";
+import type { CollectionModel } from "pocketbase";
+import { cn } from "@/lib/utils";
+import { FIELD_TYPES, type FieldSchema, isMultiValue, newField } from "@/lib/field-types";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TagInput } from "@/components/ui/tag-input";
 
 interface SchemaFieldRowProps {
   field: FieldSchema;
@@ -10,6 +15,10 @@ interface SchemaFieldRowProps {
   onRemove: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  /** Whether the type-specific options panel is showing. Owned by the form
+   * so only the row you're working on is open. */
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
   dragHandleAttributes?: React.HTMLAttributes<HTMLButtonElement>;
   dragHandleListeners?: Record<string, unknown>;
   isDragging?: boolean;
@@ -25,23 +34,24 @@ function OptionField({
   label,
   help,
   children,
+  className,
 }: {
   label: string;
   help?: string;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-[11.5px] font-medium text-foreground/80">{label}</span>
+    <label className={cn("flex min-w-0 flex-col gap-1", className)}>
+      <span className="text-xs font-medium text-foreground/80">{label}</span>
       {children}
-      {help ? <span className="text-[10.5px] leading-snug text-muted-foreground">{help}</span> : null}
+      {help ? <span className="text-2xs leading-snug text-muted-foreground">{help}</span> : null}
     </label>
   );
 }
 
-/** A titled, visually distinct panel grouping the options relevant to one
- * field type, so a `select` field never shows `relation`/`file` controls
- * and vice versa. */
+/** A titled panel grouping the options relevant to one field type, so a
+ * `select` field never shows `relation`/`file` controls and vice versa. */
 function OptionGroup({
   title,
   error,
@@ -52,11 +62,11 @@ function OptionGroup({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-border/60 bg-secondary/30 p-2.5">
+    <div className="flex flex-col gap-3 border-t border-border bg-surface-sunken/60 px-3 py-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground/70">{title}</p>
+        <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground/70">{title}</p>
         {error ? (
-          <span className="flex items-center gap-1 text-[10.5px] font-medium text-destructive">
+          <span className="flex items-center gap-1 text-2xs font-medium text-destructive">
             <AlertCircle className="size-3" />
             {error}
           </span>
@@ -77,36 +87,92 @@ function NumberInput({
   placeholder?: string;
 }) {
   return (
-    <input
+    <Input
       type="number"
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
       placeholder={placeholder}
-      className="h-8 w-full rounded-lg border border-border bg-secondary/60 px-2 text-[12.5px] text-foreground outline-none focus:border-primary"
+      className="h-control-md text-sm"
     />
   );
 }
 
-function MultipleValuesCheckbox({
+/** One boolean field option. Radix's checkbox is a `<button>`, so the
+ * label is wired up with `htmlFor` rather than by wrapping it. */
+function CheckboxOption({
   checked,
   onChange,
   label,
+  className = "",
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
+  className?: string;
 }) {
+  const id = useId();
   return (
-    <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="size-3.5 accent-primary"
-      />
-      {label}
-    </label>
+    <div className={`flex items-center gap-1.5 ${className}`}>
+      <Checkbox id={id} checked={checked} onCheckedChange={(next) => onChange(next === true)} />
+      <label htmlFor={id} className="cursor-pointer text-xs text-muted-foreground">
+        {label}
+      </label>
+    </div>
   );
+}
+
+/** True when the field's type has anything to configure at all — a `bool`
+ * has no options, so it gets no disclosure arrow. */
+function hasOptions(type: FieldSchema["type"]): boolean {
+  return type !== "bool";
+}
+
+/** The one-line version of the options panel, shown on the collapsed row so
+ * a 20-field schema can be read without opening 20 disclosures. */
+function optionsSummary(field: FieldSchema, collections: CollectionModel[]): string {
+  const parts: string[] = [];
+  const min = field.min as number | undefined;
+  const max = field.max as number | undefined;
+  switch (field.type) {
+    case "text":
+    case "editor":
+    case "password":
+      if (typeof min === "number" && min > 0) parts.push(`min ${min}`);
+      if (typeof max === "number" && max > 0) parts.push(`max ${max}`);
+      if (field.pattern) parts.push("pattern");
+      break;
+    case "number":
+      if (typeof min === "number") parts.push(`≥ ${min}`);
+      if (typeof max === "number") parts.push(`≤ ${max}`);
+      if (field.onlyInt) parts.push("integer");
+      break;
+    case "select": {
+      const values = (field.values as string[] | undefined) ?? [];
+      parts.push(values.length === 0 ? "no values" : values.slice(0, 3).join(", ") + (values.length > 3 ? "…" : ""));
+      if (isMultiValue(field)) parts.push(`up to ${field.maxSelect}`);
+      break;
+    }
+    case "relation": {
+      const target = collections.find((c) => c.id === field.collectionId);
+      parts.push(target ? `→ ${target.name}` : "no target");
+      if (isMultiValue(field)) parts.push(`up to ${field.maxSelect}`);
+      break;
+    }
+    case "file": {
+      const mimes = (field.mimeTypes as string[] | undefined) ?? [];
+      parts.push(mimes.length > 0 ? mimes.slice(0, 2).join(", ") : "any type");
+      if (field.maxSize) parts.push(`≤ ${Math.round(Number(field.maxSize) / 1024)} KB`);
+      if (isMultiValue(field)) parts.push(`up to ${field.maxSelect}`);
+      break;
+    }
+    case "autodate":
+      if (field.onCreate) parts.push("on create");
+      if (field.onUpdate) parts.push("on update");
+      break;
+    default:
+      break;
+  }
+  return parts.join(" · ");
 }
 
 export function SchemaFieldRow({
@@ -116,273 +182,332 @@ export function SchemaFieldRow({
   onRemove,
   onMoveUp,
   onMoveDown,
+  expanded,
+  onExpandedChange,
   dragHandleAttributes,
   dragHandleListeners,
   isDragging,
   nameError,
   optionsError,
 }: SchemaFieldRowProps) {
-  const options = field.options ?? {};
-  const multiple = (options.multiple as boolean | undefined) ?? false;
+  const multiple = isMultiValue(field);
+  const expandable = hasOptions(field.type);
+  const open = expanded && expandable;
 
-  function patch(patchOptions: Record<string, unknown>) {
-    onChange({ ...field, options: { ...options, ...patchOptions } });
+  // select/relation/file express "allow more than one" as `maxSelect > 1`
+  // rather than a boolean, flat on the field object — there's no `options`
+  // wrapper on the wire.
+  function patch(patch: Record<string, unknown>) {
+    onChange({ ...field, ...patch } as FieldSchema);
+  }
+
+  function toggleMultiple(checked: boolean) {
+    patch({ maxSelect: checked ? Math.max((field.maxSelect as number | undefined) ?? 0, 2) : 1 });
   }
 
   return (
     <div
-      className={`flex flex-col gap-2.5 rounded-xl border bg-card/60 p-3 transition-shadow ${
+      className={cn(
+        "overflow-hidden rounded-lg border bg-card transition-shadow",
         isDragging
-          ? "border-primary shadow-[0_8px_24px_-12px_rgba(0,0,0,0.4)]"
-          : nameError
+          ? "border-primary shadow-e3"
+          : nameError || optionsError
             ? "border-destructive/50"
-            : "border-border"
-      }`}
+            : "border-border",
+      )}
     >
-      <div
-        className={`flex items-center gap-2 rounded-lg transition-colors ${
-          isDragging ? "bg-primary/[0.06]" : ""
-        }`}
-      >
+      {/* Header line: identity of the field, always visible. ------------- */}
+      <div className="flex items-center gap-2 px-2 py-2">
         <button
           type="button"
           onKeyDown={(e) => {
             if (e.key === "ArrowUp") onMoveUp?.();
             if (e.key === "ArrowDown") onMoveDown?.();
           }}
-          className={`group grid size-7 shrink-0 cursor-grab touch-none place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing ${
-            isDragging ? "bg-primary/10 text-primary" : ""
-          }`}
+          className={cn(
+            "group grid size-control-sm shrink-0 cursor-grab touch-none place-items-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing",
+            isDragging && "bg-accent text-foreground",
+          )}
           aria-label="Drag to reorder, or use the arrow keys"
           title="Drag to reorder, or focus and use the arrow keys"
           {...dragHandleAttributes}
           {...dragHandleListeners}
         >
-          <GripVertical className="size-4 transition-transform group-hover:scale-110" />
+          <GripVertical className="size-4" />
         </button>
 
-        <div className="min-w-0 flex-1">
-          <input
-            type="text"
-            value={field.name}
-            onChange={(e) => onChange({ ...field, name: e.target.value })}
-            placeholder="field_name"
-            aria-invalid={nameError ? true : undefined}
-            className={`h-8 w-full rounded-lg border bg-secondary/60 px-2 font-mono text-[12.5px] text-foreground outline-none ${
-              nameError ? "border-destructive/60 focus:border-destructive" : "border-border focus:border-primary"
-            }`}
-          />
-        </div>
+        <Input
+          type="text"
+          value={field.name}
+          onChange={(e) => onChange({ ...field, name: e.target.value })}
+          placeholder="field_name"
+          aria-label="Field name"
+          aria-invalid={nameError ? true : undefined}
+          className="h-control-md min-w-0 max-w-80 flex-1 font-mono text-sm"
+        />
 
-        <select
+        <Select
           value={field.type}
-          onChange={(e) => onChange({ ...field, type: e.target.value as FieldSchema["type"], options: {} })}
-          className="h-8 shrink-0 rounded-lg border border-border bg-secondary/60 px-2 text-[12.5px] text-foreground outline-none focus:border-primary"
+          onValueChange={(type) => {
+            // Type-specific settings (min/max, values, collectionId, ...)
+            // don't carry over to a different type — start that type fresh.
+            onChange(
+              newField({
+                id: field.id,
+                name: field.name,
+                required: field.required,
+                type: type as FieldSchema["type"],
+              }),
+            );
+            onExpandedChange(hasOptions(type as FieldSchema["type"]));
+          }}
         >
-          {FIELD_TYPES.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger aria-label="Field type" className="h-control-md w-32 shrink-0 text-sm">
+            <SelectValue placeholder="Type…" />
+          </SelectTrigger>
+          <SelectContent>
+            {FIELD_TYPES.map((t) => (
+              <SelectItem key={t.value} value={t.value}>
+                {t.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-        <label className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={field.required ?? false}
-            onChange={(e) => onChange({ ...field, required: e.target.checked })}
-            className="size-3.5 accent-primary"
-          />
-          Required
-        </label>
-        <label className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={field.unique ?? false}
-            onChange={(e) => onChange({ ...field, unique: e.target.checked })}
-            className="size-3.5 accent-primary"
-          />
-          Unique
-        </label>
+        {/* The collapsed row still has to say what the field does; the open
+            one keeps the same spacer so nothing shifts when it opens. */}
+        <span className="hidden min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground/80 xl:block">
+          {open ? "" : optionsSummary(field, collections)}
+        </span>
+
+        <CheckboxOption
+          checked={field.required ?? false}
+          onChange={(required) => onChange({ ...field, required })}
+          label="Required"
+          className="shrink-0"
+        />
+
+        {expandable ? (
+          <button
+            type="button"
+            onClick={() => onExpandedChange(!expanded)}
+            aria-expanded={open}
+            aria-label={open ? "Hide options" : "Show options"}
+            className="grid size-control-sm shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} />
+          </button>
+        ) : (
+          <span className="size-control-sm shrink-0" />
+        )}
 
         <button
           type="button"
           onClick={onRemove}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-          aria-label="Remove field"
+          className="grid size-control-sm shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+          aria-label={`Remove ${field.name || "field"}`}
         >
           <Trash2 className="size-3.5" />
         </button>
       </div>
 
       {nameError ? (
-        <p className="-mt-1 flex items-center gap-1 pl-9 text-[11px] font-medium text-destructive">
+        <p className="flex items-center gap-1 px-3 pb-2 pl-11 text-xs font-medium text-destructive">
           <AlertCircle className="size-3 shrink-0" />
           {nameError}
         </p>
       ) : null}
 
-      {field.type === "text" || field.type === "editor" || field.type === "password" ? (
+      {/* Options panel: full row width, two columns, only when opened. --- */}
+      {open && (field.type === "text" || field.type === "editor" || field.type === "password") ? (
         <OptionGroup title="Length & format" error={optionsError}>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <OptionField label="Min length" help="Minimum character count. Leave blank for no minimum.">
               <NumberInput
-                value={options.min as number | undefined}
+                value={field.min as number | undefined}
                 onChange={(min) => patch({ min })}
                 placeholder="No minimum"
               />
             </OptionField>
             <OptionField label="Max length" help="Maximum character count. Leave blank for no maximum.">
               <NumberInput
-                value={options.max as number | undefined}
+                value={field.max as number | undefined}
                 onChange={(max) => patch({ max })}
                 placeholder="No maximum"
               />
             </OptionField>
+            <OptionField label="Pattern" help="A regular expression the value must fully match.">
+              <Input
+                type="text"
+                value={(field.pattern as string | undefined) ?? ""}
+                onChange={(e) => patch({ pattern: e.target.value || undefined })}
+                placeholder="e.g. ^[a-z0-9-]+$"
+                className="h-control-md font-mono text-sm"
+              />
+            </OptionField>
           </div>
-          <OptionField label="Pattern" help="A regular expression the value must fully match. Leave blank to skip.">
-            <input
-              type="text"
-              value={(options.pattern as string | undefined) ?? ""}
-              onChange={(e) => patch({ pattern: e.target.value || undefined })}
-              placeholder="e.g. ^[a-z0-9-]+$"
-              className="h-8 w-full rounded-lg border border-border bg-secondary/60 px-2 font-mono text-[12px] text-foreground outline-none focus:border-primary"
-            />
-          </OptionField>
         </OptionGroup>
       ) : null}
 
-      {field.type === "number" ? (
+      {open && field.type === "number" ? (
         <OptionGroup title="Range & precision" error={optionsError}>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <OptionField label="Min value" help="Reject values below this. Leave blank for no minimum.">
               <NumberInput
-                value={options.min as number | undefined}
+                value={field.min as number | undefined}
                 onChange={(min) => patch({ min })}
                 placeholder="No minimum"
               />
             </OptionField>
             <OptionField label="Max value" help="Reject values above this. Leave blank for no maximum.">
               <NumberInput
-                value={options.max as number | undefined}
+                value={field.max as number | undefined}
                 onChange={(max) => patch({ max })}
                 placeholder="No maximum"
               />
             </OptionField>
+            <div className="flex items-end pb-5">
+              <CheckboxOption
+                checked={(field.onlyInt as boolean | undefined) ?? false}
+                onChange={(onlyInt) => patch({ onlyInt })}
+                label="Integer only — reject decimals"
+              />
+            </div>
           </div>
-          <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={(options.onlyInt as boolean | undefined) ?? false}
-              onChange={(e) => patch({ onlyInt: e.target.checked })}
-              className="size-3.5 accent-primary"
-            />
-            Integer only — reject decimal values
-          </label>
         </OptionGroup>
       ) : null}
 
-      {field.type === "select" ? (
+      {open && field.type === "select" ? (
         <OptionGroup title="Choices" error={optionsError}>
-          <TagInput
-            label="Allowed values"
-            value={(options.values as string[] | undefined) ?? []}
-            onChange={(values) => patch({ values })}
-            placeholder="Add an option and press Enter"
-            hint="Records can only store one of these values per selection"
-          />
-          <MultipleValuesCheckbox
-            checked={multiple}
-            onChange={(checked) => patch({ multiple: checked })}
-            label="Allow multiple selections"
-          />
-          {multiple ? (
-            <OptionField label="Max selections" help="Cap how many values can be selected at once. Leave blank for no cap.">
-              <NumberInput
-                value={options.maxSelect as number | undefined}
-                onChange={(maxSelect) => patch({ maxSelect })}
-                placeholder="Unlimited"
-              />
-            </OptionField>
-          ) : null}
-        </OptionGroup>
-      ) : null}
-
-      {field.type === "relation" ? (
-        <OptionGroup title="Relation target" error={optionsError}>
-          <OptionField
-            label="Target collection"
-            help="Values stored here must be the id of an existing record in this collection."
-          >
-            <select
-              value={(options.collectionId as string | undefined) ?? ""}
-              onChange={(e) => patch({ collectionId: e.target.value || undefined })}
-              className="h-8 w-full rounded-lg border border-border bg-secondary/60 px-2 text-[12.5px] text-foreground outline-none focus:border-primary"
-            >
-              <option value="">Select target collection…</option>
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </OptionField>
-          <MultipleValuesCheckbox
-            checked={multiple}
-            onChange={(checked) => patch({ multiple: checked })}
-            label="Allow multiple related records"
-          />
-        </OptionGroup>
-      ) : null}
-
-      {field.type === "file" ? (
-        <OptionGroup title="File constraints" error={optionsError}>
-          <TagInput
-            label="Allowed MIME types"
-            value={(options.mimeTypes as string[] | undefined) ?? []}
-            onChange={(mimeTypes) => patch({ mimeTypes })}
-            placeholder="e.g. image/png"
-            hint="Leave empty to allow any file type"
-          />
-          <OptionField label="Max file size (bytes)" help="Reject uploads larger than this. e.g. 5242880 = 5 MB. Leave blank for no limit.">
-            <NumberInput
-              value={options.maxSize as number | undefined}
-              onChange={(maxSize) => patch({ maxSize })}
-              placeholder="No limit"
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <TagInput
+              label="Allowed values"
+              value={(field.values as string[] | undefined) ?? []}
+              onChange={(values) => patch({ values })}
+              placeholder="Add an option and press Enter"
+              hint="Records can only store one of these values per selection"
             />
-          </OptionField>
-          <MultipleValuesCheckbox
-            checked={multiple}
-            onChange={(checked) => patch({ multiple: checked })}
-            label="Allow multiple files"
-          />
+            <div className="flex flex-col gap-3">
+              <CheckboxOption checked={multiple} onChange={toggleMultiple} label="Allow multiple selections" />
+              {multiple ? (
+                <OptionField label="Max selections" help="Cap how many values can be selected at once.">
+                  <NumberInput
+                    value={field.maxSelect as number | undefined}
+                    onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                    placeholder="e.g. 3"
+                  />
+                </OptionField>
+              ) : null}
+            </div>
+          </div>
         </OptionGroup>
       ) : null}
 
-      {field.type === "autodate" ? (
-        <OptionGroup title="Timing" error={optionsError}>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={(options.onCreate as boolean | undefined) ?? false}
-                onChange={(e) => patch({ onCreate: e.target.checked })}
-                className="size-3.5 accent-primary"
-              />
-              Set on create
-            </label>
-            <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={(options.onUpdate as boolean | undefined) ?? false}
-                onChange={(e) => patch({ onUpdate: e.target.checked })}
-                className="size-3.5 accent-primary"
-              />
-              Set on update
-            </label>
+      {open && field.type === "relation" ? (
+        <OptionGroup title="Relation target" error={optionsError}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <OptionField
+              label="Target collection"
+              help="Values stored here must be the id of an existing record in this collection."
+            >
+              <Select
+                value={(field.collectionId as string | undefined) ?? ""}
+                onValueChange={(collectionId) => patch({ collectionId: collectionId || undefined })}
+              >
+                <SelectTrigger aria-label="Target collection" className="h-control-md w-full text-sm">
+                  <SelectValue placeholder="Select target collection…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {collections.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </OptionField>
+            <div className="flex flex-col gap-3">
+              <CheckboxOption checked={multiple} onChange={toggleMultiple} label="Allow multiple related records" />
+              {multiple ? (
+                <OptionField label="Max related records" help="Cap how many records can be related at once.">
+                  <NumberInput
+                    value={field.maxSelect as number | undefined}
+                    onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                    placeholder="e.g. 3"
+                  />
+                </OptionField>
+              ) : null}
+            </div>
           </div>
-          <p className="text-[10.5px] leading-snug text-muted-foreground">
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "file" ? (
+        <OptionGroup title="File constraints" error={optionsError}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <TagInput
+              label="Allowed MIME types"
+              value={(field.mimeTypes as string[] | undefined) ?? []}
+              onChange={(mimeTypes) => patch({ mimeTypes })}
+              placeholder="e.g. image/png"
+              hint="Leave empty to allow any file type"
+            />
+            <div className="flex flex-col gap-3">
+              <OptionField
+                label="Max file size (bytes)"
+                help="Reject uploads larger than this. e.g. 5242880 = 5 MB. Leave blank for no limit."
+              >
+                <NumberInput
+                  value={field.maxSize as number | undefined}
+                  onChange={(maxSize) => patch({ maxSize })}
+                  placeholder="No limit"
+                />
+              </OptionField>
+              <CheckboxOption checked={multiple} onChange={toggleMultiple} label="Allow multiple files" />
+              {multiple ? (
+                <OptionField label="Max files" help="Cap how many files can be uploaded at once.">
+                  <NumberInput
+                    value={field.maxSelect as number | undefined}
+                    onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                    placeholder="e.g. 3"
+                  />
+                </OptionField>
+              ) : null}
+            </div>
+          </div>
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "autodate" ? (
+        <OptionGroup title="Timing" error={optionsError}>
+          <div className="flex items-center gap-6">
+            <CheckboxOption
+              checked={(field.onCreate as boolean | undefined) ?? false}
+              onChange={(onCreate) => patch({ onCreate })}
+              label="Set on create"
+            />
+            <CheckboxOption
+              checked={(field.onUpdate as boolean | undefined) ?? false}
+              onChange={(onUpdate) => patch({ onUpdate })}
+              label="Set on update"
+            />
+          </div>
+          <p className="text-2xs leading-snug text-muted-foreground">
             The value is computed by the server; clients can't set it. At least one of the two must be enabled.
+          </p>
+        </OptionGroup>
+      ) : null}
+
+      {open && (field.type === "email" || field.type === "url" || field.type === "date" || field.type === "json") ? (
+        <OptionGroup title="Options" error={optionsError}>
+          <p className="text-2xs leading-snug text-muted-foreground">
+            {field.type === "email"
+              ? "Validated as an email address. Domain allow/deny lists are set through the API."
+              : field.type === "url"
+                ? "Validated as an absolute URL. Domain allow/deny lists are set through the API."
+                : field.type === "date"
+                  ? "Stored as a UTC timestamp. Filter it with the date macros — @now, @todayStart, @monthStart."
+                  : "Stored as JSON. Filterable with :length and :each; not sortable."}
           </p>
         </OptionGroup>
       ) : null}

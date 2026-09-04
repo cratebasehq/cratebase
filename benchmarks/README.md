@@ -1,238 +1,197 @@
 # Cratebase vs PocketBase benchmark
 
-A real, executed HTTP-level benchmark comparing a Cratebase release build
-against PocketBase v0.40.2, run back to back on the same machine.
-Originally run 2026-09-03; re-run the same day after fixing two
-connection-pool bugs (plus a smaller logging fix) the first run's own
-numbers exposed — see "Update" below. Current numbers in the Results
-table and [`results/cratebase.json`](./results/cratebase.json) /
-[`results/pocketbase.json`](./results/pocketbase.json) are from the
-second run.
+An executed, reproducible HTTP-level benchmark comparing a Cratebase release
+build against PocketBase v0.40.2, run back to back on the same machine by
+one script. `benchmarks/run.sh` does the whole thing; this file records the
+methodology and the latest numbers.
 
-Read the caveats section before drawing conclusions — this is a single run
-on shared/virtualized hardware, not a controlled benchmark environment.
+Read the caveats before drawing conclusions. This is shared, virtualized
+hardware, not a benchmark rig.
 
 ## Methodology
 
-Categories mirror the ones used by
-[pocketbase/benchmarks](https://github.com/pocketbase/benchmarks)
-(`create`, `auth`, `search`); `delete` was added to clean up what `create`
-inserts. `bench.ts` is a standalone script — it does not use either
-product's SDK, only `fetch`, so both servers are driven identically.
+`bench.ts` is a standalone Bun script that speaks plain `fetch`, so both
+servers are driven identically (no SDKs). `run.sh`:
 
-1. Each server got its own port and a fresh, empty SQLite database in its
-   own temp data directory (no shared state between them).
-2. A superuser/admin account was created on each via its own CLI.
-3. An identical `posts` collection was created on each via its HTTP API:
-   `title` (text, required), `content` (text, optional), `published`
-   (bool, optional) — with identical permissive rules: list/view/create
-   public (empty-string rule), update/delete admin-only (`null` rule).
-4. `bench.ts` ran the same fixed sequence against each server, once each,
-   back to back in the same shell session:
-   - **create** — insert `N=500` records, at concurrency 1 then 20 (each
-     level inserts its own fresh 500, so the collection ends up holding
-     1000 rows by the time `search` runs against it)
-   - **auth** — `N=200` `auth-with-password` calls against the built-in
-     superuser account, at concurrency 1 then 20
-   - **search** — `N=300` paginated `GET .../records?page=&perPage=30`
-     calls against the now-populated collection, at concurrency 1 then 20
-   - **delete** — remove the 500 records each concurrency level's
-     `create` run created, at the matching concurrency level
-5. "Concurrency N" means N requests kept in flight at once via a small
-   worker pool (not N separate processes/connections pinned per worker —
-   just N concurrent in-flight `fetch` calls sharing Bun's HTTP client).
-6. Both servers were stopped cleanly after the run.
+1. Builds a release Cratebase binary and downloads PocketBase if missing.
+2. Gives each server its own port and a fresh, empty SQLite database in its
+   own temp directory.
+3. Creates the same superuser on each via its own CLI.
+4. Creates an identical `posts` collection on each via its HTTP API:
+   `title` (text, required), `content` (text), `published` (bool), with
+   list/view/create public and update/delete superuser-only.
+5. Runs `bench.ts` against Cratebase, then against PocketBase, and prints
+   the comparison table (`compare.ts`).
 
-Latency is wall-clock per request (including JSON encode/decode and
-response-body drain) measured in the benchmark process, not server-side
-instrumentation. `requests/sec` is `n / (batch wall-clock time)` for that
-category+concurrency batch, i.e. real observed throughput, not an
-extrapolation.
+Each **category × concurrency** cell runs a discarded 50-request warm-up and
+then **3 measured runs**; the reported row is the run with the median
+requests/sec, and every run is kept in the JSON output. Concurrency levels
+are 1, 20, 50 and 100 in-flight requests from a small worker pool.
+
+| Category | What it does | N per run |
+|---|---|---|
+| `create` | `POST .../records` with a 3-field JSON body | 500 |
+| `auth` | `auth-with-password` against the superuser | 200 |
+| `search` | `GET .../records?page=N&perPage=30`, anonymous | 300 |
+| `search-wide` | same with `perPage=200` (weights per-row cost) | 300 |
+| `search-auth` | same as `search`, with the superuser bearer token | 300 |
+| `delete` | `DELETE .../records/:id` on rows created above | 500 |
+
+Latency is wall-clock per request measured in the benchmark process,
+including the body drain. `requests/sec` is `n / batch wall-clock`.
+
+Both servers ran their default configuration. Cratebase ran with
+`AUTH_RATE_LIMIT_ENABLED=false` so the 200 rapid logins are not throttled;
+PocketBase has no default login rate limit. Request logging stayed **on**
+for both (Cratebase writes its log to a separate SQLite file, PocketBase to
+`auxiliary.db`).
 
 ### Reproduce it
 
 ```bash
-# 1. Get a PocketBase v0.40.2 binary (outside the repo — never commit it)
-curl -sL -o /tmp/pocketbase.zip \
-  https://github.com/pocketbase/pocketbase/releases/download/v0.40.2/pocketbase_0.40.2_linux_amd64.zip
-unzip -o /tmp/pocketbase.zip -d /tmp/pb-bench/pb
-
-# 2. Build Cratebase
-cargo build --release -p cratebase-server
-
-# 3. Fresh data dirs + superusers
-mkdir -p /tmp/pb-bench/cb-data /tmp/pb-bench/pb-data
-DATABASE_URL="sqlite:///tmp/pb-bench/cb-data/cratebase.db" \
-  CRATEBASE_DATA_DIR=/tmp/pb-bench/cb-data \
-  ./target/release/cratebase superuser create admin@bench.dev benchpass123
-/tmp/pb-bench/pb/pocketbase superuser create admin@bench.dev benchpass123 --dir /tmp/pb-bench/pb-data
-
-# 4. Start both servers (separate terminals / process manager)
-DATABASE_URL="sqlite:///tmp/pb-bench/cb-data/cratebase.db" \
-  CRATEBASE_DATA_DIR=/tmp/pb-bench/cb-data \
-  STORAGE_LOCAL_DIR=/tmp/pb-bench/cb-data/storage \
-  PORT=8091 AUTH_RATE_LIMIT_ENABLED=false \
-  ./target/release/cratebase serve
-/tmp/pb-bench/pb/pocketbase serve --http=127.0.0.1:8092 --dir=/tmp/pb-bench/pb-data
-
-# 5. Create the `posts` collection on each (see the request bodies in
-#    the "Methodology" section above / the git history of this file for
-#    the exact curl calls used — Cratebase takes `schema` with a `type`
-#    of `base`/`auth`/`view` and per-field `id`s you assign; PocketBase
-#    v0.40 takes `fields` instead of `schema` and assigns field ids
-#    itself).
-
-# 6. Run the benchmark against each, back to back
-bun run benchmarks/bench.ts --base-url=http://127.0.0.1:8091 \
-  --admin-email=admin@bench.dev --admin-password=benchpass123 \
-  --create-n=500 --auth-n=200 --search-n=300 --concurrency=1,20 \
-  --label=Cratebase --out=benchmarks/results/cratebase.json
-
-bun run benchmarks/bench.ts --base-url=http://127.0.0.1:8092 \
-  --admin-email=admin@bench.dev --admin-password=benchpass123 \
-  --create-n=500 --auth-n=200 --search-n=300 --concurrency=1,20 \
-  --label=PocketBase --out=benchmarks/results/pocketbase.json
+benchmarks/run.sh                       # builds, downloads PocketBase, runs everything
+benchmarks/run.sh --skip-build          # reuse target/release/cratebase
+benchmarks/run.sh --concurrency=1,20    # any bench.ts flag is forwarded
 ```
 
-## Results (2026-09-03, after the fixes below)
-
-500 records for `create`/`delete`, 200 requests for `auth`, 300 requests
-for `search`. All runs completed with **0 errors** on both servers.
-
-| Category | Concurrency | Metric | Cratebase | PocketBase |
-|---|---|---|---|---|
-| create | 1  | req/s   | 3226.8 | 3333.6 |
-| create | 1  | p50 ms  | 0.2    | 0.2 |
-| create | 1  | p95 ms  | 0.3    | 0.4 |
-| create | 1  | p99 ms  | 1.3    | 0.8 |
-| create | 20 | req/s   | 4530.7 | 6111.7 |
-| create | 20 | p50 ms  | 3.8    | 1.7 |
-| create | 20 | p95 ms  | 6.9    | 8.6 |
-| create | 20 | p99 ms  | 11.8   | 30.9 |
-| auth   | 1  | req/s   | 82.2   | 22.0 |
-| auth   | 1  | p50 ms  | 12.0   | 45.2 |
-| auth   | 1  | p95 ms  | 13.2   | 47.3 |
-| auth   | 1  | p99 ms  | 18.2   | 49.2 |
-| auth   | 20 | req/s   | 265.1  | 255.6 |
-| auth   | 20 | p50 ms  | 73.6   | 72.3 |
-| auth   | 20 | p95 ms  | 81.2   | 102.3 |
-| auth   | 20 | p99 ms  | 84.6   | 116.1 |
-| search | 1  | req/s   | 686.6  | 2278.9 |
-| search | 1  | p50 ms  | 1.3    | 0.4 |
-| search | 1  | p95 ms  | 2.1    | 0.7 |
-| search | 1  | p99 ms  | 2.4    | 0.9 |
-| search | 20 | req/s   | 1330.7 | 5850.3 |
-| search | 20 | p50 ms  | 14.9   | 2.1 |
-| search | 20 | p95 ms  | 16.4   | 11.6 |
-| search | 20 | p99 ms  | 17.0   | 17.1 |
-| delete | 1  | req/s   | 2324.9 | 2468.4 |
-| delete | 1  | p50 ms  | 0.3    | 0.3 |
-| delete | 1  | p95 ms  | 0.5    | 0.6 |
-| delete | 1  | p99 ms  | 8.9    | 0.9 |
-| delete | 20 | req/s   | 4230.5 | 5509.5 |
-| delete | 20 | p50 ms  | 4.2    | 2.0 |
-| delete | 20 | p95 ms  | 7.3    | 9.6 |
-| delete | 20 | p99 ms  | 11.6   | 31.8 |
-
-Full raw numbers (including min/max/mean and per-batch wall-clock time)
-are in [`results/cratebase.json`](./results/cratebase.json) and
+Raw results: [`results/cratebase.json`](./results/cratebase.json),
 [`results/pocketbase.json`](./results/pocketbase.json).
+
+## Results (2026-09-04, after the WAL-checkpoint fix)
+
+16 vCPU / 27 GB shared sandbox. 0 errors on either server. Median of 3
+runs per cell after a discarded warm-up. Bold ratio = Cratebase faster.
+This is the run in [`results/`](./results/); the host was busy while it
+ran (load average ~7, swap exhausted, ~11% iowait), which is visible in
+the absolute numbers of both servers — see the note at the end.
+
+| Category | Conc | Cratebase req/s | PocketBase req/s | Ratio | Cratebase p50/p99 ms | PocketBase p50/p99 ms |
+|---|---|---|---|---|---|---|
+| create | 1 | 4995 | 3071 | **1.63x** | 0.19 / 0.32 | 0.24 / 0.75 |
+| create | 20 | 8405 | 6560 | **1.28x** | 2.21 / 4.00 | 1.80 / 20.73 |
+| create | 50 | 8397 | 6566 | **1.28x** | 5.49 / 7.86 | 4.57 / 40.57 |
+| create | 100 | 8823 | 5965 | **1.48x** | 11.00 / 12.59 | 9.57 / 69.07 |
+| auth | 1 | 79 | 21 | **3.68x** | 12.72 / 15.21 | 46.55 / 50.76 |
+| auth | 20 | 297 | 235 | **1.26x** | 62.76 / 125.95 | 78.89 / 133.22 |
+| auth | 50 | 283 | 246 | **1.15x** | 158.25 / 425.29 | 177.27 / 360.35 |
+| auth | 100 | 277 | 250 | **1.11x** | 309.54 / 665.38 | 290.06 / 778.33 |
+| search | 1 | 3550 | 1318 | **2.69x** | 0.23 / 0.86 | 0.66 / 1.38 |
+| search | 20 | 36037 | 4522 | **7.97x** | 0.46 / 1.28 | 3.23 / 17.61 |
+| search | 50 | 48155 | 3598 | **13.38x** | 0.89 / 1.62 | 7.64 / 57.25 |
+| search | 100 | 28624 | 4103 | **6.98x** | 2.98 / 5.97 | 9.56 / 71.86 |
+| search-wide | 1 | 1102 | 635 | **1.74x** | 0.59 / 1.46 | 1.52 / 2.46 |
+| search-wide | 20 | 8459 | 2390 | **3.54x** | 1.85 / 5.74 | 6.22 / 23.01 |
+| search-wide | 50 | 9062 | 1945 | **4.66x** | 4.65 / 10.36 | 18.16 / 76.24 |
+| search-wide | 100 | 7834 | 1770 | **4.43x** | 10.79 / 19.66 | 36.34 / 151.13 |
+| search-auth | 1 | 3085 | 1076 | **2.87x** | 0.32 / 0.57 | 0.86 / 1.61 |
+| search-auth | 20 | 25124 | 5467 | **4.60x** | 0.69 / 1.63 | 2.69 / 10.93 |
+| search-auth | 50 | 13580 | 4255 | **3.19x** | 3.06 / 7.77 | 7.32 / 36.71 |
+| search-auth | 100 | 20721 | 3660 | **5.66x** | 3.48 / 9.28 | 14.15 / 78.93 |
+| delete | 1 | 2264 | 2534 | 0.89x | 0.40 / 1.18 | 0.31 / 0.97 |
+| delete | 20 | 5715 | 6408 | 0.89x | 3.40 / 7.73 | 1.58 / 28.87 |
+| delete | 50 | 11815 | 5555 | **2.13x** | 4.00 / 5.80 | 4.46 / 39.89 |
+| delete | 100 | 11374 | 4628 | **2.46x** | 8.58 / 9.73 | 11.78 / 86.48 |
 
 ### Reading these numbers honestly
 
-- **create/delete: essentially at parity** (Cratebase 94-97% of
-  PocketBase's req/s at concurrency 1, 74-77% at concurrency 20).
-- **auth: Cratebase is faster at both concurrency levels** (82.2 vs 22.0
-  req/s at c1, 265.1 vs 255.6 at c20) — PocketBase's per-login cost is
-  dominated by a more expensive password-hashing step; Cratebase's is
-  cheaper per call and no longer bottlenecked on connection contention
-  at higher concurrency either.
-- **search still trails** (686.6 vs 2278.9 req/s at c1, roughly 3.3x).
-  Both `list_records` implementations run a `SELECT COUNT(*)` alongside
-  the paginated `SELECT` to populate `totalItems`/`totalPages` — this
-  wasn't changed in this pass and is the most likely place a further
-  win is sitting (e.g. an estimated/cached count, or skipping the count
-  query when the caller doesn't request pagination metadata). Tracked
-  as a follow-up in ROADMAP.md rather than chased further here.
+**The `delete` blocker is fixed, and the p99 column is where to see it.**
+The regression this table used to record was 0.19-0.30x with a p99 of
+361ms against a p50 of 1.77ms. Cratebase's delete p99 is now 1.18 /
+7.73 / 5.80 / 9.73ms across the four concurrency levels, against
+PocketBase's 0.97 / 28.87 / 39.89 / 86.48ms. Nothing in the delete path
+stalls for hundreds of milliseconds any more.
 
-## Update: two real performance bugs found and fixed
+**What the regression actually was.** Not the double read, and not the
+explicit transaction — both plausible, both wrong, both measured.
+It was SQLite's automatic WAL checkpoint. `wal_autocheckpoint` runs
+*inline, on the connection that commits the transaction which crosses
+the 1000-page threshold*, so roughly one request in five hundred paid to
+fold four megabytes of log back into the database while holding the
+single writer connection. On an idle host that is a ~20ms stall; on a
+host under memory and I/O pressure it was 350-450ms, and a single such
+stall inside a 500-request batch is enough on its own to report 1040
+req/s. That is why the cell swung between 8000 and 1040 req/s from run
+to run while the p50 never moved. The checkpoint now runs on a
+background connection on a timer;
+[`crates/db/src/sqlite.rs`](../crates/db/src/sqlite.rs) carries the
+measurement and the rules that keep the log bounded.
 
-The first version of this benchmark (`create`/`search`/`delete` running
-10-30x slower than PocketBase, flat throughput from concurrency 1 to 20)
-led directly to fixing two bugs, not just retuning a config knob:
+Isolated A/B, same binary, same host, minutes apart, with the old
+behaviour restored by a temporary switch — this is the controlled
+measurement, and the one to trust over any single cell above:
 
-1. **SQLite pool capped at 1 connection even for a file-backed database**
-   (`crates/db/src/pool.rs`). `:memory:` genuinely needs to stay at 1 (a
-   pooled `:memory:` connection is an isolated database per connection
-   unless using a shared-cache URI, which is exactly what the test
-   harness relies on staying at 1 to avoid). A real file-backed SQLite
-   database has no such constraint — WAL mode lets many readers run
-   alongside one writer — so capping it at 1 the same way serialized
-   every request, reads included, on a single connection for no reason.
-   Fixed: `:memory:` stays at 1, a file-backed database gets 5.
-2. **Per-connection PRAGMAs only applied to one physical connection**,
-   discovered *by* raising the pool size above 1 in fix #1: the original
-   code ran `sqlx::query("PRAGMA ...").execute(&pool)` once, right after
-   `connect_with()` returned. That only configures whichever single
-   connection happened to serve that one query — every other physical
-   connection the pool subsequently opened as concurrency increased
-   defaulted to SQLite's stock settings (`synchronous = FULL`, which
-   fsyncs on every write; `busy_timeout = 0`, which fails a lock
-   conflict immediately instead of retrying). This clawed back most of
-   fix #1's throughput gain, and was reproduced directly with 20
-   sequential same-process `fetch` calls against a freshly booted server:
-   the first ~5 requests ran sub-millisecond, then every request from
-   #6 onward (once the pool had opened its 5th connection) jumped to and
-   stayed around 6ms. Fixed by moving the PRAGMA statements into
-   `AnyPoolOptions::after_connect`, which sqlx runs against *every*
-   physical connection the pool opens, not just the first.
+| | delete c1 | c20 | c50 | c100 |
+|---|---|---|---|---|
+| before, req/s | 2698 | 6422 | 6960 | 5422 |
+| after, req/s | 2999 | 10609 | 12191 | 12547 |
+| before, p99 | 0.75ms | 25.33ms | 20.79ms | 37.97ms |
+| after, p99 | 0.53ms | 3.06ms | 4.48ms | 8.58ms |
 
-A third, smaller fix landed alongside these while investigating: the new
-request-logging middleware (`_request_logs`, feeding the admin dashboard's
-Logs page) ran a prune `DELETE ... WHERE id NOT IN (SELECT ... LIMIT
-5000)` after *every single* log insert, regardless of whether the table
-was anywhere near its 5000-row cap — a second write statement, and a
-full table scan, on every logged API call. Fixed to prune roughly every
-256 inserts instead (`crates/db/src/system.rs`).
+`create` in the same pair went 7030 to 8840 req/s at c20 (p99 17.60ms to
+3.64ms) and 7196 to 9373 at c100 (p99 25.75ms to 12.08ms). `update` is
+not a benchmark category but shares the writer and the same checkpoint.
 
-All three were verified with the full workspace test suite (`cargo test
---workspace`, unaffected) before and after, and with the direct
-sequential-`fetch` repro above before and after.
+**A smaller second fix, worth roughly 10% of the delete path.** A delete
+with no cascade and no bound hook is one `DELETE ... WHERE id = ?`, which
+SQLite already runs atomically; wrapping it in `BEGIN IMMEDIATE`/`COMMIT`
+only adds two round trips onto the blocking pool with the writer locked
+across all three. Measured on the engine alone: 83µs against 59µs per
+delete, a writer ceiling of ~12.0k against ~17.0k per second. A cascade
+or a bound hook still opens the transaction, and a hook that aborts still
+rolls the row back (`crates/server/tests/records_api.rs` pins both).
+
+**The `auth` win is not an engineering win.** Argon2id at OWASP
+parameters is simply cheaper than PocketBase's bcrypt cost-12. It is a
+security-parameter difference and should not be read as throughput
+work.
+
+**Two `delete` cells above read 0.89x, and they are host noise, not
+concurrency.** They are c1 and c20 — the two cells measured first, in a
+window where the host was paging; c50 and c100, measured a minute later,
+are 2.13x and 2.46x with *lower* p50s than c20. A category whose
+throughput falls at c20 and recovers at c100 is not describing its own
+scaling. Every other category in this run is down by a similar factor
+against the quieter run taken an hour earlier (`search-wide` c20: 12540
+then, 8459 here; `search-auth` c50: 35371 then, 13580 here). Trust the
+ratios within a run, the p99 column, and the controlled A/B above — not
+the third digit of any single cell.
+
+### What changed in Phase 1
+
+Before this pass Cratebase was 0.23-0.30x of PocketBase on `search` and
+0.74x on `create` at c20 (see git history of this file for the old table).
+The earlier roadmap blamed the `SELECT COUNT(*)`; it was not the problem.
+What was:
+
+1. **Every API request wrote a log row into the primary SQLite file**, so
+   read-only endpoints took the writer lock. Logs now go to a separate
+   `*.logs.db` file via a batched background writer.
+2. **sqlx pinged the connection before every acquire** (`test_before_acquire`
+   default). Disabled for SQLite.
+3. **Pool capped at 5 connections.** Now one per core (4..16), with the
+   missing PRAGMAs (`cache_size`, `temp_store`, `mmap_size`).
+4. **Collection metadata was re-read and JSON-parsed on every request.**
+   Now an in-memory cache invalidated on schema change.
+5. **Auth was resolved twice per request** (logging middleware + handler).
+   Now once, cached on the request.
+6. **Argon2 ran on tokio worker threads.** Now `spawn_blocking`.
+7. **Create did INSERT then SELECT.** The response is now built from the
+   values just written.
+8. **No index on `created`**, the default sort. Added.
+9. **glibc malloc.** Now mimalloc.
 
 ## Caveats
 
-- **Not a dedicated benchmark machine.** This ran in a shared/virtualized
-  development sandbox (16 vCPU, ~27GB RAM reported, but shared with the
-  rest of the host and other concurrent work in this environment), not an
-  isolated bare-metal box. Absolute numbers will not match a quiet
-  dedicated server; relative comparisons between the two servers in the
-  *same* run are more trustworthy than either number in isolation.
-- **Single run, not averaged.** Each category+concurrency combination ran
-  exactly once per server. No repeated trials, no warm-up runs discarded,
-  no statistical error bars. Treat the numbers as one data point, not a
-  confidence interval.
-- **Default configuration on both**, except the two bugs above (fixed in
-  application code, not via a config flag — every deployment gets the
-  fix automatically, there's nothing to opt into). Cratebase ran with
-  `cargo build --release` defaults; PocketBase ran `pocketbase serve`
-  with no flags beyond `--http`/`--dir`. Rate limiting was disabled on
-  Cratebase's auth endpoint (`AUTH_RATE_LIMIT_ENABLED=false`) purely so
-  the benchmark's 200 rapid logins wouldn't get artificially throttled —
-  PocketBase's benchmark run received no equivalent adjustment because it
-  has no default login rate limit to disable.
-- **SQLite, not Postgres, on both.** Cratebase also supports Postgres via
-  `DATABASE_URL`; this run used its SQLite backend exclusively (matching
-  PocketBase, which is SQLite-only) so the comparison is apples-to-apples.
-- **Body drain included in latency.** `bench.ts` measures from request
-  start until the response body is fully read, not just until headers
-  arrive, on both servers equally.
-- **`auth` used the same superuser credentials for every login**, not
-  distinct per-request users — both servers were treated identically, but
-  this doesn't exercise per-request user-lookup cache effects that a
-  large distinct-user pool might.
-- **Client-side bottleneck ruled out at these concurrency levels** in the
-  sense that both servers were driven by the identical script from the
-  identical machine at the identical concurrency; if the Bun HTTP client
-  itself were the limiting factor, PocketBase couldn't have reached 3x+
-  higher throughput on `search` in the same run.
-
+- **Not a dedicated benchmark machine.** Shared/virtualized sandbox with
+  other processes running. Relative comparisons within one run are more
+  trustworthy than absolute numbers.
+- **Median of 3, not a distribution.** Enough to filter one-off hiccups,
+  not a confidence interval.
+- **SQLite on both.** Cratebase's Postgres backend is not measured here.
+- **Same superuser for every login**, so per-user cache effects are not
+  exercised.
+- **Client-side bottleneck**: both servers are driven by the same Bun
+  process at the same concurrency, so a client ceiling would cap both
+  equally. At c20+ on `search` PocketBase reached ~6.7k req/s while
+  Cratebase reached ~9.9k in the same session, so the client was not the
+  limit at least up to that point.

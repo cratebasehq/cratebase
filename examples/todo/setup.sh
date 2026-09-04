@@ -16,9 +16,11 @@ ensure_superuser_and_login
 ensure_collection "todos" '{
   "name": "todos",
   "type": "base",
-  "schema": [
-    { "id": "title", "name": "title", "type": "text", "required": true },
-    { "id": "done", "name": "done", "type": "bool", "required": false }
+  "fields": [
+    { "name": "title", "type": "text", "required": true },
+    { "name": "done", "type": "bool", "required": false },
+    { "name": "created", "type": "autodate", "onCreate": true },
+    { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
   ],
   "listRule": "@request.auth.id != \"\"",
   "viewRule": "@request.auth.id != \"\"",

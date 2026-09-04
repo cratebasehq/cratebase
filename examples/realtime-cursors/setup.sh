@@ -13,12 +13,17 @@ ensure_superuser_and_login
 ensure_collection "cursors" '{
   "name": "cursors",
   "type": "base",
-  "schema": [
-    { "id": "clientId", "name": "clientId", "type": "text", "required": true, "unique": true },
-    { "id": "x", "name": "x", "type": "number", "required": true },
-    { "id": "y", "name": "y", "type": "number", "required": true },
-    { "id": "color", "name": "color", "type": "text", "required": true },
-    { "id": "label", "name": "label", "type": "text" }
+  "fields": [
+    { "name": "clientId", "type": "text", "required": true },
+    { "name": "x", "type": "number", "required": true },
+    { "name": "y", "type": "number", "required": true },
+    { "name": "color", "type": "text", "required": true },
+    { "name": "label", "type": "text" },
+    { "name": "created", "type": "autodate", "onCreate": true },
+    { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
+  ],
+  "indexes": [
+    "CREATE UNIQUE INDEX `idx_cursors_clientId` ON `cursors` (`clientId`)"
   ],
   "listRule": "",
   "viewRule": "",

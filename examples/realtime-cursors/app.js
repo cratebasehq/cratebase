@@ -1,9 +1,11 @@
 // Cratebase — realtime multiplayer cursors example.
 //
-// Uses the official `cratebase` JS SDK, imported via the bare specifier
-// "cratebase" (resolved by the import map in index.html to the built
-// local package, sdk/js/dist — no npm publish or build step needed).
-import { ClientResponseError, Cratebase } from "cratebase";
+// Uses the official PocketBase JS SDK, imported via the bare specifier
+// "pocketbase" (resolved by the import map in index.html to the published
+// package on esm.sh — no npm install or build step needed). Cratebase's
+// API is byte-compatible with PocketBase v0.23+, so the official client
+// works unchanged.
+import PocketBase, { ClientResponseError } from "pocketbase";
 
 // Defaults to the Cratebase server's usual dev port. Override with
 // `?api=http://host:port` if you're serving this example from somewhere
@@ -11,7 +13,7 @@ import { ClientResponseError, Cratebase } from "cratebase";
 const API_BASE = new URL(window.location.href).searchParams.get("api") || "http://localhost:8090";
 const COLLECTION = "cursors";
 
-const cb = new Cratebase(API_BASE);
+const cb = new PocketBase(API_BASE);
 const cursors = cb.collection(COLLECTION);
 
 // ---------------------------------------------------------------------
@@ -100,8 +102,8 @@ function deleteOwnCursor() {
 // ---------------------------------------------------------------------
 
 async function subscribeCursors(onEvent, onStatus) {
-  const unsubscribe = await cb.realtime.subscribe(COLLECTION, onEvent);
-  // RealtimeService.subscribe() resolving means the subscription is live;
+  const unsubscribe = await cursors.subscribe("*", onEvent);
+  // RecordService.subscribe() resolving means the subscription is live;
   // it doesn't expose a connection-status stream (drops/reconnects happen
   // transparently under the hood), so this pill is "did we ever connect",
   // not a continuously accurate live/offline indicator.

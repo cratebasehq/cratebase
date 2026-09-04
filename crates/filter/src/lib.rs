@@ -1,126 +1,80 @@
-//! A small filter expression language: parses strings like
-//! `status = "active" && (owner = @request.auth.id || public = true)` and
-//! compiles them into parameterized SQL usable against both SQLite and
-//! Postgres. Shared by record list/view queries and API access rules.
+//! PocketBase's filter / API-rule expression language for Cratebase.
+//!
+//! Parses strings like
+//!
+//! ```text
+//! status = "active" && (author = @request.auth.id || tags.name ?= "public")
+//! ```
+//!
+//! into an [`Expr`], compiles them into parameterized SQL for SQLite and
+//! Postgres ([`compile`]), and can evaluate them in-process against a
+//! record snapshot for realtime subscriptions ([`evaluate`]).
+//!
+//! # Grammar
+//!
+//! * Operators: `= != > >= < <= ~ !~` and their "any of" forms
+//!   `?= ?!= ?> ?>= ?< ?<= ?~ ?!~`; `&&`, `||`, parentheses.
+//! * Identifiers: dotted field paths through relations (`author.name`),
+//!   back-relations (`comments_via_post.title`), JSON paths
+//!   (`data.some.key`), geo coordinates (`loc.lat`); optional modifier
+//!   `:isset | :length | :each | :lower`.
+//! * Macros: `@now @second @minute @hour @weekday @day @month @year
+//!   @yesterday @tomorrow @todayStart @todayEnd @monthStart @monthEnd
+//!   @yearStart @yearEnd`, `@request.auth[.path]`, `@request.body.path`
+//!   (alias `@request.data.path`), `@request.query.path`,
+//!   `@request.headers.name`, `@request.method`, `@request.context`,
+//!   `@collection.name.path`.
+//! * Function calls: `geoDistance(lonA, latA, lonB, latB)`.
+//!
+//! # Semantics the compiler mirrors from PocketBase
+//!
+//! * `null` and `""` are the same "empty" value; `!=` also matches
+//!   `NULL` columns.
+//! * `~` escapes `\`, `%` and `_` and wraps the pattern in `%...%`,
+//!   emitting `ESCAPE '\'`; an operand that already contains a `%` is a
+//!   hand-written pattern and is used verbatim.
+//! * A multi-valued field is only unpacked by `:each`. Bare, it compares
+//!   as the raw JSON text of the column, so `tags = "a"` is false for
+//!   `["a","b"]` and the `?` prefix changes nothing.
+//! * Element operands (`:each`, paths through a multi relation): `?op` is
+//!   any-element, the bare operator is every-element (see [`eval`] for
+//!   the exact rules).
+//! * Back-relations and `@collection.X` are `LEFT JOIN`s shared by every
+//!   reference to the same collection, so several conditions constrain
+//!   the same joined row. A bare operator over one means *every* joined
+//!   row must satisfy it (`?op` is the "at least one" form) — the
+//!   difference matters on an API rule, where "any" is the permissive
+//!   reading.
+//! * `:length` on a single-valued path is ignored rather than rejected,
+//!   which is what PocketBase does.
+//!
+//! The host implements [`Resolver`] to supply the schema and the request
+//! context; [`parse_cached`] keeps parsed rules in a bounded LRU.
 
 mod ast;
+mod cache;
 mod compiler;
 mod error;
+pub mod eval;
 mod lexer;
+mod macros;
 mod parser;
+mod path;
+mod resolver;
+mod terms;
 
-pub use ast::{CompareOp, Expr, Literal, Operand};
-pub use compiler::{compile, parse_and_compile, CompiledFilter, Dialect, Resolved, Resolver};
+#[doc(hidden)]
+pub mod testing;
+
+pub use ast::{CompareOp, Expr, Literal, Modifier, Operand, FUNCTIONS};
+pub use cache::{parse_cached, CACHE_CAPACITY};
+pub use compiler::{compile, parse_and_compile, resolve_sort_path, CompiledFilter};
 pub use error::FilterError;
+pub use eval::evaluate;
+pub use macros::{date_macro, DATE_MACROS};
 pub use parser::Parser;
-
-/// Scan a filter expression for relation dot-notation (`author.name`),
-/// returning the distinct relation field names referenced (the segment
-/// before the first dot), in first-seen order. `@request.*` context
-/// variables are excluded since they are not relation fields.
-///
-/// `Resolver::resolve` is synchronous, so a relation identifier can't load
-/// its target collection's schema on demand — callers that support
-/// relation dot-notation use this first to prefetch every referenced
-/// relation's target collection before compiling.
-pub fn relation_idents(src: &str) -> Result<Vec<String>, FilterError> {
-    let tokens = lexer::Lexer::new(src).tokenize()?;
-    let mut out = Vec::new();
-    for token in tokens {
-        if let lexer::Token::Ident(name) = token {
-            if name.starts_with('@') {
-                continue;
-            }
-            if let Some((head, rest)) = name.split_once('.') {
-                if !rest.is_empty() && !out.iter().any(|h: &String| h == head) {
-                    out.push(head.to_string());
-                }
-            }
-        }
-    }
-    Ok(out)
-}
+pub use path::{Join, MAX_DEPTH};
+pub use resolver::{Dialect, RequestPath, Resolver};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestResolver;
-    impl Resolver for TestResolver {
-        fn resolve(&self, ident: &str) -> Result<Resolved, FilterError> {
-            match ident {
-                "@request.auth.id" => Ok(Resolved::Value(serde_json::json!("user-1"))),
-                other => Ok(Resolved::Column(format!("\"{other}\""))),
-            }
-        }
-    }
-
-    fn compile_str(src: &str) -> CompiledFilter {
-        parse_and_compile(src, &TestResolver, Dialect::Postgres, 0).unwrap()
-    }
-
-    #[test]
-    fn simple_eq() {
-        let c = compile_str(r#"status = "active""#);
-        assert_eq!(c.sql, "\"status\" = $1");
-        assert_eq!(c.params, vec![serde_json::json!("active")]);
-    }
-
-    #[test]
-    fn and_or_precedence() {
-        let c = compile_str(r#"a = 1 && b = 2 || c = 3"#);
-        assert_eq!(c.sql, "((\"a\" = $1 AND \"b\" = $2) OR \"c\" = $3)");
-    }
-
-    #[test]
-    fn parens_override_precedence() {
-        let c = compile_str(r#"a = 1 && (b = 2 || c = 3)"#);
-        assert_eq!(c.sql, "(\"a\" = $1 AND (\"b\" = $2 OR \"c\" = $3))");
-    }
-
-    #[test]
-    fn contains_operator_wraps_wildcards() {
-        let c = compile_str(r#"title ~ "hello""#);
-        assert_eq!(c.sql, "\"title\" ILIKE $1");
-        assert_eq!(c.params, vec![serde_json::json!("%hello%")]);
-    }
-
-    #[test]
-    fn sqlite_dialect_uses_like() {
-        let c = parse_and_compile(r#"title ~ "hi""#, &TestResolver, Dialect::Sqlite, 0).unwrap();
-        assert_eq!(c.sql, "\"title\" LIKE $1");
-    }
-
-    #[test]
-    fn null_comparison() {
-        let c = compile_str("deleted_at = null");
-        assert_eq!(c.sql, "\"deleted_at\" IS NULL");
-        assert!(c.params.is_empty());
-
-        let c = compile_str("deleted_at != null");
-        assert_eq!(c.sql, "\"deleted_at\" IS NOT NULL");
-    }
-
-    #[test]
-    fn context_variable_becomes_param() {
-        let c = compile_str("owner = @request.auth.id");
-        assert_eq!(c.sql, "\"owner\" = $1");
-        assert_eq!(c.params, vec![serde_json::json!("user-1")]);
-    }
-
-    #[test]
-    fn offset_shifts_placeholders() {
-        let c = parse_and_compile("a = 1", &TestResolver, Dialect::Postgres, 2).unwrap();
-        assert_eq!(c.sql, "\"a\" = $3");
-    }
-
-    #[test]
-    fn empty_filter_errors() {
-        assert!(matches!(Parser::parse(""), Err(FilterError::Empty)));
-    }
-
-    #[test]
-    fn unknown_operator_errors() {
-        assert!(Parser::parse("a % 1").is_err());
-    }
-}
+mod tests;

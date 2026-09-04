@@ -1,15 +1,16 @@
 # syntax=docker/dockerfile:1
 
 # ---- frontend build -----------------------------------------------------
-# Builds the JS SDK and the admin dashboard's static assets, which get
-# embedded straight into the Rust binary in the next stage (rust-embed).
+# Builds the admin dashboard's static assets, which get embedded straight
+# into the Rust binary in the next stage (rust-embed). The dashboard talks
+# to Cratebase with the official `pocketbase` npm client — no in-house SDK
+# to build here anymore.
 FROM oven/bun:1-slim AS frontend
 WORKDIR /app
 COPY package.json bun.lock ./
-COPY sdk/js sdk/js
 COPY web/admin web/admin
 COPY web/email web/email
-RUN bun install && bun run sdk:build && bun run admin:build && bun run email:build
+RUN bun install && bun run admin:build && bun run email:build
 
 # ---- deps cache layer -------------------------------------------------
 # Copies only the manifests first so `cargo build` for dependencies is

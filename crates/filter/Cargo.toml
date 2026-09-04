@@ -6,7 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+cratebase-core.workspace = true
+chrono.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# Lets the tests run the compiled SQL against real rows, so the SQL
+# compiler and the in-process evaluator are compared on the same cases
+# instead of each being asserted on its own.
+rusqlite = { version = "0.32", features = ["bundled"] }

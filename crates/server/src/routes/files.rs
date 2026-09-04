@@ -1,312 +1,501 @@
-use std::io::Cursor;
+//! `/api/files` — serving record files, thumbnails and file tokens.
+//!
+//! # `protected` is not "always needs a token"
+//!
+//! This is the single most surprising thing in the file API, measured
+//! against PocketBase v0.40.2 (KNOWN_DIVERGENCES §29): marking a file
+//! field `protected` does **not** make it private. What it does is switch
+//! on a `viewRule` check for the *token owner* — and an empty `viewRule`
+//! is public, so a protected file in a public collection is served to
+//! anyone, with or without a token. Only a restricted `viewRule` actually
+//! gates the file, and an unauthorized request is then a `404`, never a
+//! `403`, so the URL cannot confirm that the record exists.
+//!
+//! # Thumbs
+//!
+//! `?thumb=WxH[t|b|f]`, `?thumb=0xH`, `?thumb=Wx0`. A thumb is generated
+//! on first request and cached under
+//! `{collectionId}/{recordId}/thumbs_{filename}/{spec}_{filename}`, so
+//! the second request is a plain object-store read. A thumb of something
+//! that is not an image falls back to the original file with a `200`.
+
+use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
-use axum::http::header;
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderValue};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use cratebase_auth::{issue_file_token, verify_token, TokenKind};
-use cratebase_core::AppError;
+use cratebase_core::{Collection, Field, FieldKind, FieldType, Record};
+use cratebase_db::context::{AuthContext, RequestContext};
 use cratebase_db::records;
-use cratebase_db::resolver::{
-    evaluate_rule, load_related_collections_for_rule, RequestContext, RuleOutcome,
-};
-use cratebase_db::{admins, collections, AuthContext};
-use image::imageops::FilterType;
-use image::{DynamicImage, ImageFormat};
+use futures::TryStreamExt;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
-use crate::extract::CurrentAuth;
-use crate::helpers::{file_key, load_collection};
-use crate::http_error::{ApiError, ApiResult};
-use crate::state::AppState;
+use crate::app::App;
+use crate::events::{collection_tags, FileDownloadEvent, FileTokenEvent};
+use crate::extract::{Auth, RequestInfo};
+use crate::http_error::{ApiError, ApiQuery, ApiResult};
+use crate::routes::common;
 
-pub fn router() -> Router<AppState> {
+/// PocketBase's `@request.context` value while a protected file's
+/// `viewRule` is evaluated.
+const PROTECTED_FILE_CONTEXT: &str = "protectedFile";
+
+pub fn router() -> Router<App> {
     Router::new()
-        .route("/files/{collection}/{record_id}/{filename}", get(download))
-        .route("/files/token", post(issue_file_token_route))
+        .route("/files/token", post(token))
+        .route("/files/{collection}/{recordId}/{filename}", get(download))
 }
 
-#[derive(Debug, Deserialize)]
-struct DownloadParams {
-    /// A PocketBase-style thumb spec: `WxH` (cover, center-cropped),
-    /// `WxHf` (fit inside the box, no cropping), or `WxHt`/`WxHb`
-    /// (cover, cropped from the top/bottom instead of centered). Ignored
-    /// unless the file's mime type is a raster image format we can
-    /// decode/encode.
+// -------------------------------------------------------------- file tokens
+
+/// `POST /api/files/token`. Any authenticated record may mint one; what
+/// it unlocks is decided per file by the owning collection's `viewRule`.
+async fn token(State(app): State<App>, auth: Auth) -> ApiResult<Json<serde_json::Value>> {
+    let config = &auth.collection.auth.file_token;
+    let claims =
+        cratebase_auth::new_file_claims(&auth.id, &auth.collection_id, config.duration.max(1));
+    let token = cratebase_auth::sign(
+        &claims,
+        &app.token_signing_key(&auth.record.token_key(), &config.secret),
+    )
+    .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let mut event = FileTokenEvent::new(app.clone(), Some(auth), token);
+    app.hooks()
+        .on_file_token_request
+        .trigger_bare(&mut event)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(json!({ "token": event.token })))
+}
+
+/// Resolve a `?token=` file token into the rule-evaluation context of its
+/// owner. Anything wrong with the token is simply "no auth", which then
+/// fails a restricted `viewRule` and becomes a 404.
+pub async fn file_token_context(app: &App, token: &str) -> Option<AuthContext> {
+    if token.is_empty() {
+        return None;
+    }
+    let unverified = cratebase_auth::decode_unverified(token).ok()?;
+    if unverified.token_type != cratebase_auth::TokenType::File {
+        return None;
+    }
+    let collection = app.db().collections.get_by_id(&unverified.collection_id)?;
+    if !collection.is_auth() {
+        return None;
+    }
+    let record = records::find_by_id_raw(app.db(), &collection, &unverified.id)
+        .await
+        .ok()?;
+    let key = app.token_signing_key(&record.token_key(), &collection.auth.file_token.secret);
+    cratebase_auth::verify(token, &key).ok()?;
+    Some(AuthContext::new(record))
+}
+
+// ---------------------------------------------------------------- downloads
+
+#[derive(Debug, Default, Deserialize)]
+struct FileQuery {
+    #[serde(default)]
     thumb: Option<String>,
-    /// A short-lived `FileToken` minted by `POST /api/files/token`,
-    /// letting a context that can't send an `Authorization` header (an
-    /// `<img src>`, a shared link) still pass an auth-gated `viewRule`.
+    #[serde(default)]
+    download: Option<String>,
+    #[serde(default)]
     token: Option<String>,
 }
 
-/// Streams the file straight from the storage backend to the response body
-/// rather than buffering it in memory, so a multi-hundred-MB upload doesn't
-/// cost a multi-hundred-MB allocation per concurrent download.
 async fn download(
-    State(app): State<AppState>,
-    Path((collection_name, record_id, filename)): Path<(String, String, String)>,
-    Query(params): Query<DownloadParams>,
-    CurrentAuth(auth): CurrentAuth,
+    State(app): State<App>,
+    Path((collection_ref, record_id, filename)): Path<(String, String, String)>,
+    ApiQuery(query): ApiQuery<FileQuery>,
+    info: RequestInfo,
 ) -> ApiResult<Response> {
-    let collection = load_collection(&app, &collection_name).await?;
+    let not_found = || ApiError::not_found("");
 
-    // A `?token=` file token overrides the caller's live session for this
-    // request only — it exists precisely so an unauthenticated `<img>` tag
-    // can still satisfy an auth-required `viewRule`. An absent or invalid
-    // token silently falls back to whatever the `Authorization` header
-    // resolved to, same as today.
-    let auth = match params.token.as_deref() {
-        Some(token) => resolve_file_token(&app, token).await.or(auth),
-        None => auth,
-    };
-    let ctx = RequestContext { auth, data: None };
+    let collection = app
+        .db()
+        .collections
+        .get(&collection_ref)
+        .ok_or_else(not_found)?;
+    let record = records::find_by_id_raw(app.db(), &collection, &record_id)
+        .await
+        .map_err(|_| not_found())?;
+    let field = owning_field(&record, &filename).ok_or_else(not_found)?;
 
-    // A file is only downloadable if its owning record is currently
-    // visible under the collection's viewRule — files piggyback on record
-    // access control rather than having their own rule type.
-    let related =
-        load_related_collections_for_rule(&app.db, &collection, &collection.view_rule).await?;
-    let outcome = evaluate_rule(
-        &collection.view_rule,
-        &collection,
-        app.db.backend,
-        &ctx,
-        0,
-        &related,
-    )?;
-    let rule_filter = match outcome {
-        RuleOutcome::DenyAll => {
-            return Err(ApiError(AppError::Forbidden(
-                "you are not allowed to access this file".into(),
-            )))
+    if is_protected(&field) && !may_view(&app, &collection, &record, &query, &info).await? {
+        return Err(not_found());
+    }
+
+    let storage = app.storage();
+    let key = common::file_key(&collection.id, &record_id, &filename);
+    let mime = mime_for(&filename);
+
+    // A thumb request that cannot be honoured (an unparsable spec, a
+    // non-image file, a decode failure) falls back to the original with a
+    // 200 — that is what PocketBase does.
+    let mut served_key = key.clone();
+    let mut inline_bytes: Option<Bytes> = None;
+    if let Some(spec) = query
+        .thumb
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(ThumbSpec::parse)
+    {
+        if let Some((thumb_key, bytes)) =
+            thumb(&storage, &collection.id, &record_id, &filename, &key, spec).await
+        {
+            served_key = thumb_key;
+            inline_bytes = bytes;
         }
-        RuleOutcome::AllowAll => None,
-        RuleOutcome::Filtered(f) => Some(f),
-    };
-    records::get_record(&app.db, &collection, &record_id, rule_filter).await?;
-
-    let key = file_key(&collection.id, &record_id, &filename);
-    let content_type = mime_guess::from_path(&filename).first_or_octet_stream();
-
-    if let (Some(spec), Some(format)) = (
-        params.thumb.as_deref().and_then(ThumbSpec::parse),
-        image_format_for(content_type.essence_str()),
-    ) {
-        let thumb_key = thumb_key(&collection.id, &record_id, &filename, &spec.raw);
-        return serve_thumbnail(
-            &app,
-            &thumb_key,
-            &key,
-            format,
-            &spec,
-            content_type.essence_str(),
-        )
-        .await;
     }
 
-    let stream = app.storage.get_stream(&key).await?;
-    let response = (
-        [(header::CONTENT_TYPE, content_type.essence_str().to_string())],
-        Body::from_stream(stream),
+    let mut event = FileDownloadEvent::new(
+        app.clone(),
+        collection.clone(),
+        Some(record),
+        served_key.clone(),
+        filename.clone(),
+        collection_tags(&collection),
     );
-    Ok(response.into_response())
+    app.hooks()
+        .on_file_download_request
+        .trigger_bare(&mut event)
+        .await
+        .map_err(ApiError)?;
+    let served_key = event.key.clone();
+    let served_name = event.served_name.clone();
+
+    let disposition = if is_truthy(query.download.as_deref()) {
+        format!("attachment; filename=\"{served_name}\"")
+    } else {
+        format!("inline; filename=\"{served_name}\"")
+    };
+
+    let body = match inline_bytes {
+        Some(bytes) => Body::from(bytes),
+        None => {
+            let stream = storage
+                .get_stream(&served_key)
+                .await
+                .map_err(|_| not_found())?;
+            Body::from_stream(stream.map_err(std::io::Error::other))
+        }
+    };
+
+    let mut response = body.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&mime)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    Ok(response)
 }
 
-/// Mints a `FileToken` carrying the current caller's identity. The caller
-/// must already be authenticated (admin or auth record) — this endpoint
-/// only re-packages an existing session into a short-lived, URL-embeddable
-/// form, it never grants access beyond what the caller already has.
-async fn issue_file_token_route(
-    State(app): State<AppState>,
-    CurrentAuth(auth): CurrentAuth,
-) -> ApiResult<Json<Value>> {
-    let ctx =
-        auth.ok_or_else(|| ApiError(AppError::Unauthorized("missing or invalid token".into())))?;
-    let token = issue_file_token(
-        &ctx.id,
-        &ctx.collection_id,
-        ctx.is_superuser,
-        &app.config.auth_secret,
-        app.config.file_token_ttl_seconds,
+/// The file field a name belongs to, or `None` when the record does not
+/// actually hold that file (which is a 404, not a storage miss).
+fn owning_field(record: &Record, filename: &str) -> Option<Field> {
+    record
+        .collection
+        .fields_of_type(FieldType::File)
+        .find(|f| {
+            record
+                .get_string_list(&f.name)
+                .iter()
+                .any(|name| name == filename)
+        })
+        .cloned()
+}
+
+fn is_protected(field: &Field) -> bool {
+    matches!(
+        field.kind,
+        FieldKind::File {
+            protected: true,
+            ..
+        }
     )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    Ok(Json(json!({ "token": token })))
 }
 
-/// Resolves a `?token=` query param into the `AuthContext` it carries.
-/// Mirrors `CurrentAuth`'s `Admin`/`Auth` resolution but keyed off
-/// `TokenKind::FileToken` instead of a `Bearer` header. Any failure
-/// (expired, wrong kind, dangling reference to a deleted admin/record)
-/// resolves to `None` rather than a hard error — the caller falls back to
-/// its normal session, same as an absent token.
-async fn resolve_file_token(app: &AppState, token: &str) -> Option<AuthContext> {
-    let claims = verify_token(token, &app.config.auth_secret).ok()?;
-    if claims.kind != TokenKind::FileToken {
-        return None;
-    }
-    if claims.is_superuser {
-        admins::get_admin_by_id(&app.db, &claims.sub).await.ok()?;
-        return Some(AuthContext {
-            id: claims.sub,
-            collection_id: String::new(),
-            is_superuser: true,
-            record: Default::default(),
-        });
-    }
-    let collection = collections::get_collection_by_id(&app.db, &claims.collection_id)
-        .await
-        .ok()?;
-    let record = records::get_record(&app.db, &collection, &claims.sub, None)
-        .await
-        .ok()?;
-    let record_map = record.as_object().cloned().unwrap_or_default();
-    Some(AuthContext {
-        id: claims.sub,
-        collection_id: claims.collection_id,
-        is_superuser: false,
-        record: record_map,
-    })
+/// The `viewRule` gate a protected file goes through, evaluated for the
+/// `?token=` owner (or for a guest when there is no token).
+async fn may_view(
+    app: &App,
+    collection: &Arc<Collection>,
+    record: &Record,
+    query: &FileQuery,
+    info: &RequestInfo,
+) -> ApiResult<bool> {
+    let auth = match query.token.as_deref() {
+        Some(token) => file_token_context(app, token).await,
+        // A regular `Authorization` header works too; PocketBase accepts
+        // either, and the query token is only needed because a browser
+        // download cannot set a header.
+        None => info.auth.as_ref().map(Auth::to_auth_context),
+    };
+    let ctx = RequestContext {
+        auth,
+        context: PROTECTED_FILE_CONTEXT.to_string(),
+        ..Default::default()
+    };
+    common::record_matches_rule(
+        app.db(),
+        &app.db().collections,
+        &ctx,
+        collection,
+        &collection.view_rule,
+        record.id(),
+    )
+    .await
+    .map_err(|e| ApiError(e.into()))
 }
 
-/// How a thumb spec's `WxH` box is applied to the source image, matching
-/// PocketBase's `WxH`/`WxHf`/`WxHt`/`WxHb` suffix convention.
-#[derive(Clone, Copy)]
+fn is_truthy(raw: Option<&str>) -> bool {
+    matches!(raw, Some("1" | "true" | "TRUE" | "True"))
+}
+
+fn mime_for(filename: &str) -> String {
+    mime_guess::from_path(filename)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string()
+}
+
+// ------------------------------------------------------------------- thumbs
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThumbMode {
-    /// No suffix: scale to cover the box, cropping the overflow evenly
-    /// from both edges (centered).
-    Cover,
-    /// `f`: scale to fit inside the box, preserving aspect ratio, never
-    /// cropping — the result may be smaller than `WxH` in one dimension.
+    /// `WxH` / `WxHt` / `WxHb`: cover then crop to the anchor.
+    Crop(Anchor),
+    /// `WxHf`: fit inside the box, no cropping.
     Fit,
-    /// `t`: like `Cover`, but the crop keeps the top edge.
-    CropTop,
-    /// `b`: like `Cover`, but the crop keeps the bottom edge.
-    CropBottom,
+    /// `0xH` or `Wx0`: one dimension, aspect preserved.
+    Scale,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    Center,
+    Top,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ThumbSpec {
     width: u32,
     height: u32,
     mode: ThumbMode,
-    /// The original spec string (e.g. `"100x100f"`), reused verbatim in
-    /// the cache key so distinct specs never collide.
-    raw: String,
 }
 
 impl ThumbSpec {
-    fn parse(spec: &str) -> Option<Self> {
-        let (dims, mode) = if let Some(d) = spec.strip_suffix('f') {
-            (d, ThumbMode::Fit)
-        } else if let Some(d) = spec.strip_suffix('t') {
-            (d, ThumbMode::CropTop)
-        } else if let Some(d) = spec.strip_suffix('b') {
-            (d, ThumbMode::CropBottom)
-        } else {
-            (spec, ThumbMode::Cover)
+    /// `WxH`, `WxHt`, `WxHb`, `WxHf`, `0xH`, `Wx0`. Anything else is not
+    /// a thumb request and the original file is served instead.
+    fn parse(raw: &str) -> Option<ThumbSpec> {
+        let (head, mode) = match raw.chars().last() {
+            Some('t') => (&raw[..raw.len() - 1], ThumbMode::Crop(Anchor::Top)),
+            Some('b') => (&raw[..raw.len() - 1], ThumbMode::Crop(Anchor::Bottom)),
+            Some('f') => (&raw[..raw.len() - 1], ThumbMode::Fit),
+            _ => (raw, ThumbMode::Crop(Anchor::Center)),
         };
-        let (w, h) = dims.split_once('x')?;
+        let (w, h) = head.split_once('x')?;
         let width: u32 = w.parse().ok()?;
         let height: u32 = h.parse().ok()?;
-        if width == 0 || height == 0 {
+        if width == 0 && height == 0 {
             return None;
         }
-        Some(Self {
+        // A dimension of zero always means "keep the aspect ratio",
+        // whatever suffix came with it.
+        let mode = if width == 0 || height == 0 {
+            ThumbMode::Scale
+        } else {
+            mode
+        };
+        Some(ThumbSpec {
             width,
             height,
             mode,
-            raw: spec.to_string(),
         })
     }
-}
 
-/// Raster formats the `image` crate can both decode and re-encode. Any
-/// other mime (svg, pdf, video, ...) falls back to serving the original
-/// file untouched regardless of `?thumb=`.
-fn image_format_for(mime_essence: &str) -> Option<ImageFormat> {
-    match mime_essence {
-        "image/png" => Some(ImageFormat::Png),
-        "image/jpeg" => Some(ImageFormat::Jpeg),
-        "image/gif" => Some(ImageFormat::Gif),
-        "image/webp" => Some(ImageFormat::WebP),
-        _ => None,
+    fn key(&self) -> String {
+        let suffix = match self.mode {
+            ThumbMode::Crop(Anchor::Top) => "t",
+            ThumbMode::Crop(Anchor::Bottom) => "b",
+            ThumbMode::Fit => "f",
+            _ => "",
+        };
+        format!("{}x{}{suffix}", self.width, self.height)
     }
 }
 
-/// Derived cache key for a thumbnail, stored alongside the original under
-/// a `thumbs/` prefix so it survives in the same storage backend (local
-/// disk or S3) and is trivially found again on the next identical request.
-fn thumb_key(collection_id: &str, record_id: &str, filename: &str, spec_raw: &str) -> String {
-    format!("{collection_id}/{record_id}/thumbs/{filename}_{spec_raw}")
-}
-
-fn render_thumbnail(img: &DynamicImage, spec: &ThumbSpec) -> DynamicImage {
-    match spec.mode {
-        ThumbMode::Fit => img.resize(spec.width, spec.height, FilterType::Lanczos3),
-        ThumbMode::Cover => img.resize_to_fill(spec.width, spec.height, FilterType::Lanczos3),
-        ThumbMode::CropTop => resize_crop_anchored(img, spec.width, spec.height, true),
-        ThumbMode::CropBottom => resize_crop_anchored(img, spec.width, spec.height, false),
-    }
-}
-
-/// Scales the image to cover `width`x`height` (same as `resize_to_fill`)
-/// but crops the overflow from one edge only, anchoring the opposite edge
-/// instead of centering — PocketBase's `t`/`b` thumb suffixes.
-fn resize_crop_anchored(
-    img: &DynamicImage,
-    width: u32,
-    height: u32,
-    anchor_top: bool,
-) -> DynamicImage {
-    let (src_w, src_h) = (img.width().max(1) as f64, img.height().max(1) as f64);
-    let scale = (width as f64 / src_w).max(height as f64 / src_h);
-    let scaled_w = ((src_w * scale).round() as u32).max(width);
-    let scaled_h = ((src_h * scale).round() as u32).max(height);
-    let scaled = img.resize_exact(scaled_w, scaled_h, FilterType::Lanczos3);
-    let x = scaled_w.saturating_sub(width) / 2;
-    let y = if anchor_top {
-        0
-    } else {
-        scaled_h.saturating_sub(height)
-    };
-    scaled.crop_imm(x, y, width, height)
-}
-
-/// Serves a thumbnail, generating and caching it to storage on first
-/// request; every subsequent request for the same `thumb_key` is a plain
-/// storage read with no re-decode/re-encode.
-async fn serve_thumbnail(
-    app: &AppState,
-    thumb_key: &str,
+/// Serve a cached thumb, or generate and cache one. `None` means "not a
+/// thumbnailable file" and the caller falls back to the original.
+async fn thumb(
+    storage: &cratebase_storage::Storage,
+    collection_id: &str,
+    record_id: &str,
+    filename: &str,
     original_key: &str,
-    format: ImageFormat,
-    spec: &ThumbSpec,
-    content_type: &str,
-) -> ApiResult<Response> {
-    if !app.storage.exists(thumb_key).await? {
-        let original = app.storage.get(original_key).await?;
-        let img = image::load_from_memory(&original)
-            .map_err(|e| ApiError(AppError::Internal(format!("failed to decode image: {e}"))))?;
-        let resized = render_thumbnail(&img, spec);
-        let mut buf = Vec::new();
-        resized
-            .write_to(&mut Cursor::new(&mut buf), format)
-            .map_err(|e| {
-                ApiError(AppError::Internal(format!(
-                    "failed to encode thumbnail: {e}"
-                )))
-            })?;
-        app.storage.put(thumb_key, Bytes::from(buf)).await?;
+    spec: ThumbSpec,
+) -> Option<(String, Option<Bytes>)> {
+    let key = format!(
+        "{}/{}_{filename}",
+        common::thumbs_prefix(collection_id, record_id, filename),
+        spec.key()
+    );
+    if storage.exists(&key).await.unwrap_or(false) {
+        return Some((key, None));
     }
 
-    let stream = app.storage.get_stream(thumb_key).await?;
-    let response = (
-        [(header::CONTENT_TYPE, content_type.to_string())],
-        Body::from_stream(stream),
-    );
-    Ok(response.into_response())
+    let source = storage.get(original_key).await.ok()?;
+    let format = image::ImageFormat::from_path(filename).ok()?;
+    let generated = tokio::task::spawn_blocking(move || render(&source, format, spec))
+        .await
+        .ok()??;
+    if let Err(e) = storage.put(&key, generated.clone()).await {
+        // A cache write failure must not fail the request.
+        tracing::warn!(key = %key, error = %e, "failed to cache a thumbnail");
+    }
+    Some((key, Some(generated)))
+}
+
+/// Decode, resize and re-encode. CPU-bound, so it runs on the blocking
+/// pool.
+fn render(source: &[u8], format: image::ImageFormat, spec: ThumbSpec) -> Option<Bytes> {
+    use image::imageops::FilterType;
+
+    let image = image::load_from_memory_with_format(source, format).ok()?;
+    let (width, height) = (image.width().max(1), image.height().max(1));
+
+    let resized = match spec.mode {
+        ThumbMode::Scale => {
+            let (w, h) = if spec.width == 0 {
+                let scaled = (width as f64 * spec.height as f64 / height as f64).round();
+                (scaled.max(1.0) as u32, spec.height)
+            } else {
+                let scaled = (height as f64 * spec.width as f64 / width as f64).round();
+                (spec.width, scaled.max(1.0) as u32)
+            };
+            image.resize_exact(w, h, FilterType::Lanczos3)
+        }
+        ThumbMode::Fit => image.resize(spec.width, spec.height, FilterType::Lanczos3),
+        ThumbMode::Crop(anchor) => {
+            // Cover the box, then take the slice the anchor asks for.
+            let scale = (spec.width as f64 / width as f64).max(spec.height as f64 / height as f64);
+            let covered = image.resize_exact(
+                ((width as f64 * scale).round() as u32).max(spec.width),
+                ((height as f64 * scale).round() as u32).max(spec.height),
+                FilterType::Lanczos3,
+            );
+            let x = covered.width().saturating_sub(spec.width) / 2;
+            let y = match anchor {
+                Anchor::Top => 0,
+                Anchor::Bottom => covered.height().saturating_sub(spec.height),
+                Anchor::Center => covered.height().saturating_sub(spec.height) / 2,
+            };
+            let mut covered = covered;
+            image::imageops::crop(&mut covered, x, y, spec.width, spec.height)
+                .to_image()
+                .into()
+        }
+    };
+
+    let mut out = std::io::Cursor::new(Vec::new());
+    resized.write_to(&mut out, format).ok()?;
+    Some(Bytes::from(out.into_inner()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thumb_specs_cover_every_pocketbase_form() {
+        assert_eq!(
+            ThumbSpec::parse("100x100"),
+            Some(ThumbSpec {
+                width: 100,
+                height: 100,
+                mode: ThumbMode::Crop(Anchor::Center)
+            })
+        );
+        assert_eq!(
+            ThumbSpec::parse("50x50t").map(|s| s.mode),
+            Some(ThumbMode::Crop(Anchor::Top))
+        );
+        assert_eq!(
+            ThumbSpec::parse("50x50b").map(|s| s.mode),
+            Some(ThumbMode::Crop(Anchor::Bottom))
+        );
+        assert_eq!(
+            ThumbSpec::parse("50x50f").map(|s| s.mode),
+            Some(ThumbMode::Fit)
+        );
+        assert_eq!(
+            ThumbSpec::parse("0x200").map(|s| s.mode),
+            Some(ThumbMode::Scale)
+        );
+        assert_eq!(
+            ThumbSpec::parse("200x0").map(|s| s.mode),
+            Some(ThumbMode::Scale)
+        );
+        assert_eq!(ThumbSpec::parse("0x0"), None);
+        assert_eq!(ThumbSpec::parse("nonsense"), None);
+        assert_eq!(ThumbSpec::parse("100"), None);
+        assert_eq!(ThumbSpec::parse("100x100").unwrap().key(), "100x100");
+        assert_eq!(ThumbSpec::parse("50x50t").unwrap().key(), "50x50t");
+    }
+
+    #[test]
+    fn a_real_png_is_resized_and_re_encoded() {
+        let mut source = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(8, 4)
+            .write_to(&mut source, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = source.into_inner();
+
+        let cropped = render(
+            &bytes,
+            image::ImageFormat::Png,
+            ThumbSpec::parse("4x4").unwrap(),
+        )
+        .unwrap();
+        let decoded = image::load_from_memory(&cropped).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (4, 4));
+
+        let scaled = render(
+            &bytes,
+            image::ImageFormat::Png,
+            ThumbSpec::parse("0x2").unwrap(),
+        )
+        .unwrap();
+        let decoded = image::load_from_memory(&scaled).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (4, 2));
+
+        assert!(render(
+            b"not an image",
+            image::ImageFormat::Png,
+            ThumbSpec::parse("4x4").unwrap()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn download_flag_is_explicit() {
+        assert!(is_truthy(Some("1")));
+        assert!(is_truthy(Some("true")));
+        assert!(!is_truthy(Some("0")));
+        assert!(!is_truthy(None));
+        assert_eq!(mime_for("a.txt"), "text/plain");
+        assert_eq!(mime_for("a.png"), "image/png");
+    }
 }

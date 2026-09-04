@@ -1,15 +1,16 @@
 // Cratebase Realtime Chat example.
 //
-// Imported via the bare specifier "cratebase", resolved by the import map
-// in index.html to the built local package (sdk/js/dist) — no npm publish
-// or build step needed. See README.md.
-import { Cratebase } from "cratebase";
+// Imported via the bare specifier "pocketbase", resolved by the import map
+// in index.html to the official PocketBase JS SDK on esm.sh — no npm
+// install or build step needed. Cratebase's API is byte-compatible with
+// PocketBase v0.23+, so the official client works unchanged. See README.md.
+import PocketBase from "pocketbase";
 
 const BASE_URL = "http://localhost:8090";
 const COLLECTION = "messages";
 const NAME_STORAGE_KEY = "cratebase-chat-display-name";
 
-const cb = new Cratebase(BASE_URL);
+const cb = new PocketBase(BASE_URL);
 
 const statusEl = document.getElementById("status");
 const statusTextEl = document.getElementById("statusText");
@@ -115,7 +116,7 @@ async function loadHistory() {
 async function connectRealtime() {
   setStatus("connecting", "connecting…");
   try {
-    await cb.realtime.subscribe(COLLECTION, (event) => {
+    await cb.collection(COLLECTION).subscribe("*", (event) => {
       if (event.action === "create") {
         appendMessage(event.record);
       } else if (event.action === "delete") {

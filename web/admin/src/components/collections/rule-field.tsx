@@ -1,6 +1,8 @@
 import { HelpCircle } from "lucide-react";
-import { SegmentedControl } from "@/components/interior/segmented-control";
-import { Popover } from "@/components/interior/popover";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 interface RuleFieldProps {
   label: string;
@@ -39,47 +41,53 @@ const EXAMPLES: { expr: string; desc: string }[] = [
  * `crates/filter/src/{lexer,ast,parser}.rs`. */
 function SyntaxHelp() {
   return (
-    <Popover
-      label="Filter expression syntax help"
-      side="top"
-      align="end"
-      triggerClassName="!h-6 !w-6 !p-0 !justify-center !border-0 !bg-transparent !text-muted-foreground hover:!text-foreground"
-      className="!w-[320px] !p-3"
-      trigger={<HelpCircle className="size-3.5" />}
-    >
-      <div className="flex flex-col gap-3">
-        <div>
-          <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground/70">Operators</p>
-          <dl className="flex flex-col gap-1">
-            {OPERATORS.map((o) => (
-              <div key={o.op} className="flex flex-col">
-                <dt className="font-mono text-[11.5px] text-foreground">{o.op}</dt>
-                <dd className="text-[10.5px] leading-snug text-muted-foreground">{o.desc}</dd>
-              </div>
-            ))}
-          </dl>
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label="Filter expression syntax help"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <HelpCircle className="size-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="end" className="w-80 p-3">
+        <div className="flex flex-col gap-3">
+          <div>
+            <p className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground/70">Operators</p>
+            <dl className="flex flex-col gap-1">
+              {OPERATORS.map((o) => (
+                <div key={o.op} className="flex flex-col">
+                  <dt className="font-mono text-xs text-foreground">{o.op}</dt>
+                  <dd className="text-2xs leading-snug text-muted-foreground">{o.desc}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          <div>
+            <p className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground/70">Context values</p>
+            <p className="text-2xs leading-snug text-muted-foreground">
+              <code className="font-mono text-foreground">@request.auth.*</code> reads the caller's own auth record
+              (e.g. <code className="font-mono">@request.auth.id</code>); it's <code className="font-mono">""</code> for
+              anonymous callers. <code className="font-mono text-foreground">@request.data.*</code> reads the incoming
+              create/update payload.
+            </p>
+          </div>
+          <div>
+            <p className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground/70">Examples</p>
+            <ul className="flex flex-col gap-1.5">
+              {EXAMPLES.map((e) => (
+                <li key={e.expr}>
+                  <code className="block break-all font-mono text-xs text-foreground">{e.expr}</code>
+                  <span className="text-2xs leading-snug text-muted-foreground">{e.desc}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
-        <div>
-          <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground/70">Context values</p>
-          <p className="text-[10.5px] leading-snug text-muted-foreground">
-            <code className="font-mono text-foreground">@request.auth.*</code> reads the caller's own auth record
-            (e.g. <code className="font-mono">@request.auth.id</code>); it's <code className="font-mono">""</code> for
-            anonymous callers. <code className="font-mono text-foreground">@request.data.*</code> reads the incoming
-            create/update payload.
-          </p>
-        </div>
-        <div>
-          <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground/70">Examples</p>
-          <ul className="flex flex-col gap-1.5">
-            {EXAMPLES.map((e) => (
-              <li key={e.expr}>
-                <code className="block break-all font-mono text-[11px] text-foreground">{e.expr}</code>
-                <span className="text-[10.5px] leading-snug text-muted-foreground">{e.desc}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </div>
+      </PopoverContent>
     </Popover>
   );
 }
@@ -99,31 +107,39 @@ export function RuleField({ label, value, onChange }: RuleFieldProps) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[13px] font-medium text-foreground">{label}</span>
-        <SegmentedControl
-          label={`${label} access`}
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          spacing={0}
+          aria-label={`${label} access`}
           value={mode}
-          onValueChange={setMode}
-          options={[
-            { value: "admin", label: "Admins" },
-            { value: "public", label: "Public" },
-            { value: "custom", label: "Custom" },
-          ]}
-        />
+          // A segmented control always has exactly one option picked —
+          // Radix reports "" when the pressed item is toggled off.
+          onValueChange={(next) => {
+            if (next) setMode(next);
+          }}
+        >
+          <ToggleGroupItem value="admin">Admins</ToggleGroupItem>
+          <ToggleGroupItem value="public">Public</ToggleGroupItem>
+          <ToggleGroupItem value="custom">Custom</ToggleGroupItem>
+        </ToggleGroup>
       </div>
       {mode === "custom" ? (
         <div className="flex items-center gap-1.5">
-          <input
+          <Input
             type="text"
             value={value ?? ""}
             onChange={(e) => onChange(e.target.value)}
-            placeholder='e.g. owner = @request.auth.id'
-            className="h-9 w-full min-w-0 flex-1 rounded-[9px] border-2 border-border bg-secondary/60 px-2.5 font-mono text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:bg-card"
+            placeholder="e.g. owner = @request.auth.id"
+            aria-label={`${label} rule expression`}
+            className="h-control-md min-w-0 flex-1 font-mono text-sm"
           />
           <SyntaxHelp />
         </div>
       ) : (
-        <p className="text-[11.5px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           {mode === "admin" ? "Only superusers can do this." : "Anyone, including anonymous callers, can do this."}
         </p>
       )}

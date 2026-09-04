@@ -1,12 +1,37 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import type { CollectionModel, RecordModel } from "cratebase";
-import { ClientResponseError } from "cratebase";
-import { Drawer } from "@/components/interior/drawer";
-import { LoadingButton } from "@/components/interior/loading-button";
-import { ProgressBar } from "@/components/interior/progress-bar";
-import { RecordFieldInput, existingRecordValue } from "@/components/records/record-field-input";
+import { Check, Copy, Trash2 } from "lucide-react";
+import type { CollectionModel, RecordModel } from "pocketbase";
+import { isMultiValue, userFields, type FieldSchema } from "@/lib/field-types";
+import { singularize, validateRecordDraft, type FileDraft } from "@/lib/record-validation";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { Spinner } from "@/components/ui/spinner";
+import { RecordFieldInput } from "@/components/records/record-field-input";
+import { FileField } from "@/components/records/file-field";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useRecordMutations } from "@/hooks/use-records";
+import { describeFailure } from "@/lib/api";
 
 interface RecordDrawerProps {
   collection: CollectionModel;
@@ -15,49 +40,258 @@ interface RecordDrawerProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type FileFieldState = Record<string, File[]>;
+type Draft = Record<string, unknown>;
 
+/** How long a value has to hold still before its error is allowed on
+ * screen. Matches the collection form's inline validation. */
+const SETTLE_MS = 450;
+
+/** Field errors plus the two auth-only rules the schema itself can't
+ * express (the identity field and, on create, a password). */
+function allErrors(
+  fields: FieldSchema[],
+  values: Draft,
+  identityField: string | null,
+  isNew: boolean,
+): Record<string, string> {
+  const errors = validateRecordDraft(fields, values);
+  if (identityField) {
+    if (String(values[identityField] ?? "").trim().length === 0) {
+      errors[identityField] = `A ${identityField} is required`;
+    }
+    if (isNew && String(values.password ?? "").length < 8) {
+      errors.password = "At least 8 characters";
+    }
+  }
+  return errors;
+}
+
+/** The form's starting value for one field. `file` fields carry a
+ * `{ keep, added }` draft rather than a bare value, because "which of the
+ * stored files survive" is part of the edit. */
+function initialValue(record: RecordModel | null, field: FieldSchema): unknown {
+  if (field.type === "file") {
+    const stored = record?.[field.name] as string[] | string | undefined;
+    const keep = Array.isArray(stored) ? [...stored] : stored ? [stored] : [];
+    return { keep, added: [] } satisfies FileDraft;
+  }
+  if (!record) {
+    if (field.type === "bool") return false;
+    if (isMultiValue(field)) return [];
+    return null;
+  }
+  const value = record[field.name];
+  // JSON is edited as text; seed it pretty-printed.
+  if (field.type === "json" && value !== null && value !== undefined && typeof value !== "string") {
+    return JSON.stringify(value, null, 2);
+  }
+  return value ?? null;
+}
+
+function buildDraft(record: RecordModel | null, fields: FieldSchema[], identityField: string | null): Draft {
+  const draft: Draft = {};
+  for (const field of fields) draft[field.name] = initialValue(record, field);
+  if (identityField) draft[identityField] = (record?.[identityField] as string | undefined) ?? "";
+  return draft;
+}
+
+/** A copyable identifier line for the metadata strip. */
+function MetaValue({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+  const { copy, status } = useCopyToClipboard();
+  return (
+    <div className="flex min-w-0 items-baseline gap-2">
+      <dt className="w-16 shrink-0 text-2xs uppercase tracking-wider text-muted-foreground/70">{label}</dt>
+      <dd className="flex min-w-0 items-center gap-1">
+        <span className={mono ? "truncate font-mono text-xs" : "truncate text-xs"}>{value}</span>
+        <button
+          type="button"
+          aria-label={`Copy ${label}`}
+          onClick={() => void copy(value)}
+          className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/meta:opacity-100"
+        >
+          {status === "copied" ? <Check className="size-3" /> : <Copy className="size-3" />}
+        </button>
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * The record editor.
+ *
+ * Everything the audit called out is addressed here: values are validated
+ * against the field's own constraints before the request rather than after
+ * it, JSON parses as you type, files show what is actually stored and can be
+ * removed one at a time, relations are searched server-side instead of
+ * picked from the first 100 rows, the record's own identifiers are visible
+ * and copyable, and closing with unsaved edits asks first.
+ */
 export function RecordDrawer({ collection, record, open, onOpenChange }: RecordDrawerProps) {
   const isNew = record === null;
-  const identityField = (collection.authOptions?.identityField as string | undefined) ?? "email";
-  const [values, setValues] = useState<Record<string, unknown>>({});
-  const [files, setFiles] = useState<FileFieldState>({});
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const { create, update } = useRecordMutations(collection.name);
+  const identityField =
+    collection.type === "auth"
+      ? ((collection.passwordAuth?.identityFields?.[0] as string | undefined) ?? "email")
+      : null;
 
+  const fields = useMemo(() => userFields(collection), [collection]);
+  const seed = useMemo(
+    () => buildDraft(record, fields, identityField),
+    [record, fields, identityField],
+  );
+
+  const [values, setValues] = useState<Draft>(seed);
+  const [seedKey, setSeedKey] = useState(seed);
+  const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // Opening the drawer on a different record (or reopening it) re-seeds the
+  // form — adjusted during render so no frame shows the previous record.
+  if (seedKey !== seed) {
+    setSeedKey(seed);
+    setValues(seed);
+    setServerErrors({});
+    setTouched({});
+    setSubmitted(false);
+  }
+
+  const { create, update, remove } = useRecordMutations(collection.name);
+  const pending = create.isPending || update.isPending;
+
+  /** Errors as of this keystroke — what gates Save and drives the count. */
+  const clientErrors = useMemo(
+    () => allErrors(fields, values, identityField, isNew),
+    [fields, values, identityField, isNew],
+  );
+
+  /**
+   * Errors as of ~half a second ago, which is what actually gets *shown*.
+   *
+   * Validating on blur would be tidier, but a `focusout` inside a Radix
+   * sheet never reaches React's delegated handler, so a blur-gated error
+   * simply never appears. Settling the message instead means it arrives
+   * when you pause rather than on every keystroke of a value that is only
+   * briefly invalid — the same rule the collection-name field uses.
+   */
+  const [settled, setSettled] = useState<Draft>(values);
   useEffect(() => {
-    if (!open) return;
-    const initial: Record<string, unknown> = {};
-    for (const field of collection.schema) initial[field.name] = existingRecordValue(record, field);
-    if (collection.type === "auth") {
-      initial[identityField] = (record?.[identityField] as string | undefined) ?? "";
-    }
-    setValues(initial);
-    setFiles({});
-    setErrors({});
-  }, [open, record, collection]);
+    const timer = setTimeout(() => setSettled(values), SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [values]);
+  const settledErrors = useMemo(
+    () => allErrors(fields, settled, identityField, isNew),
+    [fields, settled, identityField, isNew],
+  );
 
+  const dirty = JSON.stringify(serialisableDraft(values)) !== JSON.stringify(serialisableDraft(seed));
+  const invalidCount = Object.keys(clientErrors).length;
+  // Save stays live until something on screen explains why it wouldn't
+  // work — a button disabled before you have touched anything just looks
+  // broken, and a record can be invalid the moment it loads if its schema
+  // was tightened after the row was written.
+  const blocked = invalidCount > 0 && (submitted || Object.keys(touched).length > 0);
+
+  /** Show a field's error once Save was tried, or once the value it was
+   * given has settled — never while it is still mid-edit. */
+  function errorFor(name: string): string | undefined {
+    if (serverErrors[name]) return serverErrors[name];
+    if (submitted) return clientErrors[name];
+    if (!touched[name]) return undefined;
+    // Only a settled error that is still true of the live value, so a
+    // fixed field clears immediately instead of after the delay.
+    return settledErrors[name] && clientErrors[name] ? clientErrors[name] : undefined;
+  }
+
+  function setValue(name: string, value: unknown) {
+    setValues((v) => ({ ...v, [name]: value }));
+    setTouched((t) => (t[name] ? t : { ...t, [name]: true }));
+    setServerErrors(({ [name]: _dropped, ...rest }) => rest);
+  }
+
+  function requestClose(next: boolean) {
+    if (!next && dirty && !pending) {
+      setConfirmClose(true);
+      return;
+    }
+    onOpenChange(next);
+  }
+
+  /**
+   * Turn the draft into what the API takes.
+   *
+   * Files force multipart, and the server's own `field+` / `field-`
+   * modifiers are how individual files are added to and removed from an
+   * existing record — sending the field plainly would replace the lot.
+   */
   function buildPayload(): Record<string, unknown> | FormData {
-    const hasFile = collection.schema.some((f) => f.type === "file");
-    if (!hasFile) return values;
+    const plain: Record<string, unknown> = {};
+    for (const field of fields) {
+      const value = values[field.name];
+      if (field.type === "file" || field.type === "autodate") continue;
+      if (field.type === "json") {
+        plain[field.name] = typeof value === "string" && value.trim() ? JSON.parse(value) : null;
+        continue;
+      }
+      if (field.type === "password" && !value) continue;
+      plain[field.name] = value;
+    }
+    if (identityField) plain[identityField] = values[identityField];
+    if (identityField && values.password) {
+      plain.password = values.password;
+      plain.passwordConfirm = values.password;
+    }
+
+    const fileFields = fields.filter((f) => f.type === "file");
+    const drafts = fileFields.map((f) => [f, (values[f.name] ?? { keep: [], added: [] }) as FileDraft] as const);
+    const hasUploads = drafts.some(([, d]) => d.added.length > 0);
+    const removals = drafts.flatMap(([field, draft]) => {
+      const stored = (record?.[field.name] as string[] | string | undefined) ?? [];
+      const storedNames = Array.isArray(stored) ? stored : stored ? [stored] : [];
+      const gone = storedNames.filter((name) => !draft.keep.includes(name));
+      return gone.map((name) => [field.name, name] as const);
+    });
+
+    if (!hasUploads) {
+      // No multipart needed: removals go as `field-` in the JSON body.
+      for (const [fieldName, filename] of removals) {
+        const key = `${fieldName}-`;
+        const list = (plain[key] as string[] | undefined) ?? [];
+        plain[key] = [...list, filename];
+      }
+      return plain;
+    }
 
     const form = new FormData();
-    for (const [key, value] of Object.entries(values)) {
-      if (value === null || value === undefined) continue;
-      if (Array.isArray(value)) {
-        for (const item of value) form.append(key, typeof item === "string" ? item : JSON.stringify(item));
+    for (const [key, value] of Object.entries(plain)) {
+      if (value === null || value === undefined) {
+        form.append(key, "");
+      } else if (Array.isArray(value)) {
+        if (value.length === 0) form.append(key, "");
+        else for (const item of value) form.append(key, typeof item === "string" ? item : JSON.stringify(item));
+      } else if (typeof value === "object") {
+        form.append(key, JSON.stringify(value));
       } else {
-        form.append(key, typeof value === "string" ? value : JSON.stringify(value));
+        form.append(key, String(value));
       }
     }
-    for (const [fieldName, fileList] of Object.entries(files)) {
-      for (const file of fileList) form.append(fieldName, file);
+    for (const [fieldName, filename] of removals) form.append(`${fieldName}-`, filename);
+    for (const [field, draft] of drafts) {
+      for (const file of draft.added) {
+        // On an existing record `+` appends to what's kept; on a new one
+        // there is nothing to append to.
+        form.append(isNew || !isMultiValue(field) ? field.name : `${field.name}+`, file);
+      }
     }
     return form;
   }
 
-  async function handleSubmit() {
-    setErrors({});
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitted(true);
+    if (pending || invalidCount > 0) return;
+    setServerErrors({});
     try {
       if (isNew) {
         await create.mutateAsync(buildPayload());
@@ -68,106 +302,236 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
       }
       onOpenChange(false);
     } catch (error) {
-      if (error instanceof ClientResponseError && error.status === 400) {
-        setErrors(
-          Object.fromEntries(Object.entries(error.data).map(([field, err]) => [field, err.message])),
-        );
-        toast.error("Fix the highlighted fields");
+      const failure = describeFailure(error);
+      if (Object.keys(failure.fields).length > 0) {
+        setServerErrors(failure.fields);
+        toast.error("The server rejected some fields", { description: "They're marked below." });
       } else {
-        toast.error(error instanceof Error ? error.message : "Something went wrong");
+        toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
       }
-      throw error;
     }
   }
 
-  const pending = create.isPending || update.isPending;
-
   return (
-    <Drawer
-      open={open}
-      onOpenChange={onOpenChange}
-      title={isNew ? `New ${collection.name.replace(/s$/, "")}` : "Edit record"}
-      width={440}
-    >
-      <div className="flex flex-col gap-4">
-        {collection.type === "auth" ? (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground capitalize">{identityField}</label>
-            <input
-              type={identityField === "email" ? "email" : "text"}
-              value={(values[identityField] as string) ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, [identityField]: e.target.value }))}
-              className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                errors[identityField] ? "border-destructive" : "border-border focus:border-primary"
-              }`}
-            />
-            {errors[identityField] ? <p className="text-[11.5px] text-destructive">{errors[identityField]}</p> : null}
-          </div>
-        ) : null}
-
-        {collection.type === "auth" ? (
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground">{isNew ? "Password" : "New password"}</label>
-            <input
-              type="password"
-              value={(values.password as string) ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
-              placeholder={isNew ? undefined : "Leave blank to keep current"}
-              className={`h-9 w-full rounded-[9px] border-2 bg-secondary/60 px-2.5 text-[13px] outline-none focus:bg-card ${
-                errors.password ? "border-destructive" : "border-border focus:border-primary"
-              }`}
-            />
-            {errors.password ? <p className="text-[11.5px] text-destructive">{errors.password}</p> : null}
-          </div>
-        ) : null}
-
-        {collection.schema.map((field) => (
-          <div key={field.id} className="flex flex-col gap-1.5">
-            <label className="text-[13px] font-medium text-foreground">
-              {field.name}
-              {field.required ? <span className="text-primary"> *</span> : null}
-            </label>
-            {field.type === "file" ? (
-              <div className="flex flex-col gap-1.5">
-                <input
-                  type="file"
-                  multiple={Boolean(field.options?.multiple)}
-                  onChange={(e) => setFiles((f) => ({ ...f, [field.name]: Array.from(e.target.files ?? []) }))}
-                  className="text-[12.5px] text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-2.5 file:py-1.5 file:text-[12px] file:font-medium file:text-secondary-foreground"
-                />
-                {!isNew && record && record[field.name] ? (
-                  <p className="text-[11.5px] text-muted-foreground">
-                    Current: {Array.isArray(record[field.name]) ? (record[field.name] as string[]).join(", ") : String(record[field.name])}.
-                    Choosing a new file replaces it.
-                  </p>
-                ) : null}
-              </div>
-            ) : (
-              <RecordFieldInput
-                field={field}
-                value={values[field.name]}
-                onChange={(value) => setValues((v) => ({ ...v, [field.name]: value }))}
-                error={errors[field.name]}
-              />
-            )}
-            {errors[field.name] ? <p className="text-[11.5px] text-destructive">{errors[field.name]}</p> : null}
-          </div>
-        ))}
-
-        {pending ? <ProgressBar value={null} label="Saving" /> : null}
-      </div>
-
-      <div className="mt-6 flex justify-end">
-        <LoadingButton
-          onAction={handleSubmit}
-          pendingLabel="Saving…"
-          successLabel="Saved"
-          errorLabel="Fix errors"
-          className="!border-primary !bg-primary !px-4 !text-primary-foreground hover:!bg-primary/90 dark:!border-primary dark:!bg-primary dark:!text-primary-foreground dark:hover:!bg-primary/90"
+    <>
+      <Sheet open={open} onOpenChange={requestClose}>
+        <SheetContent
+          side="right"
+          className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[560px] data-[side=right]:lg:max-w-[640px]"
         >
-          {isNew ? "Create" : "Save changes"}
-        </LoadingButton>
-      </div>
-    </Drawer>
+          {/* `noValidate` on purpose: an `<input type="url">` with a bad
+              value makes the browser cancel the submit and show its own
+              tooltip, so React's handler never runs and none of the field
+              errors below ever appear. Validation is this form's job. */}
+          <form onSubmit={handleSubmit} noValidate className="flex h-full min-h-0 flex-col">
+            <SheetHeader className="gap-1">
+              <SheetTitle>{isNew ? `New ${singularize(collection.name)}` : "Edit record"}</SheetTitle>
+              <SheetDescription>
+                {isNew ? `Add a row to ${collection.name}.` : `Editing a row in ${collection.name}.`}
+              </SheetDescription>
+            </SheetHeader>
+
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+              {/* What the server knows about this row, which the old drawer
+                  never showed — the id is the thing you paste into a filter. */}
+              {record ? (
+                <dl className="group/meta flex flex-col gap-1 rounded-lg border border-border bg-surface-sunken/60 px-3 py-2">
+                  <MetaValue label="id" value={record.id} />
+                  {record.created ? (
+                    <MetaValue label="created" value={new Date(record.created).toLocaleString()} />
+                  ) : null}
+                  {record.updated ? (
+                    <MetaValue label="updated" value={new Date(record.updated).toLocaleString()} />
+                  ) : null}
+                </dl>
+              ) : null}
+
+              {identityField ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="record-identity">{identityField}</Label>
+                  <Input
+                    id="record-identity"
+                    type={identityField === "email" ? "email" : "text"}
+                    value={(values[identityField] as string) ?? ""}
+                    onChange={(e) => setValue(identityField, e.target.value)}
+                    onBlur={() => setTouched((t) => ({ ...t, [identityField]: true }))}
+                    aria-invalid={errorFor(identityField) ? true : undefined}
+                    className="h-control-md"
+                  />
+                  <FieldError message={errorFor(identityField)} />
+                </div>
+              ) : null}
+
+              {identityField ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="record-password">{isNew ? "Password" : "New password"}</Label>
+                  <Input
+                    id="record-password"
+                    type="password"
+                    value={(values.password as string) ?? ""}
+                    onChange={(e) => setValue("password", e.target.value)}
+                    onBlur={() => setTouched((t) => ({ ...t, password: true }))}
+                    placeholder={isNew ? "At least 8 characters" : "Leave blank to keep the current one"}
+                    aria-invalid={errorFor("password") ? true : undefined}
+                    className="h-control-md"
+                  />
+                  <FieldError message={errorFor("password")} />
+                </div>
+              ) : null}
+
+              {(identityField && fields.length > 0) ? <Separator /> : null}
+
+              {fields.map((field) => {
+                const error = errorFor(field.name);
+                return (
+                  <div
+                    key={field.id || field.name}
+                    className="flex flex-col gap-1.5"
+                    onBlur={() => setTouched((t) => ({ ...t, [field.name]: true }))}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <Label className="font-mono">
+                        {field.name}
+                        {field.required ? <span className="text-destructive"> *</span> : null}
+                      </Label>
+                      <span className="shrink-0 text-2xs text-muted-foreground/70">{field.type}</span>
+                    </div>
+
+                    {field.type === "file" ? (
+                      <FileField
+                        field={field}
+                        record={record}
+                        value={(values[field.name] ?? { keep: [], added: [] }) as FileDraft}
+                        onChange={(next) => setValue(field.name, next)}
+                        invalid={Boolean(error)}
+                      />
+                    ) : (
+                      <RecordFieldInput
+                        field={field}
+                        value={values[field.name]}
+                        onChange={(value) => setValue(field.name, value)}
+                        error={error}
+                      />
+                    )}
+                    <FieldError message={error} />
+                  </div>
+                );
+              })}
+            </div>
+
+            <SheetFooter className="flex-row items-center gap-2 border-t border-border">
+              {record ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={pending}
+                >
+                  <Trash2 className="size-3.5" />
+                  Delete
+                </Button>
+              ) : null}
+
+              {blocked ? (
+                <span className="min-w-0 truncate text-xs text-destructive">
+                  {invalidCount} {invalidCount === 1 ? "field needs" : "fields need"} attention
+                </span>
+              ) : null}
+
+              <div className="flex-1" />
+              <Button type="button" variant="ghost" size="sm" onClick={() => requestClose(false)} disabled={pending}>
+                Cancel
+              </Button>
+              <Button type="submit" size="sm" disabled={pending || blocked}>
+                {pending ? <Spinner /> : null}
+                {pending ? "Saving…" : isNew ? "Create record" : "Save changes"}
+              </Button>
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
+
+      <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard this edit?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {isNew
+                ? "This record hasn't been created yet — closing loses what you've filled in."
+                : "Your changes to this record haven't been saved. Closing loses them."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmClose(false);
+                onOpenChange(false);
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono">{record?.id}</span> will be permanently removed from{" "}
+              <span className="font-mono">{collection.name}</span>, along with any files attached to it. This cannot
+              be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmDelete(false);
+                if (!record) return;
+                remove.mutate(record.id, {
+                  onSuccess: () => {
+                    toast.success("Record deleted");
+                    onOpenChange(false);
+                  },
+                  onError: (error) => {
+                    const failure = describeFailure(error);
+                    toast.error(failure.title, { description: failure.detail || undefined });
+                  },
+                });
+              }}
+            >
+              Delete record
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
+}
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) return null;
+  return <p className="text-xs text-destructive">{message}</p>;
+}
+
+/** `File` objects don't survive `JSON.stringify`, so the dirty check
+ * compares their identity by name and size instead. */
+function serialisableDraft(draft: Draft): unknown {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(draft)) {
+    if (value && typeof value === "object" && "added" in value && "keep" in value) {
+      const file = value as FileDraft;
+      out[key] = { keep: file.keep, added: file.added.map((f) => `${f.name}:${f.size}`) };
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
 }

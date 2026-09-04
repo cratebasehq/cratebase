@@ -13,9 +13,11 @@ ensure_superuser_and_login
 ensure_collection "messages" '{
   "name": "messages",
   "type": "base",
-  "schema": [
-    { "id": "author", "name": "author", "type": "text", "required": true },
-    { "id": "content", "name": "content", "type": "text", "required": true }
+  "fields": [
+    { "name": "author", "type": "text", "required": true },
+    { "name": "content", "type": "text", "required": true },
+    { "name": "created", "type": "autodate", "onCreate": true },
+    { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
   ],
   "listRule": "",
   "viewRule": "",

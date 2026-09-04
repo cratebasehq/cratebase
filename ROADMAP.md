@@ -56,13 +56,15 @@ land.
   support it) before this is safe at scale — file uploads have the same
   shape today (bounded by upload size limits) but a backup has no such
   cap.
-- **`search` pagination cost.** `list_records` runs a `SELECT COUNT(*)`
-  alongside the paginated `SELECT` on every call to populate
-  `totalItems`/`totalPages` — measured in `benchmarks/` as the main
-  remaining gap vs PocketBase on read-heavy workloads (roughly 3x slower
-  at both concurrency 1 and 20). Worth an estimated/cached count, or
-  skipping the count query entirely when a caller doesn't need pagination
-  metadata, before chasing anything else performance-related.
+- **Write throughput under contention and wide pages.** After the Phase 1
+  performance pass (`benchmarks/README.md`) Cratebase is faster than
+  PocketBase on 19 of 24 measured cells; the two it still loses, `create`
+  at concurrency 20+ and `perPage=200` reads at concurrency 20+, share a
+  cause: every pooled SQLite connection contends for the single writer
+  lock via `busy_timeout`, and every row is decoded twice through
+  `sqlx::Any`. Fixed by the Phase 2 storage engine (single-writer pool +
+  native drivers), not by tuning. The `SELECT COUNT(*)` this entry used to
+  blame was measured at well under 5% of the request.
 
 ## Shipped
 

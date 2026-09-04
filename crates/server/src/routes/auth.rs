@@ -1,690 +1,360 @@
+//! `/api/collections/{collection}/auth-*` — the password subset.
+//!
+//! Superusers are not special here: `_superusers` is an ordinary auth
+//! collection, so `POST /api/collections/_superusers/auth-with-password`
+//! goes through exactly the same code as any other login.
+//!
+//! # Tokens
+//!
+//! A session token is signed with `app secret + record.tokenKey +
+//! authToken.secret`. Nothing is stored server-side; rotating a record's
+//! `tokenKey` (which every password change does) invalidates every
+//! outstanding session for that record. The claims are PocketBase's
+//! exactly — `{collectionId, exp, id, refreshable, type}` — because the
+//! SDK reads `refreshable` off the payload.
+//!
+//! # Statuses that are not what you would guess
+//!
+//! * a disabled password method is **403**, not 400;
+//! * an auth endpoint on a *base* collection is `404 "Missing or invalid
+//!   auth collection context."`, while `auth-methods` on a collection
+//!   that does not exist at all is `404 "Missing or invalid collection
+//!   context."` — different wording for a different mistake;
+//! * a failing `authRule` is **403**, a wrong password a flat
+//!   `400 "Failed to authenticate."` with no `data`.
+//!
+//! W4b-2: OAuth2, OTP, MFA, impersonate, verification, password reset,
+//! email change, external auths and `_authOrigins`/auth-alert emails.
+
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cratebase_auth::{
-    generate_otp, hash_otp, hash_password, issue_action_token, issue_token, verify_password,
-    verify_token, TokenKind,
-};
-use cratebase_core::AppError;
-use cratebase_db::{admins, external_auths, otp, records};
+use cratebase_core::{codes, AppError, Collection, FieldError, Record};
+use cratebase_db::records;
+use cratebase_db::Executor;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
-use tower_governor::GovernorLayer;
+use serde_json::{json, Map, Value};
 
-use crate::extract::CurrentAuth;
-use crate::helpers::load_collection;
-use crate::http_error::{ApiError, ApiResult};
-use crate::mail::send_template;
-use crate::state::AppState;
+use crate::app::App;
+use crate::events::{collection_tags, RecordRequestEvent};
+use crate::extract::{Auth, RequestInfo};
+use crate::http_error::{ApiError, ApiJson, ApiResult};
+use crate::routes::common;
 
-/// `rate_limit_enabled` governs only the password-login endpoints — the
-/// actual credential-stuffing/brute-force vector. Refresh endpoints are
-/// left unlimited: a real Flutter/mobile client legitimately calls
-/// `auth-refresh` far more often than it calls `auth-with-password` (e.g.
-/// on every app foreground), so bucketing them under the same strict
-/// limit would false-positive-lock out real users rather than attackers.
-///
-/// Keyed by `SmartIpKeyExtractor` (checks `X-Forwarded-For`/`X-Real-Ip`/
-/// `Forwarded` before falling back to the raw peer address): the common
-/// deployment in [ARCHITECTURE.md](../../../../ARCHITECTURE.md) puts
-/// Cratebase behind a reverse proxy for TLS, and under `PeerIpKeyExtractor`
-/// every request would appear to come from the proxy's own IP — a single
-/// shared bucket for every real client. This trusts those headers, which
-/// is the trade-off every deployment without an explicit trusted-proxy
-/// allowlist makes (tracked in ROADMAP.md).
-pub fn router(rate_limit_enabled: bool) -> Router<AppState> {
-    // Everything that triggers an outbound email (password login attempts,
-    // and the three `request-*` flows below) shares one rate limit — each
-    // is either a credential-stuffing vector or a mail-bombing vector
-    // (spamming someone's inbox with reset/verification links), so the
-    // same per-IP throttle protects both. `confirm-*` endpoints don't:
-    // they consume a token whose entropy makes brute-forcing infeasible,
-    // not a password or an inbox.
-    let limited_router = Router::new()
-        .route("/admins/auth-with-password", post(admin_login))
+/// PocketBase's deliberately uninformative login failure.
+const AUTH_FAILED: &str = "Failed to authenticate.";
+const VALIDATION_FAILED: &str = "An error occurred while validating the submitted data.";
+const PASSWORD_DISABLED: &str =
+    "The collection is not configured to allow password authentication.";
+const AUTH_RULE_FAILED: &str =
+    "The request doesn't satisfy the collection requirements to authenticate.";
+/// `auth-methods` on a name that is not a collection at all.
+const MISSING_COLLECTION: &str = "Missing or invalid collection context.";
+
+pub fn router() -> Router<App> {
+    Router::new()
         .route(
             "/collections/{collection}/auth-with-password",
-            post(record_login),
+            post(auth_with_password),
         )
-        .route(
-            "/collections/{collection}/auth-with-oauth2",
-            post(auth_with_oauth2),
-        )
-        .route(
-            "/collections/{collection}/request-verification",
-            post(request_verification),
-        )
-        .route(
-            "/collections/{collection}/request-password-reset",
-            post(request_password_reset),
-        )
-        .route(
-            "/collections/{collection}/request-email-change",
-            post(request_email_change),
-        );
-    let limited_router = if rate_limit_enabled {
-        let governor_conf = GovernorConfigBuilder::default()
-            .key_extractor(SmartIpKeyExtractor)
-            .per_second(3)
-            .burst_size(8)
-            .finish()
-            .expect("static rate limit config is always valid");
-        limited_router.layer(GovernorLayer::new(Arc::new(governor_conf)))
-    } else {
-        limited_router
-    };
-
-    let unlimited_router = Router::new()
+        .route("/collections/{collection}/auth-refresh", post(auth_refresh))
         .route("/collections/{collection}/auth-methods", get(auth_methods))
-        .route("/admins/auth-refresh", post(admin_refresh))
-        .route(
-            "/collections/{collection}/auth-refresh",
-            post(record_refresh),
-        )
-        .route(
-            "/collections/{collection}/confirm-verification",
-            post(confirm_verification),
-        )
-        .route(
-            "/collections/{collection}/confirm-password-reset",
-            post(confirm_password_reset),
-        )
-        .route(
-            "/collections/{collection}/confirm-email-change",
-            post(confirm_email_change),
-        );
-
-    limited_router.merge(unlimited_router)
+    // W4b-2: auth-with-oauth2, request-otp, auth-with-otp, impersonate,
+    // request-verification, confirm-verification, request-password-reset,
+    // confirm-password-reset, request-email-change, confirm-email-change,
+    // list-external-auths, unlink-external-auth.
 }
 
-#[derive(Deserialize)]
-struct AdminPasswordLogin {
-    email: String,
-    password: String,
-}
+// ------------------------------------------------------- auth-with-password
 
-#[derive(Deserialize)]
-struct RecordPasswordLogin {
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PasswordBody {
+    #[serde(default)]
     identity: String,
+    #[serde(default)]
     password: String,
+    /// Pins the lookup to one of `passwordAuth.identityFields` instead of
+    /// trying them in order.
+    #[serde(default)]
+    identity_field: String,
 }
 
-fn invalid_credentials() -> ApiError {
-    ApiError(AppError::Unauthorized("invalid email or password".into()))
-}
-
-async fn admin_login(
-    State(app): State<AppState>,
-    Json(body): Json<AdminPasswordLogin>,
+async fn auth_with_password(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    info: RequestInfo,
+    ApiJson(raw): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
-    let admin = admins::get_admin_by_email(&app.db, &body.email)
-        .await
-        .map_err(|_| invalid_credentials())?;
-    if !verify_password(&body.password, &admin.password_hash) {
-        return Err(invalid_credentials());
+    let collection = common::auth_collection_of(&app, &name)?;
+    if !collection.auth.password_auth.enabled {
+        return Err(ApiError::forbidden(PASSWORD_DISABLED));
     }
-    let token = issue_token(
-        &admin.id,
-        TokenKind::Admin,
-        "",
-        &app.config.auth_secret,
-        app.config.admin_token_ttl_seconds,
-    )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    Ok(Json(json!({ "token": token, "admin": admin })))
-}
+    let body: PasswordBody = serde_json::from_value(raw.clone())
+        .map_err(|_| ApiError::bad_request(AppError::DEFAULT_BAD_REQUEST))?;
 
-async fn admin_refresh(
-    State(app): State<AppState>,
-    CurrentAuth(auth): CurrentAuth,
-) -> ApiResult<Json<Value>> {
-    let ctx =
-        auth.ok_or_else(|| ApiError(AppError::Unauthorized("missing or invalid token".into())))?;
-    if !ctx.is_superuser {
-        return Err(ApiError(AppError::Unauthorized(
-            "missing or invalid token".into(),
-        )));
+    let mut errors: std::collections::BTreeMap<String, FieldError> = Default::default();
+    if body.identity.trim().is_empty() {
+        errors.insert(
+            "identity".into(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
     }
-    let admin = admins::get_admin_by_id(&app.db, &ctx.id).await?;
-    let token = issue_token(
-        &admin.id,
-        TokenKind::Admin,
-        "",
-        &app.config.auth_secret,
-        app.config.admin_token_ttl_seconds,
-    )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    Ok(Json(json!({ "token": token, "admin": admin })))
-}
-
-async fn record_login(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<RecordPasswordLogin>,
-) -> ApiResult<Json<Value>> {
-    let collection = load_collection(&app, &collection_name).await?;
-    if !collection.is_auth() {
-        return Err(ApiError(AppError::BadRequest(format!(
-            "'{collection_name}' is not an auth collection"
-        ))));
+    if body.password.is_empty() {
+        errors.insert(
+            "password".into(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
+    }
+    if !errors.is_empty() {
+        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
     }
 
-    let Some((id, password_hash, verified)) =
-        records::find_auth_credentials(&app.db, &collection, &body.identity).await?
-    else {
-        return Err(invalid_credentials());
+    let record = find_by_identity(&app, &collection, &body).await?;
+    // The lookup and the verify are deliberately not distinguished in the
+    // response: a caller must not be able to enumerate identities.
+    let Some(record) = record else {
+        // Still pay the hashing cost so a missing identity and a wrong
+        // password take the same time.
+        cratebase_auth::verify_password_async(&body.password, "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$0000000000000000000000000000000000000000000").await;
+        return Err(ApiError::bad_request(AUTH_FAILED));
     };
-    if !verify_password(&body.password, &password_hash) {
-        return Err(invalid_credentials());
-    }
-    if collection
-        .auth_options
-        .require_email_verification
-        .unwrap_or(false)
-        && !verified
-    {
-        return Err(ApiError(AppError::Forbidden(
-            "please verify your email before signing in".into(),
-        )));
+    let hash = record.password_hash();
+    if !cratebase_auth::verify_password_async(&body.password, &hash).await {
+        return Err(ApiError::bad_request(AUTH_FAILED));
     }
 
-    // Second factor: park the password success behind a pending marker
-    // instead of issuing a real session token straight away. The marker
-    // and the OTP it names are minted together (same TTL) so one always
-    // outlives the other by exactly zero seconds — `/mfa/confirm` is the
-    // only way to turn this into a usable token.
-    if collection.auth_options.mfa_required() {
-        let ttl = app.config.otp_token_ttl_seconds;
-        let code = generate_otp();
-        otp::create(&app.db, &collection.id, &id, &hash_otp(&code), ttl).await?;
-        let mfa_id = issue_token(
-            &id,
-            TokenKind::Mfa,
-            &collection.id,
-            &app.config.auth_secret,
-            ttl,
-        )
-        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-        if collection.auth_options.identity_is_email() {
-            let _ = send_template(
-                &app,
-                &body.identity,
-                &format!("Your {} verification code", app.config.mail_from_name),
-                "otp.html",
-                &[
-                    ("appName", &app.config.mail_from_name),
-                    ("code", &code),
-                    ("expiresIn", &format_ttl(ttl)),
-                ],
-            )
-            .await;
+    // `authRule` gates the login itself, separately from `listRule` and
+    // friends. `null` means superusers only.
+    if !passes_auth_rule(&app, &collection, &record).await? {
+        return Err(ApiError::forbidden(AUTH_RULE_FAILED));
+    }
+
+    // A bcrypt hash imported from PocketBase is upgraded on the spot.
+    // `tokenKey` is deliberately left alone: rotating it here would
+    // invalidate the token this very request is about to mint.
+    if cratebase_auth::needs_rehash(&hash) {
+        if let Err(e) = rehash(&app, &collection, &record, &body.password).await {
+            tracing::warn!(error = %e, "failed to upgrade a legacy password hash");
         }
-        return Ok(Json(json!({ "mfaId": mfa_id, "mfaRequired": true })));
     }
 
-    let record = records::get_record(&app.db, &collection, &id, None).await?;
-    let token = issue_token(
-        &id,
-        TokenKind::Auth,
-        &collection.id,
-        &app.config.auth_secret,
-        collection
-            .auth_options
-            .token_ttl_seconds
-            .unwrap_or(app.config.auth_token_ttl_seconds),
-    )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-
-    Ok(Json(json!({ "token": token, "record": record })))
+    respond_with_token(&app, &collection, record, info, raw, |hooks| {
+        &hooks.on_record_auth_with_password_request
+    })
+    .await
 }
 
-async fn record_refresh(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    CurrentAuth(auth): CurrentAuth,
-) -> ApiResult<Json<Value>> {
-    let collection = load_collection(&app, &collection_name).await?;
-    let ctx =
-        auth.ok_or_else(|| ApiError(AppError::Unauthorized("missing or invalid token".into())))?;
-    if ctx.is_superuser || ctx.collection_id != collection.id {
-        return Err(ApiError(AppError::Unauthorized(
-            "missing or invalid token".into(),
-        )));
-    }
-    let record = records::get_record(&app.db, &collection, &ctx.id, None).await?;
-    let token = issue_token(
-        &ctx.id,
-        TokenKind::Auth,
-        &collection.id,
-        &app.config.auth_secret,
-        collection
-            .auth_options
-            .token_ttl_seconds
-            .unwrap_or(app.config.auth_token_ttl_seconds),
-    )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    Ok(Json(json!({ "token": token, "record": record })))
-}
-
-#[derive(Deserialize)]
-struct EmailOnly {
-    email: String,
-}
-
-#[derive(Deserialize)]
-struct TokenOnly {
-    token: String,
-}
-
-#[derive(Deserialize)]
-struct ConfirmPasswordReset {
-    token: String,
-    password: String,
-    #[serde(rename = "passwordConfirm")]
-    password_confirm: String,
-}
-
-#[derive(Deserialize)]
-struct NewEmailOnly {
-    #[serde(rename = "newEmail")]
-    new_email: String,
-}
-
-fn invalid_token() -> ApiError {
-    ApiError(AppError::BadRequest("invalid or expired token".into()))
-}
-
-fn looks_like_email(s: &str) -> bool {
-    let Some((local, domain)) = s.split_once('@') else {
-        return false;
-    };
-    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
-}
-
-/// `"3600"` -> `"1 hour"`, `"120"` -> `"2 minutes"`, otherwise the raw
-/// second count — for the "this link expires in ..." line in emails.
-fn format_ttl(seconds: i64) -> String {
-    if seconds >= 3600 && seconds % 3600 == 0 {
-        let h = seconds / 3600;
-        format!("{h} hour{}", if h == 1 { "" } else { "s" })
-    } else if seconds >= 60 && seconds % 60 == 0 {
-        let m = seconds / 60;
-        format!("{m} minute{}", if m == 1 { "" } else { "s" })
+/// Look the record up by each configured identity field in turn.
+async fn find_by_identity(
+    app: &App,
+    collection: &Arc<Collection>,
+    body: &PasswordBody,
+) -> ApiResult<Option<Record>> {
+    let configured = collection.identity_fields();
+    let candidates: Vec<String> = if body.identity_field.is_empty() {
+        configured
+    } else if configured.contains(&body.identity_field) {
+        vec![body.identity_field.clone()]
     } else {
-        format!("{seconds} seconds")
-    }
-}
-
-fn not_email_identity() -> ApiError {
-    ApiError(AppError::BadRequest(
-        "this collection's identity field isn't an email address".into(),
-    ))
-}
-
-/// `POST /collections/{c}/request-verification` — always responds 204
-/// regardless of whether `email` matches a record, so the response can't
-/// be used to enumerate registered accounts.
-async fn request_verification(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<EmailOnly>,
-) -> ApiResult<axum::http::StatusCode> {
-    let collection = load_collection(&app, &collection_name).await?;
-    if !collection.is_auth() || !collection.auth_options.identity_is_email() {
-        return Err(not_email_identity());
-    }
-    if let Ok(Some((id, _, _))) =
-        records::find_auth_credentials(&app.db, &collection, &body.email).await
-    {
-        let ttl = app.config.verification_token_ttl_seconds;
-        if let Ok(token) = issue_action_token(
-            &id,
-            TokenKind::VerifyEmail,
-            &collection.id,
-            None,
-            &app.config.auth_secret,
-            ttl,
-        ) {
-            let action_url = format!("{}/verify-email?token={token}", app.config.public_app_url);
-            let _ = send_template(
-                &app,
-                &body.email,
-                &format!("Confirm your email for {}", app.config.mail_from_name),
-                "verification.html",
-                &[
-                    ("appName", &app.config.mail_from_name),
-                    ("actionUrl", &action_url),
-                    ("expiresIn", &format_ttl(ttl)),
-                ],
-            )
-            .await;
-        }
-    }
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-/// `POST /collections/{c}/confirm-verification`
-async fn confirm_verification(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<TokenOnly>,
-) -> ApiResult<axum::http::StatusCode> {
-    let collection = load_collection(&app, &collection_name).await?;
-    let claims = verify_token(&body.token, &app.config.auth_secret).map_err(|_| invalid_token())?;
-    if claims.kind != TokenKind::VerifyEmail || claims.collection_id != collection.id {
-        return Err(invalid_token());
-    }
-    records::set_verified(&app.db, &collection, &claims.sub).await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-/// `POST /collections/{c}/request-password-reset` — same no-enumeration
-/// shape as `request_verification`.
-async fn request_password_reset(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<EmailOnly>,
-) -> ApiResult<axum::http::StatusCode> {
-    let collection = load_collection(&app, &collection_name).await?;
-    if !collection.is_auth() || !collection.auth_options.identity_is_email() {
-        return Err(not_email_identity());
-    }
-    if let Ok(Some((id, _, _))) =
-        records::find_auth_credentials(&app.db, &collection, &body.email).await
-    {
-        let ttl = app.config.password_reset_token_ttl_seconds;
-        if let Ok(token) = issue_action_token(
-            &id,
-            TokenKind::ResetPassword,
-            &collection.id,
-            None,
-            &app.config.auth_secret,
-            ttl,
-        ) {
-            let action_url = format!("{}/reset-password?token={token}", app.config.public_app_url);
-            let _ = send_template(
-                &app,
-                &body.email,
-                &format!("Reset your {} password", app.config.mail_from_name),
-                "password-reset.html",
-                &[
-                    ("appName", &app.config.mail_from_name),
-                    ("actionUrl", &action_url),
-                    ("expiresIn", &format_ttl(ttl)),
-                ],
-            )
-            .await;
-        }
-    }
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-/// `POST /collections/{c}/confirm-password-reset`
-async fn confirm_password_reset(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<ConfirmPasswordReset>,
-) -> ApiResult<axum::http::StatusCode> {
-    let collection = load_collection(&app, &collection_name).await?;
-    let claims = verify_token(&body.token, &app.config.auth_secret).map_err(|_| invalid_token())?;
-    if claims.kind != TokenKind::ResetPassword || claims.collection_id != collection.id {
-        return Err(invalid_token());
-    }
-    let min_len = collection.auth_options.min_password_length.unwrap_or(8) as usize;
-    if body.password.chars().count() < min_len {
-        return Err(ApiError(AppError::BadRequest(format!(
-            "password must be at least {min_len} characters"
-        ))));
-    }
-    if body.password != body.password_confirm {
-        return Err(ApiError(AppError::BadRequest(
-            "passwords do not match".into(),
-        )));
-    }
-    let hash =
-        hash_password(&body.password).map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    let mut data = serde_json::Map::new();
-    data.insert("password_hash".into(), json!(hash));
-    records::update_record(&app.db, &collection, &claims.sub, data).await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-/// `POST /collections/{c}/request-email-change` — requires a session
-/// token for the record whose email is changing; the confirmation link
-/// goes to the *new* address to prove ownership of it before the switch
-/// takes effect.
-async fn request_email_change(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    CurrentAuth(auth): CurrentAuth,
-    Json(body): Json<NewEmailOnly>,
-) -> ApiResult<axum::http::StatusCode> {
-    let collection = load_collection(&app, &collection_name).await?;
-    let ctx =
-        auth.ok_or_else(|| ApiError(AppError::Unauthorized("missing or invalid token".into())))?;
-    if ctx.is_superuser || ctx.collection_id != collection.id {
-        return Err(ApiError(AppError::Unauthorized(
-            "missing or invalid token".into(),
-        )));
-    }
-    if !collection.auth_options.identity_is_email() {
-        return Err(not_email_identity());
-    }
-    if !looks_like_email(&body.new_email) {
-        return Err(ApiError(AppError::BadRequest(
-            "not a valid email address".into(),
-        )));
-    }
-
-    let ttl = app.config.email_change_token_ttl_seconds;
-    let token = issue_action_token(
-        &ctx.id,
-        TokenKind::ChangeEmail,
-        &collection.id,
-        Some(&body.new_email),
-        &app.config.auth_secret,
-        ttl,
-    )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    let action_url = format!(
-        "{}/confirm-email-change?token={token}",
-        app.config.public_app_url
-    );
-    let _ = send_template(
-        &app,
-        &body.new_email,
-        &format!("Confirm your new email for {}", app.config.mail_from_name),
-        "email-change.html",
-        &[
-            ("appName", &app.config.mail_from_name),
-            ("newEmail", &body.new_email),
-            ("actionUrl", &action_url),
-            ("expiresIn", &format_ttl(ttl)),
-        ],
-    )
-    .await;
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
-
-/// `POST /collections/{c}/confirm-email-change`
-async fn confirm_email_change(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<TokenOnly>,
-) -> ApiResult<axum::http::StatusCode> {
-    let collection = load_collection(&app, &collection_name).await?;
-    let claims = verify_token(&body.token, &app.config.auth_secret).map_err(|_| invalid_token())?;
-    if claims.kind != TokenKind::ChangeEmail || claims.collection_id != collection.id {
-        return Err(invalid_token());
-    }
-    let Some(new_email) = claims.new_email else {
-        return Err(invalid_token());
+        // Pinning a field that is not an identity field is simply a
+        // failed login, not a validation error.
+        return Ok(None);
     };
-    let identity = collection.auth_options.identity_field();
-    let mut data = serde_json::Map::new();
-    data.insert(identity.to_string(), json!(new_email));
-    records::update_record(&app.db, &collection, &claims.sub, data).await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
-}
 
-#[derive(Deserialize)]
-struct AuthMethodsQuery {
-    #[serde(rename = "redirectUri")]
-    redirect_uri: Option<String>,
-}
-
-/// `GET /collections/{c}/auth-methods?redirectUri=...` — lists what a
-/// client can authenticate with. `redirectUri` (the client's own OAuth2
-/// callback — a web page or a mobile deep link) is baked into each
-/// provider's `authUrl` if supplied, so the client can `open()` the URL
-/// directly with no further assembly.
-async fn auth_methods(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Query(q): Query<AuthMethodsQuery>,
-) -> ApiResult<Json<Value>> {
-    let collection = load_collection(&app, &collection_name).await?;
-    if !collection.is_auth() {
-        return Err(ApiError(AppError::BadRequest(format!(
-            "'{collection_name}' is not an auth collection"
-        ))));
+    let mut params = Map::new();
+    params.insert("identity".into(), Value::String(body.identity.clone()));
+    for field in candidates {
+        if !collection.has_field(&field) {
+            continue;
+        }
+        let filter = format!("{field} = {{:identity}}");
+        let found = records::find_first_by_filter(
+            app.db(),
+            &app.db().collections,
+            collection,
+            &filter,
+            &params,
+        )
+        .await
+        .map_err(|e| ApiError(e.into()))?;
+        if found.is_some() {
+            return Ok(found);
+        }
     }
-    let providers: Vec<Value> = app
-        .config
-        .oauth_providers
-        .iter()
-        .map(|p| {
-            let mut url = format!(
-                "{}?client_id={}&response_type=code&scope={}",
-                p.auth_url,
-                urlencoding::encode(&p.client_id),
-                urlencoding::encode(p.scope)
-            );
-            if let Some(redirect) = &q.redirect_uri {
-                url.push_str(&format!("&redirect_uri={}", urlencoding::encode(redirect)));
-            }
-            json!({ "name": p.name, "authUrl": url })
-        })
-        .collect();
+    Ok(None)
+}
+
+/// `authRule`: `Some("")` is public, `Some(expr)` must match the record,
+/// `None` means superusers only (so nobody can log in through the API).
+async fn passes_auth_rule(
+    app: &App,
+    collection: &Arc<Collection>,
+    record: &Record,
+) -> ApiResult<bool> {
+    match collection.auth.auth_rule.as_deref() {
+        Some(expr) if expr.trim().is_empty() => Ok(true),
+        None => Ok(false),
+        Some(_) => {
+            let ctx = cratebase_db::context::RequestContext::default();
+            common::record_matches_rule(
+                app.db(),
+                &app.db().collections,
+                &ctx,
+                collection,
+                &collection.auth.auth_rule,
+                record.id(),
+            )
+            .await
+            .map_err(|e| ApiError(e.into()))
+        }
+    }
+}
+
+async fn rehash(
+    app: &App,
+    collection: &Arc<Collection>,
+    record: &Record,
+    plaintext: &str,
+) -> Result<(), AppError> {
+    let hash = cratebase_auth::hash_password_async(plaintext)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let sql = format!(
+        "UPDATE {} SET \"password\" = $1 WHERE \"id\" = $2",
+        cratebase_db::quote_ident(collection.table_name())
+    );
+    app.db()
+        .execute(
+            &sql,
+            &[
+                cratebase_db::Sql::Text(hash),
+                cratebase_db::Sql::Text(record.id().to_string()),
+            ],
+        )
+        .await
+        .map(|_| ())
+        .map_err(AppError::from)
+}
+
+// -------------------------------------------------------------- auth-refresh
+
+async fn auth_refresh(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    auth: Auth,
+    info: RequestInfo,
+) -> ApiResult<Json<Value>> {
+    let collection = common::auth_collection_of(&app, &name)?;
+    if auth.collection_id != collection.id {
+        // PocketBase names the *authenticated* record's collection here.
+        return Err(ApiError::forbidden(format!(
+            "The request requires auth record from {} collection.",
+            auth.collection_name
+        )));
+    }
+    let record = auth.record.clone();
+    respond_with_token(
+        &app,
+        &collection,
+        record,
+        info,
+        Value::Object(Map::new()),
+        |hooks| &hooks.on_record_auth_refresh_request,
+    )
+    .await
+}
+
+// -------------------------------------------------------------- auth-methods
+
+async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiResult<Json<Value>> {
+    let collection = app
+        .db()
+        .collections
+        .get(&name)
+        .ok_or_else(|| ApiError::not_found(MISSING_COLLECTION))?;
+    if !collection.is_auth() {
+        return Err(ApiError::not_found(
+            "Missing or invalid auth collection context.",
+        ));
+    }
+    let auth = &collection.auth;
     Ok(Json(json!({
-        "password": true,
-        "oauth2": { "enabled": !providers.is_empty(), "providers": providers },
+        "password": {
+            "enabled": auth.password_auth.enabled,
+            "identityFields": collection.identity_fields(),
+        },
+        // W4b-2: list the configured providers with their auth URLs and
+        // PKCE state once the OAuth2 service exists.
+        "oauth2": {
+            "enabled": auth.oauth2.enabled,
+            "providers": Value::Array(vec![]),
+        },
+        // A disabled method reports a zero duration, not its configured
+        // one — pinned by `auth.test.ts`.
+        "mfa": {
+            "enabled": auth.mfa.enabled,
+            "duration": if auth.mfa.enabled { auth.mfa.duration } else { 0 },
+        },
+        "otp": {
+            "enabled": auth.otp.enabled,
+            "duration": if auth.otp.enabled { auth.otp.duration } else { 0 },
+        },
     })))
 }
 
-#[derive(Deserialize)]
-struct OAuth2Login {
-    provider: String,
-    code: String,
-    #[serde(rename = "redirectUri")]
-    redirect_uri: String,
+// ------------------------------------------------------------------- shared
+
+/// Mint the session token, run the auth hooks and render
+/// `{token, record}`.
+async fn respond_with_token(
+    app: &App,
+    collection: &Arc<Collection>,
+    record: Record,
+    info: RequestInfo,
+    body: Value,
+    hook: fn(&crate::hooks::Hooks) -> &crate::hooks::Hook<RecordRequestEvent>,
+) -> ApiResult<Json<Value>> {
+    let info = info.with_body(body.as_object().cloned().unwrap_or_default());
+    let mut event = RecordRequestEvent::new(
+        app.clone(),
+        collection.clone(),
+        info.clone(),
+        info.auth.clone(),
+        Some(record),
+        collection_tags(collection),
+    );
+    hook(app.hooks())
+        .trigger_bare(&mut event)
+        .await
+        .map_err(ApiError)?;
+    app.hooks()
+        .on_record_auth_request
+        .trigger_bare(&mut event)
+        .await
+        .map_err(ApiError)?;
+
+    let record = event
+        .record
+        .ok_or_else(|| ApiError::bad_request(AUTH_FAILED))?;
+    let token = mint(app, collection, &record)?;
+    // The owner of a session always sees their own address.
+    let serialized =
+        common::enrich_and_serialize(app, collection, record, info.auth.clone(), true).await?;
+    Ok(Json(json!({ "token": token, "record": serialized })))
 }
 
-/// `POST /collections/{c}/auth-with-oauth2` — exchanges `code` for the
-/// provider's access token, fetches the provider's profile, and either
-/// signs in the record already linked to that provider identity, links
-/// an existing record with a matching email, or creates a new one (with a
-/// random unusable password — set later via `confirm-password-reset` if
-/// the person ever wants to add password login too). The email is
-/// pre-verified: the provider already proved ownership of it.
-async fn auth_with_oauth2(
-    State(app): State<AppState>,
-    Path(collection_name): Path<String>,
-    Json(body): Json<OAuth2Login>,
-) -> ApiResult<Json<Value>> {
-    let collection = load_collection(&app, &collection_name).await?;
-    if !collection.is_auth() {
-        return Err(ApiError(AppError::BadRequest(format!(
-            "'{collection_name}' is not an auth collection"
-        ))));
-    }
-    if !collection.auth_options.identity_is_email() {
-        return Err(not_email_identity());
-    }
-    let provider = app
-        .config
-        .oauth_providers
-        .iter()
-        .find(|p| p.name == body.provider)
-        .ok_or_else(|| {
-            ApiError(AppError::BadRequest(format!(
-                "unknown or unconfigured provider '{}'",
-                body.provider
-            )))
-        })?;
-
-    let access_token = crate::oauth2::exchange_code(provider, &body.code, &body.redirect_uri)
-        .await
-        .map_err(|e| ApiError(AppError::BadRequest(format!("oauth2 exchange failed: {e}"))))?;
-    let external_user = crate::oauth2::fetch_user(provider, &access_token)
-        .await
-        .map_err(|e| {
-            ApiError(AppError::BadRequest(format!(
-                "oauth2 profile lookup failed: {e}"
-            )))
-        })?;
-
-    let record_id = match external_auths::find_linked_record(
-        &app.db,
-        &collection.id,
-        provider.name,
-        &external_user.provider_user_id,
+/// A PocketBase-shaped session token: `{collectionId, exp, id,
+/// refreshable, type}`, signed with the record's own `tokenKey`.
+fn mint(app: &App, collection: &Arc<Collection>, record: &Record) -> ApiResult<String> {
+    let config = &collection.auth.auth_token;
+    let claims =
+        cratebase_auth::new_auth_claims(record.id(), &collection.id, config.duration.max(1), true);
+    cratebase_auth::sign(
+        &claims,
+        &app.token_signing_key(&record.token_key(), &config.secret),
     )
-    .await?
-    {
-        Some(id) => id,
-        None => {
-            let email = external_user.email.ok_or_else(|| {
-                ApiError(AppError::BadRequest(
-                    "provider account has no email address".into(),
-                ))
-            })?;
-            let id = match records::find_auth_credentials(&app.db, &collection, &email).await? {
-                Some((id, _, _)) => id,
-                None => {
-                    let random_password = cratebase_core::new_id();
-                    let hash = hash_password(&random_password)
-                        .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-                    let mut fields = serde_json::Map::new();
-                    fields.insert("email".into(), json!(email));
-                    fields.insert("password_hash".into(), json!(hash));
-                    let record = records::create_record(&app.db, &collection, fields).await?;
-                    let new_id = record["id"].as_str().unwrap_or_default().to_string();
-                    // The provider already proved ownership of this
-                    // email; don't also make them click a verification
-                    // link for an account they can't set a password on
-                    // yet anyway.
-                    records::set_verified(&app.db, &collection, &new_id).await?;
-                    new_id
-                }
-            };
-            external_auths::link(
-                &app.db,
-                &collection.id,
-                &id,
-                provider.name,
-                &external_user.provider_user_id,
-            )
-            .await?;
-            id
-        }
-    };
-
-    let record = records::get_record(&app.db, &collection, &record_id, None).await?;
-    let token = issue_token(
-        &record_id,
-        TokenKind::Auth,
-        &collection.id,
-        &app.config.auth_secret,
-        collection
-            .auth_options
-            .token_ttl_seconds
-            .unwrap_or(app.config.auth_token_ttl_seconds),
-    )
-    .map_err(|e| ApiError(AppError::Internal(e.to_string())))?;
-    Ok(Json(json!({ "token": token, "record": record })))
+    .map_err(|e| ApiError::internal(e.to_string()))
 }

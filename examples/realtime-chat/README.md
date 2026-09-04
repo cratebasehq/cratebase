@@ -9,30 +9,29 @@ display-name field (stored in `localStorage`, no login) so the focus stays
 on realtime record subscriptions. See `examples/todo` for a real
 register/login-gated flow.
 
-## Importing `cratebase` with zero build step
+## Importing `pocketbase` with zero build step
 
-`index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) mapping the bare
-specifier to the already-built local package:
+Cratebase's API is byte-compatible with PocketBase v0.23+, so this example
+uses the official PocketBase JS SDK straight off a CDN instead of a
+bespoke client. `index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+mapping the bare specifier to the published package on esm.sh:
 
 ```html
 <script type="importmap">
-  { "imports": { "cratebase": "../../sdk/js/dist/index.js" } }
+  { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
 </script>
 ```
 
 so `app.js` can just write:
 
 ```js
-import { Cratebase } from "cratebase";
+import PocketBase from "pocketbase";
 ```
 
-`cratebase` isn't published to npm yet, so `https://esm.sh/cratebase` (or
-any other CDN-from-npm-registry URL) would 404 — the import map is what
-makes the bare specifier resolve locally instead, no npm install and no
-bundler step needed. Once `cratebase` is published to npm, swapping the
-import map's one entry for a CDN URL (or dropping the import map
-entirely and using a bundler) is a drop-in change — `app.js` doesn't
-change at all.
+No npm install and no bundler step needed. Swapping the import map's one
+entry for a local `node_modules/pocketbase` resolution (or dropping the
+import map entirely and using a bundler) is a drop-in change if you'd
+rather not depend on a CDN — `app.js` doesn't change at all.
 
 ## 1. Start Cratebase
 
@@ -84,15 +83,16 @@ subscription — no page refresh, no polling.
 
 ## How it works
 
-- `app.js` creates one `Cratebase` client pointed at `http://localhost:8090`.
+- `app.js` creates one `PocketBase` client pointed at `http://localhost:8090`.
 - On load, it fetches the most recent 50 messages with
   `cb.collection("messages").getList(1, 50, { sort: "created" })` and
   renders them.
-- It then calls `cb.realtime.subscribe("messages", callback)`, which opens
-  an SSE connection to `/api/realtime`, waits for the `PB_CONNECT` event to
-  get a `clientId`, and posts a subscription for the `messages` topic.
-  Every subsequent `create`/`delete` event on that collection calls the
-  callback, which appends or removes the corresponding chat bubble live.
+- It then calls `cb.collection("messages").subscribe("*", callback)`, which
+  opens an SSE connection to `/api/realtime`, waits for the `PB_CONNECT`
+  event to get a `clientId`, and posts a subscription for the
+  `messages/*` topic. Every subsequent `create`/`delete` event on that
+  collection calls the callback, which appends or removes the
+  corresponding chat bubble live.
 - Sending a message is a plain `cb.collection("messages").create({ author,
   content })` — the sender doesn't render its own message from the create
   response; it relies on the realtime event to render it, exactly the same
@@ -101,10 +101,13 @@ subscription — no page refresh, no polling.
 
 ## Verification status
 
-Verified live: `bun run examples:chat:setup` against a fresh `cargo run
---bin cratebase -- serve` instance, served via `bun run examples:serve`,
-driven in a real browser (headless Chromium) — submitting the composer
-form appended a message with no page reload and no console/network
-errors. Two-tab live delivery was not re-verified after this pass; the
-sender's own render comes back through the same `connectRealtime()` SSE
-path a second tab would use.
+`bun run examples:chat:setup` is verified live against a running server:
+it creates the `messages` collection and its rules, and re-running it is a
+no-op.
+
+The browser half is **not** currently verified. It was driven in headless
+Chromium at one point — submitting the composer appended a message with no
+page reload and no console errors — but that was before `/api/realtime`
+was taken out of the router during the core rewrite. Until realtime lands
+again (see the root README's status section), `connectRealtime()` will
+404 and the page will not live-update.
