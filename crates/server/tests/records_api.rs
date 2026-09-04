@@ -583,6 +583,87 @@ async fn a_failed_write_rolls_back_and_fires_the_error_hook() {
     assert_eq!(page["totalItems"], 0);
 }
 
+/// A plain delete skips the explicit transaction (one statement, nothing
+/// that can join or abort it). The moment a delete hook is bound that is
+/// no longer true, and the row has to come back when the hook fails
+/// *after* the `DELETE` has already run.
+#[tokio::test]
+async fn a_delete_hook_that_fails_after_the_row_is_gone_rolls_it_back() {
+    let harness = Harness::new().await;
+    harness.collection(posts("posts")).await;
+    let (status, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/posts/records",
+            Some(json!({"title": "Keep me"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    let id = created["id"].as_str().expect("id").to_string();
+
+    harness
+        .app
+        .hooks()
+        .on_record_after_delete_success
+        .bind_func(|_e| {
+            Box::pin(async move { Err(cratebase_core::AppError::bad_request("hook says no")) })
+        });
+
+    let (status, body) = harness
+        .admin(
+            "DELETE",
+            &format!("/api/collections/posts/records/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["message"], "hook says no");
+
+    // The DELETE ran before the hook did, so only a transaction can put
+    // the row back.
+    let (status, back) = harness
+        .admin("GET", &format!("/api/collections/posts/records/{id}"), None)
+        .await;
+    assert_eq!(
+        status, 200,
+        "the failed delete must have rolled back: {back}"
+    );
+    assert_eq!(back["title"], "Keep me");
+}
+
+/// The same delete without a hook: still one row gone, still a 204, and
+/// the record is really gone rather than rolled back by accident.
+#[tokio::test]
+async fn a_plain_delete_commits_without_an_explicit_transaction() {
+    let harness = Harness::new().await;
+    harness.collection(posts("posts")).await;
+    let (_, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/posts/records",
+            Some(json!({"title": "Delete me"})),
+        )
+        .await;
+    let id = created["id"].as_str().expect("id").to_string();
+
+    let response = harness
+        .raw(
+            axum::http::Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/collections/posts/records/{id}"))
+                .header("authorization", &harness.token)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let (status, _) = harness
+        .admin("GET", &format!("/api/collections/posts/records/{id}"), None)
+        .await;
+    assert_eq!(status, 404);
+}
+
 // -------------------------------------------------------------------- auth
 
 /// Creates a `users` auth collection and one member, returning that

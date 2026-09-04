@@ -766,6 +766,28 @@ pub async fn delete(
     Ok(files)
 }
 
+/// Whether [`delete`] can touch anything beyond the record's own row.
+///
+/// A relation field pointing at `target` is either cascaded into (more
+/// `DELETE`s, plus a `SELECT` per cascaded row) or has its reference
+/// stripped (an `UPDATE`), so a referenced collection always means a
+/// multi-statement delete that has to be atomic. With no referencing
+/// field the whole operation is one `DELETE ... WHERE id = ?`, which
+/// SQLite already runs atomically on its own — the caller can then skip
+/// `BEGIN IMMEDIATE`/`COMMIT` and the two extra writer round trips they
+/// cost.
+///
+/// Cheaper than [`referencing_fields`] on the hot path: it stops at the
+/// first hit and clones nothing.
+pub fn delete_touches_other_collections(store: &CollectionStore, target: &Collection) -> bool {
+    store.all().all.iter().any(|collection| {
+        !collection.is_view()
+            && collection
+                .fields_of_type(FieldType::Relation)
+                .any(|field| field.relation_collection_id() == Some(target.id.as_str()))
+    })
+}
+
 /// Every `(collection, relation field)` pair pointing at `target`,
 /// excluding `target`'s own self-relations' owner (a self-relation still
 /// counts, but the visited set stops the recursion).
@@ -928,6 +950,51 @@ mod tests {
     use super::*;
     use cratebase_core::{CollectionType, FieldKind};
     use serde_json::json;
+
+    /// The route layer skips `BEGIN IMMEDIATE`/`COMMIT` for a delete this
+    /// says is confined to one row, so a wrong answer here is a lost
+    /// cascade, not a slow one.
+    #[test]
+    fn spots_the_collections_a_delete_would_reach_beyond_its_own_row() {
+        let posts = Collection::new("posts", CollectionType::Base);
+        let mut comments = Collection::new("comments", CollectionType::Base);
+        let mut unrelated = Collection::new("tags", CollectionType::Base);
+        unrelated.fields.push(Field::new(
+            "topic",
+            FieldKind::Relation {
+                collection_id: "some_other_collection".into(),
+                cascade_delete: true,
+                min_select: 0,
+                max_select: 1,
+            },
+        ));
+
+        let store = CollectionStore::new();
+        store.replace(vec![posts.clone(), unrelated.clone()]);
+        assert!(!delete_touches_other_collections(&store, &posts));
+
+        // A relation that does *not* cascade still turns the delete into
+        // several statements: the reference has to be stripped.
+        for cascade_delete in [false, true] {
+            comments.fields.retain(|f| f.name != "post");
+            comments.fields.push(Field::new(
+                "post",
+                FieldKind::Relation {
+                    collection_id: posts.id.clone(),
+                    cascade_delete,
+                    min_select: 0,
+                    max_select: 1,
+                },
+            ));
+            store.replace(vec![posts.clone(), comments.clone(), unrelated.clone()]);
+            assert!(
+                delete_touches_other_collections(&store, &posts),
+                "cascade_delete = {cascade_delete}"
+            );
+            // The relation points one way only.
+            assert!(!delete_touches_other_collections(&store, &comments));
+        }
+    }
 
     #[test]
     fn substitutes_named_filter_params_safely() {

@@ -392,6 +392,7 @@ async fn create_record(
             ))
         },
         record,
+        true,
     )
     .await;
 
@@ -484,6 +485,7 @@ async fn update_record(
             ))
         },
         record,
+        true,
     )
     .await;
 
@@ -555,6 +557,7 @@ async fn delete_record(
             })
         },
         record,
+        delete_needs_transaction(&app, &collection),
     )
     .await?;
 
@@ -577,6 +580,32 @@ async fn delete_record(
 
     realtime::publish(&app, &collection, RecordAction::Delete, &deleted);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Whether this delete has to be wrapped in an explicit transaction.
+///
+/// It does when it is more than one statement — a cascade or a stripped
+/// reference, see [`records::delete_touches_other_collections`] — or when
+/// any delete hook is bound, because a hook may write through the same
+/// scope (those writes must commit with the delete) or fail after it (the
+/// delete must then roll back). With neither, the whole operation is a
+/// single `DELETE ... WHERE id = ?`, which is already atomic on its own,
+/// and `BEGIN IMMEDIATE`/`COMMIT` would only add two writer round trips
+/// and hold the single writer connection across them.
+///
+/// The default configuration — no bound hooks, no relation pointing at
+/// the collection — is the common one, so this is the path most deletes
+/// take.
+fn delete_needs_transaction(app: &App, collection: &Collection) -> bool {
+    if records::delete_touches_other_collections(&app.db().collections, collection) {
+        return true;
+    }
+    let hooks = app.hooks();
+    !(hooks.on_record_delete_request.is_empty()
+        && hooks.on_record_delete.is_empty()
+        && hooks.on_record_delete_execute.is_empty()
+        && hooks.on_record_after_delete_success.is_empty()
+        && hooks.on_record_after_delete_error.is_empty())
 }
 
 // ----------------------------------------------------------- write plumbing
@@ -611,8 +640,14 @@ impl Write {
 }
 
 /// The `*Request` hook and the transaction it wraps — the part every
-/// write shares. `work` runs inside `App::run_in_transaction`, so its own
+/// write shares. `work` runs inside `App::run_scoped`, so its own
 /// database calls (and any hook's) join the same transaction.
+///
+/// `transactional` is false only for a write that is provably one
+/// statement with nothing able to join or abort it; see
+/// [`delete_needs_transaction`]. Creates and updates always pass true:
+/// their validation reads (uniqueness, relation existence) have to see
+/// the same snapshot the row is written against.
 async fn run_request<F>(
     app: &App,
     collection: &Arc<Collection>,
@@ -620,6 +655,7 @@ async fn run_request<F>(
     hook: fn(&Hooks) -> &Hook<RecordRequestEvent>,
     work: F,
     record: Record,
+    transactional: bool,
 ) -> ApiResult<Record>
 where
     F: FnOnce(TxApp, Arc<Collection>, Record) -> BoxFuture<'static, Result<Record, AppError>>
@@ -646,7 +682,7 @@ where
                         return Ok(());
                     };
                     let saved = inner_app
-                        .run_in_transaction(move |tx| work(tx, inner_collection, record))
+                        .run_scoped(transactional, move |tx| work(tx, inner_collection, record))
                         .await?;
                     e.record = Some(saved);
                     Ok(())

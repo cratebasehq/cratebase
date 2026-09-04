@@ -505,9 +505,40 @@ impl App {
         Fut: std::future::Future<Output = Result<T, AppError>> + Send,
         T: Send,
     {
-        let tx = self.db().begin().await.map_err(AppError::from)?;
+        self.run_scoped(true, f).await
+    }
+
+    /// [`run_in_transaction`](App::run_in_transaction) with an opt-out.
+    ///
+    /// When `transactional` is false no transaction is opened and the
+    /// [`TxApp`]'s statements run in autocommit mode on the engine. Only
+    /// pass false when the closure issues **one** statement and nothing
+    /// else (no hook, no cascade) can join or abort it: the whole point
+    /// of the transaction is to make several statements — or a statement
+    /// plus a hook that may fail after it — atomic, and a single
+    /// statement already is.
+    ///
+    /// This is worth an opt-out because the transaction is not free:
+    /// `BEGIN IMMEDIATE` and `COMMIT` are two extra round trips onto the
+    /// blocking pool, with the single writer connection locked across all
+    /// three. Measured straight on the SQLite engine (16 readers, 6000
+    /// rows), one `DELETE` costs 83µs wrapped in a transaction against
+    /// 59µs in autocommit: a writer ceiling of ~12.0k versus ~17.0k
+    /// deletes per second, at every concurrency from 1 to 50.
+    pub async fn run_scoped<F, Fut, T>(&self, transactional: bool, f: F) -> Result<T, AppError>
+    where
+        F: FnOnce(TxApp) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<T, AppError>> + Send,
+        T: Send,
+    {
+        let tx = if transactional {
+            Some(self.db().begin().await.map_err(AppError::from)?)
+        } else {
+            None
+        };
         let handle = Arc::new(TxHandle {
-            tx: tokio::sync::Mutex::new(Some(tx)),
+            tx: tokio::sync::Mutex::new(tx),
+            transactional,
         });
         let tx_app = TxApp {
             app: self.clone(),
@@ -683,6 +714,13 @@ pub fn new_token_key() -> String {
 /// `run_in_transaction` scope.
 struct TxHandle {
     tx: tokio::sync::Mutex<Option<Transaction>>,
+    /// False for a scope opened by [`App::run_scoped`] with
+    /// `transactional = false`: `tx` is then permanently `None` and the
+    /// [`TxApp`] executes straight on the engine. Kept as its own flag so
+    /// "no transaction was ever opened" is distinguishable from "the
+    /// transaction has already been committed", which must still be an
+    /// error.
+    transactional: bool,
 }
 
 impl TxHandle {
@@ -731,6 +769,9 @@ impl Executor for TxApp {
     }
 
     async fn query(&self, sql: &str, params: &[Sql]) -> cratebase_db::DbResult<Vec<Row>> {
+        if !self.handle.transactional {
+            return self.app.db().query(sql, params).await;
+        }
         let guard = self.handle.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx.query(sql, params).await,
@@ -739,6 +780,9 @@ impl Executor for TxApp {
     }
 
     async fn execute(&self, sql: &str, params: &[Sql]) -> cratebase_db::DbResult<u64> {
+        if !self.handle.transactional {
+            return self.app.db().execute(sql, params).await;
+        }
         let guard = self.handle.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx.execute(sql, params).await,
