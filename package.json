@@ -6,6 +6,10 @@
     "admin:dev": "bun run --cwd web/admin dev",
     "admin:build": "bun run --cwd web/admin build",
     "email:build": "bun run --cwd web/email build",
-    "conformance": "bun run --cwd tests/conformance test"
+    "conformance": "bun run --cwd tests/conformance test",
+    "examples:serve": "bash examples/serve.sh",
+    "examples:todo:setup": "bash examples/todo/setup.sh",
+    "examples:chat:setup": "bash examples/realtime-chat/setup.sh",
+    "examples:cursors:setup": "bash examples/realtime-cursors/setup.sh"
   }
 }

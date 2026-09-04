@@ -51,8 +51,57 @@ pub fn router() -> Router<App> {
     Router::new()
         .route("/backups", get(list).post(create))
         .route("/backups/upload", post(upload))
+        // Ahead of `/backups/{key}` on purpose: axum prefers the literal
+        // segment, and this is an extension rather than a PocketBase route.
+        .route("/backups/storage-info", get(storage_info))
         .route("/backups/{key}", get(download).delete(delete))
         .route("/backups/{key}/restore", post(restore))
+}
+
+/// `GET /api/backups/storage-info` — a Cratebase extension, not a
+/// PocketBase route.
+///
+/// Backups go wherever `settings.backups.s3` points, which is a different
+/// store from the one serving uploaded files. Nothing on the backups
+/// screen otherwise says which, so a superuser configuring S3 has no way
+/// to confirm it took effect short of writing a backup and looking.
+#[derive(Serialize)]
+struct StorageInfo {
+    /// `"local"` or `"s3"`.
+    driver: &'static str,
+    /// Where backups land: the on-disk directory, or `bucket[@endpoint]`
+    /// for S3-compatible stores. Never includes credentials.
+    location: String,
+}
+
+async fn storage_info(
+    State(app): State<App>,
+    _su: RequireSuperuser,
+) -> ApiResult<Json<StorageInfo>> {
+    let settings = app.settings();
+    let s3 = &settings.backups.s3;
+    let info = if s3.enabled {
+        StorageInfo {
+            driver: "s3",
+            location: if s3.endpoint.is_empty() {
+                s3.bucket.clone()
+            } else {
+                format!("{}@{}", s3.bucket, s3.endpoint)
+            },
+        }
+    } else {
+        // Ask the store itself rather than rebuilding the path here, so
+        // this can't drift from where `backups_storage()` actually writes.
+        let storage = app.backups_storage().map_err(ApiError)?;
+        StorageInfo {
+            driver: "local",
+            location: storage
+                .local_root()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+        }
+    };
+    Ok(Json(info))
 }
 
 /// One row of `GET /api/backups`.

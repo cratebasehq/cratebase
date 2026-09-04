@@ -6,6 +6,9 @@
 .env.*
 !.env.example
 /data
+# The default data directory: running `cratebase serve` from the repo root
+# creates it, and `.secret` inside it is a real credential.
+/pb_data
 node_modules/
 .DS_Store
 *.log
@@ -25,3 +28,6 @@ web/email/node_modules
 .claude/skills/
 .agents/skills/
 skills-lock.json
+
+# Claude Code worktrees
+.claude/worktrees/

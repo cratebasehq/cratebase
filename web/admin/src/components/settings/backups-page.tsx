@@ -77,6 +77,11 @@ export function BackupsPage() {
     queryKey: ["backups"],
     queryFn: () => cb.send<BackupInfo[]>("/api/backups", { method: "GET" }),
   });
+  const { data: storageInfo } = useQuery({
+    queryKey: ["backups", "storage-info"],
+    queryFn: () => cb.send<{ driver: "local" | "s3"; location: string }>("/api/backups/storage-info"),
+    staleTime: 5 * 60 * 1000,
+  });
 
   function invalidate() {
     return queryClient.invalidateQueries({ queryKey: ["backups"] });
@@ -131,6 +136,16 @@ export function BackupsPage() {
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
           Full-database snapshots, stored alongside your uploaded files. SQLite only.
+          {storageInfo ? (
+            <>
+              {" "}
+              Currently{" "}
+              <span className="font-mono text-foreground">
+                {storageInfo.driver === "s3" ? `S3 (${storageInfo.location})` : `local disk (${storageInfo.location})`}
+              </span>
+              .
+            </>
+          ) : null}
         </p>
         <Button onClick={handleCreate} disabled={pending}>
           {pending ? <Spinner /> : null}

@@ -23,12 +23,17 @@ comment above `deleteOwnCursor` in `app.js`.
 
 ## 1. Start Cratebase
 
+From the repo root:
+
 ```bash
-docker compose up -d
-docker compose exec cratebase cratebase superuser create you@example.com yourpassword
+cargo run --bin cratebase -- serve
 ```
 
-(or, from source: `cargo build --release -p cratebase-server && ./target/release/cratebase superuser create you@example.com yourpassword && ./target/release/cratebase serve`)
+(`docker compose up -d` also works if you'd rather run it containerized —
+just note its `cratebase` service uses a separate persisted volume from
+the `cargo run` binary's local `data/` dir, so pick one and stick with it
+per demo session, and stop the other before switching so they don't
+fight over port 8090.)
 
 This example assumes the API is reachable at `http://localhost:8090` (the
 default). Serving `index.html` from a different origin is fine — CORS
@@ -37,41 +42,14 @@ with `?api=http://your-host:port` appended.
 
 ## 2. Create the `cursors` collection
 
-Get a superuser token, then create a `base` collection with fully public
-rules (`""` = anyone, no auth needed) so the demo works with zero client
-setup:
+Run the setup script — it upserts an `admin@example.com` / `changeme123`
+superuser (override with `ADMIN_EMAIL`/`ADMIN_PASSWORD` env vars) and
+creates a `cursors` collection with fully public rules (`""` = anyone, no
+auth needed) if it doesn't already exist. Safe to re-run.
 
 ```bash
-# PocketBase v0.23+ dropped /api/admins/* in favour of the _superusers
-# auth collection.
-ADMIN_TOKEN=$(curl -s -X POST localhost:8090/api/collections/_superusers/auth-with-password \
-  -H 'content-type: application/json' \
-  -d '{"identity":"you@example.com","password":"yourpassword"}' | jq -r .token)
-
-# PocketBase v0.23+ uses "fields" (not "schema"); every collection needs
-# its own id/created/updated fields spelled out. Per-field "unique" is
-# gone too — uniqueness is a collection-level index instead.
-curl -X POST localhost:8090/api/collections \
-  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
-  -d '{
-    "name": "cursors",
-    "type": "base",
-    "fields": [
-      {"name": "clientId", "type": "text", "required": true},
-      {"name": "x", "type": "number", "required": true},
-      {"name": "y", "type": "number", "required": true},
-      {"name": "color", "type": "text", "required": true},
-      {"name": "label", "type": "text"},
-      {"name": "created", "type": "autodate", "onCreate": true},
-      {"name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true}
-    ],
-    "indexes": ["CREATE UNIQUE INDEX `idx_cursors_clientId` ON `cursors` (`clientId`)"],
-    "listRule": "",
-    "viewRule": "",
-    "createRule": "",
-    "updateRule": "",
-    "deleteRule": ""
-  }'
+bun run examples:cursors:setup
+# or directly: bash examples/realtime-cursors/setup.sh
 ```
 
 Every rule is `""` (public) — `createRule`/`updateRule`/`deleteRule` all
@@ -83,18 +61,24 @@ open scratch collection.
 
 ## 3. Serve the example
 
-Any static file server works, e.g.:
-
 ```bash
-cd examples/realtime-cursors
-python3 -m http.server 5500
+bun run examples:serve
 ```
 
-Open `http://localhost:5500` in two or more browser tabs (or two
-different browsers/devices on the same network, pointed at your
-machine's IP) and move the mouse around — each tab renders every *other*
-tab's cursor live, labeled with a randomly generated name and color. Your
-own real system cursor is never duplicated with a rendered dot.
+This serves the whole repo (not just this directory) — required because
+`index.html`'s import map points `"cratebase"` at
+`../../sdk/js/dist/index.js`, a path that only resolves when the server
+is rooted above `examples/`. Serving just this directory (e.g. `cd
+examples/realtime-cursors && python3 -m http.server`) 404s on that
+import, which fails silently (bare specifier `"cratebase"` can't resolve
+at all — the page loads but no cursor ever appears, guest or peer).
+
+Open **`http://localhost:4173/examples/realtime-cursors/`** in two or
+more browser tabs (or two different browsers/devices on the same
+network, pointed at your machine's IP) and move the mouse around — each
+tab renders every *other* tab's cursor live, labeled with a randomly
+generated name and color. Your own real system cursor is never
+duplicated with a rendered dot.
 
 ## How it works
 
@@ -127,11 +111,17 @@ own real system cursor is never duplicated with a rendered dot.
 
 ## Verification
 
-- `node --check app.js` passes (plain ES module syntax, no bundler
-  needed).
-- **Not verified**: actual multi-tab live behavior in a browser — this
-  sandbox has no browser available. The realtime/CRUD flow was checked
-  against the official `pocketbase` JS SDK's own source instead (same
-  request shapes, same SSE event names, same subscribe-after-`PB_CONNECT`
-  sequencing). Please smoke-test with two real browser tabs before
-  relying on this as a finished demo.
+- `bun run examples:cursors:setup` is verified live against a running
+  server: it creates `cursors`, its unique `clientId` index and its rules,
+  and re-running it is a no-op.
+- **Not currently verified**: the browser half. It ran clean in headless
+  Chromium at one point — identity, upsert, and subscribe all fired — but
+  that was before `/api/realtime` was taken out of the router during the
+  core rewrite. Until realtime lands again, `GET /api/realtime` 404s and
+  no cursor, own or peer, will move.
+
+**Fixed since the original version of this README**: `index.html` was
+missing the import map entirely, so the bare specifier in `app.js` had
+nothing to resolve to and the module failed to load at all — no cursors,
+no realtime, silently. It now declares the same import map every other
+`examples/*` app uses.
