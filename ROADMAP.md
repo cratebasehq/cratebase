@@ -42,15 +42,23 @@ land.
     mid-run) reclaim. Same "small built-in job registry" trade-off as
     cron jobs. `cb.queue.enqueue(queue, payload)` in the SDK.
   **Still not built on this foundation:**
-  - **Team management as a plugin** — multiple superusers with roles is a
-    real data-model change (today `_superusers` is one flat auth
-    collection, no roles); once record-lifecycle hooks exist on `Plugin`
-    this can enforce role checks without touching the core auth crate.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
 
 ## Shipped
+
+- **Team management (superuser roles).** `_superusers` gained a required
+  `owner`/`admin` role field (`crates/core/src/field.rs`'s `role_field`),
+  enforced by `RequireOwner` (`crates/server/src/extract.rs`) alongside
+  inline guards in `routes/records.rs`: creating, deleting, or changing
+  another superuser's role needs `owner`; `admin` keeps identical access
+  to everything else, including self-service on their own row. The sole
+  remaining `owner` cannot be demoted or deleted (migration
+  `8_add_superuser_role.rs` backfills every pre-existing row to `owner`,
+  so no installation loses admin access on upgrade). Built directly on
+  the core auth crate rather than the `Plugin` trait, since record
+  lifecycle hooks (below) still don't exist on it.
 
 - **Streaming backup upload.** `write_backup` in `routes/backups.rs`
   builds the `VACUUM INTO` snapshot into a temp-file ZIP via
@@ -228,15 +236,32 @@ collection has no address to send them to.
   **type-aware records table**, and **field-editor UX polish** (per-type
   option panels, inline validation, a syntax-help popover on every rule
   input).
+- **Multi-file append/remove semantics.** A multipart update field named
+  `field+` appends newly uploaded files to an existing multi-file field
+  without disturbing the rest; `field-` removes named files (deleting
+  their storage blobs, not just the JSON list entry) — verified against
+  real PocketBase v0.40.2 to confirm removing a name that isn't present
+  is a silent no-op, not an error. An unsuffixed field name still fully
+  replaces, unchanged (`crates/server/src/routes/records.rs`).
+- **Admin audit log.** A new append-only `_audit_log` system collection
+  (`crates/server/src/audit.rs`) records collection schema changes,
+  settings updates, and superuser account changes, plus any record
+  delete where a superuser bypassed the collection's own `deleteRule` —
+  not ordinary rule-permitted deletes, to avoid drowning the log in
+  noise. No rule string can express "nobody, ever," so update/delete on
+  `_audit_log` itself is rejected at the hook level even for a
+  superuser. Dashboard page at Settings → Audit log.
+- **Per-collection rate limiting.** Already fell out of the existing
+  `RateLimitRule` tag-matching (`crates/server/src/middleware/rate_limit.rs`'s
+  `tags_for()` derives a `{collection}:{action}` tag per request purely
+  from URL shape); the real gap was dashboard discoverability, closed
+  with a collection-name autocomplete on the rule editor
+  (`settings/network-page.tsx`).
 
 ## Later
 
-- Multi-file append/remove semantics on update (today, uploading new files
-  for a field replaces the whole value; `field+`/`field-` suffix syntax
-  for appending/removing individual files is not implemented).
-- Admin audit log / activity feed.
-- Per-collection rate limiting (today's rate limiting is IP-based on the
-  auth/email endpoints only, not a general per-collection mechanism).
+(nothing currently tracked here — everything previously listed shipped
+this session; see Shipped below.)
 
 ## Explicitly out of scope for now
 
