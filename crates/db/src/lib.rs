@@ -1,22 +1,37 @@
-//! Storage engine for Cratebase: connects to either SQLite or Postgres
-//! through sqlx's `Any` driver, keeps collection metadata + their physical
-//! tables in sync, and performs record CRUD with API-rule and filter
-//! enforcement pushed down into SQL.
+//! Storage engine for Cratebase.
+//!
+//! - [`engine`]: the backend-agnostic [`Engine`] / [`Executor`] /
+//!   [`Transaction`] contract and the [`Sql`] value type.
+//! - [`sqlite`] / [`postgres`]: the two implementations (rusqlite with a
+//!   read pool and a single writer; tokio-postgres behind deadpool).
+//! - [`schema`]: DDL derived from a [`cratebase_core::Collection`].
+//! - [`collections`]: `_collections` persistence and the arc-swapped
+//!   in-memory [`CollectionStore`] every request reads from.
+//! - [`params`], [`migrations`], [`logs`]: the remaining system tables.
+//! - [`Db`]: the handle bundling the main engine, the logs engine, the
+//!   backend and the collection store.
+//!
+//! Record reads/writes/validation live one layer up (`records`,
+//! `resolver`, `validate`) and are built on the executors exposed here.
 
-pub mod admins;
 pub mod backend;
 pub mod collections;
+pub mod db;
+pub mod engine;
 pub mod error;
-pub mod external_auths;
-pub mod otp;
-pub mod pool;
-pub mod records;
-pub mod resolver;
+pub mod logs;
+pub mod migrations;
+pub mod params;
+pub mod postgres;
+pub mod schema;
+pub mod sqlite;
 pub mod system;
-pub mod validate;
-pub mod value;
 
 pub use backend::Backend;
+pub use collections::{CollectionStore, Snapshot};
+pub use cratebase_filter::Dialect;
+pub use db::Db;
+pub use engine::{quote_ident, Engine, Executor, Row, Sql, Transaction, TransactionImpl};
 pub use error::{DbError, DbResult};
-pub use pool::Db;
-pub use resolver::{AuthContext, CollectionResolver, RequestContext, RuleOutcome};
+pub use postgres::PostgresEngine;
+pub use sqlite::SqliteEngine;

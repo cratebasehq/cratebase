@@ -11,16 +11,21 @@ cratebase-filter.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-regex = "1"
 tracing.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 chrono.workspace = true
-
-[dependencies.sqlx]
-version = "0.8"
-default-features = false
-features = ["any", "sqlite", "postgres", "runtime-tokio-rustls", "tls-rustls"]
+tokio.workspace = true
+indexmap = { version = "2", features = ["serde"] }
+arc-swap = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-chrono-0_4"] }
+deadpool-postgres = "0.14"
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = { workspace = true }
+bytes.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"
