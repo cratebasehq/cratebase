@@ -1,7 +1,7 @@
 //! App settings, shaped like `GET /api/settings` in PocketBase v0.23+ and
 //! persisted as JSON in `_params`. Secrets (`smtp.password`, `s3.secret`,
-//! `backups.s3.secret`) are accepted on input and stored, but stripped
-//! from the public JSON by [`Settings::to_public_json`].
+//! `backups.s3.secret`, `llm.apiKey`) are accepted on input and stored,
+//! but stripped from the public JSON by [`Settings::to_public_json`].
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

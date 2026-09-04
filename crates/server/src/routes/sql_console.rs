@@ -44,6 +44,22 @@
 //! *response* is truncated to [`ROW_CAP`] rows, with `truncated: true`
 //! when that happened — safe for the response payload, honest about
 //! what ran.
+//!
+//! # Client-visible timeout, not real cancellation
+//!
+//! [`QUERY_TIMEOUT`] bounds how long *this request* waits — a caller
+//! that hits it gets a clear error instead of a hung HTTP connection.
+//! It does **not** stop the underlying query: both engines run
+//! statements inside `tokio::task::spawn_blocking` (see
+//! `crates/db/src/sqlite.rs`'s module doc), and racing a `timeout`
+//! against a `spawn_blocking` future abandons the *future*, not the OS
+//! thread — a pathological statement (an unindexed cross join, a
+//! runaway recursive CTE) keeps running and can still hold the single
+//! SQLite writer after this handler has already returned an error.
+//! Real cancellation needs `rusqlite::Connection::get_interrupt_handle`
+//! wired through the engine so a timeout can call `interrupt()` on the
+//! connection actually running the statement — tracked as follow-up
+//! work, not solved here.
 
 use axum::routing::post;
 use axum::{Json, Router};
@@ -59,6 +75,10 @@ use crate::http_error::{ApiError, ApiJson, ApiResult};
 
 /// Response rows are truncated to this many entries; see the module doc.
 const ROW_CAP: usize = 500;
+
+/// How long an ad-hoc statement is allowed to run before the endpoint
+/// gives up and returns an error; see the module doc.
+const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub fn router() -> Router<App> {
     Router::new().route("/sql", post(run_sql))
@@ -119,10 +139,9 @@ async fn run_sql(
     }
 
     if is_read {
-        let rows = app
-            .db()
-            .query(&req.sql, &[])
+        let rows = tokio::time::timeout(QUERY_TIMEOUT, app.db().query(&req.sql, &[]))
             .await
+            .map_err(|_| ApiError::bad_request("Query timed out after 10s."))?
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         let columns: Vec<String> = rows
             .first()
@@ -136,10 +155,9 @@ async fn run_sql(
             truncated,
         }))
     } else {
-        let rows_affected = app
-            .db()
-            .execute(&req.sql, &[])
+        let rows_affected = tokio::time::timeout(QUERY_TIMEOUT, app.db().execute(&req.sql, &[]))
             .await
+            .map_err(|_| ApiError::bad_request("Query timed out after 10s."))?
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
         Ok(Json(SqlResponse::Write { rows_affected }))
     }

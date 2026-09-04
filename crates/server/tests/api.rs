@@ -379,6 +379,7 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
     assert!(body["smtp"].get("password").is_none());
     assert!(body["s3"].get("secret").is_none());
     assert!(body["backups"]["s3"].get("secret").is_none());
+    assert!(body["llm"].get("apiKey").is_none());
 
     // Store a secret, then patch an unrelated key: the secret survives
     // because the merge is deep and the client never echoed it back.
