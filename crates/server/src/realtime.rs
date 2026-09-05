@@ -122,8 +122,6 @@ const SEND_QUEUE_LIMIT: usize = 512;
 /// branch on exactly as PocketBase's do.
 const CONTEXT_REALTIME: &str = "realtime";
 
-// ---------------------------------------------------------------- service
-
 /// One connected SSE client.
 struct Client {
     /// Frames queued for this client's stream. Unbounded so a publish
@@ -375,8 +373,6 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-// ----------------------------------------------------------------- routes
-
 pub fn router() -> Router<App> {
     Router::new().route("/realtime", get(connect).post(submit))
 }
@@ -482,8 +478,6 @@ async fn submit(
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
-
-// ---------------------------------------------------------------- publish
 
 /// Announce a committed record mutation to realtime subscribers.
 ///
@@ -600,8 +594,6 @@ async fn fan_out(
         }
     }
 }
-
-// ----------------------------------------------------------- cross-node
 
 fn parse_action(s: &str) -> Option<RecordAction> {
     match s {

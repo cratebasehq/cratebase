@@ -20,7 +20,7 @@
 //!
 //! Plugin routers are nested at `/api/plugins/<name>` **inside** the same
 //! nest as the built-in API, so they pass through request logging and the
-//! rate limiter. The Phase 1 registry merged them at the router root,
+//! rate limiter. An earlier design merged them at the router root instead,
 //! which the audit flagged: a plugin route was neither logged nor
 //! rate-limited.
 

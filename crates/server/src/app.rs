@@ -61,13 +61,13 @@ pub struct AppInner {
     /// verify plus a database round trip), as opposed to being served
     /// from the per-request cache.
     ///
-    /// This is a *performance invariant*, not a statistic: the Phase 1
-    /// regression was the logging layer and the handler each resolving
-    /// the caller independently, which doubled the cost of every
-    /// authenticated request. One relaxed increment on a path that
-    /// already does a signature check is free, and it lets a test assert
-    /// "exactly one resolution per request" instead of trusting a
-    /// comment.
+    /// This is a *performance invariant*, not a statistic: an earlier
+    /// version double-counted resolutions because the logging layer and
+    /// the handler each resolved the caller independently, doubling the
+    /// cost of every authenticated request. One relaxed increment on a
+    /// path that already does a signature check is free, and it lets a
+    /// test assert "exactly one resolution per request" instead of
+    /// trusting a comment.
     auth_resolutions: std::sync::atomic::AtomicU64,
     /// Set once the JS runtime starts (absent `pb_hooks/`, or an empty
     /// one, means it never does). An `Arc<OnceLock<_>>` rather than a
@@ -165,8 +165,6 @@ impl App {
             .auth_resolutions
             .load(std::sync::atomic::Ordering::Relaxed)
     }
-
-    // ------------------------------------------------------------ accessors
 
     /// The open database. Panics when called before [`App::bootstrap`],
     /// which is a programming error rather than a runtime condition.
@@ -310,8 +308,6 @@ impl App {
     pub fn token_signing_key(&self, record_token_key: &str, type_secret: &str) -> Vec<u8> {
         cratebase_auth::signing_key(&self.inner.config.secret, record_token_key, type_secret)
     }
-
-    // ------------------------------------------------------------ lifecycle
 
     /// Open everything and get the app ready to serve. Idempotent-ish:
     /// calling it twice is refused rather than silently reopening the
@@ -464,8 +460,6 @@ impl App {
         }
     }
 
-    // ------------------------------------------------------------- settings
-
     /// Persist `settings`, swap them in and rebuild everything derived
     /// from them (storage, mailer, the backups cron).
     pub async fn set_settings(&self, settings: Settings) -> anyhow::Result<()> {
@@ -497,8 +491,6 @@ impl App {
         self.inner.settings.store(settings);
         Ok(())
     }
-
-    // -------------------------------------------------------------- crons
 
     /// PocketBase's four system jobs, registered under their exact ids so
     /// `GET /api/crons` matches the fixture.
@@ -628,8 +620,6 @@ impl App {
         }
     }
 
-    // ---------------------------------------------------------- transactions
-
     /// Run `f` inside one write transaction, committing on `Ok` and
     /// rolling back on `Err`. The closure receives a [`TxApp`], so hooks
     /// and services called from inside it read and write through the same
@@ -690,8 +680,6 @@ impl App {
             }
         }
     }
-
-    // ------------------------------------------------- superusers (W4a only)
 
     /// Look up a `_superusers` row by id, straight through the engine.
     ///

@@ -59,10 +59,6 @@ use crate::app::{App, JsRoute, TxApp};
 use crate::extract::RequestInfo;
 use crate::http_error::ApiError;
 
-// ---------------------------------------------------------------------------
-// The host: `App` for ordinary calls, `TxApp` inside a write-path hook.
-// ---------------------------------------------------------------------------
-
 /// What a [`JsvmHost`] calls through: the plain database engine, or an
 /// open transaction when the call originates inside a record/collection
 /// write-path hook.
@@ -541,10 +537,6 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Starting the runtime.
-// ---------------------------------------------------------------------------
-
 /// `true` when `dir` exists and contains at least one `*.pb.js` file.
 fn has_hook_files(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -580,10 +572,6 @@ pub async fn maybe_start(app: &App) -> Result<(), AppError> {
     let _ = app.jsvm_cell().set(runtime);
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// `routerAdd` → real axum routes.
-// ---------------------------------------------------------------------------
 
 /// PocketBase path segments (`{name}`, `{path...}`) to axum 0.8 ones
 /// (`{name}`, `{*path}`); axum already uses `{name}` for a named

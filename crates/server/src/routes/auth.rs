@@ -153,8 +153,6 @@ pub fn router() -> Router<App> {
         )
 }
 
-// ------------------------------------------------------- auth-with-password
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PasswordBody {
@@ -346,8 +344,6 @@ async fn rehash(
         .map_err(AppError::from)
 }
 
-// -------------------------------------------------------------- auth-refresh
-
 async fn auth_refresh(
     State(app): State<App>,
     Path(name): Path<String>,
@@ -406,8 +402,6 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .ok()?;
     Some(raw.strip_prefix("Bearer ").unwrap_or(raw).trim()).filter(|t| !t.is_empty())
 }
-
-// -------------------------------------------------------------- auth-methods
 
 async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiResult<Json<Value>> {
     let collection = app
@@ -525,8 +519,6 @@ fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
         "codeChallengeMethod": code_challenge_method,
     })
 }
-
-// ------------------------------------------------------------------- shared
 
 /// Mint the session token, run the auth hooks and render
 /// `{token, record}`.
@@ -767,8 +759,6 @@ async fn fire_request_hook(
         .map_err(ApiError)
 }
 
-// -------------------------------------------------------------- verification
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct EmailBody {
@@ -883,8 +873,6 @@ async fn confirm_verification(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ------------------------------------------------------------ password reset
-
 async fn request_password_reset(
     State(app): State<App>,
     Path(name): Path<String>,
@@ -989,8 +977,6 @@ async fn confirm_password_reset(
         .map_err(|e| ApiError(e.into()))?;
     Ok(StatusCode::NO_CONTENT)
 }
-
-// -------------------------------------------------------------- email change
 
 async fn request_email_change(
     State(app): State<App>,
@@ -1170,8 +1156,6 @@ async fn confirm_email_change(
         .map_err(|e| ApiError(e.into()))?;
     Ok(StatusCode::NO_CONTENT)
 }
-
-// --------------------------------------------------------------------- OTP
 
 async fn request_otp(
     State(app): State<App>,
@@ -1373,8 +1357,6 @@ async fn auth_with_otp(
     .await
     .map(IntoResponse::into_response)
 }
-
-// ------------------------------------------------------------------ OAuth2
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1878,8 +1860,6 @@ async fn create_oauth2_record(
     Ok(record)
 }
 
-// --------------------------------------------------------------------- MFA
-
 enum MfaGate {
     Passed,
     /// A first factor just succeeded; `.0` is the new `_mfas` row id the
@@ -1970,8 +1950,6 @@ async fn mfa_gate(
         }
     }
 }
-
-// ---------------------------------------------------------- auth origins
 
 /// Records this login's `_authOrigins` fingerprint and, when it is a
 /// genuinely new device for a record that already had at least one
@@ -2065,8 +2043,6 @@ async fn record_login_origin_inner(
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------- impersonate
 
 async fn impersonate(
     State(app): State<App>,

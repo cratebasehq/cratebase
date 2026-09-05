@@ -258,7 +258,7 @@ async fn superuser(dir: Option<String>, action: SuperuserAction) -> anyhow::Resu
                 anyhow::bail!("no superuser with email {email}");
             };
             let code = cratebase_auth::generate_otp(cratebase_auth::DEFAULT_OTP_LENGTH);
-            // W4b-2: persist the code in `_otps` through the auth service so
+            // Persist the code in `_otps` through the auth service so
             // `auth-with-otp` accepts it. Printing it is already useful for
             // an operator locked out of the dashboard.
             format!("one-time code for {email}: {code}")
@@ -306,9 +306,9 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             println!("created {}", path.display());
         }
         MigrateAction::Collections => {
-            // W7: snapshot the collection set into a JS migration. The
-            // JSON export exists now (`Collection::to_json`); what is
-            // missing is the JS migration file format the runtime reads.
+            // Snapshot the collection set into a JS migration. The JSON
+            // export exists now (`Collection::to_json`); what is missing
+            // is the JS migration file format the runtime reads.
             anyhow::bail!("`migrate collections` needs the JS migration runtime (W7)");
         }
         MigrateAction::HistorySync => {
@@ -325,7 +325,7 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
     Ok(())
 }
 
-/// PocketBase's `migrate create` writes a JS file the JS runtime (W5)
+/// PocketBase's `migrate create` writes a JS file the JS runtime
 /// executes; the CLI only has to lay down the skeleton.
 fn write_migration_stub(app: &App, name: &str) -> anyhow::Result<std::path::PathBuf> {
     let dir = std::path::Path::new(&app.config().migrations_dir);

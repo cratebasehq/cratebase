@@ -88,8 +88,6 @@ pub fn router() -> Router<App> {
     Router::new().route("/batch", post(batch))
 }
 
-// --------------------------------------------------------------- payload
-
 /// One `{method, url, headers?, body?}` entry as the SDK's
 /// `createBatch()` serializes it. `body` is arbitrary JSON — files never
 /// appear here, only in the sibling `requests.<index>.<field>` multipart
@@ -257,8 +255,6 @@ fn assemble(parsed: ParsedBatch) -> Vec<BatchItem> {
         .collect()
 }
 
-// ----------------------------------------------------------------- target
-
 /// The record endpoint a sub-request's `url` names.
 struct Target {
     collection: String,
@@ -356,8 +352,6 @@ fn sub_request_info(outer: &RequestInfo, item: &BatchItem, target: &Target) -> R
         auth: outer.auth.clone(),
     }
 }
-
-// -------------------------------------------------------------- processing
 
 /// What one successful sub-request leaves behind, kept apart from the
 /// database write itself because none of it is safe to act on until the
@@ -783,8 +777,6 @@ async fn serialize_record(
     Ok(value)
 }
 
-// ------------------------------------------------------------------- errors
-
 /// `data.requests = {code, message}` — the shape for a failure that
 /// rejects the *whole* batch before any sub-request runs (too many
 /// requests, none at all).
@@ -807,8 +799,6 @@ fn error_response(err: ApiError) -> Value {
     };
     serde_json::json!({ "status": body.status, "message": body.message, "data": data })
 }
-
-// ------------------------------------------------------------------ handler
 
 async fn batch(
     State(app): State<App>,

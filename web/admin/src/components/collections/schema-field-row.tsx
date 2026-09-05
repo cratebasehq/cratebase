@@ -223,7 +223,6 @@ export function SchemaFieldRow({
             : "border-border",
       )}
     >
-      {/* Header line: identity of the field, always visible. ------------- */}
       <div className="flex items-center gap-2 px-2 py-2">
         <button
           type="button"
@@ -325,7 +324,6 @@ export function SchemaFieldRow({
         </p>
       ) : null}
 
-      {/* Options panel: full row width, two columns, only when opened. --- */}
       {open && (field.type === "text" || field.type === "editor" || field.type === "password") ? (
         <OptionGroup title="Length & format" error={optionsError}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

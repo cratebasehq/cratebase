@@ -4,8 +4,8 @@
 //!
 //! `X-Forwarded-For` is attacker-controlled: anybody can send
 //! `X-Forwarded-For: 1.2.3.4` and, if the server believes it, sail past
-//! any per-IP rate limit or superuser IP allowlist. The Phase 1 code
-//! trusted the header unconditionally, which the audit flagged.
+//! any per-IP rate limit or superuser IP allowlist. An earlier version
+//! trusted the header unconditionally.
 //!
 //! So a forwarded header is honoured **only** when the operator listed it
 //! in `settings.trustedProxy.headers` — i.e. only when they have told us

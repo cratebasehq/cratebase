@@ -19,10 +19,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { describeFailure } from "@/lib/api";
 
-/* ------------------------------------------------------------------------ *
- * Route-level states
- * ------------------------------------------------------------------------ */
-
 /** Rendered by the router for any error thrown in a loader or a screen.
  * Before this, a failing route rendered nothing at all. */
 export function RouteError({ error, reset }: { error: Error; reset?: () => void }) {
@@ -128,10 +124,6 @@ function ErrorDetails({ error }: { error: unknown }) {
     </Collapsible>
   );
 }
-
-/* ------------------------------------------------------------------------ *
- * Global boundary
- * ------------------------------------------------------------------------ */
 
 interface BoundaryState {
   error: Error | null;

@@ -21,10 +21,6 @@ import { PAGE_SIZES } from "@/hooks/use-records";
 import type { ColumnPrefs } from "@/hooks/use-column-prefs";
 import type { Density } from "@/lib/grid";
 
-/* -------------------------------------------------------------------------- *
- * Columns
- * -------------------------------------------------------------------------- */
-
 function SortableColumnRow({
   id,
   label,
@@ -152,10 +148,6 @@ export function ColumnsMenu({
   );
 }
 
-/* -------------------------------------------------------------------------- *
- * View: page size, density, total count
- * -------------------------------------------------------------------------- */
-
 export function ViewMenu({
   perPage,
   onPerPageChange,
@@ -249,10 +241,6 @@ export function ViewMenu({
     </Popover>
   );
 }
-
-/* -------------------------------------------------------------------------- *
- * Selection
- * -------------------------------------------------------------------------- */
 
 export function SelectionBar({
   count,

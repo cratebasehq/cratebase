@@ -534,8 +534,6 @@ impl Field {
         )
     }
 
-    // --- PocketBase's standard system fields -------------------------------
-
     /// The `id` primary key field every collection has.
     pub fn id_field() -> Field {
         let mut f = Field::new(

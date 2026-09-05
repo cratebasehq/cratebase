@@ -51,8 +51,6 @@ pub fn router() -> Router<App> {
         .route("/files/{collection}/{recordId}/{filename}", get(download))
 }
 
-// -------------------------------------------------------------- file tokens
-
 /// `POST /api/files/token`. Any authenticated record may mint one; what
 /// it unlocks is decided per file by the owning collection's `viewRule`.
 async fn token(State(app): State<App>, auth: Auth) -> ApiResult<Json<serde_json::Value>> {
@@ -96,8 +94,6 @@ pub async fn file_token_context(app: &App, token: &str) -> Option<AuthContext> {
     cratebase_auth::verify(token, &key).ok()?;
     Some(AuthContext::new(record))
 }
-
-// ---------------------------------------------------------------- downloads
 
 #[derive(Debug, Default, Deserialize)]
 struct FileQuery {
@@ -269,8 +265,6 @@ fn mime_for(filename: &str) -> String {
         .essence_str()
         .to_string()
 }
-
-// ------------------------------------------------------------------- thumbs
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThumbMode {

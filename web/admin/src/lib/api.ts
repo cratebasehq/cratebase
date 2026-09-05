@@ -108,10 +108,6 @@ export async function createFirstSuperuser(
   });
 }
 
-/* ------------------------------------------------------------------------ *
- * Error handling
- * ------------------------------------------------------------------------ */
-
 /** A failure translated into something a person can act on. `fields` carries
  * the per-field entries of the `{status, message, data}` envelope so a form
  * can mark the offending input instead of firing a generic toast. */

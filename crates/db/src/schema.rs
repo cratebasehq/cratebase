@@ -100,8 +100,6 @@ pub fn create_table_sql(backend: Backend, collection: &Collection) -> DbResult<S
     ))
 }
 
-// --- indexes -------------------------------------------------------------
-
 /// The parts of a `CREATE INDEX` statement we need: enough to name it,
 /// point it at the right table, and re-emit it in double-quoted form.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -428,8 +426,6 @@ fn parse_indexes(collection: &Collection) -> DbResult<Vec<(IndexDef, String)>> {
         })
         .collect()
 }
-
-// --- sync ---------------------------------------------------------------
 
 /// Bring the physical table/view of `next` in line with its definition.
 /// `previous` is the definition currently materialized (`None` on
