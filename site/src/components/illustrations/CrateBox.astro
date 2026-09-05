@@ -1,0 +1,22 @@
+---
+/**
+ * One crate: the mark, filled. Top face in brand orange, the two side faces
+ * under progressively deeper harbor shadow, and the mark's three interior
+ * spokes drawn as braces across the faces.
+ */
+import { type Box, braces, faces, shadow } from "../../assets/illustrations/iso";
+
+interface Props {
+  box: Box;
+  /** Cast a ground shadow (only for crates that stand on the ground plane). */
+  shadow?: boolean;
+}
+const { box: b, shadow: cast = false } = Astro.props;
+const face = faces(b);
+---
+
+{cast && <path class="shadow" d={shadow(b)} />}
+<path class="crate-left" d={face.left} />
+<path class="crate-right" d={face.right} />
+<path class="crate-top" d={face.top} />
+<path class="brace" d={braces(b)} />

@@ -1,0 +1,28 @@
+---
+title: "Files"
+description: "Downloading a file, and minting a token for a protected one."
+sidebar:
+  order: 6
+---
+
+### `GET /files/{collection}/{recordId}/{filename}` — gated by `viewRule`
+
+Streams the raw file (`application/octet-stream`). `?thumb=WxH` (plus
+the `f`/`t`/`b` fit-mode suffixes) requests a generated thumbnail
+variant instead of the original, generated and cached on first request.
+`?download=1` forces `Content-Disposition: attachment`; without it the
+response is `inline`. A file on a `protected` field is not automatically
+gated by presence of a bearer token — it is gated by the collection's
+`viewRule` evaluated for whoever is asking, exactly like any other
+record read (see [Files](/docs/concepts/files/) for why "protected"
+doesn't mean "always needs a token").
+
+### `POST /files/token` — any authenticated record
+
+No body. Returns `{ "token": "..." }`, a short-lived token minted for the
+*caller's own* identity. Pass it as `?token=` on a file/thumb URL or the
+backup-download endpoint in place of an `Authorization` header — the
+only way to gate a download reachable from a plain `<img src>` or
+`<a download>`, neither of which can set request headers. What the token
+actually unlocks is still decided per file by the owning collection's
+`viewRule`, evaluated against the token's owner, not the token itself.

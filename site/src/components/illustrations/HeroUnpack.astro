@@ -1,0 +1,134 @@
+---
+/**
+ * Hero: a crate being unpacked into a dashboard. An open crate in the
+ * foreground, its lid hinged back; three progressively smaller crates rise
+ * along an arc into a standing screen whose table is filling with rows.
+ */
+import { bezier, box, faceRect, line, poly, polyline, shadow, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+
+// ---- The dashboard: a standing screen on a stem and foot. ----
+const foot = box(-0.35, 1.7, 0, 0.7, 1.6, 0.08);
+const stem = box(-0.06, 2.3, 0.08, 0.12, 0.4, 0.75);
+const screen = box(-0.06, 0, 0.83, 0.12, 5.0, 3.1);
+// On the screen's visible (x = const) face, `u` runs along +y, which is
+// screen-left: u = 1 is the reader's left edge. The sidebar goes there.
+const face = (u0: number, v0: number, u1: number, v1: number, lift = 0.03) =>
+  faceRect(screen, "right", u0, v0, u1, v1, lift);
+const bezel = face(0.04, 0.05, 0.96, 0.95, 0.02);
+const sidebar = face(0.7, 0.07, 0.94, 0.93);
+const sidebarItems = [0.82, 0.74, 0.66, 0.58, 0.5].map((v) => face(0.74, v, 0.9, v + 0.035, 0.04)).join("");
+const header = face(0.08, 0.83, 0.66, 0.91);
+// Table rows fill from the top; the lowest three are still empty outlines.
+const rowV = [0.72, 0.63, 0.54, 0.45, 0.36, 0.27, 0.18];
+const rowsFilled = rowV.slice(0, 4).map((v) => face(0.08, v, 0.66, v + 0.06)).join("");
+const rowsEmpty = rowV.slice(4).map((v) => face(0.08, v, 0.66, v + 0.06)).join("");
+const rowText = rowV
+  .slice(0, 4)
+  .flatMap((v) => [
+    face(0.5, v + 0.02, 0.63, v + 0.04, 0.05),
+    face(0.28, v + 0.02, 0.45, v + 0.04, 0.05),
+    face(0.14, v + 0.02, 0.23, v + 0.04, 0.05),
+  ])
+  .join("");
+
+// ---- The open crate in the foreground. ----
+const open = box(3.1, 0.9, 0, 1.4, 1.4, 1.4);
+const { x: ox, y: oy, sx: os, sz: oh } = open;
+const inner = 0.1;
+const floor = poly([
+  [ox + inner, oy + inner, inner],
+  [ox + os - inner, oy + inner, inner],
+  [ox + os - inner, oy + os - inner, inner],
+  [ox + inner, oy + os - inner, inner],
+]);
+const innerBack = poly([
+  [ox + inner, oy + inner, inner],
+  [ox + inner, oy + os - inner, inner],
+  [ox + inner, oy + os - inner, oh],
+  [ox + inner, oy + inner, oh],
+]);
+const innerSide = poly([
+  [ox + inner, oy + inner, inner],
+  [ox + os - inner, oy + inner, inner],
+  [ox + os - inner, oy + inner, oh],
+  [ox + inner, oy + inner, oh],
+]);
+const outerLeft = poly([
+  [ox, oy + os, 0],
+  [ox + os, oy + os, 0],
+  [ox + os, oy + os, oh],
+  [ox, oy + os, oh],
+]);
+const outerRight = poly([
+  [ox + os, oy, 0],
+  [ox + os, oy + os, 0],
+  [ox + os, oy + os, oh],
+  [ox + os, oy, oh],
+]);
+const outerBraces =
+  line([ox + os, oy + os, oh], [ox, oy + os, 0]) + line([ox + os, oy + os, oh], [ox + os, oy, 0]);
+const rim = poly([
+  [ox, oy, oh],
+  [ox + os, oy, oh],
+  [ox + os, oy + os, oh],
+  [ox, oy + os, oh],
+]);
+// Lid hinged along the back-right top edge (y = oy), swung 110° away from
+// the viewer toward the upper right, so its underside is what shows.
+const lidAngle = (110 * Math.PI) / 180;
+const lidDy = Math.cos(lidAngle) * os;
+const lidDz = Math.sin(lidAngle) * os;
+const lid = poly([
+  [ox, oy, oh],
+  [ox + os, oy, oh],
+  [ox + os, oy + lidDy, oh + lidDz],
+  [ox, oy + lidDy, oh + lidDz],
+]);
+const lidBrace = line([ox + os, oy, oh], [ox, oy + lidDy, oh + lidDz]);
+
+// ---- Crates rising from the open crate, up and left into the screen. ----
+const rising = [box(2.35, 1.5, 1.85, 0.85), box(1.55, 2.0, 2.35, 0.6), box(0.75, 2.4, 2.7, 0.4)];
+const arc = polyline(bezier([3.8, 1.6, 1.5], [3.2, 1.5, 2.6], [1.8, 2.5, 3.3], [0.4, 2.8, 3.1], 32));
+
+const frame = viewBox([foot, screen, open], 14, [
+  [ox + os, oy + lidDy, oh + lidDz],
+  [ox + os + 0.35, oy + os + 0.35, 0],
+]);
+---
+
+<IsoFrame viewBox={frame} label={label}>
+  <path class="shadow" d={shadow(foot, 0.25)} />
+  <path class="shadow" d={shadow(open, 0.25)} />
+
+  <PanelBox box={foot} />
+  <PanelBox box={stem} />
+  <PanelBox box={screen} />
+  <path class="lit thin" d={bezel} />
+  <path class="shade thin" d={sidebar} />
+  <path class="ink faint" d={sidebarItems} />
+  <path class="shade thin" d={header} />
+  <path class="shade thin" d={rowsFilled} />
+  <path class="thin faint dash" d={rowsEmpty} />
+  <path class="ink faint" d={rowText} />
+
+  <path class="thin faint dash" d={arc} />
+  {rising.map((c) => <CrateBox box={c} />)}
+
+  <path class="crate-left" d={lid} />
+  <path class="brace" d={lidBrace} />
+  <path class="crate-right" d={floor} />
+  <path class="crate-right" d={innerBack} />
+  <path class="crate-left" d={innerSide} />
+  <path class="crate-left" d={outerLeft} />
+  <path class="crate-right" d={outerRight} />
+  <path class="brace" d={outerBraces} />
+  <path d={rim} />
+</IsoFrame>

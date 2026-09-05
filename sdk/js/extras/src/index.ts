@@ -1,7 +1,8 @@
 /** `@cratebase/extras` — optional client extensions for the handful of
  * Cratebase endpoints the official `pocketbase` npm SDK has no
  * first-class surface for: vector search, MCP tool schemas, the LLM
- * chat gateway, and a client-side presence pattern (see
+ * chat gateway, the durable job queue, and a client-side presence
+ * pattern (see
  * `docs/superpowers/specs/2026-09-04-value-add-strategy.md` §1/§1a/§6).
  *
  * This package deliberately does **not** replace or fork the SDK — a
@@ -9,8 +10,9 @@
  * and pays zero cost. Everything here takes an existing `PocketBase`
  * client instance and bolts extra methods onto it, either through the
  * {@link CratebaseExtras} facade or as the standalone functions it
- * wraps (`nearestTo`, `getToolSchema(s)`, `chat`, `trackPresence`), for
- * callers who'd rather not carry an extra object around.
+ * wraps (`nearestTo`, `getToolSchema(s)`, `chat`, `enqueue`,
+ * `trackPresence`), for callers who'd rather not carry an extra object
+ * around.
  */
 
 import type PocketBase from "pocketbase";
@@ -19,10 +21,12 @@ import type { RecordModel } from "pocketbase";
 import { nearestTo, type NearestToOptions } from "./vector.js";
 import { getToolSchema, getToolSchemas, type ToolSchema } from "./mcp.js";
 import { trackPresence, type Presence, type PresenceOptions } from "./presence.js";
+import { enqueue, type EnqueuedJob, type EnqueueOptions } from "./queue.js";
 
 export { nearestTo, type NearestToOptions } from "./vector.js";
 export { getToolSchema, getToolSchemas, type ToolSchema } from "./mcp.js";
 export { trackPresence, type Presence, type PresenceOptions } from "./presence.js";
+export { enqueue, type EnqueuedJob, type EnqueueOptions } from "./queue.js";
 
 /** One turn of a chat exchange, mirroring the server's `WireMessage`
  * (`crates/server/src/routes/llm.rs`). */
@@ -178,5 +182,9 @@ export class CratebaseExtras {
     options?: PresenceOptions,
   ): Promise<Presence> {
     return trackPresence<T>(this.pb, collectionIdOrName, record, options);
+  }
+
+  enqueue(queue: string, payload: unknown, options?: EnqueueOptions): Promise<EnqueuedJob> {
+    return enqueue(this.pb, queue, payload, options);
   }
 }

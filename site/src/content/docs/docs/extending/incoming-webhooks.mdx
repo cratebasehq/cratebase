@@ -1,17 +1,52 @@
 ---
 title: "Incoming webhooks"
-description: "Verifying a signed inbound webhook (Stripe as the worked example)."
+description: "Verifying a signed inbound webhook (Stripe as the worked example) from a pb_hooks JS file."
 ---
 
 Trusting a payload an external service POSTs *at* Cratebase (Stripe,
 GitHub, another Cratebase instance's own outgoing webhook) is the
 opposite direction from `_webhooks` above, and reduces to one primitive:
-`verify_hmac_sha256_hex(secret, signed_content, hex_signature)`, a
-constant-time HMAC-SHA256 comparison exposed both natively
-(`crates/server/src/incoming_webhooks.rs`) and to `pb_hooks` JS via
-`$security.hs256(data, secret)`. `POST /api/webhooks/stripe` is a worked
-endpoint implementing Stripe's specific `Stripe-Signature` scheme
-end-to-end (timestamp tolerance + multi-secret rotation window); see the
+`$security.hs256(data, secret)`, the constant-time HMAC-SHA256-as-hex
+computation the embedded JS runtime already exposes to every
+`pb_hooks/*.pb.js` file — no server-side Rust module or dedicated route
+needed, since there is nothing left for the host to implement that
+`$security.hs256` doesn't already cover.
+
+A `pb_hooks` file registers its own inbound-webhook endpoint with the
+existing `routerAdd` mechanism. Stripe's `Stripe-Signature` header
+(`t=<unix-seconds>,v1=<hex>[,v1=<hex>...]`, multiple `v1` values while a
+signing secret is being rotated — a match against any one is valid) is
+the worked example because its scheme is the de facto reference design
+most other HMAC-webhook providers copy:
+
+```js
+routerAdd("POST", "/webhooks/stripe", (e) => {
+  const sig = e.request.header.get("Stripe-Signature") || "";
+  const parts = Object.fromEntries(
+    sig.split(",").map((p) => p.split("=").map((s) => s.trim()))
+  );
+  const secret = $os.getenv("STRIPE_WEBHOOK_SECRET");
+  const body = e.request.body; // raw bytes read by the runtime
+  const signedContent = parts.t + "." + body;
+  const expected = $security.hs256(signedContent, secret);
+  const age = Math.floor(Date.now() / 1000) - Number(parts.t);
+
+  if (expected !== parts.v1 || Math.abs(age) > 300) {
+    throw new BadRequestError("invalid webhook signature");
+  }
+
+  const event = JSON.parse(body);
+  console.log("verified Stripe webhook:", event.type);
+});
+```
+
+The timestamp check exists because a signature alone only proves "the
+secret holder produced this digest at some point," not *when* — without
+it, a captured request stays replayable forever even though its
+signature is technically valid; 300 seconds matches Stripe's own official
+libraries' default tolerance.
+
+See the
 [incoming-webhooks-stripe example](https://github.com/cratebasehq/cratebase/tree/main/examples/incoming-webhooks-stripe)
-for the full pattern, including the equivalent `pb_hooks` version with no
-Rust changes needed.
+for the full walkthrough, including trying it against a locally running
+server with `curl` and a hand-computed signature.

@@ -1,6 +1,15 @@
 ---
 import LandingLayout from "../layouts/LandingLayout.astro";
-import IsoPlaceholder from "../components/IsoPlaceholder.astro";
+import HeroUnpack from "../components/illustrations/HeroUnpack.astro";
+import CrateSignal from "../components/illustrations/CrateSignal.astro";
+import LoadedPallet from "../components/illustrations/LoadedPallet.astro";
+import Warehouses from "../components/illustrations/Warehouses.astro";
+import CrateRobot from "../components/illustrations/CrateRobot.astro";
+import Dolly from "../components/illustrations/Dolly.astro";
+import Crate from "../components/illustrations/Crate.astro";
+import CrateStack from "../components/illustrations/CrateStack.astro";
+import CrateLocked from "../components/illustrations/CrateLocked.astro";
+import Conveyor from "../components/illustrations/Conveyor.astro";
 
 const benchmarkRows = [
   { cat: "search", conc: 50, cb: "49,986", pb: "4,774", ratio: "10.47x" },
@@ -26,7 +35,6 @@ const features: [string, string, string][] = [
   ["Audit log", "Append-only log of schema changes, settings updates, and superuser account changes.", "_audit_log"],
   ["Metrics", "Prometheus exposition, unauthenticated and outside /api by design.", "GET /metrics"],
   ["Backups", "Streaming VACUUM INTO snapshots to local disk or S3, from the dashboard.", "Settings → Backups"],
-  ["Web analytics", "A <2KB cookie-free beacon posting pageviews into an ordinary collection.", "web/beacon/beacon.js"],
 ];
 
 const examples: [string, string, string][] = [
@@ -35,8 +43,7 @@ const examples: [string, string, string][] = [
   ["realtime-cursors", "Every visitor's mouse position, live, as a labeled dot on everyone else's screen.", "realtime-cursors.png"],
   ["kanban", "A shared, realtime, drag-and-drop board with optimistic updates, FLIP animation, and a presence bar.", "kanban.png"],
   ["docmind", "Upload documents, ask questions, get answers — a RAG copilot built on collections and one hooks file.", "docmind.png"],
-  ["memories", "An agent-memory service: vector search, MCP tools, cron expiry, and a live feed — zero new server code.", "memories.png"],
-  ["incoming-webhooks-stripe", "Verifying an inbound Stripe webhook's HMAC signature, in Rust and in a pb_hooks JS file.", "incoming-webhooks-stripe.png"],
+  ["incoming-webhooks-stripe", "Verifying an inbound Stripe webhook's HMAC signature in a pb_hooks JS file.", "incoming-webhooks-stripe.png"],
 ];
 ---
 
@@ -75,11 +82,7 @@ api:         http://127.0.0.1:8090/api/
         </div>
       </div>
       <div class="hero-art">
-        <IsoPlaceholder
-          label="hero: crates unpacked into a dashboard"
-          swapFor="isometric-hero.svg"
-          height={420}
-        />
+        <HeroUnpack label="A crate being unpacked into a dashboard: collections becoming table rows" />
       </div>
     </div>
   </section>
@@ -89,6 +92,7 @@ api:         http://127.0.0.1:8090/api/
     <div class="wrap">
       <div class="try-panel">
         <div class="try-copy">
+          <div class="try-art"><CrateSignal label="A crate broadcasting to listening terminals" /></div>
           <h2>Try it without installing</h2>
           <p>
             A live public instance isn't running yet — this section is a
@@ -145,11 +149,11 @@ pb.collection("guestbook").subscribe("*", (e) => render(e.record));`}</code></pr
           Reproduce it: <code>benchmarks/run.sh</code>
         </p>
       </div>
-      <IsoPlaceholder label="faster under load" swapFor="isometric-speed.svg" height={220} />
+      <div class="bench-art"><LoadedPallet label="A pallet stacked with crates, moving fast" /></div>
     </article>
 
     <article class="bench-panel reverse">
-      <IsoPlaceholder label="postgres, zero code change" swapFor="isometric-postgres.svg" height={220} />
+      <div class="bench-art"><Warehouses label="Two warehouses sharing one rail, a crate crossing between them" /></div>
       <div class="bench-copy">
         <h3>Postgres, zero code change</h3>
         <p>
@@ -181,11 +185,10 @@ POST /api/mcp {"method":"tools/list"}  // -> list_memories, create_memories, ...
           candidates — honest about not being a vector database at massive
           scale.
           <a href="/docs/ai/overview/">AI overview →</a> ·
-          <a href="https://github.com/cratebasehq/cratebase/tree/main/examples/memories">memories example</a> ·
           <a href="https://github.com/cratebasehq/cratebase/tree/main/examples/docmind">docmind example</a>
         </p>
       </div>
-      <IsoPlaceholder label="AI-ready backend" swapFor="isometric-agent.svg" height={220} />
+      <div class="bench-art"><CrateRobot label="A crate wired to a small robot by a ribbon cable" /></div>
     </article>
   </section>
 
@@ -193,6 +196,12 @@ POST /api/mcp {"method":"tools/list"}  // -> list_memories, create_memories, ...
   <section class="band">
     <div class="wrap section">
       <h2>Everything else, plainly</h2>
+      <ul class="vocab" aria-label="How to read the illustrations">
+        <li><Crate /><span>a crate is a collection</span></li>
+        <li><CrateLocked /><span>a locked crate is an auth collection</span></li>
+        <li><CrateStack /><span>a stack is a database</span></li>
+        <li><Conveyor /><span>the belt is realtime</span></li>
+      </ul>
       <dl class="feature-list">
         {features.map(([term, def, code]) => (
           <div class="feature-row">
@@ -209,7 +218,7 @@ POST /api/mcp {"method":"tools/list"}  // -> list_memories, create_memories, ...
   <!-- ======================= MOVING FROM POCKETBASE ==================== -->
   <section class="wrap section">
     <div class="migrate-panel">
-      <IsoPlaceholder label="two-crate dolly: migrate-from-pocketbase" swapFor="isometric-dolly.svg" height={260} />
+      <div class="migrate-art"><Dolly label="A hand truck carrying two crates: the migration tool" /></div>
       <div>
         <h2>Moving from PocketBase</h2>
         <pre class="mono"><code>cratebase migrate-from-pocketbase pb_data --dir cratebase_data</code></pre>
@@ -360,7 +369,11 @@ files copied: 4`}</code></pre>
   .try-copy .hint {
     font-family: var(--font-mono);
     font-size: 0.85rem;
-    color: var(--color-harbor);
+    color: var(--color-ink);
+  }
+  .try-art {
+    max-width: 11rem;
+    margin-bottom: 1rem;
   }
   .try-code {
     background: var(--color-fog);
@@ -416,7 +429,7 @@ files copied: 4`}</code></pre>
     border-bottom: 1px solid var(--color-hairline);
   }
   .bench-table .ratio {
-    color: var(--color-harbor);
+    color: var(--color-ink);
     font-weight: 700;
   }
   .footnote {
@@ -424,7 +437,7 @@ files copied: 4`}</code></pre>
     color: var(--color-text-secondary);
   }
   .footnote a {
-    color: var(--color-harbor);
+    color: var(--color-ink);
   }
   .diff-blocks pre {
     background: var(--color-fog);
@@ -434,6 +447,34 @@ files copied: 4`}</code></pre>
   }
   :root[data-theme="dark"] .diff-blocks pre {
     background: #101f30;
+  }
+
+  .bench-art {
+    max-width: 22rem;
+    justify-self: center;
+    padding: 1rem;
+  }
+
+  .vocab {
+    list-style: none;
+    margin: -0.75rem 0 2rem;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem 2rem;
+  }
+  .vocab li {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--color-text-secondary);
+  }
+  .vocab :global(.iso) {
+    height: 3.5rem;
+    width: auto;
+    flex: none;
   }
 
   .feature-list {
@@ -462,9 +503,14 @@ files copied: 4`}</code></pre>
     display: block;
     margin-top: 0.35rem;
     font-size: 0.8rem;
-    color: var(--color-harbor);
+    color: var(--color-ink);
   }
 
+  .migrate-art {
+    max-width: 17rem;
+    margin-top: 1rem;
+    justify-self: center;
+  }
   .migrate-panel {
     display: grid;
     grid-template-columns: 0.8fr 1.2fr;
@@ -555,11 +601,25 @@ files copied: 4`}</code></pre>
     .migrate-panel {
       grid-template-columns: 1fr;
     }
+    .hero-grid > *,
+    .try-panel > *,
+    .bench-panel > *,
+    .migrate-panel > * {
+      min-width: 0;
+    }
     .bench-panel.reverse .bench-copy {
       order: 0;
     }
     .feature-list {
       grid-template-columns: 1fr;
+    }
+    .hero-art {
+      max-height: 16rem;
+      overflow: hidden;
+    }
+    .migrate-art {
+      justify-self: start;
+      max-width: 14rem;
     }
   }
 </style>

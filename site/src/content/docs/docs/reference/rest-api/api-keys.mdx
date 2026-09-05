@@ -1,0 +1,47 @@
+---
+title: "API keys"
+description: "POST /api/api-keys — mint a key and see its raw value exactly once."
+sidebar:
+  order: 15
+---
+
+### `POST /api-keys`
+
+```json
+{ "name": "ci-pipeline" }
+```
+
+```json
+{ "id": "...", "name": "ci-pipeline", "prefix": "cb_live_a1b2", "actsAsCollection": "", "actsAsRecord": "", "key": "cb_live_a1b2c3d4e5f6..." }
+```
+
+Superuser-only. `key` is the **only time** the raw value is ever
+returned — it's stored as a one-way hash, so every other operation
+(list/view/rename/disable/delete) goes through the generic Records API
+at `/collections/_api_keys/records`, which can never round-trip the
+secret back out. `prefix` is a non-secret identifying fragment, safe to
+display in a UI afterward so an operator can tell keys apart. See
+[Authentication → API keys](/docs/concepts/authentication/api-keys/).
+
+### Scoping: `actsAsCollection` / `actsAsRecord`
+
+Left out (as above), a key is **unscoped root** — every request it
+makes bypasses every collection rule, the same trust tier as a
+Supabase `service_role` key. Set both to name a real record in a real
+auth collection and the key stops being superuser: it resolves to that
+record's own identity, so every rule is evaluated exactly as it would
+be for that record logged in normally.
+
+```json
+{ "name": "support-agent", "actsAsCollection": "users", "actsAsRecord": "8k2j1m0m1n2o3p4" }
+```
+
+```json
+{ "id": "...", "name": "support-agent", "prefix": "cb_live_9f8e", "actsAsCollection": "users", "actsAsRecord": "8k2j1m0m1n2o3p4", "key": "cb_live_9f8e..." }
+```
+
+A nonexistent collection, a collection that isn't type `auth`, or a
+record id that doesn't exist in it is rejected with `400` at mint
+time — a scoped key is validated once, up front, rather than silently
+failing to authenticate later. Passing only one of the pair is
+rejected the same way; the pair is all-or-nothing.

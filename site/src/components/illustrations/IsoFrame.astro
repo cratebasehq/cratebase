@@ -1,0 +1,109 @@
+---
+/**
+ * The `<svg>` every illustration lives in, plus the one stylesheet they
+ * share. Line-work is `currentColor` (harbor on paper, paper on navy), so a
+ * piece rethemes with its surroundings. Orange is reserved for crate faces.
+ */
+interface Props {
+  viewBox: string;
+  /** Accessible name. Omit for purely decorative uses (the piece is then aria-hidden). */
+  label?: string;
+}
+const { viewBox, label } = Astro.props;
+---
+
+<svg
+  viewBox={viewBox}
+  class="iso"
+  role={label ? "img" : undefined}
+  aria-label={label}
+  aria-hidden={label ? undefined : "true"}
+>
+  <slot />
+</svg>
+
+<style is:global>
+  .iso {
+    display: block;
+    width: 100%;
+    height: auto;
+    color: var(--color-ink);
+
+    /* Neutral objects (belts, robots, buildings): lit / shade / deep shade. */
+    --iso-lit: var(--color-white);
+    --iso-shade: var(--color-fog);
+    --iso-deep: var(--color-hairline);
+    /* Crate faces: the brand orange, and the same orange under harbor shadow. */
+    --iso-crate-top: var(--color-crate);
+    --iso-crate-left: color-mix(in srgb, var(--color-crate) 86%, var(--color-harbor));
+    --iso-crate-right: color-mix(in srgb, var(--color-crate) 70%, var(--color-harbor));
+    --iso-shadow-opacity: 0.1;
+  }
+  :root[data-theme="dark"] .iso {
+    --iso-lit: color-mix(in srgb, var(--color-panel) 84%, var(--color-fog));
+    --iso-shade: var(--color-panel);
+    --iso-deep: var(--color-bg);
+    --iso-shadow-opacity: 0.32;
+  }
+
+  .iso path,
+  .iso line {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+  }
+  /* The mark's interior spokes: thinner and at the mark's 0.55 opacity. */
+  .iso .brace {
+    stroke-width: 1;
+    opacity: 0.55;
+  }
+  .iso .thin {
+    stroke-width: 1;
+  }
+  /* Ribbon cable: a wide currentColor band with a paper core, plus a dashed spine drawn on top. */
+  .iso .ribbon-out {
+    stroke-width: 6.5;
+  }
+  .iso .ribbon-in {
+    stroke: var(--iso-lit);
+    stroke-width: 4;
+  }
+  .iso .faint {
+    opacity: 0.45;
+  }
+  .iso .dash {
+    stroke-dasharray: 3 4;
+  }
+  .iso .shadow {
+    fill: var(--color-harbor);
+    stroke: none;
+    opacity: var(--iso-shadow-opacity);
+  }
+
+  .iso .crate-top {
+    fill: var(--iso-crate-top);
+  }
+  .iso .crate-left {
+    fill: var(--iso-crate-left);
+  }
+  .iso .crate-right {
+    fill: var(--iso-crate-right);
+  }
+
+  .iso .lit {
+    fill: var(--iso-lit);
+  }
+  .iso .shade {
+    fill: var(--iso-shade);
+  }
+  .iso .deep {
+    fill: var(--iso-deep);
+  }
+  .iso .ink {
+    fill: currentColor;
+    stroke: none;
+  }
+</style>

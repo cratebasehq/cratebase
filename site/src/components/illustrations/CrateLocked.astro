@@ -1,0 +1,30 @@
+---
+/**
+ * An auth collection: a crate with a padlock hung on its right face. The
+ * lock is drawn in the face's own plane (yz), so its shackle projects as the
+ * correct tilted ellipse arc.
+ */
+import { arc, box, faceRect, line, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+const crate = box(0, 0, 0);
+
+// Hasp plate on the right face, then the lock body hanging below its staple.
+const hasp = faceRect(crate, "right", 0.36, 0.62, 0.64, 0.74);
+const lockBody = faceRect(crate, "right", 0.4, 0.3, 0.6, 0.52, 0.03);
+const shackle = arc([1.03, 0.5, 0.52], 0.08, "yz", 0, Math.PI, 16);
+const keyhole = line([1.04, 0.5, 0.45], [1.04, 0.5, 0.38]);
+---
+
+<IsoFrame viewBox={viewBox([crate], 8)} label={label}>
+  <CrateBox box={crate} shadow />
+  <path class="lit thin" d={hasp} />
+  <path class="thin" d={shackle} />
+  <path class="lit" d={lockBody} />
+  <path class="thin" d={keyhole} />
+</IsoFrame>

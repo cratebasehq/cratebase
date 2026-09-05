@@ -1,0 +1,47 @@
+---
+title: "Batch"
+description: "POST /api/batch — several record writes, one transaction."
+sidebar:
+  order: 8
+---
+
+### `POST /batch`
+
+`application/json` (`{"requests": [...]}`) when no sub-request uploads a
+file, or `multipart/form-data` with a `@jsonPayload` part plus
+`requests.<index>.<field>` file parts otherwise — the exact shape the
+official SDK's `createBatch()` sends.
+
+```json
+{
+  "requests": [
+    { "method": "POST", "url": "/collections/posts/records", "body": { "title": "A" } },
+    { "method": "PATCH", "url": "/collections/posts/records/abc123", "body": { "title": "B" } },
+    { "method": "DELETE", "url": "/collections/posts/records/def456" }
+  ]
+}
+```
+
+Each sub-request is one of the ordinary record endpoints: `POST`
+(create), `PATCH` (update), `PUT` (upsert, id read from the body), or
+`DELETE`. All sub-requests commit together in one SQL transaction, or
+none do.
+
+Success (`200`):
+
+```json
+{ "requests": [ { "status": 200, "body": { "id": "...", "title": "A" } }, { "status": 200, "body": {...} }, { "status": 204, "body": null } ] }
+```
+
+Note deletes report `{status: 204, body: null}` inline rather than being
+omitted. A failed sub-request rolls back the *entire* batch and nests
+one level deeper than the success shape suggests:
+
+```json
+{ "code": 400, "message": "Batch transaction failed.", "data": { "requests": { "1": { "code": "batch_request_failed", "message": "Batch request failed.", "response": { "status": 400, "message": "...", "data": {...} } } } } }
+```
+
+`settings.batch` (`enabled`, `maxRequests`, `timeout`, `maxBodySize`)
+bounds this endpoint; batching while disabled is `403`, and an
+over-limit request count is `validation_length_too_long`. See
+[Concepts → Batch API](/docs/concepts/batch-api/).

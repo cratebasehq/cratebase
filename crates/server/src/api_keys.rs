@@ -1,9 +1,11 @@
 //! Incoming API-key authentication (`_api_keys`): a superuser mints a
 //! `cb_<random>` token to hand to a script, CI job, or MCP client, and any
-//! request presenting it as a Bearer token resolves to a superuser
-//! identity — see [`crate::extract::resolve_and_cache`]'s private
-//! `resolve` for where this plugs into the ordinary session-JWT
-//! resolution path.
+//! request presenting it as a Bearer token resolves to either a
+//! superuser identity (the default) or, when the key opts into scoping,
+//! the exact [`Auth`] a normal login for a real record would produce —
+//! see the "Scoping" section below and
+//! [`crate::extract::resolve_and_cache`]'s private `resolve` for where
+//! this plugs into the ordinary session-JWT resolution path.
 //!
 //! # Why this can't be a session JWT
 //!
@@ -32,10 +34,35 @@
 //! [`resolve`] still verifies the full hash rather than trusting the
 //! prefix match alone, and a shared prefix is handled safely — the wrong
 //! candidate simply fails verification, same as any other guess.
+//!
+//! # Scoping: `actsAsCollection` / `actsAsRecord`
+//!
+//! Minting a key is a superuser-only operation, but the identity it
+//! resolves to need not be superuser. When both `actsAsCollection` (a
+//! collection name) and `actsAsRecord` (a record id in that collection)
+//! are set, [`resolve`] loads that record and hands back the identical
+//! [`Auth`] shape [`crate::extract`]'s session-JWT path builds for it —
+//! same `collection`, same `is_superuser` (derived from the target
+//! collection, not hardcoded), same `record` — so every rule this
+//! codebase evaluates treats the key exactly like that record signed in
+//! normally. There is no second permission system here: a scoped key
+//! carries no rules of its own, it only names whose rules to run.
+//!
+//! Left unset (the default, and the only shape a key minted before this
+//! pair existed can have), a key keeps behaving exactly as before —
+//! unscoped root, equivalent to PocketBase's own "service_role" framing
+//! for a Supabase key: powerful, unrestricted by any collection rule,
+//! and never something to hand to untrusted code. [`load_acts_as`] is
+//! the shared lookup both [`resolve`] (every request) and
+//! `crate::routes::api_keys::create` (mint-time validation, so a typo'd
+//! collection or a deleted record is rejected before the key exists)
+//! go through.
 
 use serde_json::{Map, Value};
 
-use cratebase_core::Collection;
+use std::sync::Arc;
+
+use cratebase_core::{Collection, Record};
 use cratebase_db::engine::{Executor, Sql};
 
 use crate::app::App;
@@ -84,12 +111,15 @@ pub fn looks_like_api_key(token: &str) -> bool {
     token.starts_with(KEY_PREFIX)
 }
 
-/// Resolve a `cb_...` bearer token to a superuser [`Auth`], or `None`
-/// for anything that doesn't check out. An unknown prefix, a hash
-/// mismatch, and a disabled key all return the same `None` here — the
-/// caller (`crate::extract`) turns that into the same 401 a missing or
-/// garbage session token gets, so none of the three is distinguishable
-/// from the outside.
+/// Resolve a `cb_...` bearer token to an [`Auth`] — a superuser identity
+/// by default, or the target record's own identity when the key is
+/// scoped (see the module doc's "Scoping" section) — or `None` for
+/// anything that doesn't check out. An unknown prefix, a hash mismatch,
+/// a disabled key, and a scoped key whose target no longer resolves
+/// (see [`load_acts_as`]) all return the same `None` here — the caller
+/// (`crate::extract`) turns that into the same 401 a missing or garbage
+/// session token gets, so none of them is distinguishable from the
+/// outside.
 pub async fn resolve(app: &App, token: &str) -> Option<Auth> {
     let random = token.strip_prefix(KEY_PREFIX)?;
     if random.len() < PREFIX_LEN {
@@ -123,6 +153,25 @@ pub async fn resolve(app: &App, token: &str) -> Option<Auth> {
 
     touch_last_used(app, &collection, candidate.id()).await;
 
+    let acts_as = acts_as_pair(&candidate);
+    if let Some((acts_as_collection, acts_as_record)) = acts_as {
+        // Record-scoped: the exact `Auth` a normal login for that record
+        // would produce, not a synthetic superuser — see the module
+        // doc's "Scoping" section. A target that no longer resolves
+        // (collection renamed/deleted, record deleted) fails the whole
+        // key rather than silently falling back to superuser.
+        let (target_collection, target_record) =
+            load_acts_as(app, &acts_as_collection, &acts_as_record).await?;
+        return Some(Auth {
+            id: target_record.id().to_string(),
+            collection_id: target_collection.id.clone(),
+            collection_name: target_collection.name.clone(),
+            is_superuser: target_collection.is_superusers(),
+            collection: target_collection,
+            record: target_record,
+        });
+    }
+
     let id = candidate.id().to_string();
     Some(Auth {
         id,
@@ -132,6 +181,50 @@ pub async fn resolve(app: &App, token: &str) -> Option<Auth> {
         collection,
         record: candidate,
     })
+}
+
+/// `(actsAsCollection, actsAsRecord)` off an `_api_keys` record, when
+/// both are set to something non-empty. Either field absent or blank —
+/// which is every key minted before this pair existed, and every key
+/// minted since without opting into scoping — means "unscoped", not
+/// "partially scoped"; there is no state where only one of the pair
+/// matters.
+fn acts_as_pair(record: &Record) -> Option<(String, String)> {
+    let collection_name = record
+        .get("actsAsCollection")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let record_id = record
+        .get("actsAsRecord")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    Some((collection_name, record_id))
+}
+
+/// Look up a real record in a real auth collection for the "acts as"
+/// scoping pair — used both by [`resolve`] on every request and by
+/// `crate::routes::api_keys::create` to validate at mint time that the
+/// pair actually names something, rather than letting a typo'd
+/// collection or a since-deleted record silently mint a key that can
+/// never authenticate. `None` covers every way the pair can fail to
+/// resolve: an unknown collection, a non-auth collection (scoping to,
+/// say, a `posts` row makes no sense — there is no login-shaped `Auth`
+/// for it to produce), or a record that doesn't exist.
+pub async fn load_acts_as(
+    app: &App,
+    collection_name: &str,
+    record_id: &str,
+) -> Option<(Arc<Collection>, Record)> {
+    let collection = app.db().collections.get_by_name(collection_name)?;
+    if !collection.is_auth() {
+        return None;
+    }
+    let record = cratebase_db::records::find_by_id_raw(app.db(), &collection, record_id)
+        .await
+        .ok()?;
+    Some((collection, record))
 }
 
 /// Best-effort `lastUsedAt` stamp. A raw `UPDATE`, not `records::update`
@@ -215,6 +308,54 @@ mod tests {
         generated.raw
     }
 
+    /// Insert an enabled, scoped `_api_keys` row acting as `(collection,
+    /// record_id)`.
+    async fn insert_scoped_key(
+        app: &App,
+        name: &str,
+        acts_as_collection: &str,
+        acts_as_record: &str,
+    ) -> String {
+        let collection = app
+            .db()
+            .collections
+            .get_by_name(COLLECTION)
+            .expect("_api_keys");
+        let generated = generate();
+        let hash = cratebase_auth::hash_password_async(&generated.raw)
+            .await
+            .expect("hash");
+        let mut record = cratebase_core::Record::new(collection);
+        record.set("name", Value::String(name.to_string()));
+        record.set("key", Value::String(hash));
+        record.set("prefix", Value::String(generated.prefix.clone()));
+        record.set("enabled", Value::Bool(true));
+        record.set(
+            "actsAsCollection",
+            Value::String(acts_as_collection.to_string()),
+        );
+        record.set("actsAsRecord", Value::String(acts_as_record.to_string()));
+        cratebase_db::records::create(app.db(), &app.db().collections, &mut record)
+            .await
+            .expect("insert scoped api key");
+        generated.raw
+    }
+
+    /// A plain `users` record — no password flow, no session — the same
+    /// shortcut `routes::auth`'s own tests take to seed an ordinary
+    /// auth-collection record directly.
+    async fn seed_user(app: &App, email: &str) -> String {
+        let users = app.db().collections.get_by_name("users").expect("users");
+        let mut record = cratebase_core::Record::new(users);
+        record.set("email", Value::String(email.into()));
+        record.set("password", Value::String("whatever-password".into()));
+        record.set("tokenKey", Value::String(crate::app::new_token_key()));
+        cratebase_db::records::create(app.db(), &app.db().collections, &mut record)
+            .await
+            .expect("seed user");
+        record.id().to_string()
+    }
+
     #[tokio::test]
     async fn valid_key_resolves_to_a_superuser_identity() {
         let (app, _dir) = test_app().await;
@@ -287,6 +428,70 @@ mod tests {
         assert!(
             !stamped.is_empty(),
             "lastUsedAt should be stamped after a successful resolve"
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_key_resolves_to_the_target_records_own_identity() {
+        let (app, _dir) = test_app().await;
+        let user_id = seed_user(&app, "person@example.com").await;
+        let raw = insert_scoped_key(&app, "agent", "users", &user_id).await;
+
+        let auth = resolve(&app, &raw).await.expect("should resolve");
+        assert!(!auth.is_superuser);
+        assert_eq!(auth.id, user_id);
+        assert_eq!(auth.collection_name, "users");
+    }
+
+    /// A scoped key's target being deleted after the key was minted fails
+    /// the whole key, rather than silently falling back to superuser or
+    /// resolving to a stale in-memory identity.
+    #[tokio::test]
+    async fn scoped_key_with_a_deleted_target_is_rejected() {
+        let (app, _dir) = test_app().await;
+        let user_id = seed_user(&app, "person@example.com").await;
+        let raw = insert_scoped_key(&app, "agent", "users", &user_id).await;
+
+        let users = app.db().collections.get_by_name("users").unwrap();
+        let target = cratebase_db::records::find_by_id_raw(app.db(), &users, &user_id)
+            .await
+            .expect("load target user");
+        cratebase_db::records::delete(app.db(), &app.db().collections, &target)
+            .await
+            .expect("delete target user");
+
+        assert!(resolve(&app, &raw).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn scoped_key_still_stamps_its_own_last_used_at_not_the_targets() {
+        let (app, _dir) = test_app().await;
+        let user_id = seed_user(&app, "person@example.com").await;
+        let raw = insert_scoped_key(&app, "agent", "users", &user_id).await;
+
+        let key_prefix: String = raw[KEY_PREFIX.len()..].chars().take(PREFIX_LEN).collect();
+        resolve(&app, &raw).await.expect("should resolve");
+
+        let mut params = Map::new();
+        params.insert("prefix".into(), Value::String(key_prefix));
+        let collection = app.db().collections.get_by_name(COLLECTION).unwrap();
+        let key_row = cratebase_db::records::find_first_by_filter(
+            app.db(),
+            &app.db().collections,
+            &collection,
+            "prefix = {:prefix}",
+            &params,
+        )
+        .await
+        .unwrap()
+        .expect("key row");
+        assert!(
+            !key_row
+                .get("lastUsedAt")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .is_empty(),
+            "the _api_keys row itself should be stamped"
         );
     }
 }

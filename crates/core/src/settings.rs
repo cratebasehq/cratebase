@@ -1,8 +1,8 @@
 //! App settings, shaped like `GET /api/settings` in PocketBase v0.23+ and
 //! persisted as JSON in `_params`. Secrets (`smtp.password`, `s3.secret`,
-//! `backups.s3.secret`, `llm.apiKey`, `sms.authToken`,
-//! `push.vapid.privateKey`, `push.fcm.serviceAccountJson`, `push.apns.key`)
-//! are accepted on input and stored, but stripped from the public JSON by
+//! `backups.s3.secret`, `llm.apiKey`, `push.vapid.privateKey`,
+//! `push.fcm.serviceAccountJson`, `push.apns.key`) are accepted on input
+//! and stored, but stripped from the public JSON by
 //! [`Settings::to_public_json`].
 
 use serde::{Deserialize, Serialize};
@@ -103,21 +103,8 @@ impl Default for Llm {
     }
 }
 
-/// SMS provider config for `cratebase_mailer::sms` (Twilio-compatible REST
-/// API). Mirrors [`Smtp`]'s shape: `enabled` picks between the configured
-/// Twilio backend and the zero-config log fallback, exactly like
-/// `smtp.enabled` picks between `SmtpBackend` and `LogBackend`.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Sms {
-    pub enabled: bool,
-    pub account_sid: String,
-    pub auth_token: String,
-    pub from_number: String,
-}
-
 /// Push notification provider config for `POST /api/push/send`
-/// (`crates/server/src/push.rs`). Unlike [`Smtp`]/[`Llm`]/[`Sms`], there is
+/// (`crates/server/src/push.rs`). Unlike [`Smtp`]/[`Llm`], there is
 /// no single "provider" choice: a caller targets a `_push_subscriptions`
 /// row whose own `platform` field (`web`/`android`/`ios`) picks one of
 /// three independent backends, so each backend gets its own `enabled` flag
@@ -331,6 +318,31 @@ impl Default for Logs {
     }
 }
 
+/// Toggle for the built-in Teams module (`crates/server/src/teams.rs`):
+/// off by default. When `false`, the reactive `_teams`/`_team_members`
+/// bootstrap-owner hook is never bound at all (`App::bootstrap` checks
+/// this before calling `teams::bind_hooks`) — zero background cost, not
+/// just a request-time 403. The `_teams`/`_team_members` system
+/// collections themselves always exist (cheap, and removing them would
+/// need a real migration-reversibility story); only the hook wiring and
+/// dashboard visibility are gated.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Teams {
+    pub enabled: bool,
+}
+
+/// Toggle for the built-in Queue module (`crates/server/src/queue.rs`), a
+/// `Plugin` shipped in-tree rather than a third-party one. Off by
+/// default: `App::bootstrap` only calls `register_plugin` for it when
+/// this is `true`, so the `_queue_jobs` collection is never provisioned
+/// and the worker tick never spawns until an operator opts in.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Queue {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -343,8 +355,9 @@ pub struct Settings {
     pub batch: Batch,
     pub logs: Logs,
     pub llm: Llm,
-    pub sms: Sms,
     pub push: Push,
+    pub teams: Teams,
+    pub queue: Queue,
     #[serde(rename = "superuserIPs")]
     pub superuser_ips: Vec<String>,
 }
@@ -361,9 +374,6 @@ impl Settings {
         }
         if let Some(llm) = v.get_mut("llm").and_then(Value::as_object_mut) {
             llm.remove("apiKey");
-        }
-        if let Some(sms) = v.get_mut("sms").and_then(Value::as_object_mut) {
-            sms.remove("authToken");
         }
         if let Some(vapid) = v
             .get_mut("push")
@@ -445,7 +455,6 @@ mod tests {
         assert!(v["smtp"].get("password").is_none());
         assert!(v["s3"].get("secret").is_none());
         assert!(v["backups"]["s3"].get("secret").is_none());
-        assert!(v["sms"].get("authToken").is_none());
         assert_eq!(v["rateLimits"]["rules"][0]["label"], "*:auth");
         assert_eq!(v["batch"]["maxRequests"], 50);
         assert_eq!(v["logs"]["maxDays"], 5);

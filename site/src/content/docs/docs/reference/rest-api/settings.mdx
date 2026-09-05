@@ -1,0 +1,59 @@
+---
+title: "Settings"
+description: "GET/PATCH /api/settings, plus S3/email/Apple test probes. All superuser only."
+sidebar:
+  order: 9
+---
+
+See [Reference → Settings object](/docs/reference/settings-object/) for
+every key this endpoint reads and writes.
+
+### `GET /settings`
+
+Returns the full settings object with every write-only secret
+(`smtp.password`, S3/backup credentials, `llm.apiKey`, `sms.authToken`,
+push provider keys) stripped from the response.
+
+### `PATCH /settings`
+
+Deep-merges a partial update onto the stored settings — **not** a
+replace. An omitted key keeps its stored value; this is what makes
+write-only secrets round-trip safely: the client never received
+`smtp.password` from `GET`, so it can't send it back, and omitting it on
+`PATCH` must not (and does not) clear it. Applies immediately with no
+restart — the storage driver, mailer, and built-in backup cron are all
+rebuilt from the new settings in-process. Returns `200` with the full
+merged (secrets-stripped) settings.
+
+### `POST /settings/test/s3`
+
+```json
+{ "filesystem": "storage" }
+```
+
+Round-trips a probe object through the configured S3 filesystem
+(`storage` or `backups`; defaults to `storage`). `204` on a successful
+round trip; `400` if S3 isn't enabled for that filesystem or the round
+trip itself failed.
+
+### `POST /settings/test/email`
+
+```json
+{ "email": "you@example.com", "template": "verification", "collection": "users" }
+```
+
+Sends a real test email using one of an auth collection's actual
+templates, with placeholders (`{TOKEN}`, `{OTP}`) filled with obviously
+fake values since there's no real record behind the send. `collection`
+defaults to `_superusers`.
+
+### `POST /settings/apple/generate-client-secret`
+
+```json
+{ "clientId": "com.example.service", "teamId": "...", "keyId": "...", "privateKey": "-----BEGIN PRIVATE KEY-----...", "duration": 15777000 }
+```
+
+Signs an ES256 JWT for use as Apple OAuth2's "client secret" — Apple
+requires a freshly-signed JWT rather than a static string, capped at
+`15777000` seconds (~6 months, Apple's own ceiling). Returns
+`200 { "secret": "<jwt>" }`.

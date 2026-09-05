@@ -1,0 +1,13 @@
+---
+title: "Utils"
+description: "Deterministic avatar image generation. Unauthenticated."
+sidebar:
+  order: 22
+---
+
+### `GET /utils/avatar/{seed}?size=128` — unauthenticated
+
+Renders a deterministic hashed-identicon PNG for `seed` — the same seed
+always produces the same image, and nothing is cached server-side (it's
+cheap enough to regenerate), but the response ships with a year-long
+immutable `Cache-Control` so a client only ever fetches it once.

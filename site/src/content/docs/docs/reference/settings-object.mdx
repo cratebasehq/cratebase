@@ -1,10 +1,168 @@
 ---
 title: "Settings object"
-description: "Every settings.* key, read/written via GET/PATCH /api/settings."
+description: "Every settings.* key, its default, and how it's read/written."
 ---
 
-`GET /api/settings` (superuser-only) returns the full settings object;
-`PATCH /api/settings` updates a subset without touching the rest.
-Top-level groups include `meta` (app name/URL), `mail`, `rateLimits`,
-`llm`, `push`, `batch`, and the analytics/backup-related toggles surfaced
-in their respective dashboard settings pages.
+`GET /api/settings` (superuser-only) returns the whole object below,
+minus write-only secrets, stripped by `Settings::to_public_json`
+(`crates/core/src/settings.rs`): `smtp.password`, `s3.secret`,
+`backups.s3.secret`, `llm.apiKey`, `sms.authToken`,
+`push.vapid.privateKey`, `push.fcm.serviceAccountJson`, and
+`push.apns.key` are all accepted on write and stored, but never echoed
+back on read. `PATCH /api/settings` deep-merges a partial payload onto
+the current settings, so omitting a secret on an update keeps its stored
+value rather than blanking it.
+
+## `meta`
+
+| Key | Default |
+| --- | --- |
+| `appName` | `"Acme"` |
+| `appURL` | `"http://localhost:8090"` |
+| `senderName` | `"Support"` |
+| `senderAddress` | `"support@example.com"` |
+| `hideControls` | `false` |
+| `accentColor` | `"#1055c9"` |
+
+## `smtp`
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `false` | `false` routes mail through the zero-config `Log` backend instead. |
+| `host` | `"smtp.example.com"` | |
+| `port` | `587` | |
+| `username` | `""` | |
+| `password` | *(write-only)* | Stripped from every read. |
+| `authMethod` | `""` | |
+| `tls` | `false` | |
+| `localName` | `""` | HELO/EHLO hostname. |
+
+## `s3` (file storage)
+
+| Key | Default |
+| --- | --- |
+| `enabled` | `false` (local disk) |
+| `bucket` | `""` |
+| `region` | `""` |
+| `endpoint` | `""` |
+| `accessKey` | `""` |
+| `secret` | *(write-only)* |
+| `forcePathStyle` | `false` |
+
+## `backups`
+
+| Key | Default |
+| --- | --- |
+| `cron` | `""` (disabled) |
+| `cronMaxKeep` | `3` |
+| `s3` | a nested [`s3`](#s3-file-storage)-shaped block for uploading backups somewhere other than local disk |
+
+Setting `backups.cron` to a non-empty cron expression is what makes the
+`__pbAutoBackup__` scheduled job appear alongside the always-present
+`__pbDBOptimize__`/`__pbMFACleanup__`/`__pbOTPCleanup__`/`__pbLogsCleanup__`
+jobs — see [Crons](/docs/reference/rest-api/crons/).
+
+## `rateLimits`
+
+| Key | Default |
+| --- | --- |
+| `enabled` | `false` |
+| `excludedIPs` | `[]` |
+| `rules` | four built-in rules, see below |
+
+Each rule is `{ label, audience, duration, maxRequests }` — `label` is a
+path prefix (`/api/`), an exact path, or a `<collection-or-*>:<tag>` pair
+(`*:auth`, `*:create`, `posts:list`); `audience` is `""` (everyone),
+`@guest`, or `@auth`; `duration` is the window in seconds. The shipped
+defaults:
+
+| `label` | `duration` | `maxRequests` |
+| --- | --- | --- |
+| `*:auth` | 3s | 2 |
+| `*:create` | 5s | 20 |
+| `/api/batch` | 1s | 3 |
+| `/api/` | 10s | 300 |
+
+More specific labels win over less specific ones for the same request —
+see [Rate limiting](/docs/deploy/rate-limiting/) for the matching order
+and how per-collection tags are derived from the URL.
+
+## `trustedProxy`
+
+| Key | Default |
+| --- | --- |
+| `headers` | `[]` |
+| `useLeftmostIP` | `false` |
+
+See [Reverse proxy & TLS](/docs/deploy/reverse-proxy-tls/) for why the
+client IP used for rate limiting depends on this being configured
+correctly behind a proxy.
+
+## `batch`
+
+| Key | Default |
+| --- | --- |
+| `enabled` | `false` |
+| `maxRequests` | `50` |
+| `timeout` | `3`s |
+| `maxBodySize` | `0` (unlimited) |
+
+## `logs`
+
+| Key | Default |
+| --- | --- |
+| `maxDays` | `5` |
+| `minLevel` | `0` |
+| `logIP` | `true` |
+| `logAuthId` | `false` |
+| `maxDataSize` | `0` (unlimited) |
+
+## `llm`
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `false` | `false` routes `/api/llm/chat` and auto-embedding through a deterministic, network-free echo provider. |
+| `provider` | `"openai"` | Any OpenAI-compatible `/chat/completions` API (including a local Ollama) works; anything else falls back to echo. |
+| `baseUrl` | `"https://api.openai.com/v1"` | |
+| `apiKey` | *(write-only)* | |
+| `model` | `"gpt-4o-mini"` | |
+
+## `sms`
+
+| Key | Default |
+| --- | --- |
+| `enabled` | `false` |
+| `accountSid` | `""` |
+| `authToken` | *(write-only)* |
+| `fromNumber` | `""` |
+
+Twilio-compatible REST API; `false` falls back to the same zero-config
+log backend `smtp.enabled: false` uses.
+
+## `push`
+
+No single provider choice — a `_push_subscriptions` row's own `platform`
+(`web`/`android`/`ios`) selects one of three independently-configured
+backends:
+
+| Key | Default | Notes |
+| --- | --- | --- |
+| `vapid.enabled` | `false` | Web Push (RFC 8292). |
+| `vapid.publicKey` / `vapid.privateKey` | `""` | Raw unpadded-base64url P-256 key pair, as produced by `web-push generate-vapid-keys` — not PEM. `privateKey` is write-only. |
+| `vapid.subject` | `""` | A `mailto:`/`https:` contact URI, required by every VAPID JWT. |
+| `fcm.enabled` | `false` | Firebase Cloud Messaging HTTP v1, for Android. |
+| `fcm.serviceAccountJson` | *(write-only)* | Raw contents of the Firebase service-account key file; project id, client email, and signing key are parsed out of it. |
+| `apns.enabled` | `false` | Apple Push Notification service, HTTP/2 provider API. |
+| `apns.key` | *(write-only)* | Raw `.p8` token-auth key contents. |
+| `apns.keyId` / `apns.teamId` / `apns.bundleId` | `""` | From the Apple Developer portal. |
+| `apns.production` | `false` | Picks `api.push.apple.com` over the sandbox host. |
+| `triggers` | `[]` | Record-event → push rules: `{ enabled, collection, events, title, body, targetField }`. `events` is a comma-separated subset of `create`/`update`/`delete`; `title`/`body` are `{{field}}`-templated against the triggering record; an empty `targetField` broadcasts to every enabled subscription, a non-empty one scopes delivery to subscriptions whose `recordRef` matches that field's value. |
+
+## `superuserIPs`
+
+A top-level `string[]`, default `[]` (unrestricted) — an IP allow-list
+for every `_superusers` auth endpoint when non-empty.
+
+See [Reference → REST API → Settings](/docs/reference/rest-api/settings/)
+for the endpoint shape itself, including the `testS3`/`testMail`/
+`testApple` diagnostic actions.

@@ -13,6 +13,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
+import { isSettingsItemVisible, useSettings } from "@/hooks/use-settings";
 import { SETTINGS_GROUPS } from "@/lib/settings-nav";
 
 interface AppCommandPaletteProps {
@@ -36,6 +37,8 @@ const SETTINGS_TARGETS = SETTINGS_GROUPS.flatMap((group) =>
 export function AppCommandPalette({ collections, onNewCollection, open, onOpenChange }: AppCommandPaletteProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const navigate = useNavigate();
+  const { data: settings } = useSettings();
+  const settingsTargets = SETTINGS_TARGETS.filter((item) => isSettingsItemVisible(item.to, settings));
 
   const isOpen = open ?? internalOpen;
 
@@ -94,7 +97,7 @@ export function AppCommandPalette({ collections, onNewCollection, open, onOpenCh
           </CommandGroup>
 
           <CommandGroup heading="Settings">
-            {SETTINGS_TARGETS.map(({ to, label, group, icon: Icon }) => (
+            {settingsTargets.map(({ to, label, group, icon: Icon }) => (
               <CommandItem
                 key={to}
                 value={`${label} ${group} settings`}

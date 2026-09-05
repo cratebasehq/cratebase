@@ -8,18 +8,22 @@ land.
 ## Next up
 
 - **Plugin system.** Shipped as of `crates/server/src/plugin.rs`: a
-  `Plugin` trait with three extension points — `setup()` for one-time
-  async startup work (e.g. provisioning a collection a plugin depends
-  on), `routes()` to mount extra HTTP endpoints under
-  `/api/plugins/<name>`, and `scheduled_tasks()` for fixed-interval
-  background jobs. This is a compile-time Rust trait, not a dynamically
-  loaded/scripted plugin format: "installing a plugin" means implementing
-  `Plugin` and registering it in a `PluginRegistry`, then shipping your
-  own binary — which doesn't have to be this repo's own binary either,
-  since `cratebase-server` is a normal library crate a downstream project
-  can depend on (see `crate::plugin`'s module doc for the pattern).
-  `plugins/example.rs` is a working reference (a `/stats` route + a
-  5-minute logging job) to copy from.
+  `Plugin` trait with two extension points — `setup()` for one-time
+  synchronous startup work (bind hooks, spawn a background task) and
+  `routes()` to mount extra HTTP endpoints under `/api/plugins/<name>`.
+  This is a compile-time Rust trait, not a dynamically loaded/scripted
+  plugin format: "installing a plugin" means implementing `Plugin` and
+  registering it in a `PluginRegistry`, then shipping your own binary —
+  which doesn't have to be this repo's own binary either, since
+  `cratebase-server` is a normal library crate a downstream project can
+  depend on (see `crate::plugin`'s module doc for the pattern). An
+  earlier revision of this file described a third extension point,
+  `scheduled_tasks()`, and a `plugins/example.rs` reference file;
+  neither exists in the tree — that was aspirational text outrunning the
+  code, corrected here. `setup()` receiving a plain `&App` (not `async`)
+  is enough for periodic background work: a plugin that needs a fixed
+  interval spawns its own `tokio::spawn` loop from inside `setup()` —
+  see `crates/server/src/queue.rs` below for the pattern.
   **Shipped on this foundation:**
   - **Custom SQL cron jobs** (`crates/server/src/cron_jobs.rs`, not a
     plugin) — a `_cron_jobs` system collection: name, a 5-field cron
@@ -32,19 +36,73 @@ land.
     create/update/delete takes effect on the live scheduler immediately,
     no restart. `lastRunAt`/`lastStatus`/`lastMessage` are written back
     after every run, including the real driver error on failure.
-  - **Feature flags as a plugin** (`plugins/feature_flags.rs`) — a
-    self-contained `_feature_flags` collection + an `evaluation rule`
-    (reuses the existing filter/rule engine, evaluated against
-    `@request.auth.*`) + `cb.featureFlags.isEnabled(key)` in the SDK.
-  - **Durable job queue as a plugin** (`plugins/queue.rs`) — a
-    `_queue_jobs` collection, `POST /api/plugins/queue/enqueue`, and a
-    worker tick with exponential-backoff retry and stale-job (crashed
-    mid-run) reclaim. Same "small built-in job registry" trade-off as
-    cron jobs. `cb.queue.enqueue(queue, payload)` in the SDK.
-  **Still not built on this foundation:**
+  - **Durable job queue** (`crates/server/src/queue.rs`,
+    `QueuePlugin`) — a real pg_boss-style worker, toggle-gated off by
+    default behind `settings.queue.enabled` (see "Toggle-gated built-in
+    modules" below). A `_queue_jobs` system collection
+    (`queue`/`payload`/`status`/`attempts`/`maxAttempts`/`runAfter`/
+    `startedAt`/`lastError`), `POST /api/plugins/queue/enqueue`
+    (superuser-only, goes through `cratebase_db::records::create` for id
+    generation and validation), and a `setup()`-spawned tick loop:
+    `reclaim_stale` first puts any `in_progress` job stuck past a
+    timeout back to `pending` (a crashed worker's job is never orphaned
+    forever — pg_boss's own core guarantee), then `claim_next` atomically
+    claims the earliest due `pending` row inside one transaction
+    (`SELECT ... FOR UPDATE SKIP LOCKED` on Postgres so concurrent
+    workers never race for the same row; SQLite's single writer lock
+    already serializes it) and an `UPDATE ... WHERE status = 'pending'`
+    that re-checks status inside the same transaction rather than
+    trusting the row the `SELECT` just read. A failed job's `runAfter` is
+    pushed out with exponential backoff (`min(2^attempts * base, max)`)
+    until `attempts` reaches `maxAttempts`, at which point it becomes
+    `failed` for good. Job bodies are a small in-process handler registry
+    (`QueuePlugin::handle().register_handler(name, ...)`), not a dynamic
+    execution plane — that is the separate WASM plugin system below.
+  **Not built on this foundation:**
+  - A feature-flags plugin was also listed as "shipped" in an earlier
+    revision of this file; `plugins/feature_flags.rs` never existed in
+    the tree either. Not currently planned — it would need the same
+    "named user asked for this" bar as anything else in this file before
+    landing.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
+
+## Toggle-gated built-in modules
+
+Teams, the LLM chat gateway, and the queue plugin above are all built
+in — compiled into the `cratebase-server` binary either way — but off by
+default and hidden from the dashboard until an operator opts in, rather
+than always-on background cost or a permanently deleted feature:
+
+- **Teams** (`crates/server/src/teams.rs`). `settings.teams.enabled`
+  (default `false`). `App::bootstrap` only calls `teams::bind_hooks` when
+  set — the reactive bootstrap-owner hook is never bound otherwise, zero
+  background cost. The `_teams`/`_team_members` system collections
+  always exist regardless (cheap, and avoids a migration-reversibility
+  story), but stay out of the dashboard sidebar's System group until
+  enabled.
+- **LLM chat gateway** (`crates/server/src/routes/llm.rs`). Reuses the
+  existing `settings.llm.enabled` flag rather than adding a redundant
+  second one: `routes::api_router` only merges `llm::router()` when it's
+  `true`, so `POST /api/llm/chat` 404s outright (not a 403) while
+  disabled. Confirmed independent of vector search's auto-embedding
+  (`crates/server/src/embeddings.rs` reads its own
+  `EMBEDDINGS_BASE_URL`/`EMBEDDINGS_API_KEY` env vars) — see
+  `crates/server/tests/vector_fields.rs`'s
+  `vector_auto_embedding_is_unaffected_by_a_disabled_llm_gateway` for the
+  live proof.
+- **Queue plugin** (`crates/server/src/queue.rs`). `settings.queue.enabled`
+  (default `false`). `App::bootstrap` only provisions `_queue_jobs` and
+  registers `QueuePlugin` when set, so an idle install never spawns the
+  worker tick.
+
+Both flags' route/hook wiring is decided once, at boot (`App::serve`
+assembles the router exactly once from `App::bootstrap`'s already-loaded
+settings) — flipping a toggle via `PATCH /api/settings` takes effect on
+the next restart, not live. That is the deliberate trade-off for "zero
+background cost while disabled": there is nothing to tear down or
+re-wire at runtime because nothing was ever wired up.
 
 ## Shipped
 

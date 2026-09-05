@@ -57,6 +57,15 @@ export interface ServerSettings {
   };
   trustedProxy: { headers: string[]; useLeftmostIP: boolean };
   superuserIPs: string[];
+  /** Toggle-gated built-in module (`crates/server/src/teams.rs`): off by
+   * default, no dashboard page of its own yet — the `_teams`/
+   * `_team_members` system collections stay hidden from the sidebar's
+   * System group until this is `true`. */
+  teams: { enabled: boolean };
+  /** Toggle-gated built-in Queue plugin (`crates/server/src/queue.rs`):
+   * off by default, no dashboard page of its own yet. Enable with
+   * `PATCH /api/settings { "queue": { "enabled": true } }`. */
+  queue: { enabled: boolean };
   push: {
     vapid: { enabled: boolean; publicKey: string; subject: string; privateKey?: string };
     fcm: { enabled: boolean; serviceAccountJson?: string };
@@ -77,6 +86,15 @@ export interface ServerSettings {
       targetField: string;
     }[];
   };
+}
+
+/** Settings-gated nav visibility, additive to `lib/settings-nav.ts`'s
+ * static registry: a toggle-gated built-in module's page (currently just
+ * `/settings/llm`) is hidden from the sidebar and command palette until
+ * its flag is on, even though the route itself still exists. */
+export function isSettingsItemVisible(to: string, settings: ServerSettings | undefined): boolean {
+  if (to === "/settings/llm") return Boolean(settings?.llm.enabled);
+  return true;
 }
 
 export const SETTINGS_KEY = ["settings"] as const;

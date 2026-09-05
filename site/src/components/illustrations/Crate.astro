@@ -1,0 +1,16 @@
+---
+/** A collection: one crate on the ground. */
+import { box, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+const crate = box(0, 0, 0);
+---
+
+<IsoFrame viewBox={viewBox([crate], 8)} label={label}>
+  <CrateBox box={crate} shadow />
+</IsoFrame>

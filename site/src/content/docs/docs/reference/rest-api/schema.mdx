@@ -1,0 +1,42 @@
+---
+title: "Schema"
+description: "POST /api/schema/apply — diff a checked-in schema against the live database."
+sidebar:
+  order: 14
+---
+
+See [Extending → Schema as code](/docs/extending/schema-as-code/) for
+the CI workflow this endpoint is built for.
+
+### `POST /schema/apply`
+
+Query params: `?dryRun=1` computes and returns the plan without writing
+anything; `?force=1` actually drops fields the payload omits (without
+it, omitted fields are left in place and reported as `pendingRemoval`).
+
+Accepts three interchangeable body shapes — a bare array, `{"collections": [...]}`,
+or `{"items": [...]}` (verbatim `GET /collections` output, so
+`schema/apply` can consume its own export unmodified):
+
+```json
+[ { "name": "posts", "type": "base", "schema": [ /* FieldSchema[] */ ] } ]
+```
+
+Response (`200`, whether or not it was applied — check `applied`):
+
+```json
+{
+  "applied": true, "force": false,
+  "collections": [
+    { "name": "posts", "action": "update", "fieldsAdded": ["summary"], "fieldsRemoved": [], "fieldsChanged": [], "pendingRemoval": false },
+    { "name": "legacy_posts", "action": "unchanged", "fieldsAdded": [], "fieldsRemoved": ["old_field"], "fieldsChanged": [], "pendingRemoval": true }
+  ]
+}
+```
+
+Diff-first, unlike [`PUT /collections/import`](/docs/reference/rest-api/collections/)'s
+replace-first semantics: added or changed fields are always written
+(they can't lose data on their own), but a field the payload omits is
+only actually dropped when `force=1` — otherwise it's left alone and
+surfaced as `pendingRemoval: true`, so a CI pipeline can gate a merge on
+"does this change silently delete a column" before it ever runs.

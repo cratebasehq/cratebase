@@ -1,0 +1,76 @@
+---
+title: "Collections"
+description: "CRUD on collection schemas, import, scaffolds, and truncate — all superuser only."
+sidebar:
+  order: 3
+---
+
+Every endpoint on this page is superuser-only. See
+[Concepts → Collections](/docs/concepts/collections/) for what a
+collection actually is underneath these calls.
+
+| Method & path | Summary |
+| --- | --- |
+| `GET /collections` | List every collection |
+| `POST /collections` | Create a collection |
+| `GET /collections/{idOrName}` | Get one collection |
+| `PATCH /collections/{idOrName}` | Update a collection's schema/rules |
+| `DELETE /collections/{idOrName}` | Delete a collection and every record in it |
+| `PUT /collections/import` | Create/update several collections in one transaction |
+| `GET /collections/meta/scaffolds` | Field-template starting points for base/auth/view |
+| `DELETE /collections/{idOrName}/truncate` | Delete every record, keep the collection |
+
+### Create / update body (`CollectionInput`)
+
+```json
+{
+  "name": "posts",
+  "type": "base",
+  "schema": [
+    { "id": "text1", "name": "title", "type": "text", "required": true },
+    { "id": "bool1", "name": "published", "type": "bool" }
+  ],
+  "listRule": "published = true",
+  "viewRule": "published = true",
+  "createRule": "@request.auth.id != ''",
+  "updateRule": "@request.auth.id = owner",
+  "deleteRule": "@request.auth.id = owner",
+  "authOptions": {}
+}
+```
+
+`type` is one of `base`/`auth`/`view` and **cannot change after
+creation** — attempting to is `validation_collection_type_change`. A
+rule string of `null` means superuser-only; `""` (empty string) means
+public. `authOptions` only applies to `type: "auth"` collections (auth
+token durations, `passwordAuth`, `mfa`, `otp`, `authAlert` — see
+[Authentication](/docs/concepts/authentication/overview/)).
+
+### `PUT /collections/import`
+
+```json
+{ "collections": [ /* CollectionInput[] */ ], "deleteMissing": false }
+```
+
+Applies every collection in the payload in one transaction — a single
+invalid collection fails the whole import and leaves the schema
+untouched. `deleteMissing: true` also drops any existing non-system
+collection the payload omits, which makes this endpoint a **replace**
+operation; contrast with [`POST /schema/apply`](/docs/reference/rest-api/schema/),
+which diffs instead and never drops a field unless `force=1` is passed.
+`204` on success.
+
+### `GET /collections/meta/scaffolds`
+
+Returns `{ "base": Collection, "auth": Collection, "view": Collection }`
+— starting-point field sets for the dashboard's "new collection" flow.
+Per [`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md),
+the base scaffold has only the `id` field (`created`/`updated` autodate
+fields are *not* part of it); the auth scaffold has
+`id, password, tokenKey, email, emailVisibility, verified`.
+
+### `DELETE /collections/{idOrName}/truncate`
+
+Deletes every record in the collection but keeps the collection (schema
+and rules) itself — the fast path for "empty this collection out" without
+recreating it. `204` on success, `404` for an unknown collection.

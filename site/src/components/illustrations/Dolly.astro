@@ -1,0 +1,73 @@
+---
+/**
+ * `migrate-from-pocketbase`: a hand truck with two crates on its plate,
+ * parked. The frame stands behind the load; the wheels sit in the yz plane
+ * so they project as the correct tilted ellipses.
+ */
+import { box, circle, line, polyline, shadow, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+
+const plate = box(0, 0.05, 0.1, 1.2, 1.15, 0.06);
+const crates = [box(0.1, 0.1, 0.16, 1), box(0.1, 0.1, 1.16, 1)];
+
+// Frame: two uprights at the back (y = 0), cross-braced, with a handle bar.
+const frameY = 0;
+const top = 3.1;
+const uprightX = [0.22, 0.98];
+const uprights = uprightX.map((x) => line([x, frameY, 0.16], [x, frameY, top])).join("");
+const crossbars = [0.75, 1.75, 2.55]
+  .map((z) => line([uprightX[0], frameY, z], [uprightX[1], frameY, z]))
+  .join("");
+const handle = polyline([
+  [uprightX[0], frameY, top],
+  [uprightX[0], frameY - 0.32, top + 0.02],
+  [uprightX[1], frameY - 0.32, top + 0.02],
+  [uprightX[1], frameY, top],
+]);
+
+// Wheels on an axle across x, behind the plate. Each is a short cylinder:
+// an inner disc, then the outer disc offset along +x, so a sliver of tread
+// shows between them.
+const wheelR = 0.4;
+const tread = 0.16;
+const axle: [number, number] = [-0.3, 0.42];
+const wheelAt = (x: number) => ({
+  inner: circle([x - tread, ...axle], wheelR, "yz"),
+  outer: circle([x, ...axle], wheelR, "yz"),
+  hub: circle([x, ...axle], 0.08, "yz"),
+});
+const wheelLeft = wheelAt(0.02);
+const wheelRight = wheelAt(1.3);
+const axleLine = line([0.02, axle[0], axle[1]], [1.3, axle[0], axle[1]]);
+
+const ground = shadow(box(-0.1, -0.35, 0, 1.4, 1.55, 0));
+const frame = viewBox([plate, ...crates], 12, [
+  [uprightX[0], frameY - 0.32, top + 0.02],
+  [1.36, axle[0] - wheelR, 0],
+  [0.02, axle[0] + wheelR, 0],
+]);
+---
+
+<IsoFrame viewBox={frame} label={label}>
+  <path class="shadow" d={ground} />
+  <path class="deep" d={wheelLeft.inner} />
+  <path class="shade" d={wheelLeft.outer} />
+  <path class="ink" d={wheelLeft.hub} />
+  <path class="thin" d={axleLine} />
+  <path class="deep" d={wheelRight.inner} />
+  <path class="shade" d={wheelRight.outer} />
+  <path class="ink" d={wheelRight.hub} />
+  <path d={uprights} />
+  <path class="thin" d={crossbars} />
+  <PanelBox box={plate} />
+  <CrateBox box={crates[0]} />
+  <CrateBox box={crates[1]} />
+  <path d={handle} />
+</IsoFrame>

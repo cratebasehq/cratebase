@@ -1,0 +1,21 @@
+---
+title: "Functions"
+description: "Read-only view of pb_hooks/*.pb.js files and the routes they registered."
+sidebar:
+  order: 13
+---
+
+### `GET /functions`
+
+```json
+{
+  "hooksDir": "/data/pb_hooks",
+  "files": [ { "name": "increment_view_count.pb.js", "sizeBytes": 412, "modifiedAt": "2026-08-20T10:00:00Z" } ],
+  "routes": [ { "method": "POST", "pattern": "/webhooks/custom" } ]
+}
+```
+
+Superuser-only, read-only — there is **no write path** through this API.
+Hooks are edited as files on disk and picked up on the next server
+start, not through the dashboard or a REST call. See
+[JavaScript hooks](/docs/extending/js-hooks/).

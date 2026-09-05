@@ -1,0 +1,48 @@
+---
+title: "Backups"
+description: "List, create, upload, download, and restore backup archives. Superuser only."
+sidebar:
+  order: 11
+---
+
+See [Deploy → Backups & restore](/docs/deploy/backups-restore/) for the
+snapshot mechanism behind these endpoints.
+
+| Method & path | Summary |
+| --- | --- |
+| `GET /backups` | List archives, newest first |
+| `POST /backups` | Take a fresh backup now |
+| `POST /backups/upload` | Upload an existing archive |
+| `GET /backups/storage-info` | Which store backups are written to |
+| `GET /backups/{key}` | Download one archive |
+| `DELETE /backups/{key}` | Delete one archive |
+| `POST /backups/{key}/restore` | Restore from an archive |
+
+### `POST /backups`
+
+Body optional: `{ "name": "custom-name.zip" }` — defaults to
+PocketBase's own `pb_backup_YYYYMMDDHHMMSS.zip` pattern. A ZIP of a
+consistent snapshot of the main database, the auxiliary (logs) database,
+and the local-disk storage tree when files aren't on S3. `204` on
+success.
+
+### `GET /backups/{key}` — authenticated by query token, not bearer
+
+```
+GET /backups/pb_backup_20250115103000.zip?token=<file-token>
+```
+
+Uses a superuser **file token** (from [`POST /files/token`](/docs/reference/rest-api/files/))
+in the query string, not `Authorization` — the same reason ordinary
+protected file downloads do: a browser `<a download>`/`window.open`
+can't set headers.
+
+### `POST /backups/{key}/restore`
+
+Extracts and validates the archive, then swaps the data directory and
+re-execs the current binary with the same arguments. The process id
+survives (a supervisor sees no crash), but every open connection is
+dropped, and the swap happens **after** this endpoint has already
+answered `204`. This is the one conformance-suite test that's
+permanently skipped rather than run against a live server — see
+[Compatibility](/docs/migrating/compatibility/).

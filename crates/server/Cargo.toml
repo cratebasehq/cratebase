@@ -17,6 +17,7 @@ cratebase-storage.workspace = true
 cratebase-auth.workspace = true
 cratebase-mailer.workspace = true
 cratebase-jsvm.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -50,10 +51,6 @@ mimalloc = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 hmac = "0.12"
 sha2 = "0.10"
-# Bare module matrix only (no "image" feature) — utils.rs rasterizes the
-# QR modules itself with the `image` crate already in this workspace, to
-# avoid pulling in a second, possibly version-mismatched `image` dep.
-qrcode = { version = "0.14", default-features = false }
 base64 = "0.22"
 # Pure-Rust web-push (VAPID) client for crates/server/src/push.rs — no
 # OpenSSL dependency, unlike the more popular `web-push` crate which
@@ -64,6 +61,8 @@ web-push-native = "0.5"
 # `migrate-from-pocketbase` — the same bundled-SQLite crate `cratebase-db`
 # already uses, so no second SQLite implementation enters the binary.
 rusqlite = { version = "0.32", features = ["bundled"] }
+cratebase-wasm-plugin.workspace = true
+toml = "1.1.5"
 
 [dev-dependencies]
 tempfile = "3"

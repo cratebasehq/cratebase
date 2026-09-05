@@ -1,0 +1,24 @@
+---
+title: "Tool schema"
+description: "GET /api/collections/{name}/tool-schema — function-calling shape, no MCP required."
+sidebar:
+  order: 19
+---
+
+See [AI → Tool schemas](/docs/ai/tool-schemas/) for when to reach for
+this instead of [MCP](/docs/reference/rest-api/mcp/).
+
+### `GET /collections/{name}/tool-schema` — superuser only
+
+Returns the same JSON-Schema/OpenAI-function-calling-shaped conversion
+`POST /mcp`'s `tools/list` uses internally to build its
+`create_<collection>` tool definition, for a caller that wants the shape
+without speaking MCP at all:
+
+```json
+{
+  "name": "posts",
+  "description": "The 'posts' base collection (3 fields).",
+  "parameters": { "type": "object", "properties": { "title": {"type": "string"}, "body": {"type": "string"}, "tags": {"type": "array"} }, "required": ["title"] }
+}
+```

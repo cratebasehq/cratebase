@@ -5,39 +5,94 @@
 **A fast, self-hostable backend — dynamic collections, auth, file storage,
 and realtime — in one Rust binary.**
 
-SQLite by default. Switch to Postgres by changing one environment variable.
-No code changes either way.
-
 </div>
 
-Cratebase is what you reach for instead of Hono + a hand-rolled REST layer +
-Postgres/S3/auth wiring every time you start a new project. Define a
+```bash
+curl -fsSL https://cratebase.dev/install.sh | sh
+```
+
+That downloads the right prebuilt binary for your OS/arch straight from
+GitHub Releases, verifies its checksum, and installs it to
+`~/.local/bin` — no Rust toolchain, no Docker, no build step. Prefer
+Docker, building from source, or you're on Windows? See
+[Installation](https://cratebase.dev/docs/getting-started/install/) on the
+docs site.
+
+Cratebase is what you reach for instead of Hono + a hand-rolled REST layer
++ Postgres/S3/auth wiring every time you start a new project. Define a
 collection's shape, get a full CRUD REST API, auth, file uploads, and
-realtime subscriptions for it immediately — from your web app, an Expo app,
-or a coding agent that just needs a backend.
+realtime subscriptions for it immediately — from your web app, an Expo
+app, or a coding agent that just needs a backend.
 
-Same shape end to end — dynamic collections, API rules enforced in SQL,
-one binary, embedded admin dashboard — plus **Postgres as a first-class,
-zero-code-change option** for when SQLite stops being enough.
+## What you get in the next 30 seconds
 
-## Features
+```bash
+cratebase serve
+```
+
+starts listening on `:8090` immediately — SQLite and local-disk storage,
+zero configuration. Open `http://localhost:8090` and the dashboard itself
+shows an inline setup form instead of a login screen: fill in an email and
+password there and that's your superuser account, no CLI step required.
+(Prefer to script it instead? `cratebase superuser create you@example.com
+yourpassword` works too, before or after that first visit.)
+
+From there, create a collection and start reading/writing records over
+HTTP or from the official PocketBase SDK:
+
+```ts
+import PocketBase from "pocketbase";
+
+const cb = new PocketBase("http://localhost:8090");
+const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
+const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
+```
+
+Full walkthrough (creating that first collection, the record/auth/realtime
+APIs) is in [Getting started](https://cratebase.dev/docs/getting-started/first-collection/)
+on the docs site. Quick orientation for humans or LLMs poking at a running
+instance: [llms.txt](./llms.txt). Full endpoint reference:
+[openapi.yaml](./openapi.yaml).
+
+## Why Cratebase
+
+- **PocketBase-wire-compatible.** The official
+  [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client
+  (and PocketBase's other official SDKs) work against Cratebase
+  unchanged — verified against the real SDK: 180/181 conformance tests
+  pass (the one skip restarts the server mid-run to test backup restore,
+  which would kill the test harness itself; see
+  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)).
+  Already on PocketBase? [Migrating from PocketBase](https://cratebase.dev/docs/migrating/migration-tool/)
+  covers the actual migration tool.
+- **Rust performance.** Same API, same filter syntax, same rules —
+  meaningfully faster under load than PocketBase's Go implementation.
+  Numbers and methodology (hardware, what's measured, honest caveats):
+  [benchmarks/README.md](./benchmarks/README.md).
+- **SQLite or Postgres, zero code changes.** `DATABASE_URL=sqlite://...`
+  (default) or `DATABASE_URL=postgres://...` — identical API, identical
+  filter syntax, identical rules either way.
+- **An AI bundle that isn't a bolt-on.** Vector search, an LLM chat
+  gateway, auto-embedding on write, and MCP server support, all backed by
+  the same collections and API rules as everything else. See
+  [AI](https://cratebase.dev/docs/ai/overview/) on the docs site.
+
+## Full feature list
 
 - **Dynamic collections** — define fields (text, number, bool, email, url,
   date, select, JSON, relation, file, password) through the API/dashboard;
   Cratebase creates and migrates the real SQL table for you.
-- **SQLite or Postgres** — `DATABASE_URL=sqlite://...` (default) or
-  `DATABASE_URL=postgres://...`. Identical API, identical filter syntax,
-  identical rules either way.
 - **API rules** — a small filter expression language
   (`owner = @request.auth.id`) for list/view/create/update/delete access,
   enforced in SQL, not in application code you have to trust.
 - **Auth built in** — any collection can be `type: "auth"` and gets
   `email`/`password`, `POST .../auth-with-password`, and
-  `POST .../auth-refresh` for free. Registration is just creating a record.
-  Beyond password login: email verification, password reset, email-change
-  confirmation, OTP (passwordless) login, MFA, OAuth2 (Google/GitHub),
-  superuser impersonation, and new-location login alerts (`_authOrigins`)
-  are all built in — see [ROADMAP.md](./ROADMAP.md) for the endpoint list.
+  `POST .../auth-refresh` for free. Registration is just creating a
+  record. Beyond password login: email verification, password reset,
+  email-change confirmation, OTP (passwordless) login, MFA, OAuth2
+  (Google/GitHub), superuser impersonation, and new-location login alerts
+  (`_authOrigins`) are all built in — see
+  [ROADMAP.md](./ROADMAP.md) for the endpoint list.
 - **Batch API** — `POST /api/batch` runs several record
   create/update/upsert/delete calls (JSON or multipart, for file fields)
   in one HTTP round trip and one SQL transaction: all of them commit or
@@ -46,12 +101,7 @@ zero-code-change option** for when SQLite stops being enough.
   next to your data directory and get PocketBase's own hook API:
   `onRecordCreate`/`onRecordUpdate`/-style lifecycle hooks and `routerAdd`
   for custom HTTP endpoints, both backed by an embedded QuickJS runtime
-  (`crates/jsvm`) — no separate process, no restart-to-reload. This is the
-  most-requested PocketBase capability that was previously missing.
-- **First-run setup, no CLI required** — point a browser at a fresh
-  instance and the dashboard shows an inline superuser-creation form
-  (`GET/POST /api/setup`) instead of a bare login screen. The
-  `superuser create` CLI command still works for scripted/headless setup.
+  (`crates/jsvm`) — no separate process, no restart-to-reload.
 - **File storage** — local disk by default; switch to any S3-compatible
   bucket (AWS S3, Cloudflare R2, Backblaze B2, or self-hosted
   [RustFS](https://rustfs.com)/MinIO) with three environment variables.
@@ -62,235 +112,23 @@ zero-code-change option** for when SQLite stops being enough.
   `_cron_jobs` record is the whole job (name, expression, SQL), reactive
   (a dashboard edit takes effect immediately), with the last run's
   status and error written back for you to see.
-- **Self-hosted web analytics** — a `<script>` beacon
-  (`web/beacon/beacon.js`, <2KB, no dependencies) posts pageviews straight
-  to an ordinary collection (`web/beacon/analytics-collection.json`), no
-  new server endpoint. Cookie-free, no localStorage, nothing that could be
-  replayed as a persistent visitor id — see [Web analytics](#web-analytics)
-  below for the trade-off that comes with that.
 - **One binary** — the admin dashboard is embedded at compile time
   (`rust-embed`). `cratebase serve` is the whole deployment.
-- **PocketBase-compatible API** — the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client (and PocketBase's other official SDKs) work against Cratebase unchanged. Verified against the
-  real SDK: 180/181 conformance tests pass (1 test is skipped because it
-  restarts the server mid-run to test backup restore, which would kill the
-  test harness itself — see
-  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)).
+- **Server-side rendering** — the official SDK's standard SSR pattern
+  (a fresh client per request, auth store hydrated from a cookie) works
+  unmodified against Cratebase; no framework-specific glue needed.
 
-## Quickstart
-
-### Docker (recommended)
-
-```bash
-docker compose up
-```
-
-`docker compose up` pulls the official
-[`ghcr.io/nicoaudy/cratebase`](https://github.com/nicoaudy/cratebase/pkgs/container/cratebase)
-image (published on every tagged release, `linux/amd64` and
-`linux/arm64`) — no need to clone this repo or build anything locally.
-Pin a version instead of `latest` with `CRATEBASE_VERSION=0.1.0 docker
-compose up`. Prefer plain `docker run`?
-
-```bash
-docker run -p 8090:8090 -v cratebase_data:/app/data ghcr.io/nicoaudy/cratebase:latest
-```
-
-That's SQLite + local disk storage, listening on `:8090`. Open
-`http://localhost:8090` and the dashboard's first-run setup form creates
-your superuser account — no CLI needed. (You can still script it instead:
-`docker compose exec cratebase cratebase superuser create you@example.com yourpassword`.)
-
-Want Postgres and S3-compatible storage instead of the defaults?
-
-```bash
-docker compose --profile postgres --profile s3 up
-```
-
-See [.env.example](./.env.example) for every configuration option.
-
-### From source
-
-```bash
-cargo build --release -p cratebase-server
-./target/release/cratebase serve
-```
-
-This gets you the API immediately. Open `http://localhost:8090` and the
-dashboard walks you through creating a superuser — or run
-`./target/release/cratebase superuser create you@example.com yourpassword`
-first if you'd rather skip the form. The admin dashboard needs its
-frontend built once first (`bun install && bun run admin:build` at the
-repo root, then rebuild the Rust binary so it picks up the new
-`web/admin/dist`) — see [ARCHITECTURE.md](./ARCHITECTURE.md) for why it
-works this way.
-
-## Using it
-
-```bash
-# create a collection
-curl -X POST localhost:8090/api/collections \
-  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
-  -d '{"name":"posts","type":"base",
-       "schema":[{"id":"f1","name":"title","type":"text","required":true},
-                 {"id":"f2","name":"published","type":"bool"}],
-       "listRule":"","viewRule":"","createRule":"","updateRule":"","deleteRule":null}'
-
-# create a record — no auth needed, createRule is public ("")
-curl -X POST localhost:8090/api/collections/posts/records \
-  -H 'content-type: application/json' -d '{"title":"Hello","published":true}'
-
-# list, with a filter
-curl "localhost:8090/api/collections/posts/records?filter=published%20%3D%20true&sort=-created"
-```
-
-From TypeScript/JavaScript:
-
-```ts
-import PocketBase from "pocketbase";
-
-const cb = new PocketBase("http://localhost:8090");
-const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
-const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
-```
-
-Full API reference: [openapi.yaml](./openapi.yaml). Quick orientation for
-humans or LLMs: [llms.txt](./llms.txt).
-
-## Server-side rendering
-
-No code gap here either: the official [`pocketbase`](https://www.npmjs.com/package/pocketbase)
-SDK already supports the standard SSR pattern used by meta-frameworks
-like TanStack Start, Next.js, and SvelteKit — a fresh client instance
-per request, with the auth store hydrated from (and re-serialized back
-into) a cookie. Nothing Cratebase-specific is required beyond pointing
-`PocketBase` at your server URL.
-
-```ts
-// inside a TanStack Start server function / loader (same shape for any
-// Node-based SSR framework — swap getCookie/setCookie for your
-// framework's request/response cookie helpers)
-import PocketBase from "pocketbase";
-
-const pb = new PocketBase(process.env.CRATEBASE_URL);
-pb.autoCancellation(false); // see below
-pb.authStore.loadFromCookie(getCookie("pb_auth") ?? "");
-
-const posts = await pb.collection("posts").getList(1, 20);
-
-setCookie("pb_auth", pb.authStore.exportToCookie());
-```
-
-> **`autoCancellation(false)` is required in every server context.** By
-> default the SDK cancels an in-flight request when an identical one is
-> issued again — a de-duplication behavior meant for client-side UI
-> (e.g. a component re-rendering mid-fetch). On the server, each
-> incoming request gets its own `PocketBase` instance, but the SDK has
-> no way of knowing that two loaders calling the same endpoint at the
-> same time are actually two independent requests, not one UI component
-> re-firing — with auto-cancellation left on, it can silently cancel one
-> of them. Call `pb.autoCancellation(false)` on every server-side client
-> you construct.
-
-## Web analytics
-
-A self-hosted, cookie-free pageview counter. It needs almost no new
-backend capability — the whole feature is a public collection plus a
-small script:
-
-1. **Create the collection.** In the dashboard, open **Collections →
-   Import**, and paste in
-   [`web/beacon/analytics-collection.json`](./web/beacon/analytics-collection.json).
-   That creates `analytics` with a public `createRule` (`""`) and
-   everything else superuser-only — anyone can write a pageview, only a
-   superuser can list/read them back. This is an ordinary user-owned
-   collection, not a built-in system one: delete it, rename its fields,
-   or add your own if the default shape doesn't fit.
-2. **Install the beacon.** Drop [`web/beacon/beacon.js`](./web/beacon/beacon.js)
-   (under 2KB, zero dependencies) in a `<script>` tag on the site you
-   want to track, pointed at your Cratebase instance:
-
-   ```html
-   <script defer src="/path/to/beacon.js" data-api="https://your-cratebase.example.com"></script>
-   ```
-
-   It fires once per page load: `POST /api/collections/analytics/records`
-   with `{url, referrer, path}` — the same generic records API any other
-   client uses, allowed by the collection's own `createRule`. No cookie,
-   no `localStorage`, nothing that could be replayed as a persistent
-   visitor id.
-3. **View it.** The dashboard's **Settings → Analytics** page reads the
-   same collection back through ordinary list/filter/sort queries: total
-   pageviews, unique paths and top referrer over the last 30 days, a
-   daily chart, and a table of recent pageviews.
-
-**Known limitation: no unique-visitor counting.** A privacy-safe unique
-count (Plausible's approach: a rotating daily hash of IP+User-Agent)
-has to be computed server-side, since the client cannot safely derive it
-itself without sending something identifying. Doing that would need a
-bespoke ingestion endpoint instead of "the generic records API already
-allows this write" — out of scope for this pass. What ships instead is
-an honest count of what the beacon actually sends: raw pageviews,
-distinct paths, and referrers.
-
-## Rate-limiting expensive endpoints
-
-`settings.rateLimits` already supports per-path/per-prefix/per-tag rules —
-each rule's `label` *is* the path/prefix/tag it matches (an exact path, a
-prefix like `/api/`, or a tag like `*:auth`), scoped by `audience`
-(`""`/`@guest`/`@auth`) — but the defaults don't single out two endpoints
-that are meaningfully more expensive than an ordinary record read and are
-worth an explicit rule in production:
-
-- **`POST /api/sql`** — the dashboard SQL console. Superuser-only already,
-  but a single query can still hold a database connection for seconds (see
-  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)'s
-  note on SQLite cancellation limits). A low per-minute cap on this exact
-  path prevents one runaway script or a compromised superuser session from
-  starving every other request.
-- **`POST /api/llm/chat`** — every call spends the operator's own
-  configured LLM provider quota/credits. It requires authentication (any
-  record, not just superusers), but authentication alone doesn't bound
-  *cost* the way it does for an ordinary record write.
-
-```json
-{
-  "rateLimits": {
-    "enabled": true,
-    "rules": [
-      { "label": "/api/sql", "audience": "", "maxRequests": 20, "duration": 60 },
-      { "label": "/api/llm/chat", "audience": "", "maxRequests": 30, "duration": 60 }
-    ]
-  }
-}
-```
-
-`PATCH /api/settings` with the body above (or the dashboard's Network
-settings page) adds both without touching any other rule already
-configured — rules are matched most-specific-first (exact path beats
-prefix beats tag), so an exact-path rule here doesn't affect a broader
-`/api/` prefix rule you may already have.
+See the [docs site](https://cratebase.dev/docs/) for the complete,
+up-to-date reference — this list is intentionally a summary, not the full
+pitch.
 
 ## Examples
 
-Four runnable apps in [examples/](./examples), each with its own
-`setup.sh` that provisions the collections it needs:
-
-- [examples/todo](./examples/todo) — the minimal register → login →
-  authenticated CRUD path, zero-build (a single `app.js` loaded via an
-  import map, no bundler).
-- [examples/realtime-chat](./examples/realtime-chat) — a shared chat room
-  built on realtime subscriptions.
-- [examples/realtime-cursors](./examples/realtime-cursors) — live cursor
-  positions broadcast between open tabs over realtime.
-- [examples/kanban](./examples/kanban) — the flagship demo: a shared,
-  realtime, drag-and-drop Kanban board (Vite + React + TypeScript,
-  optimistic updates, FLIP-animated card reflow, and a presence bar)
-  demonstrating auth, API rules, and realtime working together end to
-  end, not each in isolation.
-
-`bun run examples:serve` serves the three zero-build examples from the
-repo root; `examples/kanban` has its own Vite dev server (`npm run dev`
-inside `examples/kanban`) since it has an actual build step.
+Six runnable apps in [examples/](./examples), each with its own
+`setup.sh` that provisions the collections it needs — from the minimal
+register → login → authenticated CRUD path to a realtime, drag-and-drop
+Kanban board. Full list with descriptions:
+[Examples](https://cratebase.dev/docs/getting-started/examples/).
 
 ## Project layout
 
@@ -310,18 +148,18 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for how the pieces fit together
 and the trade-offs behind them, and [ROADMAP.md](./ROADMAP.md) for what's
 shipped and what's still ahead.
 
-### Plugins
+## More
 
-Extend the server without forking it: implement the `Plugin` trait
-(`crates/server/src/plugin.rs`) for one-time setup, extra HTTP routes
-under `/api/plugins/<name>`, and fixed-interval background jobs, then
-register it in a `PluginRegistry` — including from a downstream binary
-that depends on `cratebase-server` as a library, not just this repo's own
-`cratebase` binary. See `crate::plugin`'s module doc for the trait shape;
-there is no bundled example plugin in this repo yet — `crates/server/src/cron_jobs.rs`
-is the closest reference for the "reactive system collection" shape a
-plugin author would follow, even though it isn't built on the `Plugin`
-trait itself.
+- [Configuration reference](https://cratebase.dev/docs/deploy/configuration-reference/)
+  — every environment variable, including Postgres/S3/rate-limiting setup.
+- [Docker](https://cratebase.dev/docs/deploy/docker/),
+  [reverse proxy/TLS](https://cratebase.dev/docs/deploy/reverse-proxy-tls/),
+  and other deployment topics.
+- [Extending Cratebase](https://cratebase.dev/docs/extending/js-hooks/) —
+  JS hooks, Rust plugins, cron jobs, webhooks.
+- [Contributing, security policy, license](https://cratebase.dev/docs/project/contributing-security-license/)
+  ([CONTRIBUTING.md](./CONTRIBUTING.md) and [LICENSE](./LICENSE) in this
+  repo).
 
 ## Development
 
@@ -338,3 +176,5 @@ bun install && bun run admin:dev
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+</content>
+<parameter name="i">Rewrite README around install-first flow

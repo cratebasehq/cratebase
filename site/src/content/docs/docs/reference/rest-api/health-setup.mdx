@@ -1,0 +1,26 @@
+---
+title: "Health & setup"
+description: "GET /health, and the first-run superuser bootstrap."
+sidebar:
+  order: 2
+---
+
+### `GET /health` — unauthenticated
+
+Liveness check. `200 { "status": "ok" }`, always, with no request body.
+
+### `GET /setup/status` — unauthenticated
+
+Whether the instance still needs its first superuser. `200 { "needsSetup": boolean }`.
+The dashboard polls this to decide whether to render the inline setup
+form or the normal login screen (see [First run](/docs/getting-started/first-run/)).
+
+### `POST /setup` — unauthenticated
+
+Creates the first `_superusers` record. Body: `email`, `password`
+(min length 8), `passwordConfirm`. `200` with the created record on
+success. **Permanently closed once any superuser exists** — a second
+call is `403` even if the first superuser was later deleted through
+other means, since the check is "does at least one exist now," not "did
+setup ever run." `cratebase superuser create` is the headless
+equivalent for scripted deployments; see [CLI](/docs/reference/cli/).

@@ -1,0 +1,47 @@
+---
+title: "MCP"
+description: "GET/POST /api/mcp — Model Context Protocol, one JSON-RPC-dispatched endpoint."
+sidebar:
+  order: 18
+---
+
+See [AI → MCP server](/docs/ai/mcp-server/) for the tool-exposure model
+behind this endpoint.
+
+### `GET /mcp` — unauthenticated, SSE handshake leg
+
+Opens an SSE stream and immediately emits the spec's `endpoint` handshake
+event (`data: /api/mcp`), then idle keep-alive comments every 25s. This
+server answers every `tools/call` synchronously in the `POST` response
+below rather than over this stream — it's kept open only so an MCP
+client expecting the full two-leg HTTP+SSE transport (protocol version
+`2024-11-05`) finds a working stream.
+
+### `POST /mcp` — bearer optional depending on method
+
+One route, JSON-RPC 2.0, method-routed:
+
+| `method` | Result |
+| --- | --- |
+| `initialize` | `{protocolVersion, capabilities, serverInfo}` |
+| `ping` | `{}` |
+| `tools/list` | `{"tools": [{name, description, inputSchema}, ...]}` |
+| `tools/call` | `{content: [{type: "text", text}], structuredContent, isError}` |
+
+Every non-system collection (name not starting with `_`) gets up to
+five tools: `list_<collection>`, `get_<collection>`, `create_<collection>`,
+`update_<collection>`, `delete_<collection>` (view collections only get
+`list_`/`get_`), each authorized exactly like the equivalent HTTP record
+route — through that collection's own rules and the caller's own bearer
+token (an [API key](/docs/reference/rest-api/api-keys/) is a natural
+choice here). A denied rule or validation failure inside `tools/call`
+comes back as a normal result with `isError: true`, **not** a JSON-RPC
+error — only a malformed request (bad method, missing `name`, unknown
+tool) is a protocol-level error.
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "list_posts", "arguments": { "filter": "published = true", "perPage": 10 } } }
+```
+
+A request with no `id` (a JSON-RPC *notification*, e.g. the spec's
+`notifications/initialized`) gets `202 Accepted` with no body.

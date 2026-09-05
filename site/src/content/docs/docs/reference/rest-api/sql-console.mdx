@@ -1,0 +1,35 @@
+---
+title: "SQL console"
+description: "POST /api/sql — run ad-hoc SQL directly against the database. Superuser only."
+sidebar:
+  order: 20
+---
+
+### `POST /sql`
+
+```json
+{ "sql": "SELECT id, title FROM posts WHERE published = 1", "write": false }
+```
+
+No new capability beyond what a superuser already has through the
+schema/record APIs — this only skips the dashboard's UI translation
+layer. `write: false` (the default) rejects anything that doesn't
+trimmed-and-uppercase start with `SELECT`/`WITH`, **server-enforced**,
+not just a confirmation dialog; set `write: true` to run
+`INSERT`/`UPDATE`/`DELETE`/DDL. Read responses are truncated to 500 rows
+(`truncated: true` when more existed) and every statement is cancelled
+after 10 seconds. Driver errors are returned verbatim rather than a
+generic wrapper message, since the caller is already running arbitrary
+SQL by choice.
+
+Read response:
+
+```json
+{ "columns": ["id", "title"], "rows": [ { "id": "abc", "title": "Hello" } ], "truncated": false }
+```
+
+Write response:
+
+```json
+{ "rowsAffected": 3 }
+```

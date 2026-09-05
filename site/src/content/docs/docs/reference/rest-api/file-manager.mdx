@@ -1,0 +1,37 @@
+---
+title: "File manager"
+description: "Raw object-store browsing, independent of any record. Superuser only."
+sidebar:
+  order: 21
+---
+
+The escape hatch for an operator to see and fix what's actually sitting
+in the configured storage bucket when it and the database have drifted —
+these endpoints never touch a record even when a key happens to collide
+with one a record's file field would use.
+
+| Method & path | Summary |
+| --- | --- |
+| `GET /storage/objects` | List objects under a prefix, one level deep |
+| `POST /storage/objects` | Upload/overwrite one object at an arbitrary key |
+| `DELETE /storage/objects` | Delete one object by key |
+| `GET /storage/objects/download` | Download one object by key |
+
+### `GET /storage/objects?prefix=`
+
+```json
+{ "folders": ["books/k7zi7ewdor8vhwh/"], "files": [ { "key": "avatars/x.png", "size": 4096, "lastModified": "..." } ] }
+```
+
+Object keys are flat strings; `folders` fakes a directory tree the way
+an S3 console does, one level per call — pass a returned folder back in
+as the next `prefix` to descend further.
+
+### `POST /storage/objects` — `multipart/form-data`
+
+Fields: `key` (the full object key to write), `file` (binary). `204` on
+success.
+
+### `DELETE /storage/objects?key=`
+
+`204` on success, `404` if the key doesn't exist.

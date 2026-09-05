@@ -8,6 +8,7 @@ members = [
     "crates/auth",
     "crates/mailer",
     "crates/jsvm",
+    "crates/wasm_plugin",
     "crates/server",
 ]
 
@@ -40,6 +41,7 @@ cratebase-db = { path = "crates/db" }
 cratebase-storage = { path = "crates/storage" }
 cratebase-auth = { path = "crates/auth" }
 cratebase-mailer = { path = "crates/mailer" }
+cratebase-wasm-plugin = { path = "crates/wasm_plugin" }
 cratebase-jsvm = { path = "crates/jsvm" }
 
 [profile.release]

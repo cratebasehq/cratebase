@@ -9,8 +9,35 @@ wiring is needed: every collection is automatically exposed as MCP tools
 `update_<collection>`, `delete_<collection>`) — `POST /api/mcp
 {"method":"tools/list"}` reflects whatever collections currently exist.
 An agent authenticates with an [API key](/docs/concepts/authentication/api-keys/)
-like any other identity and gets exactly the rule-gated access that key's
-record has — the same authorization path a normal HTTP request goes
-through, nothing bespoke for agent traffic. Connect Claude, Cursor, or
-any MCP-speaking client by pointing it at this endpoint; the dashboard's
-**Settings → MCP** page shows the connection details.
+like any other identity, through the same authorization path a normal
+HTTP request goes through — nothing bespoke for agent traffic. What
+access that gets the agent depends on which of the two key shapes you
+minted:
+
+- A **record-scoped** key — the recommended shape for an agent — gets
+  exactly the rule-gated access its target record has, same as that
+  record logging in normally. This is the shape that makes "an agent
+  gets the same rule enforcement as a real user" literally true, and
+  it's the one to reach for here: a compromised or over-eager agent can
+  only do what that one record could do.
+- A **superuser** key is unscoped root — every rule is bypassed, on
+  every collection, for every tool call. Only use one for an agent you
+  trust with the entire database, the same caution you'd give a
+  Supabase `service_role` key.
+
+Connect Claude, Cursor, or any MCP-speaking client by pointing it at
+this endpoint; the dashboard's **Settings → MCP** page shows the
+connection details and the dashboard's **Settings → API keys** page is
+where you mint either shape of key.
+
+```json
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "list_posts", "arguments": { "filter": "published = true", "perPage": 10 } } }
+```
+
+A denied rule or a validation failure inside `tools/call` comes back as
+an ordinary JSON-RPC result with `isError: true` — never a protocol
+error — so an agent sees the same "you don't have access" or "missing
+required field" signal a human would over plain HTTP, not a broken
+connection. See [Reference → REST API → MCP](/docs/reference/rest-api/mcp/)
+for the full method table (`initialize`, `ping`, `tools/list`,
+`tools/call`) and the exact tool-naming scheme.

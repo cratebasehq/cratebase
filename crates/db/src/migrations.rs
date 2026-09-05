@@ -140,6 +140,21 @@ impl Runner {
             Box::new(|db| Box::pin(add_audit_log_up(db))),
             Box::new(|db| Box::pin(add_audit_log_down(db))),
         ));
+        // `_api_keys.actsAsCollection`/`.actsAsRecord` were added after
+        // `INIT_SYSTEM` shipped, same story as `ADD_SUPERUSER_ROLE`
+        // above — an existing database's `_api_keys` table predates the
+        // pair and needs them added; a fresh database already has them
+        // from `INIT_SYSTEM`'s `default_system_collections()` and this
+        // migration is a no-op there. No backfill is needed: the
+        // physical zero default for a new text column is `''`, which is
+        // already the "unscoped, superuser" reading `crate::api_keys`
+        // (server crate) gives an absent pair, so every pre-existing key
+        // keeps behaving exactly as before.
+        r.register(Migration::new(
+            ADD_API_KEY_SCOPING,
+            Box::new(|db| Box::pin(add_api_key_scoping_up(db))),
+            Box::new(|db| Box::pin(add_api_key_scoping_down(db))),
+        ));
         r
     }
 
@@ -171,9 +186,20 @@ impl Runner {
     /// Revert the last `n` applied migrations (most recent first).
     /// Every reverted file must be registered; an unknown one is an
     /// error rather than a silent skip.
+    ///
+    /// Ties on `applied` (migrations run in the same `up()` call share a
+    /// timestamp, second resolution) break on the numeric prefix of the
+    /// filename, not a plain string compare — `"10_..."` sorts as file
+    /// number 10, not lexicographically before `"9_..."` (`'1' < '9'` as
+    /// characters), which would revert a same-second batch out of
+    /// registration order the moment a migration count crosses into
+    /// double digits.
     pub async fn down(&self, db: &Db, n: usize) -> DbResult<Vec<String>> {
         let mut done = applied(db).await?;
-        done.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+        done.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| migration_number(&b.0).cmp(&migration_number(&a.0)))
+        });
         let mut reverted = Vec::new();
         for (file, _) in done.into_iter().take(n) {
             let m = self
@@ -208,6 +234,18 @@ impl Runner {
         }
         Ok(out)
     }
+}
+
+/// The leading integer of a `"{n}_description.rs"` migration filename —
+/// see [`Runner::down`]'s doc comment for why this exists instead of
+/// comparing filenames as strings. An unparseable prefix (never
+/// registered by this module, but the ledger can in principle hold rows
+/// [`Runner`] doesn't know about) sorts as `0`, i.e. oldest.
+fn migration_number(file: &str) -> u32 {
+    file.split('_')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 /// Every ledger row as `(file, applied unix seconds)`, in file order.
@@ -518,6 +556,59 @@ async fn add_audit_log_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_API_KEY_SCOPING: &str = "10_add_api_key_scoping.rs";
+
+/// A record-scoped text field, matching the shape `Collection::default_system_collections`
+/// gives `_api_keys.actsAsCollection`/`.actsAsRecord` on a fresh database — see
+/// `ADD_API_KEY_SCOPING`'s registration comment for why an existing database
+/// needs this migration and why no backfill is needed.
+fn acts_as_field(name: &str) -> Field {
+    let mut f = Field::new(
+        name,
+        cratebase_core::FieldKind::Text {
+            min: 0,
+            max: 0,
+            pattern: String::new(),
+            autogenerate_pattern: String::new(),
+            primary_key: false,
+        },
+    );
+    f.system = true;
+    f.required = false;
+    f
+}
+
+async fn add_api_key_scoping_up(db: &Db) -> DbResult<()> {
+    let Some(previous) = db.collections.get_by_name("_api_keys") else {
+        return Ok(());
+    };
+    if previous.fields.iter().any(|f| f.name == "actsAsCollection") {
+        return Ok(());
+    }
+    let mut next = (*previous).clone();
+    // Same insertion point `default_system_collections` uses: right
+    // before `created`/`updated`.
+    let pos = next.fields.len() - 2;
+    next.fields.insert(pos, acts_as_field("actsAsCollection"));
+    next.fields.insert(pos + 1, acts_as_field("actsAsRecord"));
+    db.collections.update(&*db.engine, &next).await?;
+    Ok(())
+}
+
+async fn add_api_key_scoping_down(db: &Db) -> DbResult<()> {
+    let Some(previous) = db.collections.get_by_name("_api_keys") else {
+        return Ok(());
+    };
+    if !previous.fields.iter().any(|f| f.name == "actsAsCollection") {
+        return Ok(());
+    }
+    let mut next = (*previous).clone();
+    next.fields
+        .retain(|f| f.name != "actsAsCollection" && f.name != "actsAsRecord");
+    db.collections.update(&*db.engine, &next).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +639,7 @@ mod tests {
                 ADD_PUSH_SUBSCRIPTIONS.to_string(),
                 ADD_SUPERUSER_ROLE.to_string(),
                 ADD_AUDIT_LOG.to_string(),
+                ADD_API_KEY_SCOPING.to_string(),
             ]
         );
         assert_eq!(
@@ -590,10 +682,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 9).await.unwrap();
+        let reverted = Runner::core().down(&db, 10).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_API_KEY_SCOPING.to_string(),
                 ADD_AUDIT_LOG.to_string(),
                 ADD_SUPERUSER_ROLE.to_string(),
                 ADD_PUSH_SUBSCRIPTIONS.to_string(),

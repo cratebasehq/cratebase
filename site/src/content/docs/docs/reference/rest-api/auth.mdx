@@ -1,0 +1,69 @@
+---
+title: "Auth"
+description: "Password login, refresh, verification/reset/email-change, OTP, MFA, impersonation."
+sidebar:
+  order: 5
+---
+
+Every path below is scoped to one auth collection:
+`/collections/{idOrName}/<action>`. Superuser login is the *same*
+`auth-with-password` endpoint with `idOrName=_superusers` — there is no
+separate admin-login path. See [Concepts → Authentication](/docs/concepts/authentication/overview/)
+for the token model these endpoints share.
+
+| Method & path | Auth | Summary |
+| --- | --- | --- |
+| `POST .../auth-with-password` | none | Log in with identity + password |
+| `POST .../auth-refresh` | bearer | Refresh a session token |
+| `GET .../auth-methods` | none | Which auth methods are enabled |
+| `POST .../request-verification` | none | Email a verification link |
+| `POST .../confirm-verification` | none | Consume it |
+| `POST .../request-password-reset` | none | Email a reset link |
+| `POST .../confirm-password-reset` | none | Consume it, set a new password |
+| `POST .../request-email-change` | bearer | Email a confirmation to a pending new address |
+| `POST .../confirm-email-change` | none | Consume it (acting record comes from the token) |
+| `POST .../request-otp` | none | Email a one-time login code |
+| `POST .../auth-with-otp` | none | Complete OTP login |
+| `POST .../impersonate/{id}` | bearer (superuser) | Mint a non-refreshable token for another record |
+
+### `auth-with-password`
+
+```json
+{ "identity": "alice@example.com", "password": "hunter2", "identityField": "email", "mfaId": "..." }
+```
+
+`identity` is matched against `passwordAuth.identityFields` (email by
+default); `identityField` pins the lookup to one field instead of trying
+each in order. `mfaId` completes a pending [MFA](/docs/concepts/authentication/mfa/)
+challenge from a previous call. Success: `200 { "token", "record" }`.
+A pending MFA challenge is `401 { "mfaId": "..." }` — with no
+`status`/`message`/`data` envelope, distinct from every other error
+shape on this page.
+
+### `request-*` endpoints always answer `204`
+
+`request-verification`, `request-password-reset`, and `request-otp` all
+answer `204` (or, for OTP, `200 { "otpId" }`) **regardless of whether the
+address exists** — this is deliberate account-enumeration resistance,
+not a bug to work around. See [Email flows](/docs/concepts/authentication/email-flows/)
+and [OTP](/docs/concepts/authentication/otp/).
+
+### `confirm-email-change`
+
+```json
+{ "token": "...", "password": "current-password" }
+```
+
+Note this one takes the record's **current** password as a second
+factor, not the new email — the acting record comes entirely from the
+token's claims, not from an `Authorization` header, which is why this
+endpoint is unauthenticated at the transport level while still being
+scoped to one specific record.
+
+### `impersonate/{id}`
+
+Superuser-only. Body: `{ "duration": 3600 }` (optional; defaults to the
+collection's own `authToken.duration`). Returns a normal
+`{ "token", "record" }` pair, but the token is flagged non-refreshable —
+calling `auth-refresh` on it returns the same token unchanged rather
+than failing. See [Impersonation](/docs/concepts/authentication/impersonation/).

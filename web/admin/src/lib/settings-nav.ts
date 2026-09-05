@@ -1,6 +1,5 @@
 import {
   Archive,
-  BarChart3,
   Bell,
   Bot,
   Clock,
@@ -171,12 +170,6 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         icon: History,
         description: "Append-only history of schema, settings, and superuser changes.",
         collection: "_audit_log",
-      },
-      {
-        to: "/settings/analytics",
-        label: "Analytics",
-        icon: BarChart3,
-        description: "Self-hosted, cookie-free web analytics.",
       },
     ],
   },

@@ -3,16 +3,11 @@
 //! `tracing` log fallback, and an in-memory recorder for tests), the
 //! transport-agnostic [`Message`] envelope, and [`render_template`] for
 //! the per-collection PocketBase-style email templates.
-//!
-//! Also home to [`sms`], a standalone transactional-SMS provider
-//! primitive that mirrors this same `Backend`/`from_settings` shape —
-//! see that module's own doc comment.
 
 mod backend;
 mod config;
 mod error;
 mod message;
-pub mod sms;
 mod template;
 
 pub use backend::{

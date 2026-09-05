@@ -1,0 +1,31 @@
+---
+title: "Push"
+description: "POST /api/push/send — deliver a push notification. Superuser only."
+sidebar:
+  order: 16
+---
+
+See [Extending → Push notifications](/docs/extending/push-notifications/)
+for the provider setup behind this endpoint.
+
+### `POST /push/send`
+
+```json
+{ "collection": "users", "recordId": "abc123", "title": "New comment", "body": "...", "data": { "postId": "xyz" } }
+```
+
+Target either a record's subscriptions (`collection` + `recordId`) or
+specific rows directly (`subscriptionIds`, which takes priority when
+set). Superuser-only rather than any-authenticated-record — unlike
+[`/llm/chat`](/docs/reference/rest-api/llm/), the target is
+caller-chosen and can name *any* record's subscriptions, so this is an
+operator action, not something a record's own rules gate. A
+collection's own record-driven push (`settings.push.triggers`) does not
+go through this endpoint at all.
+
+```json
+{ "sent": 2, "failed": 1, "results": [ { "id": "...", "platform": "web", "ok": true, "error": null }, { "id": "...", "platform": "android", "ok": false, "error": "invalid registration token" } ] }
+```
+
+`200` even when some individual targets failed — check `results` for
+per-target outcomes rather than relying on the HTTP status alone.

@@ -1,0 +1,97 @@
+---
+/**
+ * Postgres, multi-node: two warehouses sharing one rail, a crate on a cart
+ * between them. The rail is the LISTEN/NOTIFY link; the crate is the event
+ * crossing nodes.
+ */
+import { type Box, box, faceRect, line, poly, shadow, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+
+const depth = 1.7;
+const ridgeRise = 0.42;
+
+function warehouse(x: number): { walls: Box; roofFar: string; roofNear: string; gable: string; door: string; slats: string; window: string } {
+  const walls = box(x, 0, 0, 2.3, depth, 1.15);
+  const X = x + walls.sx;
+  const eave = walls.z + walls.sz;
+  const ridge = eave + ridgeRise;
+  const mid = depth / 2;
+  return {
+    walls,
+    roofFar: poly([
+      [x - 0.12, 0 - 0.1, eave - 0.06],
+      [X + 0.12, 0 - 0.1, eave - 0.06],
+      [X + 0.12, mid, ridge],
+      [x - 0.12, mid, ridge],
+    ]),
+    roofNear: poly([
+      [x - 0.12, depth + 0.1, eave - 0.06],
+      [X + 0.12, depth + 0.1, eave - 0.06],
+      [X + 0.12, mid, ridge],
+      [x - 0.12, mid, ridge],
+    ]),
+    gable: poly([
+      [X, 0, eave],
+      [X, depth, eave],
+      [X, mid, ridge],
+    ]),
+    door: faceRect(walls, "right", 0.28, 0, 0.72, 0.7, 0.02),
+    slats: [0.18, 0.36, 0.54]
+      .map((v) => line([X + 0.02, depth * 0.28, walls.sz * v], [X + 0.02, depth * 0.72, walls.sz * v]))
+      .join(""),
+    window: faceRect(walls, "left", 0.15, 0.45, 0.4, 0.8, 0.02),
+  };
+}
+
+const a = warehouse(0);
+const b = warehouse(4.6);
+
+// Rail between the two doors, sleepers first, then the two rails.
+const railY: [number, number] = [depth * 0.4, depth * 0.6];
+const sleepers = Array.from({ length: 7 }, (_, i) => {
+  const x = 2.55 + i * 0.3;
+  return line([x, railY[0] - 0.12, 0], [x, railY[1] + 0.12, 0]);
+}).join("");
+const rails = railY.map((y) => line([2.3, y, 0.03], [4.6, y, 0.03])).join("");
+
+const cart = box(3.15, railY[0] - 0.08, 0.06, 0.7, railY[1] - railY[0] + 0.16, 0.1);
+const crate = box(3.25, railY[0], 0.16, 0.5);
+
+const frame = viewBox([a.walls, b.walls], 12, [
+  [-0.12, depth / 2, 1.15 + ridgeRise],
+  [b.walls.x + b.walls.sx + 0.12, depth + 0.1, 0],
+]);
+---
+
+<IsoFrame viewBox={frame} label={label}>
+  <path class="shadow" d={shadow(a.walls, 0.22)} />
+  <path class="shadow" d={shadow(b.walls, 0.22)} />
+  <path class="thin faint" d={sleepers} />
+  <path d={rails} />
+
+  <PanelBox box={a.walls} />
+  <path class="deep thin" d={a.door} />
+  <path class="thin faint" d={a.slats} />
+  <path class="shade thin" d={a.window} />
+  <path class="deep" d={a.roofFar} />
+  <path class="deep" d={a.gable} />
+  <path class="lit" d={a.roofNear} />
+
+  <PanelBox box={cart} />
+  <CrateBox box={crate} />
+
+  <PanelBox box={b.walls} />
+  <path class="deep thin" d={b.door} />
+  <path class="thin faint" d={b.slats} />
+  <path class="shade thin" d={b.window} />
+  <path class="deep" d={b.roofFar} />
+  <path class="deep" d={b.gable} />
+  <path class="lit" d={b.roofNear} />
+</IsoFrame>

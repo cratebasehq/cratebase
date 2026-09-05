@@ -370,3 +370,51 @@ async fn nearest_to_orders_by_descending_cosine_similarity() {
         .await;
     assert_eq!(status, 400, "{body}");
 }
+
+// --------------------------------------------- llm.enabled independence
+
+/// `settings.llm.enabled` defaults `false` (`routes::api_router` doesn't
+/// even mount `POST /api/llm/chat` in that case — see that module's doc
+/// comment). Auto-embedding is wired through
+/// `crates/server/src/embeddings.rs`'s own `EMBEDDINGS_BASE_URL`/
+/// `EMBEDDINGS_API_KEY` env vars, entirely independent of `settings.llm`
+/// — this asserts both halves of that independence in one place: the
+/// chat gateway is truly gone, and vector auto-embedding still works.
+#[tokio::test]
+async fn vector_auto_embedding_is_unaffected_by_a_disabled_llm_gateway() {
+    let harness = Harness::new().await;
+    assert!(
+        !harness.app.settings().llm.enabled,
+        "llm.enabled should default to false"
+    );
+
+    let (status, _) = harness
+        .admin(
+            "POST",
+            "/api/llm/chat",
+            Some(json!({"messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(
+        status, 404,
+        "the llm chat route must not be mounted while settings.llm.enabled is false"
+    );
+
+    harness.collection(chunks_collection()).await;
+    let (status, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/chunks/records",
+            Some(json!({"body": "vector search keeps working"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    let vector = created["embedding"]
+        .as_array()
+        .expect("auto-embedded vector");
+    assert_eq!(vector.len(), 8);
+    assert!(
+        vector.iter().any(|v| v.as_f64().unwrap() != 0.0),
+        "auto-embedding must still run with the llm gateway disabled: {vector:?}"
+    );
+}

@@ -71,6 +71,15 @@ enum Command {
         #[arg(long = "dir")]
         dir: Option<String>,
     },
+    /// Manage locally installed third-party WASM plugins (R&D
+    /// prototype — see `crates/wasm_plugin`'s module doc).
+    Plugin {
+        #[command(subcommand)]
+        action: PluginAction,
+        /// Data directory.
+        #[arg(long = "dir", global = true)]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -152,6 +161,19 @@ enum MigrateAction {
     HistorySync,
 }
 
+#[derive(Subcommand)]
+enum PluginAction {
+    /// Validate a plugin's manifest, compile-check its `.wasm`, and
+    /// copy it into `<data_dir>/plugins/<name>` to load on next boot.
+    Install {
+        /// A directory containing `plugin.toml` + its entry `.wasm`, or
+        /// a bare `.wasm` path next to a `plugin.toml`.
+        path: String,
+    },
+    /// List installed plugins and what each one's manifest grants it.
+    List,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -167,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
         Command::MigrateFromPocketbase { pb_dir, dir } => {
             migrate_from_pocketbase(dir, pb_dir).await
         }
+        Command::Plugin { action, dir } => plugin_cmd(dir, action).await,
     }
 }
 
@@ -206,7 +229,52 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     config.dev = args.dev;
     config.automigrate = args.automigrate;
 
-    App::new(config).serve().await
+    let app = App::new(config);
+    cratebase_server::plugin_wasm::discover_and_register(&app)?;
+    app.serve().await
+}
+
+/// `cratebase plugin install|list`. Both act purely on the filesystem —
+/// no database, no running server — so `install` against a data
+/// directory a live server is currently serving takes effect the next
+/// time that server restarts, exactly like dropping a file into
+/// `pb_hooks/` does.
+async fn plugin_cmd(dir: Option<String>, action: PluginAction) -> anyhow::Result<()> {
+    let data_dir = config_for(dir).data_dir;
+    match action {
+        PluginAction::Install { path } => {
+            let manifest =
+                cratebase_server::plugin_wasm::install(&data_dir, std::path::Path::new(&path))?;
+            println!(
+                "Installed '{}' v{} to {}",
+                manifest.name,
+                manifest.version,
+                cratebase_server::plugin_wasm::plugins_dir(&data_dir)
+                    .join(&manifest.name)
+                    .display()
+            );
+            println!("{}", manifest.describe_capabilities());
+            println!("Restart the server for it to take effect.");
+            Ok(())
+        }
+        PluginAction::List => {
+            let manifests = cratebase_server::plugin_wasm::list_installed(&data_dir)?;
+            if manifests.is_empty() {
+                println!("No plugins installed.");
+                return Ok(());
+            }
+            for manifest in manifests {
+                println!("{} v{}", manifest.name, manifest.version);
+                if !manifest.description.is_empty() {
+                    println!("  {}", manifest.description);
+                }
+                for line in manifest.describe_capabilities().lines() {
+                    println!("  {line}");
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Superuser records are ordinary auth records in the system

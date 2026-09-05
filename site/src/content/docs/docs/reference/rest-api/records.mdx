@@ -1,0 +1,62 @@
+---
+title: "Records"
+description: "The generic list/view/create/update/delete surface every collection gets."
+sidebar:
+  order: 4
+---
+
+Every collection — user-defined or system — gets this same generic CRUD
+surface. Full semantics (rules, filter grammar, expand) are on
+[Concepts → Records API](/docs/concepts/records-api/); this page is the
+wire shape.
+
+| Method & path | Summary |
+| --- | --- |
+| `GET /collections/{idOrName}/records` | List/search records |
+| `POST /collections/{idOrName}/records` | Create a record |
+| `GET /collections/{idOrName}/records/{id}` | View one record |
+| `PATCH /collections/{idOrName}/records/{id}` | Update a record |
+| `DELETE /collections/{idOrName}/records/{id}` | Delete a record |
+
+### `GET .../records` query parameters
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `filter` | — | Filter expression, e.g. `published = true && title ~ "hello"` |
+| `sort` | `-created` | Comma-separated fields, `-` prefix for descending |
+| `page` | `1` | `0` is coerced to `1` |
+| `perPage` | `30` | Capped at 500 by this endpoint's own validation (1000 server-wide, per `KNOWN_DIVERGENCES.md`) |
+
+Response:
+
+```json
+{
+  "page": 1, "perPage": 30, "totalItems": 2, "totalPages": 1,
+  "items": [ { "id": "...", "created": "...", "updated": "...", "collectionId": "...", "collectionName": "posts", "title": "Hello" } ]
+}
+```
+
+A failing `listRule` never errors — it silently yields an empty
+`items` array (`totalItems: 0`), not a `403`.
+
+### Create / update
+
+`application/json` for a normal write, or `multipart/form-data` when the
+collection has `file` fields. Both endpoints accept arbitrary
+collection-schema keys in the body (`additionalProperties: true` — this
+spec doesn't enumerate them since they're user-defined per collection).
+`POST` returns `200` with the created record; `PATCH` returns `200` with
+the updated one. A failing `createRule` is `400 "Failed to create
+record."`; a failing `updateRule`/`viewRule`/`deleteRule` is `404`
+(indistinguishable from a nonexistent record — see
+[Error responses](/docs/reference/error-responses/)).
+
+### `nearestTo` — vector search, not a separate endpoint
+
+The list endpoint above doubles as the vector-search endpoint: passing
+`?nearestTo=field:<vector-or-recordId>&nearestLimit=` switches from the
+normal sort/paginate flow to application-side cosine-similarity ranking,
+with `filter` and the collection's `listRule` still applied on top. See
+[AI → Vector search](/docs/ai/vector-search/) for the full behavior and
+its candidate-row ceiling — it isn't in `openapi.yaml` as a distinct
+path since it's a query-parameter mode of this same endpoint.

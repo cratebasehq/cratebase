@@ -1,0 +1,61 @@
+---
+/**
+ * MCP / agents: a crate wired to a small robot by a ribbon cable that lies
+ * on the ground between them. The robot is paper-and-line; only the crate
+ * carries colour.
+ */
+import { bezier, box, faceRect, line, polyline, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+
+const crate = box(0, 0, 0);
+
+// Robot: tread base, body, head, antenna. Sits down-right of the crate.
+const base = box(2.35, 0.25, 0, 0.6, 0.6, 0.3);
+const body = box(2.2, 0.1, 0.3, 0.9, 0.9, 0.95);
+const head = box(2.3, 0.2, 1.35, 0.7, 0.7, 0.55);
+const antenna = line([2.65, 0.55, 1.9], [2.65, 0.55, 2.25]);
+const antennaTip = faceRect(box(2.6, 0.5, 2.25, 0.1, 0.1, 0.1), "top", 0, 0, 1, 1, 0);
+// Eyes on the head's left (screen-left) face; a speaker grille on the body.
+const eyes = [0.28, 0.58]
+  .map((u) => faceRect(head, "left", u, 0.42, u + 0.14, 0.62, 0.02))
+  .join("");
+const grille = [0.45, 0.6, 0.75]
+  .map((v) => line([2.35, 1.02, 0.3 + 0.95 * v], [2.75, 1.02, 0.3 + 0.95 * v]))
+  .join("");
+// Screen on the body's right face.
+const screen = faceRect(body, "right", 0.2, 0.35, 0.8, 0.8, 0.02);
+const screenLine = line([3.12, 0.3, 0.3 + 0.95 * 0.65], [3.12, 0.7, 0.3 + 0.95 * 0.65]);
+
+// Ribbon cable: leaves the crate's right face low, S-curves along the ground
+// into the robot's base.
+const cable = polyline(bezier([1.02, 0.7, 0.12], [1.8, 0.7, 0.05], [1.4, 1.35, 0.05], [2.5, 0.87, 0.14], 28));
+const plugCrate = box(1.0, 0.58, 0.04, 0.16, 0.24, 0.16);
+const plugRobot = box(2.34, 0.75, 0.06, 0.24, 0.16, 0.16);
+
+const frame = viewBox([crate, body, head], 10, [[2.65, 0.55, 2.35], [1.5, 1.5, 0]]);
+---
+
+<IsoFrame viewBox={frame} label={label}>
+  <CrateBox box={crate} shadow />
+  <path class="ribbon-out" d={cable} />
+  <path class="ribbon-in" d={cable} />
+  <path class="thin faint dash" d={cable} />
+  <PanelBox box={plugCrate} />
+  <PanelBox box={base} shadow />
+  <PanelBox box={plugRobot} />
+  <PanelBox box={body} />
+  <path class="thin" d={grille} />
+  <path class="deep thin" d={screen} />
+  <path class="thin" d={screenLine} />
+  <PanelBox box={head} />
+  <path class="ink" d={eyes} />
+  <path d={antenna} />
+  <path class="lit" d={antennaTip} />
+</IsoFrame>

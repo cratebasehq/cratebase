@@ -2056,9 +2056,14 @@ async fn impersonate(
     // owner/admin split every other `_superusers`-specific write does
     // (see `routes::records`'s guard doc): the impersonated session
     // inherits full owner privileges, so a merely-`admin` superuser — or
-    // an API key, which resolves `is_superuser: true` with no `role` at
-    // all and belongs to `_api_keys`, never `_superusers` — must not be
-    // able to mint one for an owner.
+    // an unscoped API key, which resolves `is_superuser: true` with no
+    // `role` at all and belongs to `_api_keys`, never `_superusers`
+    // (see `crate::api_keys`'s module doc's "Scoping" section for the
+    // one way a key's `collection_name` can be `_superusers` instead:
+    // deliberately scoped to act as a real superuser record, in which
+    // case it carries that record's own `role` and this check runs
+    // exactly as it would for that superuser logging in normally) —
+    // must not be able to mint one for an owner.
     if collection.is_superusers()
         && (caller.collection_name != cratebase_core::SUPERUSERS_COLLECTION
             || !RequireOwner::holds(&caller))

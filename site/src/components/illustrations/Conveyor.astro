@@ -1,0 +1,57 @@
+---
+/**
+ * Realtime: a roller belt carrying small crates, with the direction of
+ * travel marked on the ground.
+ */
+import { type Box, box, line, polyline, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+  /** Belt length in crate units. */
+  length?: number;
+}
+const { label, length = 5 } = Astro.props;
+
+const legHeight = 0.55;
+const belt: Box = box(0, 0, legHeight, length, 1.1, 0.28);
+const beltTop = belt.z + belt.sz;
+
+// Rollers: seams across the belt's top face.
+const rollers = Array.from({ length: Math.round(length / 0.4) - 1 }, (_, i) => {
+  const x = (i + 1) * 0.4;
+  return line([x, 0, beltTop], [x, belt.sy, beltTop]);
+}).join("");
+
+// Legs at each end, both sides. All sit inside the belt's footprint, so the
+// belt's hanging faces occlude their tops: draw them first.
+const legs = [0.35, length - 0.35].flatMap((x) =>
+  [0.18, belt.sy - 0.18].map((y) => box(x - 0.08, y - 0.08, 0, 0.16, 0.16, legHeight)),
+);
+
+// Three small crates riding the belt, spaced unevenly like a live feed.
+const s = 0.66;
+const cy = (belt.sy - s) / 2;
+const crates = [box(0.55, cy, beltTop, s), box(2.05, cy, beltTop, s), box(3.75, cy, beltTop, s)];
+
+// Direction chevrons on the ground in front of the belt.
+const chevrons = [1.4, 2.4, 3.4]
+  .map((x) =>
+    polyline([
+      [x - 0.25, belt.sy + 0.55, 0],
+      [x, belt.sy + 0.75, 0],
+      [x - 0.25, belt.sy + 0.95, 0],
+    ]),
+  )
+  .join("");
+---
+
+<IsoFrame viewBox={viewBox([belt, ...crates], 10, [[3.5, belt.sy + 1, 0]])} label={label}>
+  {legs.map((leg) => <PanelBox box={leg} />)}
+  <PanelBox box={belt} shadow />
+  <path class="thin faint" d={rollers} />
+  {crates.map((c) => <CrateBox box={c} />)}
+  <path class="faint" d={chevrons} />
+</IsoFrame>

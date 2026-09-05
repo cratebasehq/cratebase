@@ -14,6 +14,7 @@ import {
 import { CratebaseMark } from "@/components/brand/cratebase-mark";
 import { AccountMenu } from "@/components/layout/account-menu";
 import { SettingsNav } from "@/components/settings/settings-nav";
+import { useSettings } from "@/hooks/use-settings";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import {
@@ -139,12 +140,16 @@ function CollectionsNav({
 }) {
   const [systemOpen, setSystemOpen] = useState(false);
 
+  const { data: settings } = useSettings();
+  const teamsEnabled = Boolean(settings?.teams.enabled);
   const { userCollections, systemCollections } = useMemo(
     () => ({
       userCollections: collections.filter((c) => !c.system),
-      systemCollections: collections.filter((c) => c.system),
+      systemCollections: collections.filter(
+        (c) => c.system && (teamsEnabled || (c.name !== "_teams" && c.name !== "_team_members")),
+      ),
     }),
-    [collections],
+    [collections, teamsEnabled],
   );
 
   return (

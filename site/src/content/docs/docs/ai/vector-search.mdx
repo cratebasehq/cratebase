@@ -10,3 +10,57 @@ stated as the ceiling rather than silently degrading past it. Ordinary
 `filter` and API rules still apply on top of a `nearestTo` query, so
 "nearest matches this user is allowed to see" is one request, not a
 search step followed by a manual filter step.
+
+```sh
+curl "http://localhost:8090/api/collections/chunks/records?nearestTo=embedding:0.12,-0.4,0.91&nearestLimit=5&filter=docId%3D%22abc123%22"
+```
+
+returns an ordinary `ListResult`-shaped page — same envelope
+`getList()` returns — just ranked by cosine similarity instead of
+`sort`, and always exactly one page (`nearestLimit`, default 20,
+clamped like a normal `perPage`). `nearestTo`'s target after the field
+name is either a comma-separated vector or another record's id, whose
+own value on that field (subject to *that* record's `viewRule`) becomes
+the query vector — "more like this one." See the
+[`@cratebase/extras`](/docs/ai/extras-package/) `nearestTo()` helper for
+the client-side wrapper, and the
+[Records](/docs/reference/rest-api/records/) reference for the rest of
+the list endpoint's parameters this composes with.
+
+## Example: an owner-scoped vector collection
+
+A collection with a `vector` field plus an owner-scoped rule is enough
+for "semantic search over only what this user owns" — no server code
+beyond the field type and rule engine both already ship:
+
+```json
+{
+  "name": "notes",
+  "type": "base",
+  "listRule": "@request.auth.id != '' && ownerRef = @request.auth.id",
+  "viewRule": "@request.auth.id != '' && ownerRef = @request.auth.id",
+  "createRule": "@request.auth.id != '' && ownerRef = @request.auth.id",
+  "fields": [
+    { "name": "content", "type": "text" },
+    { "name": "ownerRef", "type": "relation", "collectionId": "users" },
+    {
+      "name": "vector",
+      "type": "vector",
+      "dimensions": 1536,
+      "embedding": { "provider": "openai", "sourceField": "content" }
+    }
+  ]
+}
+```
+
+`embedding.sourceField` means every create/update on `notes` recomputes
+`vector` server-side from `content` — "write text, get search," no
+application code — and `ownerRef = @request.auth.id` on both the rule
+and the query means a `nearestTo` search only ever ranks the calling
+user's own rows, the same rule-enforced access every other collection
+gets:
+
+```sh
+curl "http://localhost:8090/api/collections/notes/records?nearestTo=vector:0.1,-0.2,...&nearestLimit=5" \
+  -H "Authorization: $USER_TOKEN"
+```

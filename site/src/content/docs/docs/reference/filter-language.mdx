@@ -3,11 +3,131 @@ title: "Filter language"
 description: "The full grammar: operators, ?= family, modifiers, date macros, relations."
 ---
 
-The `crates/filter` grammar backs `filter`, every API rule, and
-`createRule`. Operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`/`!~` (like),
-and the `?=`/`?!=`/... "any of" family for multi-value fields. Modifiers:
-`:isset`, `:length`, `:each`, `:lower`. Date macros (`@now`, `@today`,
-...), relation dot-notation (`author.name`), and back-relations are all
-supported. Not supported by design: a general-purpose scripting layer —
-the language is intentionally small enough to be hand-written and
-audited in a rule field.
+This is the exhaustive grammar behind [`crates/filter`](https://github.com/cratebasehq/cratebase/blob/main/crates/filter/src/lib.rs),
+the one parser/compiler that backs the `filter` query parameter, every
+API rule (`listRule`/`viewRule`/`createRule`/`updateRule`/`deleteRule`),
+and `createRule`'s submitted-payload check. It parses strings like
+
+```
+status = "active" && (author = @request.auth.id || tags.name ?= "public")
+```
+
+into an expression tree, then compiles that tree into a parameterized
+SQL `WHERE` fragment for either SQLite or Postgres — it never evaluates
+a filter by pulling rows into the application and checking them in Rust
+(the one exception is realtime's in-process rule check against a single
+in-memory record snapshot, via the same AST).
+
+## Operators
+
+| Operator | Meaning | "Any of" form |
+| --- | --- | --- |
+| `=` | Equals (case-sensitive) | `?=` |
+| `!=` | Not equals | `?!=` |
+| `>` | Greater than | `?>` |
+| `>=` | Greater than or equal | `?>=` |
+| `<` | Less than | `?<` |
+| `<=` | Less than or equal | `?<=` |
+| `~` | LIKE (case-insensitive; wraps the pattern in `%...%` and escapes `\`, `%`, `_`, emitting `ESCAPE '\'`) | `?~` |
+| `!~` | NOT LIKE | `?!~` |
+
+Boolean combinators are `&&` and `||`, with `(`/`)` for grouping. An
+operand that already contains a literal `%` is treated as a hand-written
+LIKE pattern and used verbatim rather than re-escaped.
+
+`null` and `""` (empty string) are the same "empty" value on both sides
+of a comparison; `!=` also matches SQL `NULL` columns, matching
+PocketBase's own semantics rather than three-valued SQL logic.
+
+## The `?` "any of" prefix — read this before using it
+
+The `?` prefix only changes anything on a **joined** identifier: a
+relation, a back-relation, or `@collection.name.path`. On those, the
+bare operator means *every* joined row must satisfy the condition, and
+the `?`-prefixed form means *at least one* does — which matters most on
+a permissive API rule, where "any" is usually what you want:
+`comments_via_post.text = "nice"` requires every joined comment to equal
+`"nice"`; `comments_via_post.text ?= "nice"` finds a post with *at
+least one* matching comment.
+
+On a **plain multi-value column** (a multi-select or multi-relation
+field compared bare, without `:each`), the `?` prefix changes **nothing**:
+the column is compared as its raw JSON array text, so `tags = "rust"`
+and `tags ?= "rust"` both fail to match `["go", "rust"]`. Unpack the
+array first with the `:each` modifier — `tags:each ?= "rust"` is the
+working "contains" form; `tags:each = "rust"` means *every* element
+equals `"rust"` (true only for a single-element array).
+
+## Identifiers and modifiers
+
+An identifier is a dotted field path, optionally through relations
+(`author.name`), back-relations (`comments_via_post.title`, the
+reverse direction of a `relation` field), JSON paths (`data.some.key`),
+or geo coordinates (`loc.lat`, `loc.lon`). Any identifier can carry one
+modifier:
+
+| Modifier | Effect |
+| --- | --- |
+| `:isset` | True if the path resolves to a non-null value at all — the only way to test presence independent of a value comparison. |
+| `:length` | Compares the element count of a multi-value field instead of its contents (`tags:length > 0`). Ignored (not rejected) on a single-valued path, matching PocketBase. |
+| `:each` | Unpacks a multi-value field so the comparison applies per-element instead of to the raw JSON text — required to make `?=`-style "contains" queries work on a plain array column. |
+| `:lower` | Lower-cases both sides before comparing, for a case-insensitive `=`/`!=` (`~` is already case-insensitive). |
+
+Back-relations and `@collection.<name>` references compile to `LEFT
+JOIN`s shared by every reference to the same collection within one
+expression, so several conditions can constrain the *same* joined row —
+this is what makes the all/any distinction above meaningful rather than
+incidental.
+
+## Macros
+
+Date/time: `@now`, `@second`, `@minute`, `@hour`, `@weekday`, `@day`,
+`@month`, `@year`, `@yesterday`, `@tomorrow`, `@todayStart`, `@todayEnd`,
+`@monthStart`, `@monthEnd`, `@yearStart`, `@yearEnd`.
+
+Request context, available inside any rule (not the plain `filter` query
+param, which has no request to read):
+
+| Macro | Resolves to |
+| --- | --- |
+| `@request.auth[.path]` | The authenticated record — bare, its `id`; `.path` reaches any of its own fields, e.g. `@request.auth.role`. |
+| `@request.body.path` (alias `@request.data.path`) | A field from the submitted create/update payload. |
+| `@request.query.path` | A query-string parameter on the current request. |
+| `@request.headers.name` | A request header, by name. |
+| `@request.method` | The HTTP method of the current request. |
+| `@request.context` | Which surface triggered the rule check (e.g. distinguishing a plain API call from one made through a batch request). |
+| `@collection.name.path` | A correlated reference into another collection, joined the same way a back-relation is — the mechanism [Teams](/docs/concepts/authentication/teams/) uses to scope a collection by membership. |
+
+## Functions
+
+`geoDistance(lonA, latA, lonB, latB)` — great-circle-ish distance between
+two coordinates, usable against a literal or a `geoPoint` field's
+`.lon`/`.lat` paths, e.g.
+`geoDistance(loc.lon, loc.lat, -122.42, 37.77) < 50000`.
+
+## Semantics worth knowing before writing a rule
+
+- A failing `listRule` yields an empty list, never an error. A failing
+  `viewRule`/`updateRule`/`deleteRule` is a `404` (the record looks like
+  it doesn't exist); a failing `createRule` is a `400`; a `null` rule
+  (superuser-only) is a `403`. See [Error responses](/docs/reference/error-responses/).
+- `createRule` has no row yet to attach a `WHERE` to — it's evaluated as
+  a `FROM`-less `SELECT 1 WHERE <expr>` against the submitted payload
+  instead of a second, JSON-only evaluator, so the exact same compiler
+  and grammar apply to a rule that runs before the record exists.
+- A back-relation or `@collection.X` comparison against a record with no
+  joined rows at all compares as `""` — so `x_via_y.id = ""` finds
+  those records, but `x_via_y:length = 0` does **not**, since `:length`
+  only applies to an in-hand multi-value field, not a joined set.
+- Parsed rules are cached in a bounded LRU (`parse_cached`), so a
+  frequently-hit rule string is only parsed once per process, not once
+  per request.
+
+## Not supported, by design
+
+A general-purpose scripting layer. The grammar above is intentionally
+small enough to read and audit in a single rule-string field on a
+collection editor — logic that doesn't fit in one filter expression
+belongs in a [JS hook](/docs/extending/js-hooks/) or a
+[Rust plugin](/docs/extending/rust-plugins/), not in a bigger rule
+language.

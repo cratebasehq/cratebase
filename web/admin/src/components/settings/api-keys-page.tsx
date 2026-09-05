@@ -4,7 +4,10 @@ import { toast } from "sonner";
 import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { useCollections } from "@/hooks/use-collections";
 import { settingsItemFor } from "@/lib/settings-nav";
+import { RelationPicker } from "@/components/records/relation-picker";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,15 +20,19 @@ import {
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** An `_api_keys` record as the generic Records API returns it — never
  * `key` itself (it's `hidden` and stores a one-way hash anyway; see
- * `crates/server/src/api_keys.rs`). */
+ * `crates/server/src/api_keys.rs`). `actsAsCollection`/`actsAsRecord` are
+ * both `""` for an unscoped (superuser) key — see the same file's module
+ * doc's "Scoping" section. */
 interface ApiKeyRecord {
   id: string;
   name: string;
@@ -33,6 +40,8 @@ interface ApiKeyRecord {
   enabled: boolean;
   lastUsedAt: string;
   created: string;
+  actsAsCollection: string;
+  actsAsRecord: string;
 }
 
 /** `POST /api/api-keys`'s response — the one and only time the raw key
@@ -41,14 +50,17 @@ interface MintedApiKey {
   id: string;
   name: string;
   prefix: string;
+  actsAsCollection: string;
+  actsAsRecord: string;
   key: string;
 }
 
 /**
  * CRUD over `_api_keys` — bearer credentials (`cb_...`) a superuser mints
- * for scripts, CI jobs, or MCP clients (see the MCP settings page), each
- * resolving to a superuser identity server-side
- * (`crates/server/src/api_keys.rs`). Minting goes through the dedicated
+ * for scripts, CI jobs, or MCP clients (see the MCP settings page). Each
+ * resolves to a superuser identity by default, or, when scoped at mint
+ * time, to a real record's own identity — see `crates/server/src/api_keys.rs`'s
+ * module doc's "Scoping" section. Minting goes through the dedicated
  * `POST /api/api-keys` endpoint, the only place the raw key is ever
  * returned; everything else here is the ordinary generic Records API.
  */
@@ -97,7 +109,7 @@ export function ApiKeysPage() {
     <SettingsPage
       title={item.label}
       description={item.description}
-      width="form"
+      width="wide"
       action={
         <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
           <Plus className="size-3.5" />
@@ -138,6 +150,7 @@ export function ApiKeysPage() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Key</TableHead>
+              <TableHead>Access</TableHead>
               <TableHead>Last used</TableHead>
               <TableHead className="w-[90px]">Enabled</TableHead>
               <TableHead className="w-[60px]" />
@@ -148,6 +161,17 @@ export function ApiKeysPage() {
               <TableRow key={key.id}>
                 <TableCell className="font-medium">{key.name || <span className="text-muted-foreground">Untitled</span>}</TableCell>
                 <TableCell className="font-mono text-xs text-muted-foreground">cb_{key.prefix}…</TableCell>
+                <TableCell>
+                  {key.actsAsCollection ? (
+                    <Badge variant="outline" className="font-normal">
+                      {key.actsAsCollection}
+                    </Badge>
+                  ) : (
+                    <Badge variant="secondary" className="font-normal">
+                      Superuser
+                    </Badge>
+                  )}
+                </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {key.lastUsedAt ? new Date(key.lastUsedAt.replace(" ", "T")).toLocaleString() : "Never"}
                 </TableCell>
@@ -215,6 +239,13 @@ export function ApiKeysPage() {
   );
 }
 
+/** `"superuser"` mints unscoped root, the only shape this dialog offered
+ * before scoping existed and still the default. `"record"` picks a real
+ * auth-collection record for the key to act as — see
+ * `crates/server/src/api_keys.rs`'s module doc's "Scoping" section for
+ * what that changes server-side. */
+type ActsAsMode = "superuser" | "record";
+
 function CreateApiKeyDialog({
   onOpenChange,
   onMinted,
@@ -223,15 +254,31 @@ function CreateApiKeyDialog({
   onMinted: (key: MintedApiKey) => void;
 }) {
   const [name, setName] = useState("");
+  const [mode, setMode] = useState<ActsAsMode>("superuser");
+  const [collectionId, setCollectionId] = useState<string | undefined>(undefined);
+  const [recordId, setRecordId] = useState<string | undefined>(undefined);
+
+  const { data: collections } = useCollections();
+  const authCollections = (collections ?? []).filter((c) => c.type === "auth");
+  const targetCollection = authCollections.find((c) => c.id === collectionId);
 
   const create = useMutation({
-    mutationFn: () => cb.send<MintedApiKey>("/api/api-keys", { method: "POST", body: { name } }),
+    mutationFn: () =>
+      cb.send<MintedApiKey>("/api/api-keys", {
+        method: "POST",
+        body:
+          mode === "record" && targetCollection && recordId
+            ? { name, actsAsCollection: targetCollection.name, actsAsRecord: recordId }
+            : { name },
+      }),
     onSuccess: onMinted,
     onError: (failure) => {
       const described = describeFailure(failure);
       toast.error(described.title, { description: described.detail });
     },
   });
+
+  const canCreate = mode === "superuser" || (collectionId !== undefined && recordId !== undefined);
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
@@ -252,11 +299,71 @@ function CreateApiKeyDialog({
           />
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <Label>Acts as</Label>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Acts as"
+            value={mode}
+            // A segmented control always has exactly one option picked —
+            // Radix reports "" when the pressed item is toggled off.
+            onValueChange={(next) => {
+              if (next) setMode(next as ActsAsMode);
+            }}
+          >
+            <ToggleGroupItem value="superuser">Superuser (full access)</ToggleGroupItem>
+            <ToggleGroupItem value="record">A specific record</ToggleGroupItem>
+          </ToggleGroup>
+          <p className="text-xs text-muted-foreground">
+            {mode === "superuser"
+              ? "Unrestricted root, bypassing every collection rule — never hand this to untrusted code."
+              : "The key gets exactly the rule-gated access that record has, nothing more — the same access it would have logging in normally."}
+          </p>
+        </div>
+
+        {mode === "record" ? (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="api-key-acts-as-collection">Collection</Label>
+            <Select
+              value={collectionId}
+              onValueChange={(next) => {
+                setCollectionId(next);
+                setRecordId(undefined);
+              }}
+            >
+              <SelectTrigger id="api-key-acts-as-collection" className="w-full">
+                <SelectValue placeholder="Pick an auth collection" />
+              </SelectTrigger>
+              <SelectContent>
+                {authCollections.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {collectionId ? (
+              <RelationPicker
+                collectionId={collectionId}
+                fieldName="Record"
+                value={recordId ? [recordId] : []}
+                onChange={(ids) => setRecordId(ids[0])}
+                multiple={false}
+                maxSelect={1}
+              />
+            ) : null}
+          </div>
+        ) : null}
+
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={create.isPending} onClick={() => create.mutate()}>
+          <Button disabled={create.isPending || !canCreate} onClick={() => create.mutate()}>
             {create.isPending ? <Spinner className="size-3.5" /> : null}
             Create key
           </Button>

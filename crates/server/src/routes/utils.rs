@@ -1,13 +1,13 @@
-//! `/api/utils/avatar/{seed}` and `/api/utils/qr` — small cosmetic image
-//! generators, unauthenticated on purpose.
+//! `/api/utils/avatar/{seed}` — a small cosmetic image generator,
+//! unauthenticated on purpose.
 //!
-//! Both endpoints are pure functions of their input: the same `seed`
-//! always draws the same avatar, the same `data` always draws the same QR
-//! code. There is nothing here an API rule could usefully gate — no
-//! record, no stored data, no per-user secret — so, unlike every other
-//! route in this module tree, these skip auth entirely rather than
-//! inventing a rule to check against. Being unauthenticated also means
-//! the browser can request them directly as `<img src>` without a token.
+//! The endpoint is a pure function of its input: the same `seed` always
+//! draws the same avatar. There is nothing here an API rule could
+//! usefully gate — no record, no stored data, no per-user secret — so,
+//! unlike every other route in this module tree, it skips auth entirely
+//! rather than inventing a rule to check against. Being unauthenticated
+//! also means the browser can request it directly as `<img src>` without
+//! a token.
 //!
 //! # The avatar style is not designed here
 //!
@@ -22,8 +22,8 @@
 //! Nothing is cached server-side: generation is cheap (a `Sha256` and a
 //! few thousand pixel writes), so every request re-renders from scratch.
 //! What *is* cached is the client's copy, via a year-long `immutable`
-//! `Cache-Control` — safe because a given `seed` or `data` value can never
-//! produce different bytes later.
+//! `Cache-Control` — safe because a given `seed` value can never produce
+//! different bytes later.
 
 use axum::extract::Path;
 use axum::http::header;
@@ -35,12 +35,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::App;
-use crate::http_error::{ApiError, ApiQuery, ApiResult};
+use crate::http_error::{ApiQuery, ApiResult};
 
 pub fn router() -> Router<App> {
-    Router::new()
-        .route("/utils/avatar/{seed}", get(avatar))
-        .route("/utils/qr", get(qr))
+    Router::new().route("/utils/avatar/{seed}", get(avatar))
 }
 
 /// Hand-picked so every entry reads clearly on both a light and a dark
@@ -178,65 +176,6 @@ fn draw_dot(img: &mut RgbaImage, cx: f64, cy: f64, radius: f64, color: Rgba<u8>)
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct QrQuery {
-    #[serde(default)]
-    data: Option<String>,
-    #[serde(default)]
-    size: Option<u32>,
-}
-
-async fn qr(ApiQuery(query): ApiQuery<QrQuery>) -> ApiResult<Response> {
-    let data = query.data.unwrap_or_default();
-    if data.is_empty() {
-        return Err(ApiError::bad_request("data must not be empty."));
-    }
-    // `ApiQuery` (axum's `Query`) already percent-decodes the raw query
-    // string, so `data` is the plain text to encode by the time it gets
-    // here.
-    let size = query.size.unwrap_or(256).clamp(64, 1024);
-
-    let code = qrcode::QrCode::new(data.as_bytes())
-        .map_err(|e| ApiError::bad_request(format!("Could not encode data as a QR code: {e}")))?;
-
-    let png = render_qr(&code, size);
-    Ok(png_response(png))
-}
-
-/// Rasterizes `code` at close to `target_size` pixels square. The quiet
-/// zone (the blank border the QR spec requires so scanners can find the
-/// symbol) is 4 modules, and each module is an integer number of pixels
-/// so edges stay crisp — the actual output size is therefore the nearest
-/// multiple of the module grid to `target_size`, not `target_size`
-/// itself.
-fn render_qr(code: &qrcode::QrCode, target_size: u32) -> RgbaImage {
-    const QUIET_ZONE_MODULES: u32 = 4;
-    let modules = code.width() as u32;
-    let total_modules = modules + QUIET_ZONE_MODULES * 2;
-    let module_px = (target_size / total_modules).max(1);
-    let size = module_px * total_modules;
-
-    let colors = code.to_colors();
-    let mut img = RgbaImage::from_pixel(size, size, Rgba([0xFF, 0xFF, 0xFF, 0xFF]));
-
-    for (i, color) in colors.iter().enumerate() {
-        if *color != qrcode::Color::Dark {
-            continue;
-        }
-        let mx = (i as u32) % modules;
-        let my = (i as u32) / modules;
-        let px = (mx + QUIET_ZONE_MODULES) * module_px;
-        let py = (my + QUIET_ZONE_MODULES) * module_px;
-        for y in 0..module_px {
-            for x in 0..module_px {
-                img.put_pixel(px + x, py + y, Rgba([0, 0, 0, 0xFF]));
-            }
-        }
-    }
-
-    img
-}
-
 fn png_response(img: RgbaImage) -> Response {
     let mut bytes: Vec<u8> = Vec::new();
     let mut cursor = std::io::Cursor::new(&mut bytes);
@@ -285,24 +224,5 @@ mod tests {
         let color_a = hash_a[1] as usize % PALETTE.len();
         let color_b = hash_b[1] as usize % PALETTE.len();
         assert!(shape_a != shape_b || color_a != color_b);
-    }
-
-    #[test]
-    fn qr_rejects_empty_data() {
-        // Exercised at the HTTP layer in the module's live smoke test;
-        // this just documents the guard's intent for unit coverage.
-        let data = String::new();
-        assert!(data.is_empty());
-    }
-
-    #[test]
-    fn qr_renders_a_real_png_matrix() {
-        let code = qrcode::QrCode::new(b"https://cratebase.dev").unwrap();
-        let img = render_qr(&code, 256);
-        assert!(img.width() >= 64 && img.width() == img.height());
-        // At least one dark module and one light module were painted.
-        let raw = img.into_raw();
-        assert!(raw.chunks(4).any(|p| p == [0, 0, 0, 0xFF]));
-        assert!(raw.chunks(4).any(|p| p == [0xFF, 0xFF, 0xFF, 0xFF]));
     }
 }

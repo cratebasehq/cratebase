@@ -1,0 +1,19 @@
+---
+/**
+ * A neutral box in the world (a belt, a wall, a screen): paper faces with
+ * harbor line-work, so it takes the theme's colour rather than the crate's.
+ */
+import { type Box, faces, shadow } from "../../assets/illustrations/iso";
+
+interface Props {
+  box: Box;
+  shadow?: boolean;
+}
+const { box: b, shadow: cast = false } = Astro.props;
+const face = faces(b);
+---
+
+{cast && <path class="shadow" d={shadow(b)} />}
+<path class="shade" d={face.left} />
+<path class="deep" d={face.right} />
+<path class="lit" d={face.top} />

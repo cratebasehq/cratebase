@@ -945,6 +945,19 @@ impl Collection {
         // creation. `prefix` is the first 8 characters of the raw key,
         // stored in the clear so the dashboard can show "cb_a1b2c3d4…"
         // for identification without ever re-displaying the full value.
+        //
+        // `actsAsCollection`/`actsAsRecord` are the scoping pair: when
+        // both are set, they name a real record in a real auth
+        // collection and `crate::api_keys::resolve` builds the exact
+        // `Auth` a normal login for that record would produce — same
+        // collection, same rule context, same `@request.auth.*` — so
+        // the key is subject to that record's own rules like anyone
+        // else, not a synthetic superuser. Left empty (the default),
+        // the key is unscoped root, identical to every key minted
+        // before this pair existed. This is deliberately not a second
+        // permission system: a scoped key has no rule-evaluation
+        // behavior of its own, it just points `resolve` at whose rules
+        // to run.
         let mut api_keys = Collection::new("_api_keys", CollectionType::Base);
         api_keys.system = true;
         let mut ak_key = text("key");
@@ -963,10 +976,24 @@ impl Collection {
         );
         ak_last_used_at.system = true;
         ak_last_used_at.required = false;
+        let mut ak_acts_as_collection = text("actsAsCollection");
+        ak_acts_as_collection.system = true;
+        ak_acts_as_collection.required = false;
+        let mut ak_acts_as_record = text("actsAsRecord");
+        ak_acts_as_record.system = true;
+        ak_acts_as_record.required = false;
         let pos = api_keys.fields.len() - 2;
         api_keys.fields.splice(
             pos..pos,
-            [text("name"), ak_key, ak_prefix, ak_enabled, ak_last_used_at],
+            [
+                text("name"),
+                ak_key,
+                ak_prefix,
+                ak_enabled,
+                ak_last_used_at,
+                ak_acts_as_collection,
+                ak_acts_as_record,
+            ],
         );
         api_keys.indexes =
             vec!["CREATE UNIQUE INDEX `idx_api_keys_key` ON `_api_keys` (key)".into()];

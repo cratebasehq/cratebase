@@ -4,6 +4,7 @@ import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recha
 import { toast } from "sonner";
 import { cb, describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { fillHourlyBuckets, type LogBucket } from "@/lib/log-stats";
 import { settingsLogsRoute } from "@/routes/settings-logs";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
@@ -22,50 +23,37 @@ import {
 } from "@/components/settings/settings-form";
 import { ListTree } from "lucide-react";
 
-/** `GET /api/logs/stats` — hourly request counts for whatever filter the
- * table itself is showing, so the chart and the rows underneath it always
- * agree on what "the current view" means. */
-type LogStat = { date: string; total: number };
-
-/** Renders as a plain hour for a bucket less than a day old, and adds the
- * date once the range spans more than one — the hourly label alone stops
- * being enough to tell two bars apart once they're a day apart. */
-function bucketLabel(iso: string, spansMultipleDays: boolean): string {
-  const date = new Date(iso);
-  const hour = date.toLocaleTimeString(undefined, { hour: "numeric" });
-  if (!spansMultipleDays) return hour;
-  return `${date.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${hour}`;
-}
-
 /** The activity chart above the log table — hourly request volume for the
- * current filter. Superuser-only like the rest of this screen; there's
- * nothing here that isn't already visible row-by-row in the table, this
- * is just the shape of it at a glance. */
+ * current filter, over a fixed last-24-hours grid. `GET /api/logs/stats`
+ * only returns hours that actually have a row, so it is resampled with
+ * `fillHourlyBuckets` — otherwise sparse traffic (often just one or two
+ * real hours) collapses the chart to one or two bars stretched across
+ * nearly the whole width instead of a real per-hour histogram.
+ * Superuser-only like the rest of this screen; there's nothing here that
+ * isn't already visible row-by-row in the table, this is just the shape
+ * of it at a glance. */
 function RequestLogsChart({ filter }: { filter: string }) {
   const { data: stats } = useQuery({
     queryKey: ["request-logs", "stats", filter],
-    queryFn: () => cb.send<LogStat[]>("/api/logs/stats", { method: "GET", query: { filter: filter || undefined } }),
+    queryFn: () => cb.send<LogBucket[]>("/api/logs/stats", { method: "GET", query: { filter: filter || undefined } }),
     placeholderData: (previous) => previous,
   });
 
-  const spansMultipleDays = useMemo(() => {
-    if (!stats || stats.length < 2) return false;
-    const first = new Date(stats[0]!.date).toDateString();
-    const last = new Date(stats[stats.length - 1]!.date).toDateString();
-    return first !== last;
-  }, [stats]);
-
   const chartData = useMemo(
-    () => (stats ?? []).map((s) => ({ ...s, label: bucketLabel(s.date, spansMultipleDays) })),
-    [stats, spansMultipleDays],
+    () =>
+      fillHourlyBuckets(stats ?? []).map((bucket) => ({
+        ...bucket,
+        label: new Date(bucket.date).toLocaleTimeString(undefined, { hour: "numeric" }),
+      })),
+    [stats],
   );
 
-  if (!stats || stats.length === 0) return null;
+  if (!stats) return null;
 
   return (
     <div className="h-32 w-full rounded-lg border border-border bg-card p-2">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+        <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }} barCategoryGap="20%">
           <XAxis
             dataKey="label"
             tick={{ fontSize: 10 }}
@@ -86,7 +74,7 @@ function RequestLogsChart({ filter }: { filter: string }) {
             labelFormatter={(label) => label}
             formatter={(value) => [`${value} request${value === 1 ? "" : "s"}`, undefined]}
           />
-          <Bar dataKey="total" radius={[2, 2, 0, 0]} className="fill-primary" />
+          <Bar dataKey="total" radius={[2, 2, 0, 0]} maxBarSize={24} className="fill-primary" />
         </BarChart>
       </ResponsiveContainer>
     </div>

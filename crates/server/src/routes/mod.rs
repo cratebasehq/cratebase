@@ -1,7 +1,13 @@
 //! The `/api` router.
 //!
 //! Everything under `/api`, mounted inside the logging and rate-limit
-//! layers.
+//! layers. `llm::router()` is the one merge gated at boot: it is only
+//! added when `settings.llm.enabled` is true, so a disabled LLM gateway
+//! costs nothing beyond the flag check and `POST /api/llm/chat` 404s
+//! outright rather than falling through to a "disabled" 403 — matching
+//! `crate::teams::bind_hooks`'s "hooks/routes simply aren't bound" gating
+//! for the same reason (toggling only takes effect on the next boot,
+//! since the router is assembled once in `App::serve`).
 
 pub mod api_keys;
 pub mod auth;
@@ -54,7 +60,6 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(utils::router())
         .merge(file_manager::router())
         .merge(sql_console::router())
-        .merge(llm::router())
         .merge(tool_schema::router())
         .merge(schema::router())
         .merge(api_keys::router())
@@ -62,11 +67,11 @@ pub fn api_router(app: &App) -> Router<App> {
         // MCP lives in its own top-level module (like `realtime`), not
         // under `routes`, because it is a protocol server (JSON-RPC +
         // SSE) rather than a plain REST route table.
-        .merge(crate::mcp::router())
-        // Incoming webhooks (verifying an external service's signature,
-        // e.g. Stripe) live in their own top-level module for the same
-        // reason `realtime`/`mcp` do — see `crate::incoming_webhooks`.
-        .merge(crate::incoming_webhooks::router());
+        .merge(crate::mcp::router());
+
+    if app.settings().llm.enabled {
+        router = router.merge(llm::router());
+    }
 
     // Plugin routes live inside this nest so they inherit request logging
     // and rate limiting (see `crate::plugin`).

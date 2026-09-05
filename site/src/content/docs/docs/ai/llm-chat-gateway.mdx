@@ -12,3 +12,9 @@ operator's own provider quota, add an explicit
 [rate limit](/docs/deploy/rate-limiting/) on this exact path in
 production; authentication alone doesn't bound *cost* the way it does
 for an ordinary record write.
+
+See [Reference → REST API → LLM](/docs/reference/rest-api/llm/) for the
+full request/response shape, including why the HTTP response itself is
+always the final result (never a chunked/streamed body) and how an
+optional `collection` persists the exchange subject to that
+collection's own `createRule`.

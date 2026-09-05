@@ -1,0 +1,47 @@
+---
+/**
+ * Faster under load: a pallet stacked five crates high and moving, speed
+ * lines trailing on the ground behind it.
+ */
+import { box, line, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+
+const pallet = box(0, 0, 0, 2.3, 2.3, 0.14);
+const deck = pallet.z + pallet.sz;
+// Deck boards run along x; gaps drawn as seams on the top face.
+const boards = [0.55, 1.15, 1.75].map((y) => line([0, y, deck], [pallet.sx, y, deck])).join("");
+
+// Painter's order: back corner first, front corner last, the top crate after all four.
+const crates = [
+  box(0.12, 0.12, deck),
+  box(1.18, 0.12, deck),
+  box(0.12, 1.18, deck),
+  box(1.18, 1.18, deck),
+  box(0.65, 0.65, deck + 1),
+];
+
+// Motion is along +x; the trail sits behind the pallet at three depths.
+const trail = [
+  [0.45, -0.35, -1.75],
+  [1.15, -0.55, -1.45],
+  [1.85, -0.3, -1.1],
+]
+  .map(([y, x1, x0]) => line([x0, y, 0.02], [x1, y, 0.02]))
+  .join("");
+
+const frame = viewBox([pallet, crates[4]], 12, [[-1.8, 0.45, 0]]);
+---
+
+<IsoFrame viewBox={frame} label={label}>
+  <path class="faint" d={trail} />
+  <PanelBox box={pallet} shadow />
+  <path class="thin faint" d={boards} />
+  {crates.map((c) => <CrateBox box={c} />)}
+</IsoFrame>

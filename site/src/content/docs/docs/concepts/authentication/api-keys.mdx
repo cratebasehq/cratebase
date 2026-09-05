@@ -6,7 +6,23 @@ sidebar:
 ---
 
 Superusers can mint API keys from the dashboard's **API keys** page.
-An API key is just another identity — the same rule-gated access any
-other authenticated record gets, nothing bespoke — which makes it a
-natural credential for a CI job, a service, or an [MCP-connected
-agent](/docs/ai/mcp-server/).
+A key comes in one of two shapes, chosen when it's minted:
+
+- **Superuser** (the default) — unscoped root. It bypasses every
+  collection rule, the same trust tier as Supabase's own `service_role`
+  key: powerful, unrestricted, and something to guard as carefully as
+  a database password. Never hand one to a client you don't fully
+  trust with everything in the database.
+- **Record-scoped** — the key acts as a real record in a real auth
+  collection (`users`, `_superusers`, or a custom auth collection).
+  It gets the exact same rule-gated access that record has and nothing
+  more — the same access it would have logging in normally, no second
+  permission system involved.
+
+A record-scoped key is the credential to reach for a CI job, a
+service, or an [MCP-connected agent](/docs/ai/mcp-server/): it can
+only do what the record it acts as could do, so a compromised key
+leaks exactly as much as a compromised login for that one record —
+not the whole database. See [Reference → REST API →
+API keys](/docs/reference/rest-api/api-keys/) for the exact request
+shape.

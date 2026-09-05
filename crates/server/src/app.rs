@@ -387,13 +387,32 @@ impl App {
         crate::cron_jobs::bind_hooks(self);
         crate::cron_jobs::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
-        crate::teams::bind_hooks(self);
+        // Toggle-gated built-in module: `settings.teams.enabled` defaults
+        // `false`, and when it stays that way `bind_hooks` is simply never
+        // called — no reactive hook bound, zero background cost, matching
+        // `routes::api_router`'s equivalent gate on `settings.llm.enabled`.
+        // The `_teams`/`_team_members` system collections still exist
+        // either way; only the hook wiring (and, in the dashboard, the
+        // sidebar's System group visibility) is gated.
+        if self.settings().teams.enabled {
+            crate::teams::bind_hooks(self);
+        }
         // Postgres only (see `crate::realtime`'s module doc); a no-op on
         // SQLite because `Engine::subscribe_realtime`'s default is.
         crate::realtime::start_cross_node_listener(self);
         crate::push::bind_hooks(self);
         crate::audit::bind_hooks(self);
 
+        // Toggle-gated built-in Queue plugin: `settings.queue.enabled`
+        // defaults `false`. Registering it only when enabled means an
+        // idle install never provisions `_queue_jobs` and never spawns the
+        // worker tick — the same "hooks/routes simply aren't bound" cost
+        // model as Teams/LLM above, just expressed as a plugin instead of
+        // a hook or a route merge.
+        if self.settings().queue.enabled {
+            crate::queue::ensure_collection(self).await?;
+            self.register_plugin(crate::queue::QueuePlugin::new())?;
+        }
         let plugins = {
             let guard = self.inner.plugins.lock().expect("plugin registry poisoned");
             guard.clone_plugins()

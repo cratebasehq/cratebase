@@ -1,0 +1,37 @@
+---
+title: "Logs"
+description: "Search, view, and hourly-bucket the request/application log. Superuser only."
+sidebar:
+  order: 10
+---
+
+Backed by `_logs` in the auxiliary database (see
+[Deploy → Logs](/docs/deploy/logs/)), reached through a synthetic
+collection so it can reuse the ordinary filter grammar.
+
+### `GET /logs`
+
+| Param | Default | Notes |
+| --- | --- | --- |
+| `page` | `1` | |
+| `perPage` | `30` | |
+| `filter` | — | e.g. `level >= 8 && data.method = "GET"` — `data` is a JSON column |
+| `sort` | `-created` | |
+
+Every read flushes the background log writer first, so a request made
+just before the read is guaranteed to be visible.
+
+### `GET /logs/{id}`
+
+One `LogEntry`: `id`, `level` (slog-style severity — `0` info-ish success,
+`8` a failed request), `message`, `data` (structured context: method,
+URL, status, duration), `created`.
+
+### `GET /logs/stats`
+
+```json
+[ { "date": "2026-09-01T00:00:00Z", "total": 412 }, { "date": "2026-09-01T01:00:00Z", "total": 88 } ]
+```
+
+Hourly volume buckets for the dashboard's log chart; accepts the same
+`filter` param as `GET /logs`.

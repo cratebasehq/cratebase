@@ -46,7 +46,7 @@ export function FunctionsPage() {
 
   const item = settingsItemFor("/settings/functions")!;
   return (
-    <SettingsPage title={item.label} description={item.description} width="form">
+    <SettingsPage title={item.label} description={item.description} width="wide">
 
       {error ? (
         <Empty>
@@ -82,7 +82,7 @@ export function FunctionsPage() {
                 </EmptyHeader>
               </Empty>
             ) : (
-              <Table className="max-w-3xl">
+              <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>File</TableHead>
@@ -122,7 +122,7 @@ export function FunctionsPage() {
                 </EmptyHeader>
               </Empty>
             ) : (
-              <Table className="max-w-3xl">
+              <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-24">Method</TableHead>

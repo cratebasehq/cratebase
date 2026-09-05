@@ -9,3 +9,21 @@ to preview and `?force=1` to proceed past destructive changes) applies it
 to a target instance. A dry-run plan flags `pendingRemoval: true` on any
 field a real apply would drop, so a CI pipeline can gate on "does this
 change silently delete a column" before it ever runs against production.
+
+A concrete CI pattern: check `schema.json` (from `GET /api/collections`)
+into the repo, and on every deploy run
+
+```sh
+curl -X POST "$CRATEBASE_URL/api/schema/apply?dryRun=1" \
+  -H "Authorization: Bearer $SUPERUSER_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data @schema.json
+```
+
+and fail the pipeline if the response's `pendingRemoval` is `true` on
+any collection — that means a field this schema no longer lists is
+about to be dropped, and only actually happens once the same call is
+repeated with `?force=1`. Added or changed fields apply immediately on
+either call, since they can't lose data on their own; see
+[Reference → REST API → Schema](/docs/reference/rest-api/schema/) for
+the full request/response shape and the three body forms it accepts.

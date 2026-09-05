@@ -104,7 +104,7 @@ export function SuperusersPage() {
     <SettingsPage
       title={item.label}
       description={item.description}
-      width="form"
+      width="wide"
       action={
         isOwner ? (
           <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>

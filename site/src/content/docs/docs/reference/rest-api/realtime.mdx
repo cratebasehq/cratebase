@@ -1,0 +1,35 @@
+---
+title: "Realtime"
+description: "GET /api/realtime (SSE) and POST /api/realtime (subscribe)."
+sidebar:
+  order: 7
+---
+
+See [Concepts → Realtime](/docs/concepts/realtime/) for the pub/sub
+model behind these two endpoints.
+
+### `GET /realtime` — opens an SSE stream
+
+`Content-Type: text/event-stream`. The first event, `PB_CONNECT`,
+carries `{ "clientId": "..." }`. Every subsequent `message` event carries
+`{ "action": "create" | "update" | "delete", "record": { ... } }` for
+whatever topics the client has subscribed to. The connection stays open
+until the client disconnects.
+
+### `POST /realtime` — declare subscriptions
+
+```json
+{ "clientId": "abc123...", "subscriptions": ["posts", "posts/RECORD_ID"] }
+```
+
+A bare collection name subscribes to every change in it (filtered by
+that collection's `listRule` per-event); `collection/recordId`
+subscribes to one record only. `204` on success; `404` if `clientId`
+names a connection that's already closed. Calling this again with a new
+`subscriptions` array **replaces** the client's subscription set — it
+does not merge with a previous call.
+
+Two realtime event kinds outside this pub/sub model ride the same `GET
+/realtime` connection: `llm_chunk`/`llm_done`/`llm_error` from the
+[LLM chat gateway](/docs/reference/rest-api/llm/), keyed by `clientId`
+rather than a collection subscription.

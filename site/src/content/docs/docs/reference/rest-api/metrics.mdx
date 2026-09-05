@@ -1,0 +1,39 @@
+---
+title: "Metrics"
+description: "GET /metrics — Prometheus exposition, mounted outside /api entirely."
+sidebar:
+  order: 23
+---
+
+See [Deploy → Metrics](/docs/deploy/metrics/) for why this endpoint is
+unauthenticated and where to firewall it.
+
+### `GET /metrics` — mounted at the server root, not under `/api`
+
+This is `GET https://your-instance/metrics`, **not**
+`/api/metrics** — the one endpoint in this whole reference that isn't
+under the `/api` prefix every other page assumes. Deliberately
+unauthenticated (Prometheus's own scraping convention: firewall the
+port, don't invent a second auth scheme); not subject to the `/api` rate
+limiter; never appears in `_logs`.
+
+```
+# HELP cratebase_http_requests_total Total HTTP requests, by method and status.
+# TYPE cratebase_http_requests_total counter
+cratebase_http_requests_total{method="GET",status="200"} 42
+
+# HELP cratebase_http_request_duration_seconds Request latency in seconds.
+# TYPE cratebase_http_request_duration_seconds histogram
+cratebase_http_request_duration_seconds_bucket{le="0.005"} 10
+cratebase_http_request_duration_seconds_bucket{le="+Inf"} 42
+cratebase_http_request_duration_seconds_sum 3.14
+cratebase_http_request_duration_seconds_count 42
+
+# HELP cratebase_http_errors_total Total requests answered with a 4xx or 5xx status.
+# TYPE cratebase_http_errors_total counter
+cratebase_http_errors_total 1
+```
+
+Three metrics total: `cratebase_http_requests_total` (counter, labelled
+`method`/`status`), `cratebase_http_request_duration_seconds`
+(histogram), `cratebase_http_errors_total` (counter, every 4xx/5xx).

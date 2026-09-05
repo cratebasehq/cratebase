@@ -35,14 +35,15 @@ pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
-pub mod incoming_webhooks;
 pub mod jsvm_host;
 pub mod llm;
 pub mod mcp;
 pub mod middleware;
 pub mod plugin;
+pub mod plugin_wasm;
 pub mod pocketbase_migrate;
 pub mod push;
+pub mod queue;
 pub mod realtime;
 #[cfg(test)]
 mod records_multi_file_tests;

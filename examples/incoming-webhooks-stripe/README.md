@@ -15,23 +15,22 @@ reference design most other HMAC-webhook providers copy.
 
 ## The reusable primitive
 
-`crates/server/src/incoming_webhooks.rs` exports
-`verify_hmac_sha256_hex(secret, signed_content, hex_signature)`: given a
-shared secret, the exact bytes a sender claims to have signed, and the hex
-digest it sent, it answers "trust this or not" in constant time (via
-`hmac::Mac::verify_slice`, so a timing side-channel can't leak how much of
-the digest matched). This is *the* primitive every HMAC-based inbound
-webhook scheme reduces to — Stripe, GitHub's `X-Hub-Signature-256`, and this
-codebase's own outgoing `X-Cratebase-Signature` are all "HMAC-SHA256 over
-some canonical byte string, compare hex digests," differing only in what
-that byte string is and which header it travels in.
+The embedded JS runtime (`pb_hooks/*.pb.js`, backed by `crates/jsvm`)
+already exposes `$security.hs256(data, secret)`: given a shared secret and
+the exact bytes a sender claims to have signed, it computes
+`hex(HMAC-SHA256(secret, data))`. This is *the* primitive every HMAC-based
+inbound webhook scheme reduces to — Stripe, GitHub's
+`X-Hub-Signature-256`, and this codebase's own outgoing
+`X-Cratebase-Signature` are all "HMAC-SHA256 over some canonical byte
+string, compare hex digests," differing only in what that byte string is
+and which header it travels in. No native Rust binding is needed for this:
+a `pb_hooks` JS file gets there with the existing `$security.hs256` alone.
 
-A Rust `crate::plugin::Plugin` that wants to verify some *other* provider's
-webhook calls `verify_hmac_sha256_hex` directly. A `pb_hooks` JS file needs
-no new binding at all: the JS runtime already exposes
-`$security.hs256(data, secret)` — the exact same HMAC-SHA256-as-hex
-computation `verify_hmac_sha256_hex` wraps on the Rust side (both call down
-to the same `hmac`/`sha2` crates; see `cratebase_jsvm::security::hmac_hex`).
+A Rust `crate::plugin::Plugin` that wants to verify some *other*
+provider's webhook from native code can reach for the same primitive via
+`hmac`/`sha2` directly (see `cratebase_jsvm::security::hmac_hex` for the
+implementation `$security.hs256` wraps) — but for the common case of "one
+more inbound webhook endpoint," no Rust changes are needed at all.
 
 ## Stripe specifically
 
@@ -46,69 +45,19 @@ Stripe sends more than one `v1` value while a webhook signing secret is
 being rotated (old and new secret both sign the same event during the
 overlap window) — a match against *any* one is valid.
 
-`crates/server/src/incoming_webhooks.rs`'s `verify_stripe_signature` does
-exactly this: parse the header, reject if the timestamp is more than
-`DEFAULT_TOLERANCE` (5 minutes — Stripe's own libraries' default) away from
-now in *either* direction, then check the raw body against every `v1`
-signature via `verify_hmac_sha256_hex`. The timestamp check exists because a
-signature alone only proves "the secret holder produced this digest at some
-point," not *when* — without it, a captured request stays replayable
-forever even though its signature is technically valid.
+The recipe: parse the header, reject if the timestamp is more than 300
+seconds (Stripe's own libraries' default tolerance) away from now in
+*either* direction, then check the raw body against every `v1` signature
+via `$security.hs256`. The timestamp check exists because a signature
+alone only proves "the secret holder produced this digest at some point,"
+not *when* — without it, a captured request stays replayable forever even
+though its signature is technically valid.
 
-## The worked endpoint
+## The worked endpoint, as a `pb_hooks` JS file
 
-`POST /api/webhooks/stripe` (`incoming_webhooks::stripe_webhook`, wired into
-the router in `crates/server/src/routes/mod.rs`) is the endpoint doing this
-end to end:
-
-1. Read the signing secret from the `STRIPE_WEBHOOK_SECRET` environment
-   variable (see the module doc for why this is an env var and not a
-   `Settings` field — short version: it's a deploy-time credential for one
-   external integration, the same shape as `CB_SECRET` in
-   `crates/server/src/config.rs`, not an operator-editable dashboard toggle
-   like SMTP/SMS/LLM/Push).
-2. Read the raw request body and the `Stripe-Signature` header.
-3. Call `verify_stripe_signature`. A missing header, malformed header,
-   signature mismatch, or stale timestamp all come back as `400 Bad
-   Request` before the body is ever parsed as JSON.
-4. Only once verification succeeds does it parse the body and act on it
-   (this example just logs the event type — a real integration would
-   switch on `event["type"]`, e.g. `checkout.session.completed`).
-
-Note this endpoint deliberately has **no** `Authorization` header and no API
-key: an external service can't authenticate as a Cratebase superuser or
-record, and shouldn't have to. The signature check *is* the authentication.
-
-### Try it locally
-
-```bash
-export STRIPE_WEBHOOK_SECRET=whsec_test_secret
-cratebase serve &
-
-body='{"id":"evt_1","type":"checkout.session.completed"}'
-ts=$(date +%s)
-sig=$(printf '%s.%s' "$ts" "$body" \
-  | openssl dgst -sha256 -hmac "$STRIPE_WEBHOOK_SECRET" \
-  | sed 's/^.* //')
-
-curl -i http://localhost:8090/api/webhooks/stripe \
-  -H "Stripe-Signature: t=${ts},v1=${sig}" \
-  -H 'content-type: application/json' \
-  --data-raw "$body"
-# 200 OK
-
-curl -i http://localhost:8090/api/webhooks/stripe \
-  -H "Stripe-Signature: t=${ts},v1=deadbeef" \
-  -H 'content-type: application/json' \
-  --data-raw "$body"
-# 400 Bad Request — signature does not match
-```
-
-### The same recipe from a `pb_hooks` JS file
-
-No Rust changes needed to add a second signed-inbound-webhook endpoint —
-any `pb_hooks/*.pb.js` file gets there with `routerAdd` and the existing
-`$security.hs256` primitive:
+No Rust changes needed: any `pb_hooks/*.pb.js` file gets a signed-inbound-
+webhook endpoint with `routerAdd` and the existing `$security.hs256`
+primitive.
 
 ```js
 routerAdd("POST", "/webhooks/stripe", (e) => {
@@ -128,16 +77,53 @@ routerAdd("POST", "/webhooks/stripe", (e) => {
 
   const event = JSON.parse(body);
   console.log("verified Stripe webhook:", event.type);
+  // signature verified — safe to act on the payload now, e.g. switch on
+  // event.type (checkout.session.completed, ...).
 });
 ```
+
+Note this endpoint deliberately has **no** `Authorization` header and no API
+key: an external service can't authenticate as a Cratebase superuser or
+record, and shouldn't have to. The signature check *is* the authentication.
+
+### Try it locally
+
+Drop the hook above into `pb_hooks/stripe.pb.js` next to your data
+directory, then:
+
+```bash
+export STRIPE_WEBHOOK_SECRET=whsec_test_secret
+cratebase serve &
+
+body='{"id":"evt_1","type":"checkout.session.completed"}'
+ts=$(date +%s)
+sig=$(printf '%s.%s' "$ts" "$body" \
+  | openssl dgst -sha256 -hmac "$STRIPE_WEBHOOK_SECRET" \
+  | sed 's/^.* //')
+
+curl -i http://localhost:8090/webhooks/stripe \
+  -H "Stripe-Signature: t=${ts},v1=${sig}" \
+  -H 'content-type: application/json' \
+  --data-raw "$body"
+# 200 OK
+
+curl -i http://localhost:8090/webhooks/stripe \
+  -H "Stripe-Signature: t=${ts},v1=deadbeef" \
+  -H 'content-type: application/json' \
+  --data-raw "$body"
+# 400 Bad Request — signature does not match
+```
+
+(`pb_hooks` `routerAdd` routes mount at the root, not under `/api` — same
+as PocketBase.)
 
 ## What's deliberately out of scope
 
 * A `_incoming_webhooks` system collection (dashboard-configurable inbound
   endpoints, per-endpoint secret rotation, delivery logs) — this note ships
-  the verification *primitive* plus one concrete, hardcoded endpoint;
-  turning that into a generic no-code feature the way `_webhooks` covers
-  the outgoing direction is a larger, separate piece of work.
+  the verification *pattern* for one concrete, hardcoded endpoint; turning
+  that into a generic no-code feature the way `_webhooks` covers the
+  outgoing direction is a larger, separate piece of work.
 * Idempotency / dedup on `event.id` — Stripe (like most providers) can
   retry a webhook it didn't get a 2xx for; a production integration should
   track processed event IDs before acting on one twice. That's

@@ -1,0 +1,8 @@
+name = "hello"
+version = "0.1.0"
+description = "Minimal example plugin proving the WASM plugin pipeline end to end."
+entry = "plugin.wasm"
+
+[capabilities]
+routes = ["ping", "record"]
+records_read = ["users"]

@@ -15,3 +15,33 @@ write's own transaction, so a hook that aborts rolls the triggering
 write back too. No `pb_hooks/` directory, or an empty one, is a complete
 no-op. `GET /api/functions` gives a read-only view of what's currently
 registered.
+
+A minimal `pb_hooks/main.pb.js`:
+
+```js
+onRecordCreate((e) => {
+  if (!e.record.get("title")) {
+    throw new BadRequestError("title is required.");
+  }
+  e.next(); // let the framework's own insert run
+  console.log(`created post ${e.record.id}`);
+}, "posts");
+
+routerAdd("GET", "/api/stats/posts", (e) => {
+  const count = e.app.db().collection("posts").recordCount();
+  return e.json(200, { count });
+});
+
+cronAdd("nightly-cleanup", "0 3 * * *", () => {
+  $app.db().collection("_logs").deleteOld({ days: 30 });
+});
+```
+
+`e.next()` is what actually runs the framework's own action (here, the
+insert) — a handler that returns without calling it stops the chain, the
+same middleware model [`crates/server/src/hooks.rs`](https://github.com/cratebasehq/cratebase/blob/main/crates/server/src/hooks.rs)
+documents for native Rust handlers, so a JS hook and a Rust plugin bound
+to the same event run in one priority-ordered chain rather than JS
+always going first or last. A hook that throws aborts the chain (and,
+on a write-path hook, rolls back the transaction it's part of) and
+propagates as the request's error response.

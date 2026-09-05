@@ -1,0 +1,44 @@
+---
+/**
+ * The live crate: one crate broadcasting over SSE. Rings spread on the
+ * ground plane and two small terminals at the edge are listening.
+ */
+import { box, circle, faceRect, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+import PanelBox from "./PanelBox.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+
+const crate = box(0, 0, 0);
+const centre: [number, number, number] = [0.5, 0.5, 0];
+const rings = [1.15, 1.75, 2.35].map((r) => circle(centre, r, "xy", 48)).join("");
+
+// Two listening terminals: thin standing panels, one on each near side.
+const termRight = box(2.75, 0.1, 0, 0.1, 0.8, 0.55);
+const termLeft = box(0.1, 2.75, 0, 0.8, 0.1, 0.55);
+const rowsRight = [0.3, 0.5, 0.7]
+  .map((v) => faceRect(termRight, "right", 0.15, v, 0.85, v + 0.1, 0.02))
+  .join("");
+const rowsLeft = [0.3, 0.5, 0.7]
+  .map((v) => faceRect(termLeft, "left", 0.15, v, 0.85, v + 0.1, 0.02))
+  .join("");
+const frame = viewBox([crate, termRight, termLeft], 10, [
+  [centre[0] - 2.35, centre[1], 0],
+  [centre[0], centre[1] - 2.35, 0],
+  [centre[0] + 2.35, centre[1], 0],
+  [centre[0], centre[1] + 2.35, 0],
+]);
+---
+
+<IsoFrame viewBox={frame} label={label}>
+  <path class="thin faint dash" d={rings} />
+  <CrateBox box={crate} shadow />
+  <PanelBox box={termRight} shadow />
+  <path class="ink faint" d={rowsRight} />
+  <PanelBox box={termLeft} shadow />
+  <path class="ink faint" d={rowsLeft} />
+</IsoFrame>

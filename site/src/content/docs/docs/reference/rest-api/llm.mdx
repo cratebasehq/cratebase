@@ -1,0 +1,40 @@
+---
+title: "LLM"
+description: "POST /api/llm/chat — one chat completion, optionally streamed over realtime."
+sidebar:
+  order: 17
+---
+
+See [AI → LLM chat gateway](/docs/ai/llm-chat-gateway/) for the
+provider/config side of this endpoint.
+
+### `POST /llm/chat` — any authenticated record
+
+```json
+{
+  "messages": [ { "role": "user", "content": "Summarize the onboarding doc." } ],
+  "collection": "messages",
+  "clientId": "abc123..."
+}
+```
+
+**The HTTP response is the final result, not the streamed body.** If
+`clientId` names an already-open `GET /realtime` connection, incremental
+tokens are pushed over *that* connection as `llm_chunk` (`{requestId,
+delta}`) events, then a final `llm_done` (`{requestId, text}`) — or
+`llm_error` (`{requestId, message}`) in place of `llm_done` if the
+provider fails mid-stream. Omitting `clientId` still returns the same
+final JSON, it just never sees incremental deltas.
+
+```json
+{ "reply": "...", "promptTokens": 128, "completionTokens": 64, "record": { "id": "...", "prompt": "...", "response": "...", "model": "gpt-4o-mini" } }
+```
+
+`record` is present only when `collection` was set **and** the write
+succeeded — subject to that collection's own `createRule` evaluated
+against the calling record, since a platform-level feature doesn't imply
+superuser-only write access to wherever it persists.
+
+This endpoint spends the operator's own provider quota on every call —
+add an explicit [rate limit](/docs/deploy/rate-limiting/) on this exact
+path in production.

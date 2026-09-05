@@ -1,0 +1,25 @@
+---
+title: "Crons"
+description: "List every registered cron job, and run one on demand. Superuser only."
+sidebar:
+  order: 12
+---
+
+### `GET /crons`
+
+```json
+[ { "id": "__pbAutoBackup__", "expression": "0 0 * * *" }, { "id": "custom:cleanup-stale-sessions", "expression": "*/15 * * * *" } ]
+```
+
+Lists every registered job, in registration order — both the
+always-present built-ins (`__pbDBOptimize__`, `__pbMFACleanup__`,
+`__pbOTPCleanup__`, `__pbLogsCleanup__`; `__pbAutoBackup__` only once
+`settings.backups.cron` is set) and every user-defined
+[`_cron_jobs`](/docs/extending/cron-jobs/) record, read-only through this
+endpoint (create/edit/delete a custom job through the generic Records
+API on `_cron_jobs` instead).
+
+### `POST /crons/{id}`
+
+Runs one job synchronously, right now, regardless of its schedule.
+`204` once it completes; `404` for an unknown job id.

@@ -1,0 +1,96 @@
+---
+title: "Job queue"
+description: "A pg_boss-style durable job queue: enqueue, retry with backoff, and stale-job reclaim."
+---
+
+The Queue plugin (`crates/server/src/queue.rs`) is a durable, retrying
+job queue built on the `Plugin` trait (see [Rust plugins](/docs/extending/rust-plugins/)) — a
+pg_boss-style worker, not a hosted service. It is **off by default**:
+set `settings.queue.enabled` to `true` (`PATCH /api/settings
+{"queue": {"enabled": true}}`) and restart the server. While disabled,
+the `_queue_jobs` collection is never provisioned and no worker tick
+ever spawns — zero background cost.
+
+## Enqueuing a job
+
+```sh
+curl -X POST http://localhost:8090/api/plugins/queue/enqueue \
+  -H "Authorization: $SUPERUSER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"queue": "send-welcome-email", "payload": {"userId": "abc123"}, "maxAttempts": 5}'
+```
+
+Superuser-only, the same trust tier as `_cron_jobs`/`_webhooks`: a
+queued job's `payload` is handed verbatim to whatever handler its
+`queue` name resolves to, with no rule enforcement in between. The
+response is the created `_queue_jobs` row's `id`, `queue`, `status`
+(always `"pending"` on enqueue) and `runAfter`.
+
+From JavaScript, [`@cratebase/extras`](/docs/ai/extras-package/)'s
+`enqueue(pb, queue, payload, options)` wraps the same call.
+
+## Job shape (`_queue_jobs`)
+
+| Field | Meaning |
+|---|---|
+| `queue` | The job's name — looked up in the handler registry below. |
+| `payload` | Arbitrary JSON passed to the handler. |
+| `status` | `pending` → `in_progress` → `completed`, or back to `pending` on a retry, or `failed` once `attempts` reaches `maxAttempts`. |
+| `attempts` / `maxAttempts` | Retry count and ceiling. |
+| `runAfter` | Not claimed before this timestamp — the initial schedule, or a failure's backoff. |
+| `startedAt` | Set when a worker claims the job; used to detect a stale `in_progress` row. |
+| `lastError` | The most recent handler failure message, if any. |
+
+Query it like any other system collection through the ordinary Records
+API (`GET /api/collections/_queue_jobs/records/:id`) to poll a job's
+status.
+
+## Handlers are compile-time, not dynamic
+
+There is no bytecode or script execution plane here — a job's `queue`
+name is looked up in an in-process handler registry populated by
+whatever Rust code registered the plugin:
+
+```rust
+use cratebase_server::queue::QueuePlugin;
+
+let plugin = QueuePlugin::new();
+plugin.handle().register_handler("send-welcome-email", |payload| async move {
+    // ... send the email, return Err(message.to_string()) on failure
+    Ok(())
+});
+app.register_plugin(plugin)?;
+```
+
+A job whose `queue` has no registered handler fails immediately with a
+descriptive `lastError`, retried and eventually given up on like any
+other failure — it never panics the worker loop. This is the same
+"small built-in job registry" trade-off `_cron_jobs`' raw-SQL bodies
+make in the other direction: dynamic *data*, compile-time *code*. A
+fully dynamic, sandboxed third-party execution plane is a separate,
+larger effort — see [Rust plugins](/docs/extending/rust-plugins/) for
+where a WASM-based plugin system would layer on top instead.
+
+## Retry and backoff
+
+A failed job's `runAfter` is pushed out with exponential backoff —
+`min(2^attempts * base_delay, max_delay)` — until `attempts` reaches
+`maxAttempts`, at which point it becomes `failed` for good and is never
+retried again.
+
+## Crash recovery
+
+Every worker tick first reclaims any `in_progress` job whose
+`startedAt` is older than a stale timeout, putting it back to
+`pending` — pg_boss's own core guarantee: a worker that crashes
+mid-job never orphans that job forever.
+
+## Claim atomicity
+
+Claiming the next due job runs inside one transaction: `SELECT ... FOR
+UPDATE SKIP LOCKED` on Postgres (so concurrent workers never race for
+the same row), then an `UPDATE ... WHERE status = 'pending'` that
+re-checks status inside the same transaction rather than trusting the
+row the `SELECT` just read. SQLite needs neither trick — the engine's
+single writer lock already serializes the whole transaction against
+every other write.

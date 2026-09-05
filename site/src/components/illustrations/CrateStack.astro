@@ -1,0 +1,18 @@
+---
+/** A database: crates stacked, the top one set back a touch so the stack reads as placed, not extruded. */
+import { box, viewBox } from "../../assets/illustrations/iso";
+import CrateBox from "./CrateBox.astro";
+import IsoFrame from "./IsoFrame.astro";
+
+interface Props {
+  label?: string;
+}
+const { label } = Astro.props;
+const crates = [box(0, 0, 0), box(0, 0, 1), box(0.08, 0.06, 2, 0.84, 0.84, 0.84)];
+---
+
+<IsoFrame viewBox={viewBox(crates, 8)} label={label}>
+  <CrateBox box={crates[0]} shadow />
+  <CrateBox box={crates[1]} />
+  <CrateBox box={crates[2]} />
+</IsoFrame>

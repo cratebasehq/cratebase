@@ -5,6 +5,7 @@ import { ArrowUpRight, Boxes, Database, Plus, ShieldUser, TriangleAlert } from "
 import type { CollectionModel } from "pocketbase";
 import { cb } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { fillHourlyBuckets, type LogBucket } from "@/lib/log-stats";
 import { userFields } from "@/lib/field-types";
 import { useCollections } from "@/hooks/use-collections";
 import { useConnectionStatus } from "@/components/layout/connection-status";
@@ -13,12 +14,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-
-/** One hourly bucket as `GET /api/logs/stats` returns it. */
-interface LogBucket {
-  date: string;
-  total: number;
-}
 
 /** A failing log row, narrowed from the SDK's `LogModel` (whose `level` is
  * typed loosely) to the handful of fields this screen renders. */
@@ -169,21 +164,7 @@ export function DashboardHome() {
   // The stats endpoint returns every bucket it has; the home screen shows a
   // day of them, zero-filled so an idle hour is a gap rather than a missing
   // bar that silently compresses the timeline.
-  const buckets = useMemo(() => {
-    // The server stamps buckets PocketBase-style — `2026-09-04 15:00:00.000Z`,
-    // a space where an ISO string has a `T` — so both sides are reduced to
-    // `YYYY-MM-DDHH` before they are compared.
-    const hourKey = (value: string) => value.replace(" ", "T").slice(0, 13);
-    const byHour = new Map((stats.data ?? []).map((b) => [hourKey(b.date), b.total]));
-    const out: LogBucket[] = [];
-    const now = new Date();
-    now.setUTCMinutes(0, 0, 0);
-    for (let i = 23; i >= 0; i--) {
-      const hour = new Date(now.getTime() - i * 3600_000);
-      out.push({ date: hour.toISOString(), total: byHour.get(hourKey(hour.toISOString())) ?? 0 });
-    }
-    return out;
-  }, [stats.data]);
+  const buckets = useMemo(() => fillHourlyBuckets(stats.data ?? []), [stats.data]);
 
   const requests24h = buckets.reduce((sum, b) => sum + b.total, 0);
   const failureRows: LogRow[] = failures.data ?? [];
