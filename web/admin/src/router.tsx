@@ -22,6 +22,8 @@ import { settingsLlmRoute } from "@/routes/settings-llm";
 import { settingsApiKeysRoute } from "@/routes/settings-api-keys";
 import { settingsMcpRoute } from "@/routes/settings-mcp";
 import { settingsAuditRoute } from "@/routes/settings-audit";
+import { settingsFunctionsRoute } from "@/routes/settings-functions";
+import { settingsPushRoute } from "@/routes/settings-push";
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
@@ -45,6 +47,8 @@ const routeTree = rootRoute.addChildren([
       settingsApiKeysRoute,
       settingsMcpRoute,
       settingsAuditRoute,
+      settingsFunctionsRoute,
+      settingsPushRoute,
     ]),
   ]),
 ]);
