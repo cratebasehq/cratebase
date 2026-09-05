@@ -14,6 +14,7 @@
 
 use std::error::Error as StdError;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,6 +42,16 @@ pub struct PostgresEngine {
     /// and reconnecting on loss (below) needs a config to reconnect
     /// *with*.
     config: tokio_postgres::Config,
+    /// Set by `close()` so the `subscribe_realtime` reconnect loop —
+    /// which holds its own dedicated connection invisible to
+    /// `pool.close()` — actually stops instead of reconnecting forever
+    /// after the engine is supposed to be shut down.
+    listen_cancelled: Arc<AtomicBool>,
+    /// Wakes a `subscribe_realtime` loop parked in a reconnect sleep or
+    /// waiting on its driver so shutdown is prompt rather than waiting
+    /// out the current backoff; `listen_cancelled` is what actually
+    /// guarantees correctness; this is purely latency.
+    listen_cancel: Arc<tokio::sync::Notify>,
 }
 
 impl PostgresEngine {
@@ -61,7 +72,12 @@ impl PostgresEngine {
             .build()
             .map_err(|e| DbError::Pool(e.to_string()))?;
         drop(pool.get().await.map_err(pool_err)?);
-        Ok(PostgresEngine { pool, config })
+        Ok(PostgresEngine {
+            pool,
+            config,
+            listen_cancelled: Arc::new(AtomicBool::new(false)),
+            listen_cancel: Arc::new(tokio::sync::Notify::new()),
+        })
     }
 
     pub fn pool(&self) -> &Pool {
@@ -443,15 +459,22 @@ impl Engine for PostgresEngine {
     }
 
     async fn close(&self) -> DbResult<()> {
+        self.listen_cancelled.store(true, Ordering::SeqCst);
+        self.listen_cancel.notify_waiters();
         self.pool.close();
         Ok(())
     }
 
+    fn supports_cross_node(&self) -> bool {
+        true
+    }
+
     async fn notify_realtime(&self, payload: &str) -> DbResult<()> {
-        if payload.len() > NOTIFY_PAYLOAD_LIMIT {
+        if payload.len() >= NOTIFY_PAYLOAD_LIMIT {
             return Err(DbError::Other(format!(
-                "realtime NOTIFY payload is {} bytes, over postgres's {NOTIFY_PAYLOAD_LIMIT}-byte \
-                 limit; crate::realtime::publish should only ever send an id/collection/action (and, \
+                "realtime NOTIFY payload is {} bytes, at or over postgres's {NOTIFY_PAYLOAD_LIMIT}-byte \
+                 limit (postgres itself rejects a payload once strlen(payload) >= that limit); \
+                 crate::realtime::publish should only ever send an id/collection/action (and, \
                  for a delete, one record's snapshot), never an unbounded blob",
                 payload.len()
             )));
@@ -469,16 +492,28 @@ impl Engine for PostgresEngine {
 
     fn subscribe_realtime(&self, on_notify: Arc<dyn Fn(String) + Send + Sync>) {
         let config = self.config.clone();
+        let cancelled = self.listen_cancelled.clone();
+        let cancel = self.listen_cancel.clone();
         tokio::spawn(async move {
             loop {
+                if cancelled.load(Ordering::SeqCst) {
+                    tracing::debug!("realtime LISTEN loop stopping: engine closed");
+                    return;
+                }
                 let (client, mut connection) = match config.connect(NoTls).await {
                     Ok(pair) => pair,
                     Err(e) => {
                         tracing::warn!(error = %e, "realtime LISTEN connect failed; retrying");
-                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                            _ = cancel.notified() => {}
+                        }
                         continue;
                     }
                 };
+                if cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
 
                 // Drives the socket *and* surfaces `NOTIFY` payloads.
                 // `Connection::poll_message`'s own docs say to use this
@@ -508,7 +543,10 @@ impl Engine for PostgresEngine {
                 {
                     tracing::warn!(error = %e, "realtime LISTEN setup failed; retrying");
                     driver.abort();
-                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                        _ = cancel.notified() => {}
+                    }
                     continue;
                 }
                 tracing::debug!("realtime cross-node LISTEN connected");
@@ -518,9 +556,21 @@ impl Engine for PostgresEngine {
                 // outstanding work finishes, and an idle `LISTEN` isn't
                 // "outstanding work" that would keep it alive on its own.
                 let _client = client;
-                let _ = driver.await;
+                tokio::select! {
+                    _ = driver => {}
+                    // `close()` was called: stop driving this connection
+                    // and exit the loop instead of reconnecting forever
+                    // on a pool the caller believes is fully shut down.
+                    _ = cancel.notified() => return,
+                }
+                if cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
                 tracing::warn!("realtime LISTEN connection lost; reconnecting");
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                    _ = cancel.notified() => {}
+                }
             }
         });
     }
@@ -534,7 +584,7 @@ const REALTIME_CHANNEL: &str = "cratebase_realtime";
 /// server-side. Checked up front so an oversized payload is a clear
 /// error here rather than an opaque one from the driver (or, worse, a
 /// payload the server truncates without telling us).
-const NOTIFY_PAYLOAD_LIMIT: usize = 8000;
+pub const NOTIFY_PAYLOAD_LIMIT: usize = 8000;
 
 /// A transaction pinned to one pooled connection. Dropping it without
 /// `commit` detaches the connection from the pool and rolls back on a

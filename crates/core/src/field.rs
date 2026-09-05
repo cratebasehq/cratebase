@@ -630,6 +630,29 @@ impl Field {
         f.system = true;
         f
     }
+
+    /// The `role` field on the built-in `_superusers` collection —
+    /// `"owner"` or `"admin"` (see `crate::SUPERUSER_ROLE_OWNER`/
+    /// `SUPERUSER_ROLE_ADMIN`). Required with no default value on
+    /// purpose: a caller creating a new superuser account must say which
+    /// role it gets rather than silently inheriting one, and every
+    /// existing writer that predates this field (`App::create_superuser`,
+    /// the `8_add_superuser_role.rs` migration) sets it explicitly.
+    pub fn role_field() -> Field {
+        let mut f = Field::new(
+            "role",
+            FieldKind::Select {
+                values: vec![
+                    crate::SUPERUSER_ROLE_OWNER.to_string(),
+                    crate::SUPERUSER_ROLE_ADMIN.to_string(),
+                ],
+                max_select: 1,
+            },
+        );
+        f.system = true;
+        f.required = true;
+        f
+    }
 }
 
 #[cfg(test)]

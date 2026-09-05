@@ -253,6 +253,17 @@ pub trait Engine: Executor {
     /// data directory.
     async fn close(&self) -> DbResult<()>;
 
+    /// Whether [`notify_realtime`](Engine::notify_realtime)/
+    /// [`subscribe_realtime`](Engine::subscribe_realtime) do anything on
+    /// this backend. `false` by default (SQLite: single-process, no
+    /// cross-node channel to speak of); Postgres overrides this to
+    /// `true`. Lets `crate::realtime::publish` skip the clone/spawn/
+    /// serialize it would otherwise do on every write just to reach a
+    /// no-op `await`.
+    fn supports_cross_node(&self) -> bool {
+        false
+    }
+
     /// Best-effort cross-process notification for realtime fan-out (see
     /// `crates/server/src/realtime.rs`). Called once per committed write
     /// that might have subscribers *somewhere* — this instance has no

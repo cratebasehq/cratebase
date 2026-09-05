@@ -5,7 +5,6 @@ import {
   type AuthOptionsValue,
   type AuthProviderValue,
 } from "@/lib/collection-form-value";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -232,25 +231,20 @@ export function AuthOptionsEditor({
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ToggleField
-              checked={value.oauth2Enabled}
-              onChange={(oauth2Enabled) => patch({ oauth2Enabled })}
-              label="OAuth2"
-              help="Sign in through a third-party provider."
-            />
-            <Badge variant="outline" className="font-normal text-muted-foreground">
-              Not yet available
-            </Badge>
-          </div>
+          <ToggleField
+            checked={value.oauth2Enabled}
+            onChange={(oauth2Enabled) => patch({ oauth2Enabled })}
+            label="OAuth2"
+            help="Sign in through a third-party provider."
+          />
           <Button type="button" variant="outline" size="sm" className="h-control-sm gap-1.5" onClick={addProvider}>
             <Plus className="size-3.5" />
             Add provider
           </Button>
         </div>
         <p className="text-2xs leading-snug text-muted-foreground">
-          The sign-in flow itself isn't wired up on this server yet — providers configured here are saved but no
-          `/api/collections/{"{collection}"}/auth-with-oauth2` route exists to use them.
+          Provider name "google" or "github" only needs a client id and secret — their endpoints are built in.
+          Anything else is a custom OAuth2/OpenID provider and needs its own auth/token/user info URLs below.
         </p>
         {value.oauth2Providers.length > 0 ? (
           <div className="flex flex-col gap-2">

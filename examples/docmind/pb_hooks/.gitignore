@@ -1,0 +1,3 @@
+# Written automatically at server startup (`RuntimeConfig::types_file` in
+# crates/jsvm/src/runtime.rs) — not checked in.
+types.d.ts

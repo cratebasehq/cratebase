@@ -26,6 +26,7 @@
 
 pub mod api_keys;
 pub mod app;
+pub mod audit;
 pub mod config;
 pub mod cron;
 pub mod cron_jobs;
@@ -35,13 +36,17 @@ pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
+pub mod incoming_webhooks;
 pub mod jsvm_host;
 pub mod llm;
 pub mod mcp;
 pub mod middleware;
 pub mod plugin;
+pub mod pocketbase_migrate;
 pub mod push;
 pub mod realtime;
+#[cfg(test)]
+mod records_multi_file_tests;
 pub mod routes;
 pub mod store;
 pub mod teams;

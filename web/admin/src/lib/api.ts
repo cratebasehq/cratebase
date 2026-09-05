@@ -23,6 +23,9 @@ export interface SuperuserRecord {
   updated?: string;
   verified?: boolean;
   avatar?: string;
+  /** `"owner"` or `"admin"` — see `cratebase_core::SUPERUSER_ROLE_OWNER`/
+   * `SUPERUSER_ROLE_ADMIN`. */
+  role?: string;
 }
 
 export function isLoggedIn(): boolean {
@@ -41,6 +44,7 @@ export function currentSuperuser(): SuperuserRecord | null {
     created: typeof record["created"] === "string" ? record["created"] : undefined,
     verified: record["verified"] === true,
     avatar: typeof record["avatar"] === "string" ? record["avatar"] : undefined,
+    role: typeof record["role"] === "string" ? record["role"] : undefined,
   };
 }
 
@@ -242,4 +246,13 @@ function serverOrigin(): string {
  * would hide the real problem. */
 export function isSessionExpired(error: unknown): boolean {
   return error instanceof ClientResponseError && error.status === 401;
+}
+
+/** The server writes PocketBase's datetime form (a space, not a `T`,
+ * e.g. `2026-01-31 12:00:00.000Z`), which `new Date()` does not parse in
+ * every browser — Safari returns Invalid Date for it. Every call site that
+ * parses a server-supplied timestamp (`created`, `updated`, `modified`,
+ * …) must go through this, not a bare `new Date(...)`. */
+export function parseServerDate(value: string): Date {
+  return new Date(value.replace(" ", "T"));
 }

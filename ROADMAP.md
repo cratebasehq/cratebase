@@ -42,37 +42,39 @@ land.
     mid-run) reclaim. Same "small built-in job registry" trade-off as
     cron jobs. `cb.queue.enqueue(queue, payload)` in the SDK.
   **Still not built on this foundation:**
-  - **Team management as a plugin** — multiple superusers with roles is a
-    real data-model change (today `_superusers` is one flat auth
-    collection, no roles); once record-lifecycle hooks exist on `Plugin`
-    this can enforce role checks without touching the core auth crate.
   - Record lifecycle hooks (`on_create`/`on_update`/`on_delete`) are not
     on the trait yet — add them when the first plugin actually needs one,
     rather than speculatively.
-- **OAuth2 (Google, GitHub).** Not wired up despite appearances:
-  `.env.example` documents `OAUTH_GOOGLE_CLIENT_ID`/`_SECRET` and
-  `OAUTH_GITHUB_CLIENT_ID`/`_SECRET` as placeholders, `auth-methods`'
-  response already has an `oauth2: {enabled, providers}` shape, and
-  `AuthOptions.oauth2` exists on every auth collection — but there is no
-  `crates/server/src/oauth2.rs`, no authorization-code exchange, and no
-  `auth-with-oauth2` route; `routes/auth.rs`'s router explicitly comments
-  `// auth-with-oauth2 (no provider wiring yet)`, and `auth-methods`
-  always reports `providers: []`. External auths (`_externalAuths`
-  collection CRUD, `listExternalAuths`/`unlinkExternalAuth` in the SDK)
-  work today for a provider linked by some other means, but nothing in
-  this codebase can create that link yet.
-- **Streaming backup upload.** `routes/backups.rs`'s `create` reads the
-  entire `VACUUM INTO` snapshot into a `Vec<u8>` (`tokio::fs::read`)
-  before a single `Storage::put`, unlike `download`, which streams
-  (`Storage::get_stream`). Fine for a small/medium SQLite file; holds
-  the whole database in memory for a multi-GB one, risking an OOM on a
-  self-hosted box with limited RAM. Needs a streaming `put` on the
-  `Storage` trait (both the local-disk and S3 multipart-upload impls
-  support it) before this is safe at scale — file uploads have the same
-  shape today (bounded by upload size limits) but a backup has no such
-  cap.
 
 ## Shipped
+
+- **Team management (superuser roles).** `_superusers` gained a required
+  `owner`/`admin` role field (`crates/core/src/field.rs`'s `role_field`),
+  enforced by `RequireOwner` (`crates/server/src/extract.rs`) alongside
+  inline guards in `routes/records.rs`: creating, deleting, or changing
+  another superuser's role needs `owner`; `admin` keeps identical access
+  to everything else, including self-service on their own row. The sole
+  remaining `owner` cannot be demoted or deleted (migration
+  `8_add_superuser_role.rs` backfills every pre-existing row to `owner`,
+  so no installation loses admin access on upgrade). Built directly on
+  the core auth crate rather than the `Plugin` trait, since record
+  lifecycle hooks (below) still don't exist on it.
+
+- **Streaming backup upload.** `write_backup` in `routes/backups.rs`
+  builds the `VACUUM INTO` snapshot into a temp-file ZIP via
+  `spawn_blocking`, then opens that file and feeds it through
+  `tokio_util::io::ReaderStream` into `Storage::put_stream` — never a
+  `Vec<u8>`/`tokio::fs::read` of the whole archive. `put_stream` buffers
+  only up to one 5 MiB multipart chunk before switching to the driver's
+  multipart upload (S3 `CreateMultipartUpload`, or a renamed temp file
+  for the local driver) and bounds in-flight parts with
+  `wait_for_capacity(4)`, so memory use is capped regardless of archive
+  size — the same primitive `download` already used via
+  `Storage::get_stream`. Verified live: a 1.6 GB SQLite database backed
+  up through the real `/api/backups` endpoint peaked at ~330 MB RSS
+  (vs. a 1.6+ GB spike the old whole-file-buffering implementation would
+  have hit), produced an 871.8 MB compressed archive, and the downloaded
+  copy passed `sqlite3 <file> .tables` with every row intact.
 
 - **Write throughput under contention and wide pages.** The single-writer
   pool + native-driver storage engine (`crates/db`) resolved the
@@ -89,6 +91,18 @@ land.
   `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
   IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
   deliberately excluded — see `routes/auth.rs`'s doc comment for why.
+- **OAuth2 (Google, GitHub, custom).** `crates/auth/src/oauth2.rs` (token
+  exchange body, Google/GitHub userinfo parsing, generic-provider
+  fallback) plus `routes/auth.rs`'s `auth-with-oauth2` and `auth-methods`
+  providers list. Authorization-code + PKCE, matching the SDK's
+  `authWithOAuth2Code`: `auth-methods` hands back a per-provider
+  `authURL`/`state`/`codeVerifier`, and `auth-with-oauth2` exchanges the
+  resulting `code` server-side, fetches userinfo, and either signs in
+  the `_externalAuths`-linked record, links onto a same-email match, or
+  creates a new one (`resolve_oauth2_record`). "google"/"github" only
+  need a client id/secret configured on the collection; any other
+  `name` is a hand-configured provider using its own auth/token/userinfo
+  URLs.
 - **Mailer.** `crates/mailer`: Resend HTTP API, plain SMTP, or a `Log`
   fallback that writes the email to `tracing` instead of delivering it —
   every email-dependent flow below is exercisable with zero external
@@ -190,7 +204,30 @@ collection has no address to send them to.
   override them, which is exactly right for a backend that is
   single-node by construction (one file, one process).
   See `crates/db/tests/postgres.rs` for a two-connection LISTEN/NOTIFY
-  test proving the plumbing.
+  test proving the plumbing, and `crates/server/tests/postgres_multi_node.rs`
+  for the genuine end-to-end proof: two full `App`s, each with its own
+  real `axum::serve` listener on its own port, both against one
+  Postgres database. A real `reqwest` client opens `GET /api/realtime`
+  against instance A and subscribes to a collection; a second real
+  client POSTs a record create to instance B's REST API for that same
+  collection; the test asserts the create event actually arrives on
+  A's SSE stream — a connection B never touched — within a timeout,
+  observing a real round trip through two independent Postgres pools
+  and a dedicated `LISTEN` connection on each side, not an in-process
+  function call. That test caught a real bug in the process:
+  `origin_id()` (the id `notify_cross_node` stamps on every payload so
+  a listener can recognize and skip its own writes) was a
+  process-wide `LazyLock` static rather than per-`App`-instance, so
+  two `App`s sharing one OS process — exactly what an in-process
+  multi-node test needs, and not something the design ruled out for
+  an embedder either — shared one origin and each mistook the other's
+  writes for its own echo, silently dropping every cross-node event.
+  Fixed by moving the origin onto `RealtimeService` itself, generated
+  once per instance instead of once per process. With that fix the
+  observed cross-node latency (HTTP POST on B to SSE frame on A,
+  through commit, `pg_notify`, the dedicated `LISTEN` connection, a
+  fresh `SELECT` on A, and rule re-evaluation) is consistently
+  ~95-100ms against a local Postgres 16 container.
 - **Admin dashboard: Settings area** (request logs, backups — including
   upload/restore, cron jobs, and a Network page for rate limits/trusted
   proxy/superuser IPs), **collection export/import**, a **geoPoint field
@@ -199,15 +236,32 @@ collection has no address to send them to.
   **type-aware records table**, and **field-editor UX polish** (per-type
   option panels, inline validation, a syntax-help popover on every rule
   input).
+- **Multi-file append/remove semantics.** A multipart update field named
+  `field+` appends newly uploaded files to an existing multi-file field
+  without disturbing the rest; `field-` removes named files (deleting
+  their storage blobs, not just the JSON list entry) — verified against
+  real PocketBase v0.40.2 to confirm removing a name that isn't present
+  is a silent no-op, not an error. An unsuffixed field name still fully
+  replaces, unchanged (`crates/server/src/routes/records.rs`).
+- **Admin audit log.** A new append-only `_audit_log` system collection
+  (`crates/server/src/audit.rs`) records collection schema changes,
+  settings updates, and superuser account changes, plus any record
+  delete where a superuser bypassed the collection's own `deleteRule` —
+  not ordinary rule-permitted deletes, to avoid drowning the log in
+  noise. No rule string can express "nobody, ever," so update/delete on
+  `_audit_log` itself is rejected at the hook level even for a
+  superuser. Dashboard page at Settings → Audit log.
+- **Per-collection rate limiting.** Already fell out of the existing
+  `RateLimitRule` tag-matching (`crates/server/src/middleware/rate_limit.rs`'s
+  `tags_for()` derives a `{collection}:{action}` tag per request purely
+  from URL shape); the real gap was dashboard discoverability, closed
+  with a collection-name autocomplete on the rule editor
+  (`settings/network-page.tsx`).
 
 ## Later
 
-- Multi-file append/remove semantics on update (today, uploading new files
-  for a field replaces the whole value; `field+`/`field-` suffix syntax
-  for appending/removing individual files is not implemented).
-- Admin audit log / activity feed.
-- Per-collection rate limiting (today's rate limiting is IP-based on the
-  auth/email endpoints only, not a general per-collection mechanism).
+(nothing currently tracked here — everything previously listed shipped
+this session; see Shipped below.)
 
 ## Explicitly out of scope for now
 

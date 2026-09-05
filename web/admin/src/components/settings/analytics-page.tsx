@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { cb } from "@/lib/api";
+import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { settingsAnalyticsRoute } from "@/routes/settings-analytics";
 import { Pagination } from "@/components/ui/pagination";
@@ -127,7 +127,7 @@ export function AnalyticsPage() {
     queryKey: ["analytics", "window"],
     queryFn: () =>
       cb.collection("analytics").getFullList<AnalyticsEntry>({
-        filter: `created >= "${new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").replace("Z", ".000Z")}"`,
+        filter: `created >= "${new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString().replace("T", " ")}"`,
         sort: "-created",
         fields: "id,path,referrer,created",
         batch: 500,
@@ -159,6 +159,33 @@ export function AnalyticsPage() {
   }, [windowEntries]);
 
   const loading = totalQuery.isLoading || windowQuery.isLoading;
+  const error = totalQuery.error ?? windowQuery.error ?? tableQuery.error;
+
+  if (error) {
+    const described = describeFailure(error);
+    return (
+      <div className="flex flex-col gap-4 p-6">
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ChartNoAxesColumn />
+            </EmptyMedia>
+            <EmptyTitle>Couldn't load analytics</EmptyTitle>
+            <EmptyDescription>
+              {described.detail}
+              {described.status === 404 ? (
+                <>
+                  {" "}
+                  The <code className="font-mono">analytics</code> collection may not exist on this instance yet —
+                  import <code className="font-mono">web/beacon/analytics-collection.json</code> to create it.
+                </>
+              ) : null}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4 p-6">
@@ -198,7 +225,7 @@ export function AnalyticsPage() {
                 {entry.referrer ? refererHost(entry.referrer) : "Direct"}
               </TableCell>
               <TableCell className="text-xs text-muted-foreground">
-                {new Date(entry.created).toLocaleString()}
+                {parseServerDate(entry.created).toLocaleString()}
               </TableCell>
             </TableRow>
           ))}

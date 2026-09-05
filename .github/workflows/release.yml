@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -144,6 +145,42 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: dist/*.zip*
+
+  # Multi-arch GHCR image. The Dockerfile never cross-compiles — each
+  # stage runs `cargo build --release` for whatever arch its own base
+  # image resolves to, so buildx's per-platform build (via QEMU
+  # emulation for the foreign arch) is the correct way to get both
+  # linux/amd64 and linux/arm64 out of it, with no Dockerfile changes.
+  docker-publish:
+    needs: dashboard-is-current
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "${{ inputs.tag }}" ] && version="${{ inputs.tag }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/nicoaudy/cratebase:${{ steps.version.outputs.version }}
+            ghcr.io/nicoaudy/cratebase:latest
 
   publish:
     needs: build

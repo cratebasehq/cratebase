@@ -84,6 +84,17 @@ zero-code-change option** for when SQLite stops being enough.
 docker compose up
 ```
 
+`docker compose up` pulls the official
+[`ghcr.io/nicoaudy/cratebase`](https://github.com/nicoaudy/cratebase/pkgs/container/cratebase)
+image (published on every tagged release, `linux/amd64` and
+`linux/arm64`) — no need to clone this repo or build anything locally.
+Pin a version instead of `latest` with `CRATEBASE_VERSION=0.1.0 docker
+compose up`. Prefer plain `docker run`?
+
+```bash
+docker run -p 8090:8090 -v cratebase_data:/app/data ghcr.io/nicoaudy/cratebase:latest
+```
+
 That's SQLite + local disk storage, listening on `:8090`. Open
 `http://localhost:8090` and the dashboard's first-run setup form creates
 your superuser account — no CLI needed. (You can still script it instead:

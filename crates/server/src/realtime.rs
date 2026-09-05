@@ -72,9 +72,12 @@
 //! a local write uses, so rule evaluation runs against this process's
 //! own current settings and rule text, never anything serialized by the
 //! writer. A `delete` is the one exception: the row is gone everywhere
-//! by the time this arrives, so the writer's pre-delete snapshot rides
-//! along in the payload instead (bounded the same way, and rejected by
-//! `notify_realtime` rather than silently dropped if it doesn't fit).
+//! by the time this arrives, so the writer's pre-delete snapshot (hidden
+//! fields stripped — this rides through Postgres's own query logs)
+//! rides along in the payload instead; when that snapshot alone would
+//! push the payload over the 8000-byte cap, [`notify_cross_node`] falls
+//! back to an id-only snapshot instead of dropping the notify entirely,
+//! since a delete only needs `record.id` for a client to drop the row.
 //!
 //! SQLite is single-node by definition (one file, one process), so
 //! `notify_realtime`/`subscribe_realtime` are no-ops there — see their
@@ -212,7 +215,6 @@ impl Subscription {
 
 /// The connected clients, and an index from collection to the clients
 /// watching it.
-#[derive(Default)]
 pub struct RealtimeService {
     clients: parking_lot::RwLock<HashMap<String, Arc<Client>>>,
     /// Collection name **and** id both map to the watching client ids, so
@@ -220,11 +222,31 @@ pub struct RealtimeService {
     /// Rebuilt on every subscription change, which is rare next to
     /// publishing.
     by_collection: parking_lot::RwLock<HashMap<String, HashSet<String>>>,
+    /// Random id identifying *this* `App`'s realtime instance in every
+    /// cross-node payload it sends (Postgres only — see the module
+    /// doc's "Cross-node fan-out" section). Generated once per
+    /// `RealtimeService`, not once per process: one OS process is
+    /// expected to run exactly one `App`, but nothing enforces that
+    /// (tests routinely run several `App`s against one shared database
+    /// in-process, and nor does anything rule it out for an embedder),
+    /// and a process-wide id would make a second in-process instance
+    /// mistake every other instance's writes for its own echo and
+    /// silently drop them.
+    origin: String,
 }
 
 impl RealtimeService {
     pub fn new() -> RealtimeService {
-        RealtimeService::default()
+        RealtimeService {
+            clients: parking_lot::RwLock::new(HashMap::new()),
+            by_collection: parking_lot::RwLock::new(HashMap::new()),
+            origin: cratebase_core::ids::random_string(20, CLIENT_ID_ALPHABET),
+        }
+    }
+
+    /// This instance's [`Self::origin`] field; see its doc comment.
+    fn origin(&self) -> &str {
+        &self.origin
     }
 
     /// Number of connected clients. Exposed for the dashboard and tests.
@@ -321,6 +343,12 @@ impl RealtimeService {
             return false;
         }
         true
+    }
+}
+
+impl Default for RealtimeService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -474,8 +502,11 @@ pub fn publish(
     // Cross-node first, and unconditionally: this process has no way to
     // know whether some *other* process sharing the database has
     // watchers for this collection, only whether it does itself. See the
-    // module doc's "Cross-node fan-out" section.
-    {
+    // module doc's "Cross-node fan-out" section. Skipped entirely on a
+    // backend that doesn't support it (SQLite): `notify_realtime` there
+    // is a no-op anyway, so the clone/spawn/serialize below would just
+    // be wasted work on every single write.
+    if app.db().engine.supports_cross_node() {
         let app = app.clone();
         let collection = collection.clone();
         let record = record.clone();
@@ -572,19 +603,6 @@ async fn fan_out(
 
 // ----------------------------------------------------------- cross-node
 
-/// Random per-process id embedded in every cross-node payload this
-/// process sends. `subscribe_realtime` sees every notification on the
-/// channel, including its own — Postgres delivers `NOTIFY` to every
-/// currently listening session, sender included — so
-/// [`receive_cross_node`] uses this to recognize and skip them: this
-/// process's own local subscribers were already reached synchronously
-/// by `fan_out` above, straight off the write, never through Postgres.
-fn origin_id() -> &'static str {
-    static ORIGIN: std::sync::LazyLock<String> =
-        std::sync::LazyLock::new(|| cratebase_core::ids::random_string(20, CLIENT_ID_ALPHABET));
-    &ORIGIN
-}
-
 fn parse_action(s: &str) -> Option<RecordAction> {
     match s {
         "create" => Some(RecordAction::Create),
@@ -605,7 +623,7 @@ async fn notify_cross_node(
     record: &Record,
 ) {
     let mut payload = serde_json::json!({
-        "origin": origin_id(),
+        "origin": app.realtime().origin(),
         "collection": collection.id,
         "action": action.as_str(),
         "id": record.id(),
@@ -615,11 +633,33 @@ async fn notify_cross_node(
         // the pre-delete snapshot has to ride along; every other action
         // sends none and lets the receiver re-`SELECT` its own current
         // copy instead (see `receive_cross_node`).
-        payload["snapshot"] = record.to_json(cratebase_core::SerializeOptions {
-            with_hidden: true,
+        //
+        // `with_hidden: false`: Postgres logs bound statement parameters,
+        // and every other `LISTEN cratebase_realtime` client on this
+        // database receives this payload verbatim — a password hash or
+        // auth token key riding along here would leak far more widely
+        // than the row itself ever would.
+        let mut candidate = payload.clone();
+        candidate["snapshot"] = record.to_json(cratebase_core::SerializeOptions {
+            with_hidden: false,
             show_email: true,
             with_custom_data: false,
         });
+        // A large editor/json/text field can push the snapshot over
+        // Postgres's `NOTIFY` payload cap; `>=` to match Postgres's own
+        // `strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH` rejection.
+        // Falling back to an id-only snapshot rather than just dropping
+        // the notify entirely (the old behavior) still lets
+        // `receive_cross_node` emit `{"action":"delete","record":{"id":...}}`
+        // — PocketBase clients key a delete on `record.id` alone, so
+        // this is enough for every other node's subscribers to drop the
+        // row from their local state, even though this particular
+        // record's snapshot is too big to ride along.
+        if candidate.to_string().len() >= cratebase_db::postgres::NOTIFY_PAYLOAD_LIMIT {
+            payload["snapshot"] = serde_json::json!({ "id": record.id() });
+        } else {
+            payload = candidate;
+        }
     }
     let payload = payload.to_string();
     if let Err(e) = app.db().engine.notify_realtime(&payload).await {
@@ -644,7 +684,7 @@ async fn receive_cross_node(app: &App, payload: &str) {
         tracing::warn!("cross-node realtime payload was not a JSON object; dropping");
         return;
     };
-    if msg.get("origin").and_then(Value::as_str) == Some(origin_id()) {
+    if msg.get("origin").and_then(Value::as_str) == Some(app.realtime().origin()) {
         return;
     }
     let (Some(collection_id), Some(action), Some(id)) = (

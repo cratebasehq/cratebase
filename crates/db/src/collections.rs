@@ -429,6 +429,44 @@ mod tests {
             Err(DbError::NotFound)
         ));
     }
+    #[tokio::test]
+    async fn oauth2_client_secret_survives_a_storage_round_trip() {
+        // REAL BUG 5: `OAuth2Provider.client_secret` used to carry
+        // `#[serde(skip_serializing)]`, so `to_json()` — the exact value
+        // `row_params` writes to `_collections.options` — silently
+        // dropped it on every save, and every reload came back with an
+        // empty secret.
+        let e = engine().await;
+        let store = CollectionStore::new();
+        store.load(&e).await.unwrap();
+
+        let mut users = Collection::default_users();
+        users.auth.oauth2.enabled = true;
+        users
+            .auth
+            .oauth2
+            .providers
+            .push(cratebase_core::OAuth2Provider {
+                name: "google".into(),
+                client_id: "the-client-id".into(),
+                client_secret: "the-client-secret".into(),
+                ..Default::default()
+            });
+        let stored = store.insert(&e, &users).await.unwrap();
+        assert_eq!(
+            stored.auth.oauth2.providers[0].client_secret,
+            "the-client-secret"
+        );
+
+        // And a fresh load from storage (a process restart, in effect)
+        // sees the same thing, not just the in-memory `insert` return.
+        let reloaded = CollectionStore::new();
+        reloaded.load(&e).await.unwrap();
+        assert_eq!(
+            reloaded.get_by_name("users").unwrap().auth.oauth2.providers[0].client_secret,
+            "the-client-secret"
+        );
+    }
 
     #[tokio::test]
     async fn failed_ddl_rolls_back_the_row() {

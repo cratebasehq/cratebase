@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -32,6 +33,11 @@ import {
 
 const COLLECTION = "_superusers";
 const MIN_PASSWORD = 8;
+/** `_superusers.role` values (`cratebase_core::SUPERUSER_ROLE_OWNER`/
+ * `SUPERUSER_ROLE_ADMIN` on the server). Owners can manage every other
+ * superuser account; admins have full dashboard/API access otherwise. */
+const OWNER = "owner";
+const ADMIN = "admin";
 
 /**
  * Superusers are ordinary auth records in `_superusers` (PocketBase v0.23+
@@ -67,8 +73,29 @@ export function SuperusersPage() {
     },
   });
 
+  const changeRole = useMutation({
+    mutationFn: ({ id, role }: { id: string; role: string }) => cb.collection(COLLECTION).update(id, { role }),
+    onSuccess: async () => {
+      await invalidate();
+      toast.success("Role updated");
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.serverMessage || failure.detail });
+    },
+  });
+
   const rows = superusers.data ?? [];
-  const isLast = rows.length <= 1;
+  // Only an owner may create another superuser, change anyone's role, or
+  // delete an account — the server enforces exactly this
+  // (`RequireOwner`/`routes::records`'s `_superusers`-specific write
+  // guards); the UI mirrors it so it never offers a control the API
+  // would reject. `myRole` comes from the freshly fetched list rather
+  // than the (possibly stale) auth-store record, so a role change made
+  // elsewhere in the same session is reflected immediately.
+  const myRole = rows.find((r) => r.id === me?.id)?.role;
+  const isOwner = myRole === OWNER;
+  const ownerCount = rows.filter((r) => r.role === OWNER).length;
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
@@ -76,13 +103,16 @@ export function SuperusersPage() {
         <div className="flex flex-col">
           <h2 className="text-sm font-medium">Superusers</h2>
           <p className="text-xs text-muted-foreground">
-            Full access to every collection, record and setting. They bypass all API rules.
+            Full access to every collection, record and setting. They bypass all API rules. Only owners can add,
+            remove or re-role other superusers.
           </p>
         </div>
-        <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
-          <Plus className="size-3.5" />
-          New superuser
-        </Button>
+        {isOwner ? (
+          <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
+            <Plus className="size-3.5" />
+            New superuser
+          </Button>
+        ) : null}
       </div>
 
       {superusers.isPending ? (
@@ -105,6 +135,12 @@ export function SuperusersPage() {
         <div className="overflow-hidden rounded-lg border border-border">
           {rows.map((row) => {
             const isMe = row.id === me?.id;
+            const role = typeof row.role === "string" && row.role ? row.role : ADMIN;
+            // The lockout the server refuses to let happen: the last
+            // owner can't be re-roled or removed, by anyone (in
+            // practice always the viewer's own row — nobody else could
+            // be the sole owner while also being able to act here).
+            const isSoleOwner = role === OWNER && ownerCount <= 1;
             return (
               <div
                 key={row.id}
@@ -117,29 +153,56 @@ export function SuperusersPage() {
                     you
                   </Badge>
                 ) : null}
+                {isOwner ? (
+                  <Select
+                    value={role}
+                    disabled={isSoleOwner || changeRole.isPending}
+                    onValueChange={(next) => changeRole.mutate({ id: row.id, role: next })}
+                  >
+                    <SelectTrigger
+                      size="sm"
+                      className="h-control-sm w-28 shrink-0"
+                      title={isSoleOwner ? "The last remaining owner can't be re-roled" : undefined}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={OWNER}>Owner</SelectItem>
+                      <SelectItem value={ADMIN}>Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Badge variant="outline" className="shrink-0 font-normal capitalize">
+                    {role}
+                  </Badge>
+                )}
                 <span className="shrink-0 font-mono text-2xs text-muted-foreground">
                   {row.created ? new Date(row.created).toLocaleDateString() : ""}
                 </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-control-sm shrink-0 gap-1.5"
-                  onClick={() => setResetting(row)}
-                >
-                  <KeyRound className="size-3.5" />
-                  Password
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`Remove ${String(row.email ?? row.id)}`}
-                  className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                  disabled={isLast}
-                  title={isLast ? "The last superuser can't be removed" : undefined}
-                  onClick={() => setDeleting(row)}
-                >
-                  <Trash2 className="size-3.5" />
-                </Button>
+                {isOwner || isMe ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-control-sm shrink-0 gap-1.5"
+                    onClick={() => setResetting(row)}
+                  >
+                    <KeyRound className="size-3.5" />
+                    Password
+                  </Button>
+                ) : null}
+                {isOwner ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Remove ${String(row.email ?? row.id)}`}
+                    className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    disabled={isSoleOwner}
+                    title={isSoleOwner ? "The last remaining owner can't be removed" : undefined}
+                    onClick={() => setDeleting(row)}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                ) : null}
               </div>
             );
           })}
@@ -149,7 +212,7 @@ export function SuperusersPage() {
       <p className="text-2xs leading-snug text-muted-foreground">
         A superuser can also be created from the command line with{" "}
         <code className="font-mono">cratebase superuser create &lt;email&gt; &lt;password&gt;</code> — the way back in
-        if you lock yourself out.
+        if you lock yourself out. Command-line superusers are always created as owners.
       </p>
 
       <SuperuserSheet
@@ -206,6 +269,7 @@ function SuperuserSheet({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState(ADMIN);
   const [seedOpen, setSeedOpen] = useState(open);
 
   if (seedOpen !== open) {
@@ -213,12 +277,13 @@ function SuperuserSheet({
     if (open) {
       setEmail("");
       setPassword("");
+      setRole(ADMIN);
     }
   }
 
   const create = useMutation({
     mutationFn: () =>
-      cb.collection(COLLECTION).create({ email, password, passwordConfirm: password }),
+      cb.collection(COLLECTION).create({ email, password, passwordConfirm: password, role }),
     onSuccess: () => {
       toast.success("Superuser created");
       onCreated();
@@ -279,6 +344,23 @@ function SuperuserSheet({
                 className="h-control-md"
               />
               {passwordError ? <p className="text-xs text-destructive">{passwordError}</p> : null}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="su-role">Role</Label>
+              <Select value={role} onValueChange={setRole}>
+                <SelectTrigger id="su-role" className="h-control-md">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ADMIN}>Admin</SelectItem>
+                  <SelectItem value={OWNER}>Owner</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-2xs text-muted-foreground">
+                {role === OWNER
+                  ? "Owners have full access and can manage other superusers, including their roles."
+                  : "Admins have full access except managing other superusers' roles or accounts."}
+              </p>
             </div>
           </div>
 

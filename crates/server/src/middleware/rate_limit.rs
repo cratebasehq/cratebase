@@ -311,7 +311,7 @@ impl std::fmt::Debug for RateLimiter {
 /// from the path gives the same labels (`*:auth`, `posts:list`, ...)
 /// without the routes having to exist yet. A service may add extra tags through
 /// [`RouteTags`] for anything not visible in the URL.
-pub fn tags_for(method: &axum::http::Method, path: &str) -> Vec<String> {
+pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<String> {
     use axum::http::Method;
 
     let mut tags = Vec::new();
@@ -330,6 +330,19 @@ pub fn tags_for(method: &axum::http::Method, path: &str) -> Vec<String> {
     let (Some(collection), Some(action)) = (segments.next(), segments.next()) else {
         return tags;
     };
+    // The handler resolves this same segment by name *or* id
+    // (`common::collection_of`) after axum has already percent-decoded
+    // it, so the tag must be derived the identical way — otherwise a
+    // `posts:list` rule is dodged by hitting the collection through its
+    // id, or through a percent-encoded spelling of its name. `try_db`
+    // (rather than `db`, which panics pre-bootstrap) falls back to the
+    // raw decoded segment when there is no store to resolve against.
+    let collection = decode_path_segment(collection);
+    let collection = app
+        .try_db()
+        .and_then(|db| db.collections.get(&collection))
+        .map(|c| c.name.clone())
+        .unwrap_or(collection);
     let mut push = |name: &str| {
         tags.push(format!("*:{name}"));
         tags.push(format!("{collection}:{name}"));
@@ -338,8 +351,12 @@ pub fn tags_for(method: &axum::http::Method, path: &str) -> Vec<String> {
         "records" => {
             let has_id = segments.next().is_some();
             match (method, has_id) {
-                (&Method::GET, false) => push("list"),
-                (&Method::GET, true) => push("view"),
+                // HEAD is served by the same handler as GET (see the
+                // `get()` route registration) and must carry the same
+                // tags, or a collection-scoped `list`/`view` limit is
+                // silently skipped for HEAD requests.
+                (&Method::GET | &Method::HEAD, false) => push("list"),
+                (&Method::GET | &Method::HEAD, true) => push("view"),
                 (&Method::POST, _) => push("create"),
                 (&Method::PATCH, _) => push("update"),
                 (&Method::DELETE, _) => push("delete"),
@@ -380,6 +397,31 @@ fn lower_camel(kebab: &str) -> String {
     out
 }
 
+/// Percent-decode a single URL path segment (`%XX` bytes only — unlike
+/// form encoding, a path segment does not treat `+` as a space). This
+/// mirrors what axum's `Path<String>` extractor already did before the
+/// handler saw the segment, so [`tags_for`] resolves the *same* string
+/// [`crate::routes::common::collection_of`] does.
+fn decode_path_segment(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// The axum layer. Mounted inside the `/api` nest so plugin routes are
 /// covered too (the audit found they bypassed both this and logging).
 pub async fn rate_limit(State(app): State<App>, req: Request, next: Next) -> Response {
@@ -403,7 +445,7 @@ pub async fn rate_limit(State(app): State<App>, req: Request, next: Next) -> Res
     // nest-stripped `parts.uri` is not what to match on.
     let path = crate::middleware::original_uri(&parts).path().to_string();
 
-    let mut tags = tags_for(&parts.method, &path);
+    let mut tags = tags_for(&app, &parts.method, &path);
     if let Some(extra) = parts.extensions.get::<RouteTags>() {
         tags.extend(extra.0.iter().cloned());
     }
@@ -421,8 +463,13 @@ pub async fn rate_limit(State(app): State<App>, req: Request, next: Next) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use axum::http::Method;
+    use cratebase_core::{Collection, CollectionType, Field, FieldKind};
+
+    use super::*;
+    use crate::config::Config;
+    use crate::extract::RequestInfo;
+    use crate::routes::collections;
 
     fn rule(label: &str, audience: &str, max: i64, duration: i64) -> RateLimitRule {
         RateLimitRule {
@@ -443,6 +490,41 @@ mod tests {
 
     fn compiled(rules: Vec<RateLimitRule>) -> Compiled {
         Compiled::build(&limits(rules))
+    }
+
+    /// A bootstrapped app over an in-memory database, mirroring the
+    /// per-file test harnesses used elsewhere in this crate (see
+    /// `routes::schema`'s test module).
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(Config::memory(dir.path()));
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    async fn create_collection(app: &App, name: &str, fields: Vec<Field>) -> Collection {
+        let mut next = Collection::new(name, CollectionType::Base);
+        next.fields = fields;
+        collections::prepare_new(&mut next);
+        collections::validate(app, &next, None, "test").unwrap();
+        let info = RequestInfo::default();
+        (*collections::apply(app, next, None, collections::Change::Create, &info, None)
+            .await
+            .unwrap())
+        .clone()
+    }
+
+    fn text_field(name: &str) -> Field {
+        Field::new(
+            name,
+            FieldKind::Text {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                autogenerate_pattern: String::new(),
+                primary_key: false,
+            },
+        )
     }
 
     #[test]
@@ -554,30 +636,35 @@ mod tests {
         limiter.check("/api/x", &[], false, "ip", "ip").unwrap();
     }
 
-    #[test]
-    fn tags_follow_the_url_shape() {
+    #[tokio::test]
+    async fn tags_follow_the_url_shape() {
+        let (app, _dir) = test_app().await;
         assert_eq!(
-            tags_for(&Method::GET, "/api/collections/posts/records"),
+            tags_for(&app, &Method::GET, "/api/collections/posts/records"),
             ["*:list", "posts:list"]
         );
         assert_eq!(
-            tags_for(&Method::GET, "/api/collections/posts/records/abc"),
+            tags_for(&app, &Method::GET, "/api/collections/posts/records/abc"),
             ["*:view", "posts:view"]
         );
         assert_eq!(
-            tags_for(&Method::POST, "/api/collections/posts/records"),
+            tags_for(&app, &Method::POST, "/api/collections/posts/records"),
             ["*:create", "posts:create"]
         );
         assert_eq!(
-            tags_for(&Method::PATCH, "/api/collections/posts/records/abc"),
+            tags_for(&app, &Method::PATCH, "/api/collections/posts/records/abc"),
             ["*:update", "posts:update"]
         );
         assert_eq!(
-            tags_for(&Method::DELETE, "/api/collections/posts/records/abc"),
+            tags_for(&app, &Method::DELETE, "/api/collections/posts/records/abc"),
             ["*:delete", "posts:delete"]
         );
         assert_eq!(
-            tags_for(&Method::POST, "/api/collections/users/auth-with-password"),
+            tags_for(
+                &app,
+                &Method::POST,
+                "/api/collections/users/auth-with-password"
+            ),
             [
                 "*:auth",
                 "users:auth",
@@ -586,10 +673,129 @@ mod tests {
             ]
         );
         assert_eq!(
-            tags_for(&Method::GET, "/api/files/posts/abc/x.png"),
+            tags_for(&app, &Method::GET, "/api/files/posts/abc/x.png"),
             ["*:file"]
         );
-        assert!(tags_for(&Method::GET, "/api/health").is_empty());
-        assert!(tags_for(&Method::GET, "/_/index.html").is_empty());
+        assert!(tags_for(&app, &Method::GET, "/api/health").is_empty());
+        assert!(tags_for(&app, &Method::GET, "/_/index.html").is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_collection_tag_rule_is_scoped_to_that_collection() {
+        // A rule labelled `posts:list` is the URL-shape tag `tags_for`
+        // derives only for GET requests against `posts`'s records
+        // endpoint (see the doc comment on `tags_for`); an identically
+        // shaped request against a different collection carries the tag
+        // `comments:list` instead, which this rule set has no rule for.
+        // This is the actual "per-collection" guarantee: not merely a
+        // path prefix (which `/api/collections/posts/` would give too,
+        // and which would still match `/api/collections/posts/records`
+        // exactly the same for every verb), but one rule that fires for
+        // one collection's one action and never for another's.
+        let (app, _dir) = test_app().await;
+        let posts = create_collection(&app, "posts", vec![text_field("title")]).await;
+        let limiter = RateLimiter::new();
+        limiter.configure(&limits(vec![rule("posts:list", "", 1, 60)]));
+
+        let posts_tags = tags_for(&app, &Method::GET, "/api/collections/posts/records");
+        let comments_tags = tags_for(&app, &Method::GET, "/api/collections/comments/records");
+        assert_eq!(posts_tags, ["*:list", "posts:list"]);
+        assert_eq!(comments_tags, ["*:list", "comments:list"]);
+
+        // First request against `posts` is within budget.
+        limiter
+            .check(
+                "/api/collections/posts/records",
+                &posts_tags,
+                false,
+                "1.2.3.4",
+                "1.2.3.4",
+            )
+            .unwrap();
+        // Second request against `posts` from the same client blows the
+        // one-request budget: the rule fires.
+        let err = limiter
+            .check(
+                "/api/collections/posts/records",
+                &posts_tags,
+                false,
+                "1.2.3.4",
+                "1.2.3.4",
+            )
+            .unwrap_err();
+        assert_eq!(err.status(), 429);
+
+        // The identically shaped endpoint on a different collection, same
+        // client, is untouched — no rule matches its `comments:list` tag
+        // and its `posts:list` window was never shared.
+        for _ in 0..5 {
+            limiter
+                .check(
+                    "/api/collections/comments/records",
+                    &comments_tags,
+                    false,
+                    "1.2.3.4",
+                    "1.2.3.4",
+                )
+                .unwrap();
+        }
+
+        // The bug this regression-tests: the tag used to be built straight
+        // from the raw URL segment, so a `posts:list` rule was dodged
+        // entirely by addressing the *same* collection through its id
+        // (axum's `Path<String>` and the real handler's
+        // `routes::common::collection_of` both accept name or id) or
+        // through a percent-encoded spelling of its name. A fresh client
+        // hitting either variant must still be scoped to the same
+        // `posts:list` window as the name-addressed route above.
+        let by_id = format!("/api/collections/{}/records", posts.id);
+        let id_tags = tags_for(&app, &Method::GET, &by_id);
+        assert_eq!(
+            id_tags,
+            ["*:list", "posts:list"],
+            "addressing the collection by id must resolve to the same posts:list tag"
+        );
+        limiter
+            .check(&by_id, &id_tags, false, "9.9.9.9", "9.9.9.9")
+            .unwrap();
+        let err = limiter
+            .check(&by_id, &id_tags, false, "9.9.9.9", "9.9.9.9")
+            .unwrap_err();
+        assert_eq!(
+            err.status(),
+            429,
+            "a posts:list rule must not be dodged by addressing the collection by id"
+        );
+
+        let encoded = "/api/collections/po%73ts/records"; // %73 = 's'
+        let encoded_tags = tags_for(&app, &Method::GET, encoded);
+        assert_eq!(
+            encoded_tags,
+            ["*:list", "posts:list"],
+            "a percent-encoded collection name must still resolve to posts:list"
+        );
+        limiter
+            .check(encoded, &encoded_tags, false, "8.8.8.8", "8.8.8.8")
+            .unwrap();
+        let err = limiter
+            .check(encoded, &encoded_tags, false, "8.8.8.8", "8.8.8.8")
+            .unwrap_err();
+        assert_eq!(
+            err.status(),
+            429,
+            "a posts:list rule must not be dodged by percent-encoding the collection name"
+        );
+
+        // HEAD is served by the same `get()` handler as GET on the list
+        // route and must carry the identical tags, or the rule silently
+        // never applies to it.
+        let head_tags = tags_for(&app, &Method::HEAD, "/api/collections/posts/records");
+        assert_eq!(head_tags, posts_tags, "HEAD must be tagged like GET");
+        let view_get = tags_for(&app, &Method::GET, "/api/collections/posts/records/abc");
+        let view_head = tags_for(&app, &Method::HEAD, "/api/collections/posts/records/abc");
+        assert_eq!(
+            view_head, view_get,
+            "HEAD on the view route must match GET too"
+        );
     }
 }

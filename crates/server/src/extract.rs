@@ -226,22 +226,106 @@ where
             None => return Err(ApiError(AppError::unauthorized(""))),
         };
 
-        let settings = app.settings();
-        if !settings.superuser_ips.is_empty() {
-            let peer = parts
-                .extensions
-                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                .map(|ci| ci.0);
-            let ip = crate::middleware::client_ip::client_ip(
-                &parts.headers,
-                peer,
-                &settings.trusted_proxy,
-            );
-            if !settings.superuser_ips.contains(&ip) {
-                return Err(ApiError(AppError::forbidden("")));
-            }
-        }
+        check_superuser_ip_allowlist(parts, &app)?;
         Ok(RequireSuperuser(auth))
+    }
+}
+
+/// PocketBase's `settings.superuserIPs` allowlist for superuser traffic:
+/// when non-empty, a superuser request from any other client IP is
+/// rejected outright. Shared by [`RequireSuperuser`] and any other
+/// superuser-gated path (e.g. `impersonate`) that can't use that
+/// extractor directly because it needs a different rejection message for
+/// the "authenticated but not a superuser" case.
+pub(crate) fn check_superuser_ip_allowlist(parts: &Parts, app: &App) -> Result<(), ApiError> {
+    let settings = app.settings();
+    if !settings.superuser_ips.is_empty() {
+        let peer = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0);
+        let ip =
+            crate::middleware::client_ip::client_ip(&parts.headers, peer, &settings.trusted_proxy);
+        if !settings.superuser_ips.contains(&ip) {
+            return Err(ApiError(AppError::forbidden("")));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects anyone but an authenticated `_superusers` record whose `role`
+/// is `"owner"` (see `cratebase_core::SUPERUSER_ROLE_OWNER`). Layered on
+/// top of [`RequireSuperuser`] — every request that satisfies
+/// `RequireOwner` also satisfies `RequireSuperuser`'s checks (auth
+/// resolution, `settings.superuserIPs`) — for the handful of endpoints
+/// that manage *other* superuser accounts specifically: creating one,
+/// deleting one, or changing anyone's role. Letting a merely `"admin"`
+/// superuser reach those would let any admin promote a peer to owner or
+/// lock other admins out, defeating the entire point of having two
+/// roles. Every other superuser-only endpoint stays on
+/// [`RequireSuperuser`] so an `admin` keeps full access to them — see
+/// `routes::records`'s `_superusers`-specific write guards, which call
+/// [`RequireOwner::holds`] directly rather than using this as a request
+/// extractor, since `create_record`/`update_record`/`delete_record` are
+/// shared by every collection and only need the stricter check for this
+/// one.
+pub struct RequireOwner(pub Auth);
+
+impl RequireOwner {
+    /// The single rule both this extractor and the generic records path
+    /// enforce, kept in one place so they cannot drift apart.
+    pub fn holds(auth: &Auth) -> bool {
+        auth.is_superuser && auth.record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER
+    }
+}
+
+impl<S> FromRequestParts<S> for RequireOwner
+where
+    App: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let RequireSuperuser(auth) = RequireSuperuser::from_request_parts(parts, state).await?;
+        if !Self::holds(&auth) {
+            return Err(ApiError(AppError::Forbidden(
+                "The request requires the owner role.".into(),
+            )));
+        }
+        Ok(RequireOwner(auth))
+    }
+}
+
+/// Superuser gate for `impersonate` specifically. Behaves like
+/// [`RequireSuperuser`] (same auth resolution, same `settings.superuserIPs`
+/// enforcement via [`check_superuser_ip_allowlist`]) but rejects an
+/// authenticated non-superuser caller with PocketBase's own wording for
+/// this endpoint — "The authorized record is not allowed to perform this
+/// action." — rather than [`RequireSuperuser`]'s generic message, which
+/// PocketBase does not use here (verified against the conformance suite).
+pub struct ImpersonateAuth(pub Auth);
+
+impl<S> FromRequestParts<S> for ImpersonateAuth
+where
+    App: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app = App::from_ref(state);
+        let auth = match resolve_and_cache(parts, &app).await {
+            Some(auth) if auth.is_superuser => auth,
+            Some(_) => {
+                return Err(ApiError(AppError::Forbidden(
+                    "The authorized record is not allowed to perform this action.".into(),
+                )))
+            }
+            None => return Err(ApiError(AppError::unauthorized(""))),
+        };
+        check_superuser_ip_allowlist(parts, &app)?;
+        Ok(ImpersonateAuth(auth))
     }
 }
 

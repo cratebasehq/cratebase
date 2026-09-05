@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { MoreHorizontal, Plus, Search, Settings as SettingsIcon, ShieldUser, X } from "lucide-react";
+import { Code2, MoreHorizontal, Plus, Search, Settings as SettingsIcon, ShieldUser, X } from "lucide-react";
 import { ClientResponseError, type CollectionModel, type RecordModel } from "pocketbase";
 import { avatarUrl, cb, describeFailure } from "@/lib/api";
 import { userFields, type FieldSchema } from "@/lib/field-types";
@@ -43,6 +43,7 @@ import { FilterBar } from "@/components/records/filter-bar";
 import { GridFooter } from "@/components/records/grid-footer";
 import { RecordDrawer } from "@/components/records/record-drawer";
 import { CollectionSettings } from "@/components/collections/collection-settings";
+import { ApiDocsTab } from "@/components/collections/api-docs-tab";
 
 /** Matches the debounce the old expanding-search field committed its
  * query with, so typing still doesn't fire a request per keystroke. */
@@ -76,7 +77,7 @@ type CollectionSearch = {
   sort?: string;
   q?: string;
   filter?: string;
-  tab?: "records" | "settings";
+  tab?: "records" | "settings" | "docs";
   /** Set by a relation-value popover's "Open record" link elsewhere in the
    * dashboard — jumps straight to this collection and pops the record
    * drawer open for the given id, then clears itself from the URL. */
@@ -143,7 +144,23 @@ function CollectionPage() {
   // guard that covers navigation has to cover this too.
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [confirmLeaveSettings, setConfirmLeaveSettings] = useState(false);
+  const [pendingTab, setPendingTab] = useState<CollectionSearch["tab"]>(undefined);
 
+  // Any tab switch away from "settings" has to run through the same
+  // unsaved-changes guard the settings button used to gate on its own —
+  // otherwise the new docs tab could silently discard an in-progress
+  // schema edit the way clicking "records" already couldn't.
+  const goToTab = useCallback(
+    (next: CollectionSearch["tab"]) => {
+      if (tab === "settings" && next !== "settings" && settingsDirty) {
+        setPendingTab(next);
+        setConfirmLeaveSettings(true);
+        return;
+      }
+      updateSearch({ tab: next });
+    },
+    [tab, settingsDirty, updateSearch],
+  );
   const { data: collection, error: collectionError } = useQuery({
     queryKey: ["collections", name],
     queryFn: () => cb.collections.getOne(name),
@@ -441,17 +458,20 @@ function CollectionPage() {
             </>
           ) : null}
           <Button
+            variant={tab === "docs" ? "secondary" : "ghost"}
+            size="icon-sm"
+            aria-label="API docs"
+            aria-pressed={tab === "docs"}
+            onClick={() => goToTab(tab === "docs" ? undefined : "docs")}
+          >
+            <Code2 className="size-4" />
+          </Button>
+          <Button
             variant={tab === "settings" ? "secondary" : "ghost"}
             size="icon-sm"
             aria-label="Collection settings"
             aria-pressed={tab === "settings"}
-            onClick={() => {
-              if (tab === "settings" && settingsDirty) {
-                setConfirmLeaveSettings(true);
-                return;
-              }
-              updateSearch({ tab: tab === "settings" ? undefined : "settings" });
-            }}
+            onClick={() => goToTab(tab === "settings" ? undefined : "settings")}
           >
             <SettingsIcon className="size-4" />
           </Button>
@@ -461,6 +481,10 @@ function CollectionPage() {
       {tab === "settings" ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <CollectionSettings collection={collection} onDirtyChange={setSettingsDirty} />
+        </div>
+      ) : tab === "docs" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ApiDocsTab collection={collection} />
         </div>
       ) : (
         <>
@@ -656,7 +680,8 @@ function CollectionPage() {
               onClick={() => {
                 setConfirmLeaveSettings(false);
                 setSettingsDirty(false);
-                updateSearch({ tab: undefined });
+                updateSearch({ tab: pendingTab });
+                setPendingTab(undefined);
               }}
             >
               Leave and lose them
@@ -739,7 +764,7 @@ export const collectionRoute = createRoute({
     sort: typeof search.sort === "string" ? search.sort : undefined,
     q: typeof search.q === "string" ? search.q : undefined,
     filter: typeof search.filter === "string" ? search.filter : undefined,
-    tab: search.tab === "settings" ? "settings" : undefined,
+    tab: search.tab === "settings" ? "settings" : search.tab === "docs" ? "docs" : undefined,
     openId: typeof search.openId === "string" ? search.openId : undefined,
   }),
   component: CollectionPage,

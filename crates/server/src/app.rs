@@ -396,6 +396,7 @@ impl App {
         // SQLite because `Engine::subscribe_realtime`'s default is.
         crate::realtime::start_cross_node_listener(self);
         crate::push::bind_hooks(self);
+        crate::audit::bind_hooks(self);
 
         let plugins = {
             let guard = self.inner.plugins.lock().expect("plugin registry poisoned");
@@ -720,7 +721,14 @@ impl App {
     }
 
     /// Insert a `_superusers` record. Used by `cratebase superuser create`
-    /// and by the test harness.
+    /// and by the test harness. Always `role: "owner"` — every path that
+    /// reaches this (the CLI, and first-run `POST /api/setup`) is either
+    /// a trusted local operator or, for setup, necessarily the very first
+    /// superuser an installation gets, which must be an owner or nobody
+    /// could ever promote a second one later. A dashboard-created
+    /// superuser instead goes through the ordinary records API
+    /// (`routes::records::create_record`), which requires the caller to
+    /// state a role explicitly (see `Field::role_field`'s doc comment).
     pub async fn create_superuser(&self, email: &str, password: &str) -> Result<String, AppError> {
         // Argon2id is deliberately expensive; the async wrapper keeps it
         // on the blocking pool so a login burst cannot stall the runtime.
@@ -732,13 +740,14 @@ impl App {
         self.db()
             .execute(
                 r#"INSERT INTO "_superusers"
-                   ("id", "email", "password", "tokenKey", "emailVisibility", "verified", "created", "updated")
-                   VALUES ($1, $2, $3, $4, 0, 1, $5, $6)"#,
+                   ("id", "email", "password", "tokenKey", "emailVisibility", "verified", "role", "created", "updated")
+                   VALUES ($1, $2, $3, $4, 0, 1, $5, $6, $7)"#,
                 &[
                     Sql::Text(id.clone()),
                     Sql::from(email),
                     Sql::Text(hash),
                     Sql::Text(new_token_key()),
+                    Sql::Text(cratebase_core::SUPERUSER_ROLE_OWNER.to_string()),
                     Sql::Text(now.clone()),
                     Sql::Text(now),
                 ],

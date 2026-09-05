@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DocMind — Cratebase AI Knowledge Base</title>
+    <script type="importmap">
+      { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --panel: #161923;
+        --panel-2: #1d212e;
+        --border: #2a2f3d;
+        --text: #e7e9ee;
+        --muted: #8a90a3;
+        --accent: #6c8dff;
+        --accent-2: #8f6cff;
+        --danger: #ff6c7c;
+        --ok: #58e08c;
+        --radius: 14px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background:
+          radial-gradient(1200px 600px at 15% -10%, rgba(108, 141, 255, 0.16), transparent),
+          radial-gradient(1000px 500px at 100% 0%, rgba(143, 108, 255, 0.12), transparent), var(--bg);
+        color: var(--text);
+        padding: 24px;
+      }
+
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+
+      header .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      header .brand .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 4px rgba(108, 141, 255, 0.18);
+      }
+
+      header h1 {
+        font-size: 16px;
+        margin: 0;
+        font-weight: 600;
+      }
+
+      header .sub {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .status .led {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+        transition: background 0.2s ease;
+      }
+
+      .status[data-state="connected"] .led {
+        background: var(--ok);
+        box-shadow: 0 0 8px rgba(88, 224, 140, 0.7);
+      }
+
+      .status[data-state="error"] .led {
+        background: var(--danger);
+        box-shadow: 0 0 8px rgba(255, 108, 124, 0.7);
+      }
+
+      #banner {
+        display: none;
+        padding: 8px 14px;
+        font-size: 12px;
+        background: rgba(255, 108, 124, 0.12);
+        color: var(--danger);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 14px;
+      }
+
+      #banner.visible {
+        display: block;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px;
+      }
+
+      /* --- Auth gate ------------------------------------------------- */
+
+      #view-guest {
+        max-width: 380px;
+        margin: 60px auto;
+      }
+
+      #view-guest h2 {
+        margin-top: 0;
+        font-size: 15px;
+      }
+
+      .field {
+        margin-bottom: 12px;
+      }
+
+      .field label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 5px;
+      }
+
+      input[type="text"],
+      input[type="email"],
+      input[type="password"],
+      input[type="file"],
+      textarea {
+        width: 100%;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        color: var(--text);
+        padding: 9px 11px;
+        font-size: 13px;
+        outline: none;
+        font-family: inherit;
+        transition: border-color 0.15s ease;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: var(--accent);
+      }
+
+      button {
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #0d0f14;
+        border: none;
+        border-radius: 9px;
+        padding: 9px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          transform 0.1s ease,
+          opacity 0.15s ease;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      button.ghost {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+
+      .toggle {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 10px;
+        text-align: center;
+      }
+
+      .toggle a {
+        color: var(--accent);
+        cursor: pointer;
+        text-decoration: none;
+      }
+
+      /* --- Main layout ------------------------------------------------ */
+
+      #view-app {
+        display: none;
+        gap: 16px;
+        grid-template-columns: 320px 1fr;
+      }
+
+      #view-app.active {
+        display: grid;
+      }
+
+      .whoami {
+        font-size: 12px;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .col {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .panel h3 {
+        margin: 0 0 12px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+      }
+
+      #uploadForm {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      #docList {
+        list-style: none;
+        margin: 14px 0 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
+      #docList li {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 9px 11px;
+        font-size: 13px;
+      }
+
+      #docList li .meta {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+
+      .empty {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 6px 2px;
+      }
+
+      /* --- Chat --------------------------------------------------------- */
+
+      #chatPanel {
+        display: flex;
+        flex-direction: column;
+        min-height: 560px;
+      }
+
+      #answer {
+        flex: 1;
+        overflow-y: auto;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        font-size: 14px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        margin-bottom: 12px;
+        min-height: 220px;
+      }
+
+      #answer .placeholder {
+        color: var(--muted);
+      }
+
+      #answer .cursor {
+        display: inline-block;
+        width: 7px;
+        height: 15px;
+        background: var(--accent);
+        margin-left: 2px;
+        vertical-align: text-bottom;
+        animation: blink 1s step-start infinite;
+      }
+
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+
+      #sources {
+        margin: 0 0 12px;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      #sources li {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 10px;
+      }
+
+      #sources li b {
+        color: var(--text);
+      }
+
+      #askForm {
+        display: flex;
+        gap: 10px;
+      }
+
+      #askForm input {
+        flex: 1;
+      }
+
+      #history {
+        margin-top: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 220px;
+        overflow-y: auto;
+      }
+
+      #history .turn {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 8px 11px;
+        font-size: 12px;
+      }
+
+      #history .turn .q {
+        color: var(--text);
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+
+      #history .turn .a {
+        color: var(--muted);
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="brand">
+          <span class="dot"></span>
+          <div>
+            <h1>DocMind</h1>
+            <div class="sub">Cratebase's AI-flagship bundle, end to end: vector search · auto-embedding · LLM chat gateway</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 16px">
+          <div id="status" class="status" data-state="idle"><span class="led"></span><span id="statusText">not connected</span></div>
+          <div class="whoami" id="whoami" style="display: none">
+            <span id="whoamiEmail"></span>
+            <button class="ghost" id="btn-logout" type="button">Sign out</button>
+          </div>
+        </div>
+      </header>
+
+      <div id="banner"></div>
+
+      <!-- Guest: register / sign in -->
+      <div id="view-guest" class="panel">
+        <h2 id="authTitle">Sign in</h2>
+        <form id="formLogin">
+          <div class="field"><label for="li-email">Email</label><input id="li-email" type="email" required autocomplete="username" /></div>
+          <div class="field"><label for="li-password">Password</label><input id="li-password" type="password" required autocomplete="current-password" /></div>
+          <button type="submit">Sign in</button>
+        </form>
+        <form id="formRegister" style="display: none">
+          <div class="field"><label for="re-email">Email</label><input id="re-email" type="email" required autocomplete="username" /></div>
+          <div class="field"><label for="re-password">Password</label><input id="re-password" type="password" required minlength="8" autocomplete="new-password" /></div>
+          <div class="field"><label for="re-password2">Confirm password</label><input id="re-password2" type="password" required minlength="8" autocomplete="new-password" /></div>
+          <button type="submit">Create account</button>
+        </form>
+        <div class="toggle">
+          <span id="toggleToRegister">New here? <a>Create an account</a></span>
+          <span id="toggleToLogin" style="display: none">Have an account? <a>Sign in</a></span>
+        </div>
+      </div>
+
+      <!-- Signed in: docs + chat -->
+      <div id="view-app">
+        <div class="col">
+          <div class="panel">
+            <h3>Upload a document</h3>
+            <form id="uploadForm">
+              <div class="field"><label for="docTitle">Title</label><input id="docTitle" type="text" required maxlength="200" /></div>
+              <div class="field"><label for="docFile">Plain-text file (.txt)</label><input id="docFile" type="file" required accept=".txt,text/plain" /></div>
+              <button type="submit" id="uploadButton">Upload &amp; index</button>
+            </form>
+          </div>
+          <div class="panel">
+            <h3>Knowledge base</h3>
+            <ul id="docList"></ul>
+            <div class="empty" id="docsEmpty">No documents yet — upload one to get started.</div>
+          </div>
+        </div>
+
+        <div class="panel" id="chatPanel">
+          <h3>Ask DocMind</h3>
+          <div id="answer"><span class="placeholder">Ask a question about an uploaded document — DocMind retrieves the most relevant chunks and answers using only that context.</span></div>
+          <ul id="sources"></ul>
+          <form id="askForm">
+            <input id="question" type="text" placeholder="What does the onboarding doc say about…" maxlength="500" required />
+            <button type="submit" id="askButton">Ask</button>
+          </form>
+          <div id="history"></div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
