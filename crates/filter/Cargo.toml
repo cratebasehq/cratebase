@@ -16,3 +16,7 @@ thiserror.workspace = true
 # compiler and the in-process evaluator are compared on the same cases
 # instead of each being asserted on its own.
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[target.wasm32-unknown-unknown.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
