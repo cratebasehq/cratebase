@@ -12,7 +12,7 @@ services:
     # cloning this repo required. Pin a version with CRATEBASE_VERSION
     # (e.g. CRATEBASE_VERSION=0.1.0), or work on Cratebase itself by
     # commenting the `image` line out and uncommenting `build: .` below.
-    image: ghcr.io/nicoaudy/cratebase:${CRATEBASE_VERSION:-latest}
+    image: ghcr.io/cratebasehq/cratebase:${CRATEBASE_VERSION:-latest}
     # build: .
     ports:
       - "${PORT:-8090}:8090"

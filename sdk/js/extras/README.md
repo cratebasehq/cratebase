@@ -1,6 +1,6 @@
 # @cratebase/extras
 
-Optional client extensions for the handful of [Cratebase](https://github.com/cratebase/cratebase)
+Optional client extensions for the handful of [Cratebase](https://github.com/cratebasehq/cratebase)
 endpoints the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) npm SDK has no
 first-class surface for: vector search, MCP tool schemas, and the LLM chat gateway.
 

@@ -7,7 +7,7 @@ GitHub issue.
 
 Use GitHub's private vulnerability reporting flow for this repository:
 
-**https://github.com/nicoaudy/cratebase/security/advisories/new**
+**https://github.com/cratebasehq/cratebase/security/advisories/new**
 
 This opens a draft security advisory that only the maintainers can see
 until it's ready to be disclosed. Include:

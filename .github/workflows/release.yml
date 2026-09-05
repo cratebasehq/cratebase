@@ -179,8 +179,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/nicoaudy/cratebase:${{ steps.version.outputs.version }}
-            ghcr.io/nicoaudy/cratebase:latest
+            ghcr.io/cratebasehq/cratebase:${{ steps.version.outputs.version }}
+            ghcr.io/cratebasehq/cratebase:latest
 
   publish:
     needs: build

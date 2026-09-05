@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cratebase/cratebase.git",
+    "url": "git+https://github.com/cratebasehq/cratebase.git",
     "directory": "sdk/js/extras"
   },
-  "homepage": "https://github.com/cratebase/cratebase/tree/main/sdk/js/extras#readme",
-  "bugs": "https://github.com/cratebase/cratebase/issues",
+  "homepage": "https://github.com/cratebasehq/cratebase/tree/main/sdk/js/extras#readme",
+  "bugs": "https://github.com/cratebasehq/cratebase/issues",
   "sideEffects": false,
   "main": "dist/index.js",
   "module": "dist/index.js",
