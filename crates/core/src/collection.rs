@@ -429,6 +429,10 @@ impl Collection {
         self.name == crate::SUPERUSERS_COLLECTION
     }
 
+    pub fn is_cron_jobs(&self) -> bool {
+        self.name == crate::CRON_JOBS_COLLECTION
+    }
+
     /// A JSON-Schema / OpenAI-function-calling-shaped description of this
     /// collection's writable, non-system fields:
     /// `{name, description, parameters: {type: "object",

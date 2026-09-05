@@ -442,6 +442,9 @@ async fn create_item(
     if collection.is_superusers() {
         record_route::require_owner(ictx.info.auth.as_ref(), "create a superuser account")?;
     }
+    if collection.is_cron_jobs() {
+        record_route::require_owner(ictx.info.auth.as_ref(), "create a custom SQL cron job")?;
+    }
     {
         let resolver = CollectionResolver::new(
             collection.clone(),
@@ -572,6 +575,9 @@ async fn update_item(
     } else {
         None
     };
+    if collection.is_cron_jobs() {
+        record_route::require_owner(info.auth.as_ref(), "edit a custom SQL cron job")?;
+    }
     let manage = common::has_manage_access(tx, &tx.db().collections, ctx, collection, &id)
         .await
         .map_err(|e| ApiError(e.into()))?;
@@ -722,6 +728,9 @@ async fn delete_item(
     let was_owner = record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
     if collection.is_superusers() {
         record_route::require_owner(info.auth.as_ref(), "delete a superuser account")?;
+    }
+    if collection.is_cron_jobs() {
+        record_route::require_owner(info.auth.as_ref(), "delete a custom SQL cron job")?;
     }
 
     let (deleted, removed) =

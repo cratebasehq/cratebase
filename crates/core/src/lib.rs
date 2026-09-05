@@ -43,6 +43,15 @@ pub const AUTH_SYSTEM_FIELDS: &[&str] = &[
 
 /// Name of the built-in superusers auth collection.
 pub const SUPERUSERS_COLLECTION: &str = "_superusers";
+/// Name of the custom-SQL-cron-jobs system collection. A row's `sql`
+/// runs with no rule enforcement — the same trust tier as a schema edit
+/// or a raw SQL-console write — so writes to it require the `owner`
+/// role, not merely any superuser (see `routes::records`'s guard doc
+/// and `crates::server::cron_jobs`'s module doc for why this is not
+/// optional: an `admin`-role superuser who could freely write here
+/// could schedule `UPDATE _superusers SET role='owner' ...` and wait
+/// for the next tick, defeating the owner/admin split entirely).
+pub const CRON_JOBS_COLLECTION: &str = "_cron_jobs";
 /// PocketBase's literal id for the built-in `users` collection.
 pub const USERS_COLLECTION_ID: &str = "_pb_users_auth_";
 

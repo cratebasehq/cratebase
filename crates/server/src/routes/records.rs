@@ -524,6 +524,14 @@ pub(crate) async fn create_record(
     if collection.is_superusers() {
         require_owner(info.auth.as_ref(), "create a superuser account")?;
     }
+    // A `_cron_jobs` row's `sql` runs on a timer with no rule
+    // enforcement in between — the same trust tier as a raw SQL-console
+    // write. An `admin`-role superuser who could freely create these
+    // could schedule a statement that promotes themselves to owner or
+    // erases the audit log, defeating the owner/admin split entirely.
+    if collection.is_cron_jobs() {
+        require_owner(info.auth.as_ref(), "create a custom SQL cron job")?;
+    }
     {
         let resolver = CollectionResolver::new(
             collection.clone(),
@@ -654,6 +662,9 @@ pub(crate) async fn update_record(
     } else {
         None
     };
+    if collection.is_cron_jobs() {
+        require_owner(info.auth.as_ref(), "edit a custom SQL cron job")?;
+    }
     let previous_was_owner = previous.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
 
     let manage = common::has_manage_access(app.db(), &app.db().collections, &ctx, &collection, &id)
@@ -780,6 +791,9 @@ pub(crate) async fn delete_record(
     let was_owner = record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
     if collection.is_superusers() {
         require_owner(info.auth.as_ref(), "delete a superuser account")?;
+    }
+    if collection.is_cron_jobs() {
+        require_owner(info.auth.as_ref(), "delete a custom SQL cron job")?;
     }
 
     let files: Arc<Mutex<Vec<FileRef>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1643,18 +1657,24 @@ mod superuser_role_tests {
         let router = crate::routes::api_router(&app).with_state(app.clone());
 
         // An ordinary superuser-only endpoint unrelated to `_superusers`
-        // management: creating a `_cron_jobs` row. `is_superuser_only`
+        // management: creating a `_webhooks` row. `is_superuser_only`
         // is the only gate here, exactly as before this feature existed.
+        // (`_cron_jobs` is NOT such an endpoint any more — see
+        // `an_admin_cannot_create_or_edit_a_custom_cron_job` below; its
+        // `sql` runs with no rule enforcement, so it needs the same
+        // owner-only gate `_superusers` writes do.)
         let created = router
             .clone()
             .oneshot(json_request(
                 "POST",
-                "/collections/_cron_jobs/records",
+                "/collections/_webhooks/records",
                 &admin_token,
                 json!({
                     "name": "noop",
-                    "expression": "* * * * *",
-                    "sql": "SELECT 1",
+                    "url": "https://example.com/hook",
+                    "collectionRef": "_superusers",
+                    "events": "create",
+                    "enabled": true,
                 }),
             ))
             .await
@@ -1677,5 +1697,92 @@ mod superuser_role_tests {
             .await
             .unwrap();
         assert_eq!(self_update.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_admin_cannot_create_edit_or_delete_a_custom_cron_job_but_an_owner_can() {
+        // `_cron_jobs` rows run their `sql` on a timer with no rule
+        // enforcement in between — the same trust tier as a raw
+        // SQL-console write. An `admin`-role superuser who could freely
+        // write these could schedule `UPDATE _superusers SET
+        // role='owner' ...` and wait for the next tick, silently
+        // defeating the whole owner/admin split. This test would have
+        // passed with a 200 before that gate existed (see the sibling
+        // test above, which used to assert exactly that).
+        let (app, _dir) = test_app().await;
+        let (_owner_id, owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (_admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let body = json!({
+            "name": "noop",
+            "expression": "* * * * *",
+            "sql": "SELECT 1",
+            "enabled": false,
+        });
+
+        let admin_create = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/collections/_cron_jobs/records",
+                &admin_token,
+                body.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(admin_create.status(), StatusCode::FORBIDDEN);
+
+        let owner_create = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/collections/_cron_jobs/records",
+                &owner_token,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(owner_create.status(), StatusCode::OK);
+        let created: Value = serde_json::from_slice(
+            &axum::body::to_bytes(owner_create.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let job_id = created["id"].as_str().unwrap().to_string();
+
+        let admin_update = router
+            .clone()
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/collections/_cron_jobs/records/{job_id}"),
+                &admin_token,
+                json!({"sql": "UPDATE \"_superusers\" SET \"role\" = 'owner'"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(admin_update.status(), StatusCode::FORBIDDEN);
+
+        let admin_delete = router
+            .clone()
+            .oneshot(empty_request(
+                "DELETE",
+                &format!("/collections/_cron_jobs/records/{job_id}"),
+                &admin_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(admin_delete.status(), StatusCode::FORBIDDEN);
+
+        let owner_delete = router
+            .oneshot(empty_request(
+                "DELETE",
+                &format!("/collections/_cron_jobs/records/{job_id}"),
+                &owner_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(owner_delete.status(), StatusCode::NO_CONTENT);
     }
 }

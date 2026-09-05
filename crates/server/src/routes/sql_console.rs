@@ -207,6 +207,16 @@ async fn run_sql(
                 "Only an owner can run write SQL against _superusers.",
             ));
         }
+        // `_cron_jobs` rows run their `sql` on a timer with no rule
+        // enforcement — the same self-promotion path as a direct
+        // `_superusers` write, just one tick later. Same owner-only gate.
+        if references_table(&req.sql, cratebase_core::CRON_JOBS_COLLECTION)
+            && !crate::extract::RequireOwner::holds(&su.0)
+        {
+            return Err(ApiError::forbidden(
+                "Only an owner can run write SQL against _cron_jobs.",
+            ));
+        }
     }
 
     if is_read {
