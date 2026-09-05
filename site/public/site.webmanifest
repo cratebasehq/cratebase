@@ -1,0 +1,12 @@
+{
+  "name": "Cratebase",
+  "short_name": "Cratebase",
+  "description": "A fast, self-hostable backend with dynamic collections, auth, files, and realtime, in one Rust binary.",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "theme_color": "#0e2238",
+  "background_color": "#0e2238",
+  "display": "standalone"
+}

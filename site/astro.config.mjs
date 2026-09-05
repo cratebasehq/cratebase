@@ -20,6 +20,47 @@ export default defineConfig({
           href: "https://github.com/cratebasehq/cratebase",
         },
       ],
+      head: [
+        {
+          tag: "link",
+          attrs: { rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
+        },
+        {
+          tag: "link",
+          attrs: { rel: "icon", type: "image/png", sizes: "192x192", href: "/icon-192.png" },
+        },
+        {
+          tag: "link",
+          attrs: { rel: "manifest", href: "/site.webmanifest" },
+        },
+        {
+          tag: "meta",
+          attrs: { name: "theme-color", content: "#0e2238" },
+        },
+        {
+          tag: "meta",
+          attrs: { property: "og:image", content: "https://cratebase.dev/og.png" },
+        },
+        {
+          tag: "meta",
+          attrs: { property: "og:image:width", content: "1200" },
+        },
+        {
+          tag: "meta",
+          attrs: { property: "og:image:height", content: "630" },
+        },
+        {
+          tag: "meta",
+          attrs: {
+            property: "og:image:alt",
+            content: "Cratebase — a fast, self-hostable backend in one Rust binary.",
+          },
+        },
+        {
+          tag: "meta",
+          attrs: { name: "twitter:image", content: "https://cratebase.dev/og.png" },
+        },
+      ],
       // All Starlight-generated pages are nested under content/docs/docs/
       // so their routes land at /docs/... while src/pages/index.astro
       // keeps the plain "/" for the marketing landing page. This is the
