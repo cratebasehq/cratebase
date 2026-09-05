@@ -57,6 +57,26 @@ export interface ServerSettings {
   };
   trustedProxy: { headers: string[]; useLeftmostIP: boolean };
   superuserIPs: string[];
+  push: {
+    vapid: { enabled: boolean; publicKey: string; subject: string; privateKey?: string };
+    fcm: { enabled: boolean; serviceAccountJson?: string };
+    apns: {
+      enabled: boolean;
+      keyId: string;
+      teamId: string;
+      bundleId: string;
+      production: boolean;
+      key?: string;
+    };
+    triggers: {
+      enabled: boolean;
+      collection: string;
+      events: string;
+      title: string;
+      body: string;
+      targetField: string;
+    }[];
+  };
 }
 
 export const SETTINGS_KEY = ["settings"] as const;
