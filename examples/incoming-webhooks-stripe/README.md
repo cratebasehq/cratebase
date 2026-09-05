@@ -55,9 +55,10 @@ though its signature is technically valid.
 
 ## The worked endpoint, as a `pb_hooks` JS file
 
-No Rust changes needed: any `pb_hooks/*.pb.js` file gets a signed-inbound-
-webhook endpoint with `routerAdd` and the existing `$security.hs256`
-primitive.
+No Rust changes needed as of the `rawBody`/`header.get()` fixes landed
+alongside this example: any `pb_hooks/*.pb.js` file gets a signed-inbound-
+webhook endpoint with `routerAdd`, `$security.hs256`, and
+`e.request.rawBody`.
 
 ```js
 routerAdd("POST", "/webhooks/stripe", (e) => {
@@ -66,7 +67,8 @@ routerAdd("POST", "/webhooks/stripe", (e) => {
     sig.split(",").map((p) => p.split("=").map((s) => s.trim()))
   );
   const secret = $os.getenv("STRIPE_WEBHOOK_SECRET");
-  const body = e.request.body; // raw bytes read by the runtime
+  const body = e.request.rawBody; // exact bytes, before JSON parsing -- `e.request.body` is
+                                   // already parsed and will never match a real signature
   const signedContent = parts.t + "." + body;
   const expected = $security.hs256(signedContent, secret);
   const age = Math.floor(Date.now() / 1000) - Number(parts.t);
