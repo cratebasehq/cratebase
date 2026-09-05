@@ -676,6 +676,7 @@ async fn respond_js_route(
         query: info.query.clone(),
         headers: info.headers.clone(),
         body: body_value,
+        raw_body: String::from_utf8_lossy(&body).into_owned(),
         auth: info
             .auth
             .as_ref()

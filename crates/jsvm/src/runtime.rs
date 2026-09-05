@@ -251,6 +251,13 @@ pub struct JsRequest {
     pub headers: Map<String, Value>,
     /// Parsed JSON body, or a string for non-JSON bodies, or `null`.
     pub body: Value,
+    /// Exact request body bytes (lossy UTF-8), before any JSON parsing.
+    /// HMAC-based webhook signature schemes (Stripe, Tripay, GitHub, this
+    /// server's own outgoing `_webhooks`) all sign the raw bytes the sender
+    /// transmitted — `body` above is useless for verifying one, since
+    /// parse-then-restringify does not reproduce the sender's exact bytes.
+    pub raw_body: String,
+
     /// The authenticated record's JSON, if any.
     pub auth: Option<Value>,
     /// Path parameters already extracted by the server's router. When

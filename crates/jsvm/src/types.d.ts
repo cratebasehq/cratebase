@@ -155,6 +155,11 @@ interface Request {
   pathValue(name: string): string;
   header: { get(name: string): string };
   body: any;
+  /** Exact request body bytes (lossy UTF-8), before JSON parsing. Use this,
+   * never `body`, to verify an HMAC webhook signature (Stripe, Tripay,
+   * GitHub, ...) — parsing then re-stringifying `body` does not reproduce
+   * the sender's exact bytes and every real signature check will fail. */
+  rawBody: string;
   remoteAddr: string;
 }
 

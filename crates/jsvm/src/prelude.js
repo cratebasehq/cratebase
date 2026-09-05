@@ -962,9 +962,16 @@
       },
       pathValue: (name) => (e.__pathParams && e.__pathParams[name] !== undefined ? String(e.__pathParams[name]) : ""),
       header: {
-        get: (name) => headers[String(name).toLowerCase()] || "",
+        // Nama header disimpan sisi Rust dengan `-` -> `_` (lihat
+        // `extract.rs::header_map` -- supaya konsisten dipakai sebagai key
+        // ekspresi filter). Konsumen JS wajar menulis nama header standar
+        // ("X-Callback-Signature"), jadi lookup di sini menormalkan input
+        // dengan cara yang sama sebelum mencocokkan, bukan mengharuskan
+        // pemanggil tahu detail penyimpanan internal.
+        get: (name) => headers[String(name).toLowerCase().replace(/-/g, "_")] || "",
       },
       body: data.body,
+      rawBody: data.rawBody || "",
       remoteAddr: data.remoteIp || "",
     };
     return req;
@@ -994,7 +1001,7 @@
       auth: e.auth,
       context: info.context || "default",
     });
-    e.request = makeRequest(data.request || { method: data.method, path: data.path, query: data.query, headers: data.headers, body: data.body, remoteIp: data.remoteIp }, e);
+    e.request = makeRequest(data.request || { method: data.method, path: data.path, query: data.query, headers: data.headers, body: data.body, rawBody: data.rawBody, remoteIp: data.remoteIp }, e);
     e.next = () => {
       e.__nextCalled = true;
     };
