@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Trash2, Webhook } from "lucide-react";
 import { toast } from "sonner";
-import { cb, describeFailure } from "@/lib/api";
+import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { useCollections } from "@/hooks/use-collections";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -172,7 +172,7 @@ export function WebhooksPage() {
                       >
                         {webhook.lastStatus ?? "unknown"}
                       </Badge>
-                      <div className="mt-1">{new Date(webhook.lastTriggeredAt).toLocaleString()}</div>
+                      <div className="mt-1">{parseServerDate(webhook.lastTriggeredAt).toLocaleString()}</div>
                       {webhook.lastMessage ? <div className="max-w-xs truncate">{webhook.lastMessage}</div> : null}
                     </>
                   ) : (

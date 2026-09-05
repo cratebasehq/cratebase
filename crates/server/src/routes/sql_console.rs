@@ -154,9 +154,21 @@ fn cappable_select(sql: &str, cap: usize) -> Option<String> {
     ))
 }
 
+/// Whether `sql` mentions `table` at all — a deliberately coarse,
+/// no-parser check (matches `"_superusers"`, a bare `_superusers`, or
+/// any other quoting a driver accepts) rather than trying to actually
+/// parse the statement. False positives just make an unrelated write
+/// ask again with `write: true` or get rejected once more than it has
+/// to; a false negative is a way through the guard, so this stays
+/// intentionally over-broad.
+fn references_table(sql: &str, table: &str) -> bool {
+    sql.to_ascii_lowercase()
+        .contains(&table.to_ascii_lowercase())
+}
+
 async fn run_sql(
     axum::extract::State(app): axum::extract::State<App>,
-    _su: RequireSuperuser,
+    su: RequireSuperuser,
     ApiJson(req): ApiJson<SqlRequest>,
 ) -> ApiResult<Json<SqlResponse>> {
     if req.sql.trim().is_empty() {
@@ -170,6 +182,31 @@ async fn run_sql(
             "Read-only mode: the statement must start with SELECT or WITH. \
              Pass \"write\": true to run other statements.",
         ));
+    }
+
+    // `_audit_log` has to stay append-only end to end (see
+    // `crate::audit`'s module doc on why a rule string cannot express
+    // that) — there is no legitimate reason for even a superuser to
+    // bulk-edit or erase it, raw SQL included, so any non-read
+    // statement mentioning it is refused outright, owner or not.
+    // `_superusers` writes need the same owner-only gate raw SQL would
+    // otherwise let a merely-`admin` superuser route around (see
+    // `routes::records`'s `_superusers` guard doc) — `write: true`
+    // running `UPDATE "_superusers" SET "role" = 'owner' ...` is exactly
+    // the self-promotion path that guard exists to close.
+    if !is_read {
+        if references_table(&req.sql, crate::audit::COLLECTION) {
+            return Err(ApiError::bad_request(
+                "_audit_log cannot be modified through raw SQL.",
+            ));
+        }
+        if references_table(&req.sql, cratebase_core::SUPERUSERS_COLLECTION)
+            && !crate::extract::RequireOwner::holds(&su.0)
+        {
+            return Err(ApiError::forbidden(
+                "Only an owner can run write SQL against _superusers.",
+            ));
+        }
     }
 
     if is_read {

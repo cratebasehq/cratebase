@@ -69,8 +69,12 @@ impl Default for AuthAlert {
 pub struct OAuth2Provider {
     pub name: String,
     pub client_id: String,
-    /// Write-only: never serialized back to clients.
-    #[serde(skip_serializing)]
+    /// Persisted like every other stored secret in this codebase
+    /// (`to_json()` is the same value written to `_collections.options`
+    /// — see `crates/db/src/collections.rs`'s `row_params`). Stripped
+    /// from the *outgoing* API/dashboard response instead, by
+    /// `crates/server/src/routes/collections.rs`'s response redaction,
+    /// so it still never round-trips back to a caller.
     pub client_secret: String,
     #[serde(rename = "authURL")]
     pub auth_url: String,

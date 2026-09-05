@@ -47,6 +47,27 @@ const IMPORT_FAILED: &str = "Failed to import collections.";
 /// collection (an unknown field `type`, say).
 const BAD_PAYLOAD: &str = "Failed to load the submitted data due to invalid formatting.";
 
+/// `oauth2.providers[].clientSecret` is stored (`Collection::to_json`
+/// now serializes it — see `cratebase_core::OAuth2Provider`'s doc) but
+/// must never round-trip back out to a caller, same as any other
+/// write-only secret. Every response this module hands back goes
+/// through this first; the merge base in [`update`] does not, since
+/// that one has to keep the real value to preserve it across a PATCH.
+fn redact_oauth2_secrets(mut value: Value) -> Value {
+    if let Some(providers) = value
+        .get_mut("oauth2")
+        .and_then(|o| o.get_mut("providers"))
+        .and_then(Value::as_array_mut)
+    {
+        for provider in providers {
+            if let Some(obj) = provider.as_object_mut() {
+                obj.insert("clientSecret".into(), Value::String(String::new()));
+            }
+        }
+    }
+    value
+}
+
 pub fn router() -> Router<App> {
     Router::new()
         .route("/collections", get(list).post(create))
@@ -101,7 +122,11 @@ async fn list(
         .map_err(ApiError)?;
 
     let snapshot = app.db().collections.all();
-    let mut rows: Vec<Value> = snapshot.all.iter().map(|c| c.to_json()).collect();
+    let mut rows: Vec<Value> = snapshot
+        .all
+        .iter()
+        .map(|c| redact_oauth2_secrets(c.to_json()))
+        .collect();
 
     if let Some(expr) = query
         .filter
@@ -285,12 +310,12 @@ async fn view(
         .trigger_bare(&mut event)
         .await
         .map_err(ApiError)?;
-    Ok(Json(
+    Ok(Json(redact_oauth2_secrets(
         event
             .collection
             .map(|c| c.to_json())
             .unwrap_or_else(|| collection.to_json()),
-    ))
+    )))
 }
 
 // ------------------------------------------------------------------- create
@@ -311,7 +336,7 @@ async fn create(
 
     let info = info.with_body(body);
     let saved = apply(&app, next, None, Change::Create, &info, Some(su.0)).await?;
-    Ok(Json(saved.to_json()))
+    Ok(Json(redact_oauth2_secrets(saved.to_json())))
 }
 
 // ------------------------------------------------------------------- update
@@ -348,6 +373,25 @@ async fn update(
     next.auth.verification_token.secret = existing.auth.verification_token.secret.clone();
     next.auth.password_reset_token.secret = existing.auth.password_reset_token.secret.clone();
     next.auth.email_change_token.secret = existing.auth.email_change_token.secret.clone();
+    // `oauth2.providers[].clientSecret` is stripped from every response
+    // (see `redact_oauth2_secrets`), so a PATCH built by resubmitting a
+    // provider entry read back from a GET/view response would otherwise
+    // silently blank a secret that was actually already set. Preserve
+    // each existing provider's secret, matched by name, whenever the
+    // submitted entry doesn't carry a non-empty one of its own.
+    for provider in &mut next.auth.oauth2.providers {
+        if provider.client_secret.is_empty() {
+            if let Some(prev) = existing
+                .auth
+                .oauth2
+                .providers
+                .iter()
+                .find(|p| p.name == provider.name)
+            {
+                provider.client_secret = prev.client_secret.clone();
+            }
+        }
+    }
     next.system = existing.system;
     next.created = existing.created;
     next.updated = DateTime::now();
@@ -369,7 +413,7 @@ async fn update(
         Some(su.0),
     )
     .await?;
-    Ok(Json(saved.to_json()))
+    Ok(Json(redact_oauth2_secrets(saved.to_json())))
 }
 
 // ------------------------------------------------------------------- delete
@@ -427,7 +471,7 @@ fn referencing_collection(app: &App, target: &Collection) -> Option<String> {
 
 async fn truncate(
     State(app): State<App>,
-    _su: RequireSuperuser,
+    su: RequireSuperuser,
     Path(id_or_name): Path<String>,
 ) -> ApiResult<StatusCode> {
     let collection = app
@@ -437,6 +481,20 @@ async fn truncate(
         .ok_or_else(|| ApiError::not_found(""))?;
     if collection.is_view() {
         return Err(ApiError::bad_request("Unsupported collection type."));
+    }
+    // `_audit_log` has to stay append-only end to end (see
+    // `crate::audit`'s module doc) — no legitimate reason for even a
+    // superuser to bulk-erase it, so a truncate is refused outright.
+    // `_superusers` needs the same owner-only gate its ordinary record
+    // writes do (see `routes::records`'s `_superusers` guard doc): a
+    // truncate wipes every account including every owner, which a
+    // merely-`admin` superuser must not be able to do.
+    if collection.is_superusers() {
+        crate::extract::RequireOwner::holds(&su.0)
+            .then_some(())
+            .ok_or_else(|| ApiError::forbidden("Only an owner can truncate _superusers."))?;
+    } else if collection.name == crate::audit::COLLECTION {
+        return Err(ApiError::bad_request("_audit_log cannot be truncated."));
     }
     let sql = format!("DELETE FROM {}", quote_ident(collection.table_name()));
     app.db()

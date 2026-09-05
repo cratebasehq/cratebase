@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { History, ShieldAlert } from "lucide-react";
-import { cb } from "@/lib/api";
-import { describeFailure } from "@/lib/api";
+import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { settingsAuditRoute } from "@/routes/settings-audit";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -57,8 +56,15 @@ function actionVariant(action: string): "default" | "secondary" | "destructive" 
   return "default";
 }
 
+/** `_audit_log.actor` is blanked to an empty string server-side when the
+ * referenced superuser is later deleted (`crates/server/src/audit.rs`) —
+ * there is no "system"-initiated audit write today, so an empty actor
+ * means a since-deleted superuser, not some automated process. A non-empty
+ * `actor` id whose `expand` didn't come back is a different, rarer case:
+ * the record genuinely couldn't be resolved. */
 function actorLabel(entry: AuditLogEntry): string {
-  return entry.expand?.actor?.email ?? (entry.actor ? entry.actor : "system");
+  if (entry.expand?.actor?.email) return entry.expand.actor.email;
+  return entry.actor ? "unknown" : "removed superuser";
 }
 
 /** Superuser-only view over `_audit_log`, the append-only history
@@ -196,7 +202,7 @@ export function AuditLogPage() {
                       </TableCell>
                       <TableCell className="font-mono text-xs">{entry.target}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {new Date(entry.created).toLocaleString()}
+                        {parseServerDate(entry.created).toLocaleString()}
                       </TableCell>
                       <TableCell className="text-right">
                         {hasMeta ? (

@@ -140,8 +140,16 @@ async fn cross_node_realtime_round_trip_through_postgres_listen_notify() {
         pos,
         Field::new("title", FieldKind::default_for(FieldType::Text)),
     );
+    // Large enough that a delete snapshot carrying it (with_hidden or
+    // not) blows Postgres's 8000-byte `NOTIFY` payload cap on its own —
+    // exercises the minimal-payload delete fallback below.
+    posts.fields.insert(
+        pos + 1,
+        Field::new("body", FieldKind::default_for(FieldType::Text)),
+    );
     posts.list_rule = Some(String::new());
     posts.create_rule = Some(String::new());
+    posts.delete_rule = Some(String::new());
     app_a
         .db()
         .collections
@@ -225,5 +233,74 @@ async fn cross_node_realtime_round_trip_through_postgres_listen_notify() {
     assert!(
         latency < Duration::from_secs(5),
         "cross-node realtime latency {latency:?} exceeded the test's own timeout"
+    );
+
+    // --- large-field delete: minimal-payload fallback -----------------
+    //
+    // A record whose "body" alone is well over Postgres's 8000-byte
+    // `NOTIFY` cap. Its delete's cross-node snapshot can't ride along in
+    // full, so `notify_cross_node` must fall back to an id-only
+    // snapshot rather than silently dropping the notify (the old
+    // behavior) — proven by the delete event still arriving on A with
+    // just the id, not by it carrying `body`.
+    let huge_body = "x".repeat(20_000);
+    let create_huge = client
+        .post(format!("http://{addr_b}/api/collections/posts/records"))
+        .json(&json!({ "title": "huge", "body": huge_body }))
+        .send()
+        .await
+        .expect("POST huge record on node B");
+    assert_eq!(create_huge.status(), 200, "{:?}", create_huge.text().await);
+    let created_huge: Value = create_huge.json().await.expect("created huge record body");
+    let huge_id = created_huge["id"]
+        .as_str()
+        .expect("huge record has an id")
+        .to_string();
+
+    // Drain A's stream past that create event (not the assertion here;
+    // the delete fallback is) before triggering the delete.
+    loop {
+        let (event, payload) =
+            tokio::time::timeout(Duration::from_secs(5), next_sse_frame(&mut body, &mut buf))
+                .await
+                .expect("huge record's cross-node create event never arrived within 5s");
+        if event.is_some() {
+            assert_eq!(payload["action"], "create");
+            assert_eq!(payload["record"]["id"], huge_id);
+            break;
+        }
+    }
+
+    let delete_huge = client
+        .delete(format!(
+            "http://{addr_b}/api/collections/posts/records/{huge_id}"
+        ))
+        .send()
+        .await
+        .expect("DELETE huge record on node B");
+    assert_eq!(delete_huge.status(), 204, "{:?}", delete_huge.text().await);
+
+    let (event, payload) = loop {
+        let (event, payload) =
+            tokio::time::timeout(Duration::from_secs(5), next_sse_frame(&mut body, &mut buf))
+                .await
+                .expect("cross-node delete event never arrived within 5s");
+        if event.is_some() {
+            break (event, payload);
+        }
+    };
+    assert_eq!(event.as_deref(), Some("posts"));
+    assert_eq!(payload["action"], "delete");
+    assert_eq!(payload["record"]["id"], huge_id);
+    // The fallback path: the minimal snapshot never carried `body`, so
+    // there was nothing for the receiving node to project into the
+    // delivered event — it renders as the field's empty zero value, not
+    // the 20,000-char content this record was created with.
+    let delivered_body = payload["record"]["body"].as_str().unwrap_or_default();
+    assert!(
+        delivered_body.is_empty(),
+        "delete event unexpectedly carried the huge `body` field ({} bytes): the minimal-\
+         payload fallback did not take effect",
+        delivered_body.len()
     );
 }

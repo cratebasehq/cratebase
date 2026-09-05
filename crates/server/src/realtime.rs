@@ -72,9 +72,12 @@
 //! a local write uses, so rule evaluation runs against this process's
 //! own current settings and rule text, never anything serialized by the
 //! writer. A `delete` is the one exception: the row is gone everywhere
-//! by the time this arrives, so the writer's pre-delete snapshot rides
-//! along in the payload instead (bounded the same way, and rejected by
-//! `notify_realtime` rather than silently dropped if it doesn't fit).
+//! by the time this arrives, so the writer's pre-delete snapshot (hidden
+//! fields stripped — this rides through Postgres's own query logs)
+//! rides along in the payload instead; when that snapshot alone would
+//! push the payload over the 8000-byte cap, [`notify_cross_node`] falls
+//! back to an id-only snapshot instead of dropping the notify entirely,
+//! since a delete only needs `record.id` for a client to drop the row.
 //!
 //! SQLite is single-node by definition (one file, one process), so
 //! `notify_realtime`/`subscribe_realtime` are no-ops there — see their
@@ -499,8 +502,11 @@ pub fn publish(
     // Cross-node first, and unconditionally: this process has no way to
     // know whether some *other* process sharing the database has
     // watchers for this collection, only whether it does itself. See the
-    // module doc's "Cross-node fan-out" section.
-    {
+    // module doc's "Cross-node fan-out" section. Skipped entirely on a
+    // backend that doesn't support it (SQLite): `notify_realtime` there
+    // is a no-op anyway, so the clone/spawn/serialize below would just
+    // be wasted work on every single write.
+    if app.db().engine.supports_cross_node() {
         let app = app.clone();
         let collection = collection.clone();
         let record = record.clone();
@@ -627,11 +633,33 @@ async fn notify_cross_node(
         // the pre-delete snapshot has to ride along; every other action
         // sends none and lets the receiver re-`SELECT` its own current
         // copy instead (see `receive_cross_node`).
-        payload["snapshot"] = record.to_json(cratebase_core::SerializeOptions {
-            with_hidden: true,
+        //
+        // `with_hidden: false`: Postgres logs bound statement parameters,
+        // and every other `LISTEN cratebase_realtime` client on this
+        // database receives this payload verbatim — a password hash or
+        // auth token key riding along here would leak far more widely
+        // than the row itself ever would.
+        let mut candidate = payload.clone();
+        candidate["snapshot"] = record.to_json(cratebase_core::SerializeOptions {
+            with_hidden: false,
             show_email: true,
             with_custom_data: false,
         });
+        // A large editor/json/text field can push the snapshot over
+        // Postgres's `NOTIFY` payload cap; `>=` to match Postgres's own
+        // `strlen(payload) >= NOTIFY_PAYLOAD_MAX_LENGTH` rejection.
+        // Falling back to an id-only snapshot rather than just dropping
+        // the notify entirely (the old behavior) still lets
+        // `receive_cross_node` emit `{"action":"delete","record":{"id":...}}`
+        // — PocketBase clients key a delete on `record.id` alone, so
+        // this is enough for every other node's subscribers to drop the
+        // row from their local state, even though this particular
+        // record's snapshot is too big to ride along.
+        if candidate.to_string().len() >= cratebase_db::postgres::NOTIFY_PAYLOAD_LIMIT {
+            payload["snapshot"] = serde_json::json!({ "id": record.id() });
+        } else {
+            payload = candidate;
+        }
     }
     let payload = payload.to_string();
     if let Err(e) = app.db().engine.notify_realtime(&payload).await {

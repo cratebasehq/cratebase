@@ -725,25 +725,48 @@ impl Executor for SqliteEngine {
         self.ensure_open()?;
         let rewritten = self.inner.rewritten(sql);
         let params = params.to_vec();
-        let _guard = self.inner.writer_lock.lock().await;
-        let handle = {
-            let guard = lock(&self.inner.writer);
-            guard.as_ref().map(|c| c.get_interrupt_handle())
-        };
-        let timer = handle.map(|h| {
-            tokio::spawn(async move {
-                tokio::time::sleep(timeout).await;
-                h.interrupt();
+        let inner = self.inner.clone();
+        // The guarded work runs on its own spawned task, not inline in
+        // this `async fn`'s own future: the caller here is an axum
+        // handler that may be dropped early (client disconnect/reset
+        // mid-request). If the `writer_lock` guard and interrupt timer
+        // lived in *this* future's state, dropping it would release the
+        // lock immediately while the timer — already a separate
+        // detached `tokio::spawn` — kept running for up to `timeout` and
+        // then fired `sqlite3_interrupt` on the shared writer connection,
+        // aborting whatever unrelated request happened to be using it by
+        // then. Spawning the whole critical section means dropping the
+        // awaiting future here only stops polling the `JoinHandle`; the
+        // lock, the timer, and the query stay tied together on the
+        // spawned task regardless of whether anyone is still waiting on
+        // the result.
+        let worker = tokio::spawn(async move {
+            let _guard = inner.writer_lock.lock().await;
+            let handle = {
+                let guard = lock(&inner.writer);
+                guard.as_ref().map(|c| c.get_interrupt_handle())
+            };
+            let timer = handle.map(|h| {
+                tokio::spawn(async move {
+                    tokio::time::sleep(timeout).await;
+                    h.interrupt();
+                })
+            });
+            let result = run_on_shared(&inner.writer, move |conn| {
+                run_execute(conn, &rewritten, &params)
             })
+            .await;
+            if let Some(t) = timer {
+                t.abort();
+            }
+            result
         });
-        let result = run_on_shared(&self.inner.writer, move |conn| {
-            run_execute(conn, &rewritten, &params)
-        })
-        .await;
-        if let Some(t) = timer {
-            t.abort();
+        match worker.await {
+            Ok(result) => result,
+            Err(e) => Err(DbError::Other(format!(
+                "execute_interruptible worker task failed: {e}"
+            ))),
         }
-        result
     }
 }
 
@@ -1208,5 +1231,74 @@ mod tests {
         );
         // The writer connection survived the interrupt and is still usable.
         e.execute("INSERT INTO t VALUES (1)", &[]).await.unwrap();
+    }
+
+    /// The cancellation-safety bug this method used to have: `execute_interruptible`
+    /// is called from an axum handler (the SQL console route), which axum may drop
+    /// early on a client disconnect — long before the query itself, or the interrupt
+    /// timer racing it, resolves. Before the fix, the `writer_lock` guard and the
+    /// interrupt timer lived in *that dropped future's own state*, so dropping it
+    /// released the writer lock immediately while the timer — always a separate
+    /// detached `tokio::spawn` — kept counting down regardless, and eventually fired
+    /// `sqlite3_interrupt` on the shared writer connection no matter what else was
+    /// using it by then.
+    ///
+    /// Reproduced here without needing the bug to race a runaway statement: the
+    /// "poisoner" call is cancelled from the outside a few milliseconds after it
+    /// starts, while its own bounded statement is still genuinely running, but that
+    /// statement completes normally (on its own, not via interruption) long before
+    /// its own generous 800ms timeout. The test then waits until just before that
+    /// 800ms mark and starts an entirely unrelated "victim" write, timed so it is
+    /// still genuinely executing exactly when the poisoner's now-abandoned timer
+    /// would fire. On the old, cancellation-unsafe implementation this victim write
+    /// gets spuriously interrupted; with the fix, the poisoner's timer is aborted the
+    /// moment its own spawned worker task finishes (well before 800ms), so nothing is
+    /// left to fire at all.
+    #[tokio::test]
+    async fn execute_interruptible_dropped_early_does_not_leak_its_interrupt_to_a_later_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("interrupt_leak.db");
+        let e = SqliteEngine::open(path.to_str().unwrap(), 2).unwrap();
+        e.execute("CREATE TABLE t (v INTEGER)", &[]).await.unwrap();
+
+        // ~110ms of real work (measured on this run's own hardware via the
+        // constant below), started under a generous 800ms interrupt timeout so
+        // that timeout only ever fires because the caller abandoned it, never
+        // because the statement itself ran long.
+        let poisoner_sql = "WITH RECURSIVE spin(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM spin \
+                             WHERE x < 300000) INSERT INTO t SELECT x FROM spin";
+        let poisoner_timeout = Duration::from_millis(800);
+
+        let started = std::time::Instant::now();
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(20),
+            e.execute_interruptible(poisoner_sql, &[], poisoner_timeout),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the poisoner call should still have been running 20ms in, not already resolved"
+        );
+
+        // Sleep until just before the poisoner's 800ms mark, then start a
+        // long-enough unrelated write that it is still genuinely executing when
+        // that mark passes.
+        let until_800ms = poisoner_timeout
+            .saturating_sub(Duration::from_millis(50))
+            .saturating_sub(started.elapsed());
+        tokio::time::sleep(until_800ms).await;
+        let victim_sql = "WITH RECURSIVE spin(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM spin \
+                           WHERE x < 1000000) INSERT INTO t SELECT x FROM spin";
+        e.execute(victim_sql, &[]).await.unwrap_or_else(|err| {
+            panic!(
+                "unrelated write was spuriously interrupted by the abandoned poisoner \
+                 call's timer: {err:?}"
+            )
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "test took implausibly long: {:?}",
+            started.elapsed()
+        );
     }
 }

@@ -294,9 +294,17 @@ pub fn verify_stripe_signature(
 ) -> Result<(), SignatureError> {
     let parsed = parse_stripe_signature_header(header)?;
 
-    let age = now_unix - parsed.timestamp;
+    // `parsed.timestamp` is attacker-controlled (straight from the
+    // header); an extreme value (e.g. i64::MIN) would overflow a plain
+    // subtraction on any build profile with overflow checks enabled.
+    // `checked_sub` + `unsigned_abs` resolves any such value to a huge
+    // age, which always lands in the `Stale` branch below instead.
+    let age_secs = now_unix
+        .checked_sub(parsed.timestamp)
+        .map(|d| d.unsigned_abs())
+        .unwrap_or(u64::MAX);
     let tolerance_secs = tolerance.as_secs() as i64;
-    if age.unsigned_abs() > tolerance_secs as u64 {
+    if age_secs > tolerance_secs as u64 {
         return Err(SignatureError::Stale);
     }
 
@@ -446,6 +454,25 @@ mod tests {
         let signed_at = 1_700_000_000i64;
         let header = stripe_header(secret, signed_at, body);
         let now = signed_at - 600;
+
+        let err = verify_stripe_signature(&header, body, secret.as_bytes(), DEFAULT_TOLERANCE, now)
+            .unwrap_err();
+        assert_eq!(err, SignatureError::Stale);
+    }
+
+    #[test]
+    fn extreme_adversarial_timestamp_rejected_without_overflow_panic() {
+        // `t=i64::MIN` in the header is attacker-controlled input; the
+        // age computation must never overflow-panic (e.g. under
+        // `-C overflow-checks=on`) and must always resolve to `Stale`.
+        let secret = "whsec_test";
+        let body = b"payload";
+        let header = format!(
+            "t={},v1={}",
+            i64::MIN,
+            "0".repeat(64) // signature content is irrelevant; Stale short-circuits first
+        );
+        let now = 1_700_000_000i64;
 
         let err = verify_stripe_signature(&header, body, secret.as_bytes(), DEFAULT_TOLERANCE, now)
             .unwrap_err();

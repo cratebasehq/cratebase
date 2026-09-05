@@ -247,3 +247,12 @@ function serverOrigin(): string {
 export function isSessionExpired(error: unknown): boolean {
   return error instanceof ClientResponseError && error.status === 401;
 }
+
+/** The server writes PocketBase's datetime form (a space, not a `T`,
+ * e.g. `2026-01-31 12:00:00.000Z`), which `new Date()` does not parse in
+ * every browser — Safari returns Invalid Date for it. Every call site that
+ * parses a server-supplied timestamp (`created`, `updated`, `modified`,
+ * …) must go through this, not a bare `new Date(...)`. */
+export function parseServerDate(value: string): Date {
+  return new Date(value.replace(" ", "T"));
+}

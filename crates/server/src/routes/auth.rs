@@ -70,15 +70,17 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cratebase_core::{codes, AppError, Collection, FieldError, OAuth2MappedFields, Record};
-use cratebase_db::records;
-use cratebase_db::Executor;
+use cratebase_core::{
+    codes, AppError, Collection, FieldError, FieldKind, OAuth2MappedFields, Record,
+};
+use cratebase_db::context::{CollectionResolver, RequestContext};
+use cratebase_db::{records, rules, Executor, Sql};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::app::App;
 use crate::events::{collection_tags, MailerEvent, MailerRecordEvent, RecordRequestEvent};
-use crate::extract::{Auth, MaybeAuth, RequestInfo};
+use crate::extract::{Auth, MaybeAuth, RequestInfo, RequireOwner};
 use crate::hooks::{Hook, HookResult, Hooks};
 use crate::http_error::{ApiError, ApiJson, ApiResult};
 use crate::routes::common;
@@ -1674,6 +1676,27 @@ async fn resolve_oauth2_record(
         match find_by_email(app, collection, &oauth_user.email).await? {
             Some(mut found) => {
                 if !found.verified() {
+                    // CRITICAL 3: account pre-hijacking. An attacker who
+                    // pre-registered this email by password before the
+                    // real owner ever signed in via OAuth2 must not keep
+                    // access once this login silently verifies and
+                    // links the account. Whenever this record has no
+                    // prior OAuth2 link at all — the first time trust
+                    // shifts from "whoever knows the password" to
+                    // "whoever controls the provider account" — reset
+                    // the password (mirrors PocketBase's
+                    // `SetRandomPassword`), rotate `tokenKey`
+                    // (invalidating every outstanding session for it)
+                    // and purge any existing `_externalAuths` rows
+                    // (`DeleteAllExternalAuthsByRecord`) before linking.
+                    if !has_external_auth_link(app, collection, found.id()).await? {
+                        found.set(
+                            "password",
+                            Value::String(cratebase_auth::random_alphanumeric(40)),
+                        );
+                        found.set("tokenKey", Value::String(crate::app::new_token_key()));
+                        purge_external_auths(app, collection, found.id()).await?;
+                    }
                     found.set("verified", Value::Bool(true));
                     records::update(app.db(), &app.db().collections, &mut found)
                         .await
@@ -1705,6 +1728,56 @@ async fn resolve_oauth2_record(
     Ok((record, is_new))
 }
 
+/// Whether `record_id` (in `collection`) already has *any*
+/// `_externalAuths` link, regardless of provider — used by
+/// [`resolve_oauth2_record`] to tell "this record's first OAuth2 login"
+/// (where a pre-registered attacker's password credential is still a
+/// live risk) from "already OAuth2-linked" (where it isn't).
+async fn has_external_auth_link(
+    app: &App,
+    collection: &Arc<Collection>,
+    record_id: &str,
+) -> ApiResult<bool> {
+    let externals = app
+        .db()
+        .collections
+        .get("_externalAuths")
+        .expect("_externalAuths is a default system collection");
+    let mut params = Map::new();
+    params.insert("collectionRef".into(), Value::String(collection.id.clone()));
+    params.insert("recordRef".into(), Value::String(record_id.to_string()));
+    Ok(records::find_first_by_filter(
+        app.db(),
+        &app.db().collections,
+        &externals,
+        "collectionRef = {:collectionRef} && recordRef = {:recordRef}",
+        &params,
+    )
+    .await
+    .map_err(|e| ApiError(e.into()))?
+    .is_some())
+}
+
+/// Delete every `_externalAuths` row linking `record_id` (in
+/// `collection`) to any provider — PocketBase's
+/// `DeleteAllExternalAuthsByRecord`. See [`resolve_oauth2_record`]'s
+/// CRITICAL 3 note for why this runs before trusting a previously
+/// password-only record's first OAuth2 login.
+async fn purge_external_auths(
+    app: &App,
+    collection: &Arc<Collection>,
+    record_id: &str,
+) -> ApiResult<()> {
+    app.db()
+        .execute(
+            r#"DELETE FROM "_externalAuths" WHERE "collectionRef" = $1 AND "recordRef" = $2"#,
+            &[Sql::from(collection.id.as_str()), Sql::from(record_id)],
+        )
+        .await
+        .map_err(|e| ApiError(e.into()))?;
+    Ok(())
+}
+
 /// Creates a fresh record in `collection` for a first-time OAuth2
 /// sign-in: `create_data` first (caller-supplied, e.g. extra custom
 /// fields), then whichever of the collection's `oauth2.mappedFields`
@@ -1727,6 +1800,41 @@ async fn create_oauth2_record(
     let mut body = create_data.clone();
     body.entry("email".to_string())
         .or_insert_with(|| Value::String(oauth_user.email.clone()));
+    // CRITICAL 3: only trust the stored email as verified when it is
+    // genuinely the provider's own — a caller-supplied `createData.email`
+    // that differs from what the provider vouches for must never be
+    // silently marked verified (pre-hijacking: register the victim's
+    // real address under attacker-controlled `createData.email` first,
+    // let the OAuth2 flow "verify" it).
+    let email_matches_provider =
+        body.get("email").and_then(Value::as_str) == Some(oauth_user.email.as_str());
+
+    // REAL BUG 7: an OAuth2 self-signup must still pass the collection's
+    // own `createRule`, exactly like `records::create_record` does —
+    // otherwise an invite-only collection (`createRule: null`) silently
+    // accepts anyone through this path.
+    {
+        let ctx = RequestContext {
+            body: body.clone(),
+            ..RequestContext::default()
+        };
+        if rules::is_superuser_only(&collection.create_rule, &ctx) {
+            return Err(ApiError::bad_request("Failed to create record."));
+        }
+        let resolver = CollectionResolver::new(
+            collection.clone(),
+            &app.db().collections,
+            &ctx,
+            app.db().dialect(),
+        );
+        if !rules::check_create_rule(app.db(), &resolver, &collection.create_rule)
+            .await
+            .map_err(|e| ApiError(e.into()))?
+        {
+            return Err(ApiError::bad_request("Failed to create record."));
+        }
+    }
+
     let mut assign = |field: &str, value: &str| {
         if !field.is_empty()
             && !value.is_empty()
@@ -1739,12 +1847,28 @@ async fn create_oauth2_record(
     assign(&mapped.id, &oauth_user.id);
     assign(&mapped.name, &oauth_user.name);
     assign(&mapped.username, &oauth_user.username);
-    assign(&mapped.avatar_url, &oauth_user.avatar_url);
+    // REAL BUG 8: the default mapping (`avatarURL` -> `avatar`) may
+    // target a File-typed field; the raw provider URL is not a stored
+    // filename, so writing it there would corrupt the field instead of
+    // populating it. Skip the assignment (leave it unset) whenever the
+    // mapped field is a File field.
+    if !mapped.avatar_url.is_empty()
+        && !oauth_user.avatar_url.is_empty()
+        && !body.contains_key(&mapped.avatar_url)
+        && collection
+            .field(&mapped.avatar_url)
+            .is_some_and(|f| !matches!(f.kind, FieldKind::File { .. }))
+    {
+        body.insert(
+            mapped.avatar_url.clone(),
+            Value::String(oauth_user.avatar_url.clone()),
+        );
+    }
     body.insert(
         "password".into(),
         Value::String(cratebase_auth::random_alphanumeric(40)),
     );
-    body.insert("verified".into(), Value::Bool(true));
+    body.insert("verified".into(), Value::Bool(email_matches_provider));
 
     let mut record = records::from_body(collection.clone(), &body);
     record.set("tokenKey", Value::String(crate::app::new_token_key()));
@@ -1947,19 +2071,26 @@ async fn record_login_origin_inner(
 async fn impersonate(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
-    caller: MaybeAuth,
+    caller: crate::extract::ImpersonateAuth,
     ApiJson(raw): ApiJson<Value>,
 ) -> ApiResult<Json<Value>> {
     let collection = common::auth_collection_of(&app, &name)?;
-    let caller = match caller.0 {
-        Some(a) if a.is_superuser => a,
-        Some(_) => {
-            return Err(ApiError::forbidden(
-                "The authorized record is not allowed to perform this action.",
-            ))
-        }
-        None => return Err(ApiError::unauthorized("")),
-    };
+    let caller = caller.0;
+    // Impersonating a `_superusers` record has to hold to the same
+    // owner/admin split every other `_superusers`-specific write does
+    // (see `routes::records`'s guard doc): the impersonated session
+    // inherits full owner privileges, so a merely-`admin` superuser — or
+    // an API key, which resolves `is_superuser: true` with no `role` at
+    // all and belongs to `_api_keys`, never `_superusers` — must not be
+    // able to mint one for an owner.
+    if collection.is_superusers()
+        && (caller.collection_name != cratebase_core::SUPERUSERS_COLLECTION
+            || !RequireOwner::holds(&caller))
+    {
+        return Err(ApiError::forbidden(
+            "Only an owner can impersonate a superuser account.",
+        ));
+    }
 
     let record = records::find_by_id_raw(app.db(), &collection, &id)
         .await
@@ -2118,6 +2249,69 @@ mod oauth2_tests {
     }
 
     #[tokio::test]
+    async fn mapped_avatar_url_is_never_written_into_a_file_field() {
+        // `users`' default mapped_fields sends `avatarURL` at `"avatar"`,
+        // which is a `File` field on the default `users` collection — a
+        // provider avatar URL string is not a stored filename, so it must
+        // never land there (see `create_oauth2_record`'s File-kind guard).
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+        let mut user = oauth_user("provider-1", "jo@example.com");
+        user.avatar_url = "https://avatars.example/u/583231".into();
+
+        let (record, is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &user,
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("resolve");
+
+        assert!(is_new);
+        assert_eq!(
+            record.get_string("avatar"),
+            "",
+            "a provider avatar URL must never be stored as a File field's filename"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invite_only_collections_create_rule_blocks_oauth2_signup() {
+        // `createRule: null` means "only superusers can create a record
+        // here" — an invite-only app that enables OAuth2 for existing
+        // members only must not let a brand-new provider account
+        // self-register just because it has a valid Google/GitHub token.
+        let (app, _dir) = test_app().await;
+        let mut collection = (*oauth2_enabled(&app, "users").await).clone();
+        collection.create_rule = None;
+        app.db()
+            .collections
+            .update(&*app.db().engine, &collection)
+            .await
+            .expect("lock down createRule");
+        let collection = app.db().collections.get_by_name("users").expect("reload");
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let err = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("provider-1", "new-signup@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect_err("createRule: null must reject a brand-new OAuth2 signup");
+        assert_eq!(err.error.to_string(), "Failed to create record.");
+    }
+
+    #[tokio::test]
     async fn a_different_provider_with_the_same_email_links_onto_the_existing_record() {
         let (app, _dir) = test_app().await;
         let collection = oauth2_enabled(&app, "users").await;
@@ -2232,5 +2426,282 @@ mod oauth2_tests {
         .await;
 
         assert!(result.is_err());
+    }
+
+    /// CRITICAL 3: a caller-supplied `createData.email` that differs
+    /// from the provider's own must never be silently marked verified —
+    /// otherwise pre-registering the victim's real address under a
+    /// controlled `createData.email` and completing *any* OAuth2 login
+    /// verifies it for free.
+    #[tokio::test]
+    async fn spoofed_create_data_email_is_never_silently_verified() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let mut create_data = Map::new();
+        create_data.insert("email".into(), Value::String("victim@example.com".into()));
+
+        let (record, is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("attacker-provider", "attacker@example.com"),
+            &mapped,
+            &create_data,
+            None,
+        )
+        .await
+        .expect("resolve");
+
+        assert!(is_new);
+        assert_eq!(record.get_string("email"), "victim@example.com");
+        assert!(
+            !record.verified(),
+            "spoofed createData.email must not be silently verified"
+        );
+    }
+
+    /// CRITICAL 4 (integration half — `cratebase_auth::oauth2`'s own
+    /// tests pin the parsing itself): an `OAuth2User` with no verified
+    /// email — exactly what `parse_google_userinfo`/
+    /// `parse_generic_userinfo` now produce for an unverified claim —
+    /// must never match an existing record by email.
+    #[tokio::test]
+    async fn an_unverified_email_claim_never_matches_an_existing_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let (victim, _) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("victim-provider", "victim@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("seed victim");
+
+        let unverified_claim = cratebase_auth::OAuth2User {
+            id: "attacker-provider".into(),
+            name: "Attacker".into(),
+            username: String::new(),
+            email: String::new(),
+            avatar_url: String::new(),
+        };
+        // The provider vouched for nothing, so the caller has to supply
+        // its own address (an anonymous claim with no email at all
+        // can't create a `users` row either, since `email` is required
+        // there) — the point under test is that this can never resolve
+        // to `victim`'s own record just because the *attacker* happens
+        // to know `victim@example.com`.
+        let mut create_data = Map::new();
+        create_data.insert(
+            "email".into(),
+            Value::String("attacker-own-address@example.com".into()),
+        );
+        let (claimed, is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &unverified_claim,
+            &mapped,
+            &create_data,
+            None,
+        )
+        .await
+        .expect("resolve with no verified email");
+
+        assert!(
+            is_new,
+            "an unverified claim must never match an existing record by email"
+        );
+        assert_ne!(claimed.id(), victim.id());
+        assert!(
+            !claimed.verified(),
+            "an unverified claim's own new record must not be silently verified either"
+        );
+    }
+
+    /// CRITICAL 3 (the pre-hijacking half): the very first OAuth2 login
+    /// to genuinely match a pre-registered, still-unverified record must
+    /// reset its password and `tokenKey` and purge any `_externalAuths`
+    /// rows — an attacker who registered the victim's email by password
+    /// first, possibly with their own provider link already attached,
+    /// must lose access once the real owner's provider account claims
+    /// it.
+    #[tokio::test]
+    async fn first_oauth2_match_resets_a_pre_registered_unverified_record() {
+        let (app, _dir) = test_app().await;
+        let collection = oauth2_enabled(&app, "users").await;
+        let mapped = collection.auth.oauth2.mapped_fields.clone();
+
+        let mut body = Map::new();
+        body.insert("email".into(), Value::String("victim@example.com".into()));
+        body.insert(
+            "password".into(),
+            Value::String("attacker-password-123".into()),
+        );
+        let mut pre_registered = records::from_body(collection.clone(), &body);
+        let original_token_key = "original-token-key-30-characters!!";
+        pre_registered.set("tokenKey", Value::String(original_token_key.to_string()));
+        records::create(app.db(), &app.db().collections, &mut pre_registered)
+            .await
+            .expect("seed pre-registered record");
+        assert!(!pre_registered.verified());
+        let attacker_password_hash = pre_registered.password_hash().to_string();
+
+        let (linked, is_new) = resolve_oauth2_record(
+            &app,
+            &collection,
+            "custom",
+            &oauth_user("victim-provider", "victim@example.com"),
+            &mapped,
+            &Map::new(),
+            None,
+        )
+        .await
+        .expect("victim's real oauth2 login");
+
+        assert!(!is_new);
+        assert_eq!(linked.id(), pre_registered.id());
+        assert!(linked.verified());
+        assert_ne!(
+            linked.password_hash(),
+            attacker_password_hash,
+            "the attacker's password must no longer work"
+        );
+        assert_ne!(
+            linked.token_key(),
+            original_token_key,
+            "every outstanding attacker session must be invalidated"
+        );
+    }
+}
+
+#[cfg(test)]
+mod impersonate_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use cratebase_auth::TokenType;
+    use cratebase_db::engine::{Executor, Sql};
+    use tower::ServiceExt;
+
+    use crate::app::App;
+    use crate::config::Config;
+
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(Config::memory(dir.path()));
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    async fn superuser(app: &App, email: &str, role: &str) -> (String, String) {
+        let id = app
+            .create_superuser(email, "password12345")
+            .await
+            .expect("create superuser");
+        if role != cratebase_core::SUPERUSER_ROLE_OWNER {
+            app.db()
+                .execute(
+                    r#"UPDATE "_superusers" SET "role" = $1 WHERE "id" = $2"#,
+                    &[Sql::from(role), Sql::from(id.as_str())],
+                )
+                .await
+                .expect("set role");
+        }
+        let token = app
+            .mint_token("_superusers", &id, TokenType::Auth, 3600)
+            .await
+            .expect("mint token");
+        (id, token)
+    }
+
+    fn impersonate_request(token: &str, target_id: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/collections/_superusers/impersonate/{target_id}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap()
+    }
+
+    /// CRITICAL 2: impersonate used to gate only on `is_superuser`, so a
+    /// merely-`admin` superuser could impersonate an owner and inherit
+    /// full owner privileges for the impersonated session's lifetime.
+    #[tokio::test]
+    async fn admin_cannot_impersonate_an_owner() {
+        let (app, _dir) = test_app().await;
+        let (owner_id, _owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (_admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .oneshot(impersonate_request(&admin_token, &owner_id))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// An owner impersonating another owner is unaffected by the fix.
+    #[tokio::test]
+    async fn owner_can_impersonate_another_owner() {
+        let (app, _dir) = test_app().await;
+        let (owner1_id, owner1_token) = superuser(&app, "owner1@example.com", "owner").await;
+        let (owner2_id, _owner2_token) = superuser(&app, "owner2@example.com", "owner").await;
+        let _ = owner1_id;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .oneshot(impersonate_request(&owner1_token, &owner2_id))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Impersonating an ordinary (non-`_superusers`) auth collection's
+    /// record is unaffected by the owner-only gate — only management of
+    /// *other superusers* needs it.
+    #[tokio::test]
+    async fn admin_can_still_impersonate_an_ordinary_user() {
+        let (app, _dir) = test_app().await;
+        let (_admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let users = app.db().collections.get_by_name("users").expect("users");
+        let mut record = cratebase_core::Record::new(users);
+        record.set(
+            "email",
+            serde_json::Value::String("person@example.com".into()),
+        );
+        record.set(
+            "password",
+            serde_json::Value::String("whatever-password".into()),
+        );
+        record.set(
+            "tokenKey",
+            serde_json::Value::String(crate::app::new_token_key()),
+        );
+        cratebase_db::records::create(app.db(), &app.db().collections, &mut record)
+            .await
+            .expect("seed ordinary user");
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/collections/users/impersonate/{}", record.id()))
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

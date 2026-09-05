@@ -15,7 +15,7 @@ pub enum MailerError {
     Resend { status: u16, body: String },
     #[error("twilio api error ({status}): {body}")]
     Twilio { status: u16, body: String },
-    #[error("http request to resend failed: {0}")]
+    #[error("http request failed: {0}")]
     Http(#[from] reqwest::Error),
 }
 

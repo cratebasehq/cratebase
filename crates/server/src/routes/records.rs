@@ -647,27 +647,24 @@ pub(crate) async fn update_record(
     // non-role fields (self-service password/email changes stay on the
     // `is_superuser_only` gate above), but touching *another* account,
     // or changing anyone's `role` (including one's own — closing a
-    // self-promotion hole), needs an owner. On top of that, demoting the
-    // sole remaining owner is rejected outright: nobody would be left
-    // who could ever promote a replacement.
-    if collection.is_superusers() {
-        let role_change = body.data.contains_key("role");
+    // self-promotion hole), needs an owner. The permission check above
+    // is safe to run outside the transaction (it only reads the
+    // caller's own resolved auth and the pre-fetched `previous` row),
+    // but whether this demotion would leave zero owners is not: two
+    // concurrent demotions could each observe the same stale count, so
+    // that check runs inside the write transaction below, against
+    // [`count_owners`]'s authoritative, lock-serialized read.
+    let maybe_role_change = if collection.is_superusers() {
+        let role_change = submitted_role_change(&body.data, &previous);
         let touches_other = info.auth.as_ref().is_none_or(|a| a.id != id);
-        if role_change || touches_other {
+        if role_change.is_some() || touches_other {
             require_owner(info.auth.as_ref(), "manage another superuser's account")?;
         }
-        if role_change {
-            let demoted_from_owner = previous.get_string("role")
-                == cratebase_core::SUPERUSER_ROLE_OWNER
-                && body.data.get("role").and_then(Value::as_str)
-                    != Some(cratebase_core::SUPERUSER_ROLE_OWNER);
-            if demoted_from_owner && count_owners(&app).await? <= 1 {
-                return Err(ApiError::bad_request(
-                    "Cannot change the role of the last remaining owner.",
-                ));
-            }
-        }
-    }
+        role_change
+    } else {
+        None
+    };
+    let previous_was_owner = previous.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
 
     let manage = common::has_manage_access(app.db(), &app.db().collections, &ctx, &collection, &id)
         .await
@@ -696,20 +693,37 @@ pub(crate) async fn update_record(
     let uploads = body.upload_meta();
 
     let before = previous.clone();
+    let needs_lockout_check = previous_was_owner
+        && maybe_role_change
+            .as_deref()
+            .is_some_and(|r| r != cratebase_core::SUPERUSER_ROLE_OWNER);
     let saved = run_request(
         &app,
         &collection,
         &info,
         |hooks| &hooks.on_record_update_request,
         move |tx, collection, record| {
-            Box::pin(write_record(
-                tx,
-                collection,
-                record,
-                Some(before),
-                Write::Update,
-                uploads,
-            ))
+            Box::pin(async move {
+                let is_superusers = collection.is_superusers();
+                let saved = write_record(
+                    tx.clone(),
+                    collection,
+                    record,
+                    Some(before),
+                    Write::Update,
+                    uploads,
+                )
+                .await?;
+                if is_superusers
+                    && needs_lockout_check
+                    && count_owners(&tx).await.map_err(|e| e.error)? == 0
+                {
+                    return Err(AppError::bad_request(
+                        "Cannot change the role of the last remaining owner.",
+                    ));
+                }
+                Ok(saved)
+            })
         },
         record,
         true,
@@ -772,17 +786,12 @@ pub(crate) async fn delete_record(
     // Deleting a superuser account is always owner-only, self or not —
     // PocketBase-style admin/session lockout is a worse failure mode
     // than a superuser having to ask an owner to remove their own
-    // account. The sole remaining owner can never be deleted at all:
-    // that would leave nobody who could ever create another one.
+    // account. The permission check is safe outside the transaction;
+    // the sole-owner lockout is not (see `count_owners`'s doc) — it is
+    // re-checked inside the write transaction below.
+    let was_owner = record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
     if collection.is_superusers() {
         require_owner(info.auth.as_ref(), "delete a superuser account")?;
-        if record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER
-            && count_owners(&app).await? <= 1
-        {
-            return Err(ApiError::bad_request(
-                "Cannot delete the last remaining owner.",
-            ));
-        }
     }
 
     let files: Arc<Mutex<Vec<FileRef>>> = Arc::new(Mutex::new(Vec::new()));
@@ -794,7 +803,14 @@ pub(crate) async fn delete_record(
         |hooks| &hooks.on_record_delete_request,
         move |tx, collection, record| {
             Box::pin(async move {
-                let (record, removed) = delete_in_tx(tx, collection, record).await?;
+                let is_superusers = collection.is_superusers();
+                let (record, removed) = delete_in_tx(tx.clone(), collection, record).await?;
+                if is_superusers && was_owner && count_owners(&tx).await.map_err(|e| e.error)? == 0
+                {
+                    return Err(AppError::bad_request(
+                        "Cannot delete the last remaining owner.",
+                    ));
+                }
                 *sink.lock().expect("file slot poisoned") = removed;
                 Ok(record)
             })
@@ -828,14 +844,15 @@ pub(crate) async fn delete_record(
 // -------------------------------------------------- `_superusers` roles
 
 /// The owner-only gate `create_record`/`update_record`/`delete_record`
-/// apply to `_superusers` writes that manage *another* account. `auth`
-/// is `None` only when a plugin or test calls one of those handlers
-/// with no caller at all, which can't happen over real HTTP (the
-/// `is_superuser_only` check above already rejected it) but is handled
-/// the safe way regardless. Delegates to [`crate::extract::RequireOwner`]
-/// so the request-extractor form and this inline form can never
-/// disagree about who counts as an owner.
-fn require_owner(auth: Option<&crate::extract::Auth>, action: &str) -> ApiResult<()> {
+/// (and `crate::routes::batch`'s equivalents) apply to `_superusers`
+/// writes that manage *another* account. `auth` is `None` only when a
+/// plugin or test calls one of those handlers with no caller at all,
+/// which can't happen over real HTTP (the `is_superuser_only` check
+/// above already rejected it) but is handled the safe way regardless.
+/// Delegates to [`crate::extract::RequireOwner`] so the request-extractor
+/// form and this inline form can never disagree about who counts as an
+/// owner.
+pub(crate) fn require_owner(auth: Option<&crate::extract::Auth>, action: &str) -> ApiResult<()> {
     if auth.is_some_and(crate::extract::RequireOwner::holds) {
         Ok(())
     } else {
@@ -845,20 +862,68 @@ fn require_owner(auth: Option<&crate::extract::Auth>, action: &str) -> ApiResult
     }
 }
 
-/// How many `_superusers` rows currently carry `role = "owner"` — the
-/// count the lockout checks in `update_record`/`delete_record` compare
-/// against so the very last owner can never be demoted or deleted.
-async fn count_owners(app: &App) -> ApiResult<i64> {
-    Ok(app
-        .db()
-        .query_scalar(
-            r#"SELECT COUNT(*) FROM "_superusers" WHERE "role" = 'owner'"#,
-            &[],
-        )
+/// The normalized `role` a `_superusers` write submits: a single-select
+/// field's plain string form, or — since some SDKs submit any select
+/// field's value as a one-element array even at `maxSelect: 1` — the
+/// first element of that array form.
+fn normalize_role_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(items) => items.first().and_then(Value::as_str).map(str::to_string),
+        _ => None,
+    }
+}
+
+/// Whether a `_superusers` update body is a genuine attempt to change
+/// `role` — comparing the *normalized submitted value* against the
+/// *stored* one, not merely whether the body happens to carry a `role`
+/// key. A client that resends its own current role verbatim (a
+/// profile-save form, or the array shape some SDKs submit for a select
+/// field) must not be treated as a change attempt. Returns the
+/// normalized new role when it is one; `None` otherwise. A submitted
+/// value that fails to normalize (an unrecognized shape) is still
+/// treated as a change — with an empty new-role string, which can never
+/// equal [`cratebase_core::SUPERUSER_ROLE_OWNER`] — rather than silently
+/// ignored, so a malformed payload can never slip past the owner check
+/// below it.
+pub(crate) fn submitted_role_change(
+    body: &Map<String, Value>,
+    previous: &Record,
+) -> Option<String> {
+    let raw = body.get("role")?;
+    let normalized = normalize_role_value(raw).unwrap_or_default();
+    let previous_role = previous.get_string("role");
+    if normalized == previous_role {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+/// How many `_superusers` rows currently carry `role = "owner"`. Row-locks
+/// them on Postgres (`FOR UPDATE`) so a concurrent transaction changing
+/// another owner's role blocks until this one commits or rolls back —
+/// on SQLite the equivalent serialization already comes for free from
+/// `BEGIN IMMEDIATE`. Callers that need this count to be authoritative
+/// against a concurrent demote/delete (see `update_record`/`delete_record`
+/// and `crate::routes::batch`) MUST call this with the write-scope's own
+/// `TxApp`, from inside the transaction that performs the write — never
+/// with a plain, pre-transaction `Executor`, or the count is stale by
+/// the time the write commits.
+pub(crate) async fn count_owners(executor: &dyn Executor) -> ApiResult<i64> {
+    let sql = match executor.dialect() {
+        cratebase_filter::Dialect::Postgres => {
+            r#"SELECT "id" FROM "_superusers" WHERE "role" = 'owner' FOR UPDATE"#
+        }
+        cratebase_filter::Dialect::Sqlite => {
+            r#"SELECT "id" FROM "_superusers" WHERE "role" = 'owner'"#
+        }
+    };
+    let rows = executor
+        .query(sql, &[])
         .await
-        .map_err(|e| ApiError(AppError::from(e)))?
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0))
+        .map_err(|e| ApiError(AppError::from(e)))?;
+    Ok(rows.len() as i64)
 }
 
 /// Whether this delete has to be wrapped in an explicit transaction.
@@ -876,6 +941,13 @@ async fn count_owners(app: &App) -> ApiResult<i64> {
 /// the collection — is the common one, so this is the path most deletes
 /// take.
 fn delete_needs_transaction(app: &App, collection: &Collection) -> bool {
+    // `_superusers` always needs a real transaction: `delete_record`'s
+    // owner-count lockout check below must run under the same write
+    // lock the delete itself takes, or it is not authoritative against
+    // a concurrent delete/demote (see `count_owners`'s doc).
+    if collection.is_superusers() {
+        return true;
+    }
     if records::delete_touches_other_collections(&app.db().collections, collection) {
         return true;
     }

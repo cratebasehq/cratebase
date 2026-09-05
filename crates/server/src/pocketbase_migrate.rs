@@ -357,7 +357,16 @@ fn translate_collection(
             // keeps the secrets it generated at bootstrap.
         }
     } else if pbc.collection_type == "view" {
-        if let Some(query) = pbc.options.get("query").and_then(Value::as_str) {
+        // PocketBase v0.23+ (the shape this tool otherwise assumes
+        // throughout, e.g. the `fields` column above) persists the view
+        // SQL under `viewQuery`. `query` is only checked as a fallback
+        // for an actual pre-v0.23 dump; on a v0.23+ export it is absent.
+        let view_query = pbc
+            .options
+            .get("viewQuery")
+            .and_then(Value::as_str)
+            .or_else(|| pbc.options.get("query").and_then(Value::as_str));
+        if let Some(query) = view_query {
             doc.insert("viewQuery".into(), json!(query));
         }
     }
@@ -697,6 +706,39 @@ mod tests {
             doc.get("authToken").is_none(),
             "token secrets must never be copied across instances"
         );
+    }
+
+    #[test]
+    fn view_collection_carries_view_query_intact() {
+        let c = pbc(
+            "view",
+            json!([]),
+            json!({
+                "viewQuery": "SELECT id, title FROM widgets WHERE active = true"
+            }),
+        );
+        let mut unsupported = Vec::new();
+        let (doc, oauth2_flag) = translate_collection(&c, &mut unsupported);
+        assert!(!oauth2_flag);
+        assert!(unsupported.is_empty());
+        assert_eq!(
+            doc["viewQuery"],
+            json!("SELECT id, title FROM widgets WHERE active = true")
+        );
+    }
+
+    #[test]
+    fn view_collection_falls_back_to_pre_v023_query_key() {
+        let c = pbc(
+            "view",
+            json!([]),
+            json!({
+                "query": "SELECT id FROM widgets"
+            }),
+        );
+        let mut unsupported = Vec::new();
+        let (doc, _) = translate_collection(&c, &mut unsupported);
+        assert_eq!(doc["viewQuery"], json!("SELECT id FROM widgets"));
     }
 
     #[test]

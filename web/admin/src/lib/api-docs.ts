@@ -102,8 +102,12 @@ function sampleResponseValue(field: FieldSchema): unknown {
 
 /** PocketBase's own dashboard puts it exactly this bluntly: a `null` rule
  * is superuser-only, `""` is public, anything else is a filter expression
- * evaluated against the request. */
+ * evaluated against the request. A whitespace-only rule (e.g. the rule
+ * editor's own Custom-mode placeholder, `" "`) is neither — `evaluate()`
+ * in `crates/db/src/rules.rs` treats any rule whose `.trim()` is empty as
+ * `AllowAll`, so it must be documented as public too, not "restricted". */
 function describeRule(field: string, value: string | null | undefined): RuleInfo {
+  const trimmed = value?.trim();
   if (value === null) {
     return {
       field,
@@ -112,7 +116,7 @@ function describeRule(field: string, value: string | null | undefined): RuleInfo
       summary: "Only superusers can perform this action.",
     };
   }
-  if (value === "") {
+  if (trimmed === "") {
     return {
       field,
       value,
@@ -133,7 +137,12 @@ const CONTENT_TYPE_JSON = { name: "Content-Type", value: "application/json", req
 
 function headersFor(rule: RuleInfo, extra: { name: string; value: string; required: boolean }[] = []) {
   const headers = [...extra];
-  if (rule.tone === "locked" || rule.tone === "restricted") headers.push(AUTH_HEADER_REQUIRED);
+  // A locked (superuser-only) rule always needs auth. A restricted custom
+  // rule only needs it if the rule text actually inspects the caller's
+  // identity — plenty of custom rules (e.g. `published = true`) are
+  // satisfiable by anonymous callers and shouldn't claim otherwise.
+  const restrictedNeedsAuth = rule.tone === "restricted" && rule.value?.includes("@request.auth");
+  if (rule.tone === "locked" || restrictedNeedsAuth) headers.push(AUTH_HEADER_REQUIRED);
   return headers;
 }
 
@@ -152,8 +161,13 @@ function sampleRecord(collection: CollectionModel, fields: FieldSchema[], identi
     record.emailVisibility = false;
   }
   for (const field of fields) record[field.name] = sampleResponseValue(field);
-  record.created = "2026-01-31 12:00:00.000Z";
-  record.updated = "2026-01-31 12:00:00.000Z";
+  // View collections are read-only projections with no backing table of
+  // their own — `crates/db` never stamps them with `created`/`updated`
+  // columns, so a docs example that invents them would be wrong.
+  if (collection.type !== "view") {
+    record.created = "2026-01-31 12:00:00.000Z";
+    record.updated = "2026-01-31 12:00:00.000Z";
+  }
   record.collectionId = collection.id;
   record.collectionName = collection.name;
   return record;
@@ -170,6 +184,16 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
   const identityField = collection.type === "auth" ? (collection.passwordAuth?.identityFields?.[0] ?? "email") : "email";
 
   const requestBody = Object.fromEntries(fields.map((f) => [f.name, sampleRequestValue(f)]));
+  // Auth collections require email/password/passwordConfirm on create
+  // (`password_field`/`email_field` are mandatory and must match — see
+  // `crates/server/src/routes/records.rs`'s create_record) but
+  // `userFields()` strips every system field, so the plain requestBody
+  // above is missing them; the update example doesn't need them since a
+  // PATCH is optional-password.
+  const createRequestBody =
+    collection.type === "auth"
+      ? { email: "someone@example.com", password: "a-password", passwordConfirm: "a-password", ...requestBody }
+      : requestBody;
   const record = sampleRecord(collection, fields, identityField);
 
   const listRule = describeRule("listRule", collection.listRule);
@@ -213,11 +237,11 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     path: `/api/collections/${name}/records`,
     rule: createRule,
     headers: headersFor(createRule, [CONTENT_TYPE_JSON]),
-    requestBody,
+    requestBody: createRequestBody,
     responseStatus: 200,
     responseBody: record,
-    curl: curlFor("POST", `${base}/records`, headersFor(createRule, [CONTENT_TYPE_JSON]), requestBody),
-    js: `const record = await pb.collection("${name}").create(${JSON.stringify(requestBody, null, 2)});`,
+    curl: curlFor("POST", `${base}/records`, headersFor(createRule, [CONTENT_TYPE_JSON]), createRequestBody),
+    js: `const record = await pb.collection("${name}").create(${JSON.stringify(createRequestBody, null, 2)});`,
   };
 
   const update: DocEndpoint = {
@@ -246,6 +270,12 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     js: `await pb.collection("${name}").delete("RECORD_ID");`,
   };
 
+  // Views are read-only: `create_record`/`update_record`/`delete_record`
+  // in `crates/server/src/routes/records.rs` reject any write against a
+  // view collection with a 400 for every caller, superusers included, so
+  // there is no write panel to show.
+  if (collection.type === "view") return [list, view];
+
   const crud = [list, view, create, update, del];
   if (collection.type !== "auth") return crud;
 
@@ -260,16 +290,21 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     password: "a-password",
   };
 
+  const passwordAuthEnabled = collection.passwordAuth?.enabled ?? false;
   const authWithPassword: DocEndpoint = {
     id: "auth-with-password",
     label: "Auth with password",
     method: "POST",
     path: `/api/collections/${name}/auth-with-password`,
-    rule: authRule,
+    rule: passwordAuthEnabled
+      ? authRule
+      : { ...authRule, tone: "locked", summary: "Password auth is disabled for this collection — every request is rejected with 403 PASSWORD_DISABLED." },
     headers: headersFor({ ...authRule, tone: "public" }, [CONTENT_TYPE_JSON]),
     requestBody: authBody,
-    responseStatus: 200,
-    responseBody: { token: "JWT_TOKEN", record },
+    responseStatus: passwordAuthEnabled ? 200 : 403,
+    responseBody: passwordAuthEnabled
+      ? { token: "JWT_TOKEN", record }
+      : { status: 403, message: "Password authentication is not allowed for this collection.", data: {} },
     curl: curlFor("POST", `${base}/auth-with-password`, [CONTENT_TYPE_JSON], authBody),
     js: `const auth = await pb.collection("${name}").authWithPassword(
   "${authBody.identity}",
@@ -300,10 +335,13 @@ pb.authStore.isValid; // true`,
     headers: [],
     responseStatus: 200,
     responseBody: {
-      password: { enabled: true, identityFields: collection.passwordAuth?.identityFields ?? ["email"] },
-      oauth2: { enabled: false, providers: [] },
-      mfa: { enabled: false, duration: 0 },
-      otp: { enabled: false, duration: 0 },
+      password: { enabled: passwordAuthEnabled, identityFields: collection.passwordAuth?.identityFields ?? ["email"] },
+      oauth2: {
+        enabled: collection.oauth2?.enabled ?? false,
+        providers: (collection.oauth2?.providers ?? []).map((p) => ({ name: p.name, displayName: p.name })),
+      },
+      mfa: { enabled: collection.mfa?.enabled ?? false, duration: collection.mfa?.duration ?? 0 },
+      otp: { enabled: collection.otp?.enabled ?? false, duration: collection.otp?.duration ?? 0 },
     },
     curl: curlFor("GET", `${base}/auth-methods`, []),
     js: `const methods = await pb.collection("${name}").listAuthMethods();`,

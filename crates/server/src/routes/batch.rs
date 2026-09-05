@@ -417,7 +417,7 @@ async fn process_item(
         Op::Create => create_item(&ictx, item.body, item.uploads, None).await,
         Op::Update(id) => update_item(&ictx, id, item.body, item.uploads).await,
         Op::Upsert => upsert_item(&ictx, item.body, item.uploads).await,
-        Op::Delete(id) => delete_item(tx, &collection, &ctx, id).await,
+        Op::Delete(id) => delete_item(tx, &collection, &info, &ctx, id).await,
     }
 }
 
@@ -440,6 +440,13 @@ async fn create_item(
     } = *ictx;
     if rules::is_superuser_only(&collection.create_rule, ctx) {
         return Err(ApiError(rule_errors::superusers_only()));
+    }
+    // Creating a `_superusers` row through the batch API is exactly as
+    // dangerous as through `records::create_record` — it always manages
+    // *another* account — so it needs the same owner-only gate. See
+    // `records.rs`'s `_superusers` guard doc.
+    if collection.is_superusers() {
+        record_route::require_owner(ictx.info.auth.as_ref(), "create a superuser account")?;
     }
     {
         let resolver = CollectionResolver::new(
@@ -494,6 +501,16 @@ async fn create_item(
             return Err(common::relabel_upload_errors(ApiError(e), &uploads));
         }
     };
+    if collection.is_superusers() {
+        crate::audit::write_in_tx(
+            tx,
+            info.auth.as_ref().map(|a| a.id.as_str()),
+            "superuser.create",
+            crate::audit::superuser_target(&saved),
+            serde_json::json!({ "email": saved.get_string("email") }),
+        )
+        .await;
+    }
 
     let value = serialize_record(
         tx.app(),
@@ -545,6 +562,22 @@ async fn update_item(
     {
         return Err(ApiError(rule_errors::hidden_record()));
     }
+    // Same `_superusers` guard as `records::update_record`: touching
+    // another account, or changing anyone's `role`, needs an owner; the
+    // sole-owner lockout below is re-checked with `record_route::count_owners`
+    // against the batch's own already-open `tx`, so it is authoritative
+    // even against a concurrent request racing this same batch's write
+    // lock (see `count_owners`'s doc).
+    let role_change = if collection.is_superusers() {
+        let role_change = record_route::submitted_role_change(&body, &previous);
+        let touches_other = info.auth.as_ref().is_none_or(|a| a.id != id);
+        if role_change.is_some() || touches_other {
+            record_route::require_owner(info.auth.as_ref(), "manage another superuser's account")?;
+        }
+        role_change
+    } else {
+        None
+    };
     let manage = common::has_manage_access(tx, &tx.db().collections, ctx, collection, &id)
         .await
         .map_err(|e| ApiError(e.into()))?;
@@ -568,6 +601,7 @@ async fn update_item(
     let upload_meta: Vec<UploadMeta> = uploads.iter().map(StagedUpload::meta).collect();
 
     let before = previous.clone();
+    let previous_role = previous.get_string("role");
     let saved = record_route::write_record(
         tx.clone(),
         collection.clone(),
@@ -584,6 +618,28 @@ async fn update_item(
             return Err(common::relabel_upload_errors(ApiError(e), &uploads));
         }
     };
+    if collection.is_superusers() {
+        let demoted_from_owner = previous_role == cratebase_core::SUPERUSER_ROLE_OWNER
+            && role_change
+                .as_deref()
+                .is_some_and(|r| r != cratebase_core::SUPERUSER_ROLE_OWNER);
+        if demoted_from_owner && record_route::count_owners(tx).await.map_err(|e| e.error)? == 0 {
+            return Err(ApiError::bad_request(
+                "Cannot change the role of the last remaining owner.",
+            ));
+        }
+        let new_role = saved.get_string("role");
+        if new_role != previous_role {
+            crate::audit::write_in_tx(
+                tx,
+                info.auth.as_ref().map(|a| a.id.as_str()),
+                "superuser.role_change",
+                crate::audit::superuser_target(&saved),
+                serde_json::json!({ "from": previous_role, "to": new_role }),
+            )
+            .await;
+        }
+    }
 
     let kept: std::collections::HashSet<String> =
         common::record_file_names(&saved).into_iter().collect();
@@ -642,6 +698,7 @@ async fn upsert_item(
 async fn delete_item(
     tx: &TxApp,
     collection: &Arc<Collection>,
+    info: &RequestInfo,
     ctx: &RequestContext,
     id: String,
 ) -> Result<ProcessOutcome, ApiError> {
@@ -664,9 +721,32 @@ async fn delete_item(
     {
         return Err(ApiError(rule_errors::hidden_record()));
     }
+    // Same `_superusers` guard as `records::delete_record`: always
+    // owner-only, self or not, and the sole remaining owner can never be
+    // deleted — checked authoritatively against this batch's own
+    // already-open `tx` (see `count_owners`'s doc).
+    let was_owner = record.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
+    if collection.is_superusers() {
+        record_route::require_owner(info.auth.as_ref(), "delete a superuser account")?;
+    }
 
     let (deleted, removed) =
         record_route::delete_in_tx(tx.clone(), collection.clone(), record).await?;
+    if collection.is_superusers() {
+        if was_owner && record_route::count_owners(tx).await.map_err(|e| e.error)? == 0 {
+            return Err(ApiError::bad_request(
+                "Cannot delete the last remaining owner.",
+            ));
+        }
+        crate::audit::write_in_tx(
+            tx,
+            info.auth.as_ref().map(|a| a.id.as_str()),
+            "superuser.delete",
+            crate::audit::superuser_target(&deleted),
+            serde_json::json!({ "email": deleted.get_string("email") }),
+        )
+        .await;
+    }
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut post_commit_deletes = Vec::new();
     for file in &removed {
@@ -863,5 +943,251 @@ async fn batch(
                 data,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod superuser_guard_tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use cratebase_auth::TokenType;
+    use cratebase_db::engine::{Executor, Sql};
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    use crate::app::App;
+    use crate::config::Config;
+
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(Config::memory(dir.path()));
+        app.bootstrap().await.expect("bootstrap");
+        let mut settings = (*app.settings()).clone();
+        settings.batch.enabled = true;
+        settings.batch.max_requests = 50;
+        app.set_settings(settings).await.expect("enable batch");
+        (app, dir)
+    }
+
+    /// See `routes::records::superuser_role_tests`' identical helper.
+    async fn superuser(app: &App, email: &str, role: &str) -> (String, String) {
+        let id = app
+            .create_superuser(email, "password12345")
+            .await
+            .expect("create superuser");
+        if role != cratebase_core::SUPERUSER_ROLE_OWNER {
+            app.db()
+                .execute(
+                    r#"UPDATE "_superusers" SET "role" = $1 WHERE "id" = $2"#,
+                    &[Sql::from(role), Sql::from(id.as_str())],
+                )
+                .await
+                .expect("set role");
+        }
+        let token = app
+            .mint_token("_superusers", &id, TokenType::Auth, 3600)
+            .await
+            .expect("mint token");
+        (id, token)
+    }
+
+    async fn role_of(app: &App, id: &str) -> String {
+        app.db()
+            .query_scalar(
+                r#"SELECT "role" FROM "_superusers" WHERE "id" = $1"#,
+                &[Sql::from(id)],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap()
+    }
+
+    fn batch_request(token: &str, requests: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/batch")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(json!({ "requests": requests }).to_string()))
+            .unwrap()
+    }
+
+    /// CRITICAL 1: `/api/batch` used to re-implement `create`/`update`/
+    /// `delete` with none of `records::update_record`'s `_superusers`
+    /// owner guard, so a merely-`admin` superuser could self-promote to
+    /// `owner` in one `POST /api/batch` call. This would have passed
+    /// (200, role flipped to `owner`) before the batch guard existed.
+    #[tokio::test]
+    async fn admin_cannot_self_promote_via_batch() {
+        let (app, _dir) = test_app().await;
+        let (_owner_id, _owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .oneshot(batch_request(
+                &admin_token,
+                json!([{
+                    "method": "PATCH",
+                    "url": format!("/api/collections/_superusers/records/{admin_id}"),
+                    "body": { "role": "owner" },
+                }]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(role_of(&app, &admin_id).await, "admin");
+    }
+
+    /// The same guard also has to close the "mint a brand-new owner" and
+    /// "delete the sole remaining owner" variants of the same bypass.
+    #[tokio::test]
+    async fn admin_cannot_mint_an_owner_or_delete_the_sole_owner_via_batch() {
+        let (app, _dir) = test_app().await;
+        let (owner_id, _owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (_admin_id, admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let mint = router
+            .clone()
+            .oneshot(batch_request(
+                &admin_token,
+                json!([{
+                    "method": "POST",
+                    "url": "/api/collections/_superusers/records",
+                    "body": {
+                        "email": "second@example.com",
+                        "password": "password12345",
+                        "passwordConfirm": "password12345",
+                        "role": "owner",
+                    },
+                }]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(mint.status(), StatusCode::BAD_REQUEST);
+        assert!(app
+            .find_superuser_by_email("second@example.com")
+            .await
+            .unwrap()
+            .is_none());
+
+        let delete = router
+            .oneshot(batch_request(
+                &admin_token,
+                json!([{
+                    "method": "DELETE",
+                    "url": format!("/api/collections/_superusers/records/{owner_id}"),
+                }]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::BAD_REQUEST);
+        assert!(app.find_superuser_by_id(&owner_id).await.unwrap().is_some());
+    }
+
+    /// An actual owner using `/api/batch` for the same role-change is
+    /// still allowed, and the batch write leaves an audit row — the
+    /// other half of CRITICAL 1 (batch bypassing `_audit_log` entirely).
+    #[tokio::test]
+    async fn owner_can_promote_via_batch_and_it_is_audited() {
+        let (app, _dir) = test_app().await;
+        let (_owner_id, owner_token) = superuser(&app, "owner@example.com", "owner").await;
+        let (admin_id, _admin_token) = superuser(&app, "admin@example.com", "admin").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .oneshot(batch_request(
+                &owner_token,
+                json!([{
+                    "method": "PATCH",
+                    "url": format!("/api/collections/_superusers/records/{admin_id}"),
+                    "body": { "role": "owner" },
+                }]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(role_of(&app, &admin_id).await, "owner");
+
+        let audited: i64 = app
+            .db()
+            .query_scalar(
+                r#"SELECT COUNT(*) FROM "_audit_log" WHERE "action" = 'superuser.role_change'"#,
+                &[],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_i64())
+            .unwrap();
+        assert_eq!(audited, 1, "batch role change must still be audited");
+    }
+
+    /// REAL BUG 6: the sole-owner lockout has to be authoritative under
+    /// genuine concurrency, not just when called twice sequentially.
+    /// Two owners race to demote each other via `/api/batch` at the
+    /// same instant; exactly one must win, and at least one owner must
+    /// remain afterwards no matter which.
+    #[tokio::test]
+    async fn concurrent_demotions_never_leave_zero_owners() {
+        let (app, _dir) = test_app().await;
+        let (owner1_id, owner1_token) = superuser(&app, "owner1@example.com", "owner").await;
+        let (owner2_id, owner2_token) = superuser(&app, "owner2@example.com", "owner").await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let r1 = router.clone();
+        let owner2_id_for_1 = owner2_id.clone();
+        let task1 = tokio::spawn(async move {
+            r1.oneshot(batch_request(
+                &owner1_token,
+                json!([{
+                    "method": "PATCH",
+                    "url": format!("/api/collections/_superusers/records/{owner2_id_for_1}"),
+                    "body": { "role": "admin" },
+                }]),
+            ))
+            .await
+            .unwrap()
+            .status()
+        });
+        let r2 = router.clone();
+        let owner1_id_for_2 = owner1_id.clone();
+        let task2 = tokio::spawn(async move {
+            r2.oneshot(batch_request(
+                &owner2_token,
+                json!([{
+                    "method": "PATCH",
+                    "url": format!("/api/collections/_superusers/records/{owner1_id_for_2}"),
+                    "body": { "role": "admin" },
+                }]),
+            ))
+            .await
+            .unwrap()
+            .status()
+        });
+        let (s1, s2) = tokio::join!(task1, task2);
+        let (s1, s2) = (s1.unwrap(), s2.unwrap());
+
+        // Whatever the outcome, the two `PATCH`es cannot both have
+        // succeeded — that is precisely the TOCTOU this test pins.
+        assert!(
+            !(s1 == StatusCode::OK && s2 == StatusCode::OK),
+            "both concurrent demotions succeeded: s1={s1}, s2={s2}"
+        );
+        let remaining_owners: i64 = app
+            .db()
+            .query_scalar(
+                r#"SELECT COUNT(*) FROM "_superusers" WHERE "role" = 'owner'"#,
+                &[],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_i64())
+            .unwrap();
+        assert!(
+            remaining_owners >= 1,
+            "concurrent demotions left {remaining_owners} owners"
+        );
     }
 }

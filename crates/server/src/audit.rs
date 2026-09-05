@@ -75,7 +75,10 @@ pub fn bind_hooks(app: &App) {
 
 /// Best-effort insert into `_audit_log`. Never fails the caller — same
 /// reasoning as `crate::llm::log_usage`: a logging failure must not fail
-/// the action it is auditing.
+/// the action it is auditing. Opens its own transaction, so this is
+/// only safe to call *outside* an already-open one — see
+/// [`write_in_tx`] for the batch write path, which is never outside
+/// one.
 async fn write(
     app: &App,
     actor: Option<&str>,
@@ -87,26 +90,16 @@ async fn write(
         tracing::warn!("_audit_log collection missing; dropping audit record");
         return;
     };
-
-    let mut input = Map::new();
-    if let Some(actor) = actor {
-        input.insert("actor".into(), Value::String(actor.to_string()));
-    }
-    input.insert("action".into(), Value::String(action.to_string()));
-    input.insert("target".into(), Value::String(target.into()));
-    input.insert("meta".into(), meta);
-
-    let mut record = cratebase_db::records::from_body(collection.clone(), &input);
-    if record.id().is_empty() {
-        record.set_id(cratebase_core::record_id());
-    }
+    let Some(record) = audit_record(collection, actor, action, &target.into(), meta) else {
+        return;
+    };
 
     let action = action.to_string();
     let result = app
         .run_scoped(true, move |tx| {
             crate::routes::records::write_record(
                 tx,
-                collection,
+                record.collection().clone(),
                 record,
                 None,
                 crate::routes::records::Write::Create,
@@ -117,6 +110,68 @@ async fn write(
     if let Err(e) = result {
         tracing::warn!(error = %e, action, "failed to write audit log row");
     }
+}
+
+/// Same as [`write`], but for a caller already inside an open write
+/// transaction — `crate::routes::batch`'s single shared transaction for
+/// the whole batch, most notably — which writes the row through the
+/// caller's own `tx` directly rather than opening (and needing to
+/// separately commit) a nested scope of its own.
+pub(crate) async fn write_in_tx(
+    tx: &crate::app::TxApp,
+    actor: Option<&str>,
+    action: &str,
+    target: impl Into<String>,
+    meta: Value,
+) {
+    let Some(collection) = tx.db().collections.get_by_name(COLLECTION) else {
+        tracing::warn!("_audit_log collection missing; dropping audit record");
+        return;
+    };
+    let Some(record) = audit_record(collection, actor, action, &target.into(), meta) else {
+        return;
+    };
+
+    let action = action.to_string();
+    let result = crate::routes::records::write_record(
+        tx.clone(),
+        record.collection().clone(),
+        record,
+        None,
+        crate::routes::records::Write::Create,
+        Vec::new(),
+    )
+    .await;
+    if let Err(e) = result {
+        tracing::warn!(error = %e, action, "failed to write audit log row");
+    }
+}
+
+/// Build the pending `_audit_log` row both [`write`] and [`write_in_tx`]
+/// insert. `None` only when `_audit_log` is missing (checked, and
+/// logged, by the caller before this can be reached — kept as an
+/// `Option` rather than `unwrap`-ing here so neither caller repeats
+/// that check).
+fn audit_record(
+    collection: std::sync::Arc<Collection>,
+    actor: Option<&str>,
+    action: &str,
+    target: &str,
+    meta: Value,
+) -> Option<Record> {
+    let mut input = Map::new();
+    if let Some(actor) = actor {
+        input.insert("actor".into(), Value::String(actor.to_string()));
+    }
+    input.insert("action".into(), Value::String(action.to_string()));
+    input.insert("target".into(), Value::String(target.to_string()));
+    input.insert("meta".into(), meta);
+
+    let mut record = cratebase_db::records::from_body(collection, &input);
+    if record.id().is_empty() {
+        record.set_id(cratebase_core::record_id());
+    }
+    Some(record)
 }
 
 /// `_audit_log` itself: reject every update/delete before `e.next()`
@@ -340,7 +395,7 @@ fn bind_superuser_lifecycle(app: &App) {
 /// A superuser row identified by email when it has one, falling back to
 /// its id — matches how `crates/server/src/routes/logs.rs` labels a
 /// caller in `_request_logs`.
-fn superuser_target(record: &Record) -> String {
+pub(crate) fn superuser_target(record: &Record) -> String {
     let email = record.get_string("email");
     if email.is_empty() {
         record.id().to_string()

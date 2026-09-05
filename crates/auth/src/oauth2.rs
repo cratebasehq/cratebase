@@ -167,6 +167,12 @@ struct GoogleUserInfo {
     name: String,
     #[serde(default)]
     email: String,
+    /// CRITICAL 4: an attacker with an unverified Google/Workspace
+    /// address must not be able to sign into (and silently verify) an
+    /// existing record sharing that email — `email` below is only kept
+    /// when this is genuinely `true`.
+    #[serde(default)]
+    email_verified: bool,
     #[serde(default)]
     picture: String,
 }
@@ -179,7 +185,11 @@ pub fn parse_google_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
         id: info.sub,
         name: info.name,
         username: String::new(),
-        email: info.email,
+        email: if info.email_verified {
+            info.email
+        } else {
+            String::new()
+        },
         avatar_url: info.picture,
     })
 }
@@ -252,13 +262,38 @@ pub fn parse_generic_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
             .unwrap_or_default()
             .to_string()
     };
+    // CRITICAL 4: same reasoning as `parse_google_userinfo` — a
+    // hand-configured provider's `email` is only trusted when its own
+    // `email_verified` claim (any of Go `cast.ToBool`'s truthy shapes:
+    // `true`, a non-zero number, or `"true"`/`"1"`) is actually present
+    // and true, so an attacker with an unverified address on that
+    // provider cannot sign into and verify an existing record sharing
+    // it.
+    let email_verified = raw.get("email_verified").is_some_and(is_truthy);
     Ok(OAuth2User {
         id: get(&["id", "sub"]),
         name: get(&["name"]),
         username: get(&["username", "login", "preferred_username"]),
-        email: get(&["email"]),
+        email: if email_verified {
+            get(&["email"])
+        } else {
+            String::new()
+        },
         avatar_url: get(&["avatar", "avatar_url", "picture"]),
     })
+}
+
+/// Go's `cast.ToBool`, which is what a truthy claim means throughout
+/// PocketBase-compatible rule/field handling (see
+/// `cratebase_server::routes::records`'s own `truthy` for the record
+/// field version of the same rule).
+fn is_truthy(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        Value::String(s) => matches!(s.as_str(), "true" | "1" | "t" | "TRUE" | "True"),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -350,6 +385,26 @@ mod tests {
     }
 
     #[test]
+    fn google_never_attributes_an_unverified_email() {
+        let body = br#"{
+            "sub": "10769150350006150715113082367",
+            "name": "Jo March",
+            "email": "jo@example.com",
+            "email_verified": false,
+            "picture": "https://example.com/jo.jpg"
+        }"#;
+        let user = parse_google_userinfo(body).unwrap();
+        assert_eq!(user.email, "");
+    }
+
+    #[test]
+    fn google_never_attributes_an_email_with_no_verified_claim_at_all() {
+        let body = br#"{"sub": "1", "email": "jo@example.com"}"#;
+        let user = parse_google_userinfo(body).unwrap();
+        assert_eq!(user.email, "");
+    }
+
+    #[test]
     fn parses_github_userinfo_with_a_public_email() {
         let body = br#"{
             "id": 583231,
@@ -399,5 +454,20 @@ mod tests {
         assert_eq!(user.id, "abc123");
         assert_eq!(user.username, "jomarch");
         assert_eq!(user.avatar_url, "https://example.com/jo.jpg");
+        assert_eq!(user.email, "", "no email_verified claim: email dropped");
+    }
+
+    #[test]
+    fn generic_provider_keeps_a_truthily_verified_email() {
+        let body = br#"{"sub": "abc123", "email": "jo@example.com", "email_verified": "true"}"#;
+        let user = parse_generic_userinfo(body).unwrap();
+        assert_eq!(user.email, "jo@example.com");
+    }
+
+    #[test]
+    fn generic_provider_never_attributes_an_unverified_email() {
+        let body = br#"{"sub": "abc123", "email": "spoofed@example.com", "email_verified": false}"#;
+        let user = parse_generic_userinfo(body).unwrap();
+        assert_eq!(user.email, "");
     }
 }

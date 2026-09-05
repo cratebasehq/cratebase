@@ -455,15 +455,22 @@ async fn add_superuser_role_up(db: &Db) -> DbResult<()> {
     else {
         return Ok(());
     };
-    if previous.fields.iter().any(|f| f.name == "role") {
-        return Ok(());
+    if !previous.fields.iter().any(|f| f.name == "role") {
+        let mut next = (*previous).clone();
+        // Same insertion point `Collection::default_superusers` uses: right
+        // before `created`/`updated`.
+        let pos = next.fields.len() - 2;
+        next.fields.insert(pos, Field::role_field());
+        db.collections.update(&*db.engine, &next).await?;
     }
-    let mut next = (*previous).clone();
-    // Same insertion point `Collection::default_superusers` uses: right
-    // before `created`/`updated`.
-    let pos = next.fields.len() - 2;
-    next.fields.insert(pos, Field::role_field());
-    db.collections.update(&*db.engine, &next).await?;
+    // Always run, even when the column already existed: the ALTER and
+    // this backfill are two separate commits, so a process that died
+    // between them leaves a database where `role` already exists but
+    // every row still has the zero default `''`. Skipping this step in
+    // that case would mark the migration applied while permanently
+    // locking every existing superuser out (no valid role, no recovery
+    // path). Idempotent via the `WHERE` clause, so re-running it against
+    // an already-backfilled table is a no-op.
     db.execute(
         &format!(
             r#"UPDATE "{}" SET "role" = '{}' WHERE "role" = '' OR "role" IS NULL"#,
@@ -662,6 +669,56 @@ mod tests {
         // Re-running on an already-migrated collection is a no-op, not
         // an error (idempotent, like every other migration here).
         add_superuser_role_up(&db).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_superuser_role_up_backfills_on_a_partially_migrated_rerun() {
+        // Reproduces a process dying between the ALTER (schema update)
+        // and the backfill UPDATE the first time this migration ran: the
+        // column already exists, but every row still carries its zero
+        // default. The next boot must still complete the backfill
+        // instead of returning early because `role` is already present.
+        let db = fresh().await;
+        db.collections
+            .insert(&*db.engine, &Collection::default_superusers())
+            .await
+            .unwrap();
+        assert!(db
+            .collections
+            .get_by_name("_superusers")
+            .unwrap()
+            .fields
+            .iter()
+            .any(|f| f.name == "role"));
+
+        // A row that already has the column (physical zero default),
+        // simulating the schema-updated-but-not-backfilled state.
+        db.execute(
+            r#"INSERT INTO "_superusers"
+               ("id", "email", "password", "tokenKey", "role", "emailVisibility", "verified", "created", "updated")
+               VALUES ('sup00000000001', 'c@d.co', 'hash', 'tok0000000000000000000000000001', '', 0, 1,
+                       '2024-01-01 00:00:00.000Z', '2024-01-01 00:00:00.000Z')"#,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        add_superuser_role_up(&db).await.unwrap();
+
+        let role = db
+            .query_scalar(
+                r#"SELECT "role" FROM "_superusers" WHERE "id" = 'sup00000000001'"#,
+                &[],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_str().map(str::to_string));
+        assert_eq!(
+            role.as_deref(),
+            Some("owner"),
+            "re-running the migration against an ALTER'd-but-not-backfilled table must still \
+             backfill, not skip out early because the column already exists"
+        );
     }
 
     #[tokio::test]
