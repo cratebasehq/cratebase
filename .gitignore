@@ -23,6 +23,10 @@ web/email/dist/*
 !web/email/dist/.gitkeep
 web/email/node_modules
 
+# sdk/js publishes from this dist, but it is a build artifact, not
+# something to commit — unlike web/admin/dist (see above).
+sdk/js/dist/
+
 # @cratebase/extras' dist/ is a real npm build artifact (unlike
 # web/admin's committed dashboard bundle) — CI builds it fresh from
 # source before every publish, so it never needs to be committed.
