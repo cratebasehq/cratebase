@@ -138,13 +138,11 @@ pub async fn run(app: &App, pb_dir: &str) -> anyhow::Result<MigrationReport> {
 
     let mut report = MigrationReport::default();
 
-    // ---------------------------------------------------------------
-    // Phase 1: schema. PocketBase's `_mfas`/`_otps`/`_externalAuths`/
+    // Schema first. PocketBase's `_mfas`/`_otps`/`_externalAuths`/
     // `_authOrigins` are skipped outright (see module docs); `_superusers`
     // and `users` already exist with an identical schema (same
     // deterministic id, same default fields) so only records need to move
     // for them — no schema payload is built.
-    // ---------------------------------------------------------------
     let mut payload_items = Vec::new();
     for pbc in &pb_collections {
         if pbc.system {
@@ -175,9 +173,7 @@ pub async fn run(app: &App, pb_dir: &str) -> anyhow::Result<MigrationReport> {
         }
     }
 
-    // ---------------------------------------------------------------
-    // Phase 2: records + files, collection by collection.
-    // ---------------------------------------------------------------
+    // Then records + files, collection by collection.
     for pbc in &pb_collections {
         if pbc.system && pbc.name != "_superusers" {
             continue;
@@ -200,11 +196,9 @@ pub async fn run(app: &App, pb_dir: &str) -> anyhow::Result<MigrationReport> {
     Ok(report)
 }
 
-// --------------------------------------------------------------------
-// Reading PocketBase's SQLite file directly (never through a running
+// Reading PocketBase's SQLite file directly, never through a running
 // PocketBase server — this tool only needs `pb_data`, not a live pb
-// process).
-// --------------------------------------------------------------------
+// process.
 
 fn open_pb_db(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -266,10 +260,6 @@ fn read_pb_rows(db_path: &Path, table: &str) -> anyhow::Result<Vec<PbRow>> {
     }
     Ok(out)
 }
-
-// --------------------------------------------------------------------
-// Schema translation.
-// --------------------------------------------------------------------
 
 /// Build the Cratebase collection JSON `plan_and_apply` expects, and
 /// whether this collection has OAuth2 provider config an operator needs to
@@ -380,10 +370,6 @@ fn rule_json(rule: &Option<String>) -> Value {
         None => Value::Null,
     }
 }
-
-// --------------------------------------------------------------------
-// Record + file migration.
-// --------------------------------------------------------------------
 
 async fn migrate_record(
     app: &App,

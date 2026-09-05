@@ -55,8 +55,6 @@ const MIN_BASE_LEN: usize = 3;
 /// to `[a-z0-9]`.
 const NAME_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
-// --------------------------------------------------------------- lookups
-
 /// The collection behind an `{idOrName}` path segment, from the in-memory
 /// store. Never queries `_collections`.
 pub fn collection_of(app: &App, name_or_id: &str) -> ApiResult<Arc<Collection>> {
@@ -81,8 +79,6 @@ pub fn auth_collection_of(app: &App, name_or_id: &str) -> ApiResult<Arc<Collecti
     }
     Ok(collection)
 }
-
-// ----------------------------------------------------------------- rules
 
 /// Whether the stored record `id` satisfies `rule` for this caller.
 ///
@@ -196,8 +192,6 @@ pub async fn has_manage_access(
     .await
 }
 
-// --------------------------------------------------------- serialization
-
 /// Whether the viewer may see an auth record's `email` regardless of
 /// `emailVisibility`: it is their own record, they are a superuser, or
 /// they hold manage access.
@@ -247,8 +241,6 @@ pub fn project(value: &mut Value, fields: Option<&str>) {
         cratebase_core::record::project_fields(value, spec);
     }
 }
-
-// ------------------------------------------------------------- staged files
 
 enum StagedData {
     Memory(Bytes),
@@ -369,8 +361,6 @@ pub fn record_file_names(record: &Record) -> Vec<String> {
     }
     out
 }
-
-// ------------------------------------------------------------ body parsing
 
 /// A parsed request body plus whatever files came with it.
 #[derive(Default)]

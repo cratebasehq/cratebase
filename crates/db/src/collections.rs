@@ -140,8 +140,6 @@ impl CollectionStore {
     }
 }
 
-// --- transaction-scoped primitives ---------------------------------------
-//
 // The service layer wraps these in its own transaction when it needs to
 // combine a collection change with other writes; the `CollectionStore`
 // methods above are the convenience form.

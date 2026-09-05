@@ -290,8 +290,6 @@ function CollectionPage() {
     return () => unsubscribe?.();
   }, [collection, name, page, sortParam, queryClient]);
 
-  /* ---- Columns -------------------------------------------------------- */
-
   const allColumnIds = useMemo(() => {
     if (!collection) return [];
     return [
@@ -397,8 +395,6 @@ function CollectionPage() {
 
     return columnPrefs.visible.map((id) => byId.get(id)).filter((c): c is GridColumn<RecordModel> => Boolean(c));
   }, [collection, fields, identityField, columnPrefs.visible, openDrawer, allCollections, hasCreated]);
-
-  /* ---- Loading / not found -------------------------------------------- */
 
   if (collectionError) {
     const failed = describeFailure(collectionError);

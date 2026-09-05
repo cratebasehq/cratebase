@@ -73,8 +73,6 @@ pub struct ListResult {
     pub total_pages: i64,
 }
 
-// --- column <-> JSON ------------------------------------------------------
-
 /// Whether a value is already a password hash rather than a plaintext to
 /// be hashed: Argon2 (ours) or bcrypt (imported from PocketBase).
 pub fn is_hash(value: &Value) -> bool {
@@ -251,8 +249,6 @@ fn rows_to_records(collection: &Arc<Collection>, rows: &[Row]) -> Vec<Record> {
     let decoder = RowDecoder::new(collection, &first.columns);
     rows.iter().map(|r| decoder.decode(r)).collect()
 }
-
-// --- reads ----------------------------------------------------------------
 
 /// List with the collection's `listRule` applied and the user's `filter`
 /// AND-ed onto it. Parameter numbering is shared: the rule binds first,
@@ -471,8 +467,6 @@ pub async fn count(ex: &dyn Executor, collection: &Arc<Collection>) -> DbResult<
         .and_then(|v| v.as_i64())
         .unwrap_or(0))
 }
-
-// --- writes ---------------------------------------------------------------
 
 fn reject_view(collection: &Collection) -> DbResult<()> {
     if collection.is_view() {

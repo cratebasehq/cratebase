@@ -80,8 +80,6 @@ pub fn router() -> Router<App> {
         .route("/collections/{idOrName}/truncate", delete_method(truncate))
 }
 
-// --------------------------------------------------------------------- list
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListQuery {
@@ -285,8 +283,6 @@ impl cratebase_filter::Resolver for MetaResolver {
     }
 }
 
-// --------------------------------------------------------------------- view
-
 async fn view(
     State(app): State<App>,
     su: RequireSuperuser,
@@ -318,8 +314,6 @@ async fn view(
     )))
 }
 
-// ------------------------------------------------------------------- create
-
 async fn create(
     State(app): State<App>,
     su: RequireSuperuser,
@@ -338,8 +332,6 @@ async fn create(
     let saved = apply(&app, next, None, Change::Create, &info, Some(su.0)).await?;
     Ok(Json(redact_oauth2_secrets(saved.to_json())))
 }
-
-// ------------------------------------------------------------------- update
 
 async fn update(
     State(app): State<App>,
@@ -416,8 +408,6 @@ async fn update(
     Ok(Json(redact_oauth2_secrets(saved.to_json())))
 }
 
-// ------------------------------------------------------------------- delete
-
 async fn remove(
     State(app): State<App>,
     su: RequireSuperuser,
@@ -467,8 +457,6 @@ fn referencing_collection(app: &App, target: &Collection) -> Option<String> {
         .map(|c| c.name.clone())
 }
 
-// ----------------------------------------------------------------- truncate
-
 async fn truncate(
     State(app): State<App>,
     su: RequireSuperuser,
@@ -505,8 +493,6 @@ async fn truncate(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---------------------------------------------------------------- scaffolds
-
 async fn scaffolds(State(app): State<App>, _su: RequireSuperuser) -> ApiResult<Json<Value>> {
     let _ = &app;
     let mut out = Map::new();
@@ -532,8 +518,6 @@ async fn scaffolds(State(app): State<App>, _su: RequireSuperuser) -> ApiResult<J
     }
     Ok(Json(Value::Object(out)))
 }
-
-// ------------------------------------------------------------------- import
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -651,8 +635,6 @@ fn import_error(error: ApiError) -> ApiError {
     );
     ApiError::nested_validation(IMPORT_FAILED, data)
 }
-
-// ------------------------------------------------------------------- shared
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Change {
@@ -829,8 +811,6 @@ fn ddl_error(error: DbError, change: Change) -> AppError {
     }
 }
 
-// ---------------------------------------------------------------- shaping
-
 /// The body has to be an object before anything else can be said about
 /// it.
 fn object(body: Value) -> ApiResult<Map<String, Value>> {
@@ -890,8 +870,6 @@ fn default_auth_indexes(table: &str, id: &str) -> Vec<String> {
         format!("CREATE UNIQUE INDEX `idx_email_{id}` ON `{table}` (`email`) WHERE `email` != ''"),
     ]
 }
-
-// -------------------------------------------------------------- validation
 
 pub(crate) fn validate(
     app: &App,
@@ -1144,8 +1122,6 @@ fn indexes_error(message: &str, position: usize, code: &str, detail: &str) -> Ap
     data.insert("indexes".into(), Value::Object(indexes));
     ApiError::nested_validation(message, data)
 }
-
-// ------------------------------------------------------------- view fields
 
 /// Derive a view collection's fields from its `viewQuery`.
 ///

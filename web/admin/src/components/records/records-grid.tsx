@@ -304,7 +304,6 @@ export function RecordsGrid<T>({
         className="relative min-h-0 flex-1 overflow-auto outline-none"
       >
         <div style={{ minWidth: `${totalWidth}px` }}>
-          {/* Header ---------------------------------------------------- */}
           <div
             role="row"
             style={{ gridTemplateColumns: template }}
@@ -362,7 +361,6 @@ export function RecordsGrid<T>({
             {rowActions ? <div role="columnheader" className={headerCellClass} aria-label="Row actions" /> : null}
           </div>
 
-          {/* Body ------------------------------------------------------ */}
           {status === "loading" ? (
             <div className="flex flex-col">
               {Array.from({ length: 12 }).map((_, i) => (

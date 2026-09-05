@@ -70,8 +70,6 @@ pub fn router() -> Router<App> {
         )
 }
 
-// ------------------------------------------------------------------ queries
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListQuery {
@@ -121,8 +119,6 @@ pub(crate) struct Page {
     total_pages: i64,
     items: Value,
 }
-
-// --------------------------------------------------------------------- list
 
 pub(crate) async fn list(
     State(app): State<App>,
@@ -436,8 +432,6 @@ async fn manageable_ids(
     .map_err(|e| ApiError(e.into()))
 }
 
-// --------------------------------------------------------------------- view
-
 pub(crate) async fn view(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
@@ -504,8 +498,6 @@ pub(crate) async fn view(
     common::project(&mut value, query.fields.as_deref());
     Ok(Json(value))
 }
-
-// ------------------------------------------------------------------- create
 
 pub(crate) async fn create_record(
     State(app): State<App>,
@@ -605,8 +597,6 @@ pub(crate) async fn create_record(
     realtime::publish(&app, &collection, RecordAction::Create, &saved);
     respond(&app, &collection, &info, saved, query, ctx.is_superuser()).await
 }
-
-// ------------------------------------------------------------------- update
 
 pub(crate) async fn update_record(
     State(app): State<App>,
@@ -751,8 +741,6 @@ pub(crate) async fn update_record(
     respond(&app, &collection, &info, saved, query, manage).await
 }
 
-// ------------------------------------------------------------------- delete
-
 pub(crate) async fn delete_record(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
@@ -840,8 +828,6 @@ pub(crate) async fn delete_record(
     realtime::publish(&app, &collection, RecordAction::Delete, &deleted);
     Ok(StatusCode::NO_CONTENT)
 }
-
-// -------------------------------------------------- `_superusers` roles
 
 /// The owner-only gate `create_record`/`update_record`/`delete_record`
 /// (and `crate::routes::batch`'s equivalents) apply to `_superusers`
@@ -958,8 +944,6 @@ fn delete_needs_transaction(app: &App, collection: &Collection) -> bool {
         && hooks.on_record_after_delete_success.is_empty()
         && hooks.on_record_after_delete_error.is_empty())
 }
-
-// ----------------------------------------------------------- write plumbing
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Write {
@@ -1244,8 +1228,6 @@ pub(crate) async fn delete_in_tx(
     }
 }
 
-// ------------------------------------------------------------- auth fields
-
 /// PocketBase's guards on the auth system fields.
 ///
 /// * `password` needs a matching `passwordConfirm`, and — unless the
@@ -1341,8 +1323,6 @@ fn truthy(value: &Value) -> bool {
         _ => false,
     }
 }
-
-// ------------------------------------------------------------------ helpers
 
 /// Serialize the result of a write, honouring `?expand=` and `?fields=`.
 async fn respond(

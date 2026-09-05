@@ -273,8 +273,6 @@ pub async fn history_sync(ex: &dyn Executor, known_files: &[String]) -> DbResult
     Ok(removed)
 }
 
-// --- core migrations -----------------------------------------------------
-
 pub const INIT_SYSTEM: &str = "1_init_system.rs";
 
 /// The collections PocketBase seeds on first run, in creation order.

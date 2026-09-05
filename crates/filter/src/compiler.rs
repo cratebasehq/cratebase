@@ -168,8 +168,6 @@ impl<'a> Compiler<'a> {
         p
     }
 
-    // --- operands ----------------------------------------------------------
-
     /// `multi_match` asks for the correlated copy a bare operator over a
     /// joined path needs; `?op` never uses it, so it is not built.
     fn resolve_operand(
@@ -403,8 +401,6 @@ impl<'a> Compiler<'a> {
             mm: None,
         }
     }
-
-    // --- comparisons -------------------------------------------------------
 
     fn sql_op(op: CompareOp) -> &'static str {
         match op {

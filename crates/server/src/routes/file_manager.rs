@@ -62,8 +62,6 @@ fn validate_key(key: &str) -> Result<(), ApiError> {
     }
 }
 
-// ------------------------------------------------------------------- list
-
 #[derive(Debug, Default, Deserialize)]
 struct ListQuery {
     #[serde(default)]
@@ -138,8 +136,6 @@ async fn list(
     }))
 }
 
-// --------------------------------------------------------------- download
-
 #[derive(Debug, Default, Deserialize)]
 struct KeyQuery {
     #[serde(default)]
@@ -184,8 +180,6 @@ async fn download(
     Ok(response)
 }
 
-// ----------------------------------------------------------------- upload
-
 /// `POST /api/storage/objects`, multipart: a `key` field with the
 /// destination key and a `file` field with the bytes. Overwrites whatever
 /// is already at `key`, same as [`cratebase_storage::Storage::put`].
@@ -228,8 +222,6 @@ async fn upload(
     storage.put(key, bytes).await?;
     Ok(StatusCode::NO_CONTENT)
 }
-
-// ----------------------------------------------------------------- delete
 
 async fn delete(
     State(app): State<App>,

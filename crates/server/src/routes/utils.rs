@@ -13,11 +13,11 @@
 //!
 //! The look (one hashed shape, one hashed color from a small hand-picked
 //! palette, two dot eyes) mirrors grokbots.ai's avatar grid, which is the
-//! reference this session's admin dashboard work was told to follow. This
-//! module only implements that already-decided direction — resist the
-//! urge to add gradients, more shapes, or a "nicer" renderer here; the
-//! point of the style is that it is intentionally minimal and instantly
-//! recognizable as a hash, not an illustration.
+//! reference the admin dashboard follows. This module only implements
+//! that already-decided direction — resist the urge to add gradients,
+//! more shapes, or a "nicer" renderer here; the point of the style is
+//! that it is intentionally minimal and instantly recognizable as a
+//! hash, not an illustration.
 //!
 //! Nothing is cached server-side: generation is cheap (a `Sha256` and a
 //! few thousand pixel writes), so every request re-renders from scratch.
@@ -42,8 +42,6 @@ pub fn router() -> Router<App> {
         .route("/utils/avatar/{seed}", get(avatar))
         .route("/utils/qr", get(qr))
 }
-
-// ------------------------------------------------------------------ avatar
 
 /// Hand-picked so every entry reads clearly on both a light and a dark
 /// dashboard background — no pale pastels that wash out on white, no
@@ -180,8 +178,6 @@ fn draw_dot(img: &mut RgbaImage, cx: f64, cy: f64, radius: f64, color: Rgba<u8>)
     }
 }
 
-// ----------------------------------------------------------------------- qr
-
 #[derive(Debug, Default, Deserialize)]
 struct QrQuery {
     #[serde(default)]
@@ -240,8 +236,6 @@ fn render_qr(code: &qrcode::QrCode, target_size: u32) -> RgbaImage {
 
     img
 }
-
-// --------------------------------------------------------------- shared
 
 fn png_response(img: RgbaImage) -> Response {
     let mut bytes: Vec<u8> = Vec::new();

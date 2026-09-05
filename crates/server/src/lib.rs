@@ -12,8 +12,7 @@
 //! * [`middleware`] — client-IP resolution, request logging, rate limits,
 //!   CORS.
 //! * [`routes`] — health, settings, logs, backups, crons,
-//!   collections, records, auth (password) and files. The realtime and
-//!   batch routes are W4b-2 and are marked in `routes::api_router`.
+//!   collections, records, batch, auth (password) and files.
 //! * [`plugin`], [`store`], [`cron`], [`extract`], [`http_error`].
 //!
 //! # Building an app

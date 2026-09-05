@@ -5,14 +5,6 @@
 //! comment for the reasoning this repeats: `enabled` picks between the
 //! configured Twilio backend and the zero-config log fallback, the same
 //! way `smtp.enabled` picks between `SmtpBackend` and `LogBackend`.
-//!
-//! # No trigger wiring yet
-//!
-//! This module only exposes the provider primitive
-//! ([`SmsSender::send_sms`]) built from settings, the same way `Mailer`
-//! existed in this crate before anything called it. Nothing in the
-//! server calls `send_sms` yet; wiring it to a record hook or a
-//! dashboard-facing endpoint is a follow-up task, not this one.
 
 use std::sync::Arc;
 

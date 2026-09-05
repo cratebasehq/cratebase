@@ -213,8 +213,6 @@ fn is_email(raw: &str) -> bool {
     }
 }
 
-// --------------------------------------------------------------- test S3
-
 #[derive(Debug, Deserialize)]
 struct TestS3Body {
     #[serde(default)]
@@ -266,8 +264,6 @@ fn s3_failure(detail: impl std::fmt::Display) -> ApiError {
         "Failed to test the S3 filesystem.\nRaw error: {detail}"
     ))
 }
-
-// ------------------------------------------------------------- test email
 
 /// The template names `POST /api/settings/test/email` accepts.
 const EMAIL_TEMPLATES: &[&str] = &[
@@ -390,8 +386,6 @@ async fn test_email(
 
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
-
-// ----------------------------------------------------- apple client secret
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

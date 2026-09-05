@@ -140,8 +140,6 @@ fn compile_pattern(pattern: &str) -> Result<Arc<regex::Regex>, FieldError> {
     compiled.ok_or_else(invalid)
 }
 
-// --- per type -------------------------------------------------------------
-
 /// `text`, and (with its own options) `editor`. Length is counted in
 /// characters, not bytes, like Go's `utf8.RuneCountInString`.
 pub fn text(field: &Field, value: &Value) -> Option<FieldError> {
@@ -630,8 +628,6 @@ pub async fn id_on_create(
     Ok(None)
 }
 
-// --- coercion -------------------------------------------------------------
-
 /// Shape a submitted value into what PocketBase actually stores.
 ///
 /// This is the counterpart of Go's `field.PrepareValue`, and it is the
@@ -770,8 +766,6 @@ pub fn coerce_record(record: &mut Record) {
     }
 }
 
-// --- whole record ---------------------------------------------------------
-
 /// Validate every field of `record`. `uploads` describes the files the
 /// caller is about to store for this record (empty for a plain JSON
 /// request).
@@ -850,8 +844,6 @@ pub async fn check(
         Err(DbError::Validation(errors))
     }
 }
-
-// --- multi-value modifiers ------------------------------------------------
 
 /// PocketBase's append/prepend/remove modifiers on multi-valued
 /// `select` / `relation` / `file` fields:

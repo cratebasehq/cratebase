@@ -215,8 +215,6 @@ impl Record {
         &mut self.data
     }
 
-    // --- auth record helpers ------------------------------------------------
-
     pub fn email(&self) -> String {
         self.get_string("email")
     }
