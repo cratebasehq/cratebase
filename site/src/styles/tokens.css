@@ -1,0 +1,88 @@
+/*
+ * Design tokens — Direction C ("Dockside").
+ * Light-first, cool paper; dark is a genuine second pass (illustration
+ * line-work flips to paper-on-navy), not a simple inversion.
+ * See local://landing-docs-design-direction.md §3 for the full spec.
+ */
+
+@import "@fontsource-variable/bricolage-grotesque";
+@import "@fontsource-variable/red-hat-mono";
+
+:root {
+  /* Light palette */
+  --color-fog: #eef1f4; /* cool paper ground */
+  --color-white: #ffffff; /* panels */
+  --color-harbor: #0e2238; /* ink — headings, body 90%, illustration lines, primary button */
+  --color-slate: #5b6b7c; /* secondary text */
+  --color-hairline: #d6dce3;
+  --color-crate: #ef7d3e; /* illustrations + mark ONLY, never UI chrome */
+
+  --color-bg: var(--color-fog);
+  --color-panel: var(--color-white);
+  --color-ink: var(--color-harbor);
+  --color-text: var(--color-harbor);
+  --color-text-secondary: var(--color-slate);
+  --color-border: var(--color-hairline);
+  --color-accent: var(--color-crate);
+  --color-button-bg: var(--color-harbor);
+  --color-button-text: var(--color-fog);
+  --color-link: var(--color-harbor);
+
+  --font-display: "Bricolage Grotesque Variable", "Bricolage Grotesque", system-ui, sans-serif;
+  --font-mono: "Red Hat Mono Variable", "Red Hat Mono", ui-monospace, monospace;
+
+  --radius: 0.625rem;
+  --ease-house: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+:root[data-theme="dark"],
+:root.theme-dark {
+  /* Dark palette — a real second pass: paper-on-navy, not an inversion */
+  --color-bg: #0a1622; /* deep harbor ground */
+  --color-panel: #101f30; /* raised panel */
+  --color-ink: #eef1f4; /* paper text on navy */
+  --color-text: #eef1f4;
+  --color-text-secondary: #93a4b6;
+  --color-border: rgba(238, 241, 244, 0.14);
+  --color-accent: var(--color-crate);
+  --color-button-bg: var(--color-fog);
+  --color-button-text: var(--color-harbor);
+  --color-link: var(--color-fog);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre,
+kbd,
+.mono {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--color-link);
+}
+
+::selection {
+  background: var(--color-crate);
+  color: var(--color-harbor);
+}

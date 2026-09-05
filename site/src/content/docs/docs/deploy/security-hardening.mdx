@@ -1,0 +1,15 @@
+---
+title: "Security hardening"
+description: "Rate limits for expensive endpoints, audit log, roles, secret rotation."
+---
+
+Beyond the defaults, two endpoints are worth an explicit rate-limit rule
+in production because they're meaningfully more expensive than an
+ordinary record read: `POST /api/sql` (the dashboard SQL console —
+superuser-only already, but a single query can hold a connection for
+seconds) and `POST /api/llm/chat` (spends the operator's own provider
+quota per call). See [Rate limiting](/docs/deploy/rate-limiting/) for the
+exact rule shape. Beyond that: the [audit log](/docs/deploy/logs/) covers
+schema/settings/superuser changes, [superuser roles](/docs/concepts/authentication/superusers-roles/)
+separate `owner` from `admin`, and rotating `AUTH_SECRET` invalidates
+every session at once if a secret is ever suspected compromised.

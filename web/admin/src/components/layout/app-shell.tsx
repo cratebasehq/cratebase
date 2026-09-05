@@ -1,21 +1,10 @@
 import { createContext, use, useMemo, useState } from "react";
 import { Outlet } from "@tanstack/react-router";
-import { Boxes, Plus, Search } from "lucide-react";
 import { AppCommandPalette } from "@/components/app-command-palette";
 import { ImportCollectionsDialog } from "@/components/collections/import-collections-dialog";
 import { NewCollectionDialog } from "@/components/collections/new-collection-dialog";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppTopbar } from "@/components/layout/app-topbar";
-import { Button } from "@/components/ui/button";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty";
-import { Kbd } from "@/components/ui/kbd";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useCollections } from "@/hooks/use-collections";
@@ -95,47 +84,5 @@ export function AppShell() {
         </SidebarProvider>
       </TooltipProvider>
     </ShellActionsContext>
-  );
-}
-
-/**
- * The landing screen. An empty state is an invitation to act, so it offers
- * the action that unblocks the next step rather than describing the absence.
- */
-export function EmptyDashboard() {
-  const { data: collections } = useCollections();
-  const { openNewCollection, openSearch } = useShellActions();
-  const hasCollections = (collections ?? []).some((c) => !c.name.startsWith("_"));
-
-  return (
-    <div className="flex flex-1 items-center justify-center p-page">
-      <Empty>
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <Boxes />
-          </EmptyMedia>
-          <EmptyTitle>{hasCollections ? "Pick a collection" : "No collections yet"}</EmptyTitle>
-          <EmptyDescription>
-            {hasCollections
-              ? "Choose one to browse and edit its records."
-              : "A collection is a table with an API. Create one and it is readable and writable over REST straight away."}
-          </EmptyDescription>
-        </EmptyHeader>
-        <EmptyContent>
-          {hasCollections ? (
-            <Button variant="outline" size="sm" onClick={openSearch}>
-              <Search />
-              Search collections
-              <Kbd className="ml-1 hidden sm:inline-flex">⌘K</Kbd>
-            </Button>
-          ) : (
-            <Button size="sm" onClick={openNewCollection}>
-              <Plus />
-              New collection
-            </Button>
-          )}
-        </EmptyContent>
-      </Empty>
-    </div>
   );
 }

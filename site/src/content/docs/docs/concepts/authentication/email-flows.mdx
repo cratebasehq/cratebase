@@ -1,0 +1,18 @@
+---
+title: "Email verification, password reset, email change"
+description: "The request-*/confirm-* action-token flows, always answering 204."
+sidebar:
+  order: 3
+---
+
+Three parallel flows share one mechanism: `request-verification` /
+`confirm-verification`, `request-password-reset` / `confirm-password-reset`,
+and `request-email-change` (authenticated) / `confirm-email-change`. Each
+`request-*` call always answers `204` regardless of whether the address
+exists, so the endpoint can't be used to enumerate accounts. Each mints a
+one-time, single-use action token (a stateless JWT under a dedicated
+`type`, burned the same way a session token is — via `tokenKey`
+rotation). The bundled [mailer](/docs/project/architecture/) falls back
+to a `Log` backend that writes the email to `tracing` instead of
+delivering it, so every flow above is exercisable with zero external
+mail setup in development.

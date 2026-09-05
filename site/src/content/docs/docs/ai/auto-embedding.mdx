@@ -1,0 +1,13 @@
+---
+title: "Auto-embedding"
+description: "embedding: {provider, sourceField} recomputes a vector on every write."
+---
+
+A `vector` field's `embedding: {provider, sourceField}` config means
+every create/update recomputes the embedding server-side from
+`sourceField` — "write text, get search" with no application code.
+`settings.llm` configures the real embedding provider; `echo` is a
+deterministic, network-free fake used throughout the test suite and the
+[docmind](https://github.com/cratebasehq/cratebase/tree/main/examples/docmind)
+and [memories](https://github.com/cratebasehq/cratebase/tree/main/examples/memories)
+examples so they run with zero API keys.

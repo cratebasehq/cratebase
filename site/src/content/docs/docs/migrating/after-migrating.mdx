@@ -1,0 +1,20 @@
+---
+title: "After migrating"
+description: "Re-enable OAuth2, point the SDK at the new URL, and the SSR note."
+---
+
+After a migration completes: reconfigure any OAuth2 providers with fresh
+client credentials (see [What is and isn't migrated](/docs/migrating/what-is-and-isnt-migrated/)),
+point your client at the new base URL — the only client-side change
+needed is the constructor argument:
+
+```diff
+- const pb = new PocketBase("https://pocketbase.example.com");
++ const pb = new PocketBase("https://cratebase.example.com");
+```
+
+and if you're server-rendering, remember Cratebase's SDK usage needs
+`pb.autoCancellation(false)` in every server context (see
+[Using the JavaScript SDK](/docs/getting-started/using-js-sdk/)) — the
+same requirement PocketBase's own SSR guidance has, unrelated to
+migration itself but easy to hit for the first time right after one.

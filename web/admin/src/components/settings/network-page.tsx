@@ -4,12 +4,13 @@ import { Plus, Trash2 } from "lucide-react";
 import { describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import { useCollections } from "@/hooks/use-collections";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TagInput } from "@/components/ui/tag-input";
-import { SettingRow, SettingsSaveBar, SettingsSection, ToggleSetting } from "@/components/settings/settings-form";
+import { SettingRow, SettingsPage, SettingsSaveBar, SettingsSection, ToggleSetting } from "@/components/settings/settings-form";
 
 type RateLimitRule = ServerSettings["rateLimits"]["rules"][number];
 
@@ -143,8 +144,9 @@ export function NetworkPage() {
     );
   }
 
+  const item = settingsItemFor("/settings/network")!;
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
+    <SettingsPage title={item.label} description={item.description} width="form">
       <SettingsSection
         title="Rate limiting"
         description="Cap how often a client can call the API. Rules are checked in order; the first one whose label matches the request wins."
@@ -298,6 +300,6 @@ export function NetworkPage() {
         onSave={submit}
         onReset={() => setDraft(draftOf(settings))}
       />
-    </div>
+    </SettingsPage>
   );
 }

@@ -1,0 +1,85 @@
+---
+title: "Install"
+description: "Install Cratebase via curl | sh, Docker, or from source."
+sidebar:
+  order: 1
+---
+
+Cratebase ships as a single binary with the admin dashboard compiled in —
+there is nothing else to install.
+
+## macOS / Linux
+
+```sh
+curl -fsSL https://cratebase.dev/install.sh | sh
+```
+
+This resolves the latest release for your OS/architecture, verifies its
+`sha256` checksum before touching disk, and installs `cratebase` to
+`~/.local/bin` (override with `$CRATEBASE_INSTALL`). See
+[the script itself](/install.sh) — it's served byte-for-byte from this
+site, so `curl -s https://cratebase.dev/install.sh` shows you exactly
+what will run before you pipe it into a shell.
+
+Prebuilt binaries are published for:
+
+| Target | OS | Arch |
+|---|---|---|
+| `x86_64-unknown-linux-musl` | Linux | x86_64 |
+| `aarch64-unknown-linux-musl` | Linux | arm64 |
+| `x86_64-apple-darwin` | macOS | x86_64 |
+| `aarch64-apple-darwin` | macOS | Apple Silicon |
+| `x86_64-pc-windows-msvc` | Windows | x86_64 |
+
+## Docker (recommended for servers)
+
+```sh
+docker run -p 8090:8090 -v cratebase_data:/app/data ghcr.io/cratebasehq/cratebase:latest
+```
+
+That's SQLite plus local-disk storage, listening on `:8090`. Pin a
+version instead of `latest` with `ghcr.io/cratebasehq/cratebase:0.1.0`.
+Using `docker compose`? A `docker compose up` with
+`--profile postgres --profile s3` swaps in Postgres and S3-compatible
+storage — see [.env.example](https://github.com/cratebasehq/cratebase/blob/main/.env.example)
+for every configuration option.
+
+## Windows
+
+There is no POSIX `sh` on stock Windows, so the `curl | sh` one-liner
+above doesn't apply. Either:
+
+- Download `cratebase_<version>_x86_64-pc-windows-msvc.zip` from the
+  [latest GitHub release](https://github.com/cratebasehq/cratebase/releases/latest),
+  unzip it, and run `cratebase.exe serve`, or
+- Use the Docker command above (works identically under Docker Desktop
+  on Windows).
+
+## From source
+
+```sh
+git clone https://github.com/cratebasehq/cratebase
+cd cratebase
+bun install && bun run admin:build   # builds the embedded dashboard once
+cargo build --release -p cratebase-server
+./target/release/cratebase serve
+```
+
+The admin dashboard has to be built once with Bun before the Rust binary
+picks it up (`web/admin/dist` is embedded at compile time via
+`rust-embed`) — see [Architecture](/docs/project/architecture/) for why
+it works this way.
+
+## Verifying the download yourself
+
+Every release archive on GitHub has a matching `.sha256` file next to
+it. `install.sh` checks this automatically; to verify a manual download:
+
+```sh
+sha256sum -c cratebase_<version>_<target>.zip.sha256
+```
+
+## Next
+
+Continue to [First run](/docs/getting-started/first-run/) to create your
+first superuser and collection.

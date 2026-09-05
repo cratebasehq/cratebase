@@ -4,9 +4,11 @@ import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recha
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { settingsAnalyticsRoute } from "@/routes/settings-analytics";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Pagination } from "@/components/ui/pagination";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ChartNoAxesColumn } from "lucide-react";
 
@@ -161,10 +163,12 @@ export function AnalyticsPage() {
   const loading = totalQuery.isLoading || windowQuery.isLoading;
   const error = totalQuery.error ?? windowQuery.error ?? tableQuery.error;
 
+  const item = settingsItemFor("/settings/analytics")!;
+
   if (error) {
     const described = describeFailure(error);
     return (
-      <div className="flex flex-col gap-4 p-6">
+      <SettingsPage title={item.label} description={item.description} width="wide">
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -183,12 +187,12 @@ export function AnalyticsPage() {
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
-      </div>
+      </SettingsPage>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <SettingsPage title={item.label} description={item.description} width="wide">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <StatCard
           label="Total pageviews"
@@ -271,7 +275,7 @@ export function AnalyticsPage() {
           />
         </div>
       ) : null}
-    </div>
+    </SettingsPage>
   );
 }
 

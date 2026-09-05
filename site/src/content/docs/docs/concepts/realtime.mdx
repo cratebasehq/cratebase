@@ -1,0 +1,19 @@
+---
+title: "Realtime"
+description: "Subscribe to a collection or record over SSE; single-node on SQLite, cross-node on Postgres."
+---
+
+`GET /api/realtime` opens an SSE connection and hands back a `clientId`;
+`POST /api/realtime` declares which topics that client wants —
+`"posts"` (the whole collection) or `"posts/<id>"` (one record). Every
+subsequent create/update/delete publishes to matching subscribers,
+filtered by that collection's `listRule` so a subscriber never receives
+an event for a record they couldn't otherwise read.
+
+This is single-node by construction on SQLite — one file, one process,
+and that's genuinely fine for most deployments. On Postgres, writes also
+call `pg_notify`, and every app process listens for cross-node events on
+a dedicated connection, re-fetching the record and re-evaluating rules
+itself rather than trusting anything the writer serialized. Measured
+end-to-end latency (HTTP POST on one node to SSE frame on another) is
+~95–100ms against a local Postgres 16 container.

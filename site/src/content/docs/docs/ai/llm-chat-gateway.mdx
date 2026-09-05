@@ -1,0 +1,14 @@
+---
+title: "LLM chat gateway"
+description: "POST /api/llm/chat, streamed as llm_chunk frames over /api/realtime."
+---
+
+`POST /api/llm/chat` proxies a configured LLM provider and streams the
+response as `llm_chunk` (then `llm_done`/`llm_error`) events over the
+caller's *existing* `GET /api/realtime` connection — no separate
+streaming transport. An optional `collection` config persists the
+exchange to a collection of your choosing. Because every call spends the
+operator's own provider quota, add an explicit
+[rate limit](/docs/deploy/rate-limiting/) on this exact path in
+production; authentication alone doesn't bound *cost* the way it does
+for an ordinary record write.

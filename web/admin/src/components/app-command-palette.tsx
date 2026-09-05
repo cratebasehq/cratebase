@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Archive, Clock, Database, ListTree, Plus, ShieldUser } from "lucide-react";
+import { Database, Plus, ShieldUser } from "lucide-react";
 import type { CollectionModel } from "pocketbase";
 import {
   Command,
@@ -13,6 +13,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
+import { SETTINGS_GROUPS } from "@/lib/settings-nav";
 
 interface AppCommandPaletteProps {
   collections: CollectionModel[];
@@ -23,11 +24,12 @@ interface AppCommandPaletteProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-const SETTINGS_TARGETS = [
-  { to: "/settings/logs", label: "Request logs", icon: ListTree },
-  { to: "/settings/backups", label: "Backups", icon: Archive },
-  { to: "/settings/cron", label: "Cron jobs", icon: Clock },
-] as const;
+/** Every settings item, tagged with its group label for the palette's
+ * `CommandShortcut` — the single source of truth is `SETTINGS_GROUPS`
+ * (`lib/settings-nav.ts`), also consumed by the sidebar and breadcrumbs. */
+const SETTINGS_TARGETS = SETTINGS_GROUPS.flatMap((group) =>
+  group.items.map((item) => ({ ...item, group: group.label })),
+);
 
 /** Global ⌘K palette: jump to any collection or trigger top-level actions
  * without leaving the keyboard. */
@@ -69,7 +71,7 @@ export function AppCommandPalette({ collections, onNewCollection, open, onOpenCh
       description="Jump to a collection, open a settings page, or start an action."
     >
       <Command>
-        <CommandInput placeholder="Jump to a collection…" />
+        <CommandInput placeholder="Jump to a collection or setting…" />
         <CommandList>
           <CommandEmpty>No matches.</CommandEmpty>
 
@@ -92,10 +94,10 @@ export function AppCommandPalette({ collections, onNewCollection, open, onOpenCh
           </CommandGroup>
 
           <CommandGroup heading="Settings">
-            {SETTINGS_TARGETS.map(({ to, label, icon: Icon }) => (
+            {SETTINGS_TARGETS.map(({ to, label, group, icon: Icon }) => (
               <CommandItem
                 key={to}
-                value={`${label} settings`}
+                value={`${label} ${group} settings`}
                 onSelect={() =>
                   run(() => {
                     void navigate({ to });
@@ -104,6 +106,7 @@ export function AppCommandPalette({ collections, onNewCollection, open, onOpenCh
               >
                 <Icon />
                 {label}
+                <CommandShortcut>{group}</CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>

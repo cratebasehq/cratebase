@@ -99,7 +99,7 @@ export function AccountMenu() {
             </DropdownMenuRadioGroup>
 
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => void navigate({ to: "/settings/logs" })}>
+            <DropdownMenuItem onSelect={() => void navigate({ to: "/settings" })}>
               <Settings />
               Settings
             </DropdownMenuItem>

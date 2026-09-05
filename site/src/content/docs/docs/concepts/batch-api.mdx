@@ -1,0 +1,11 @@
+---
+title: "Batch API"
+description: "Run several record writes in one HTTP round trip and one transaction."
+---
+
+`POST /api/batch` runs several record create/update/upsert/delete calls —
+JSON or multipart, for file fields — in one HTTP round trip and one SQL
+transaction: all of them commit, or none do. `settings.batch` bounds the
+number of requests per batch. This is the same transactional guarantee a
+hand-written multi-statement endpoint would need to build itself, exposed
+generically for any collection.

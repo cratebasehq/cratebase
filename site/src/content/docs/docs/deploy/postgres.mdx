@@ -1,0 +1,13 @@
+---
+title: "Postgres"
+description: "DATABASE_URL, what changes in your code (nothing), and multi-node realtime."
+---
+
+Set `DATABASE_URL=postgres://...` — that's the entire migration from
+SQLite. The API, filter syntax, and rules are identical either way,
+verified by running the same integration test suite against both
+backends (`crates/db/tests/`). The one genuine capability upgrade:
+[realtime](/docs/concepts/realtime/) becomes cross-node via
+`LISTEN`/`NOTIFY`, so a deployment behind a load balancer with more than
+one app instance stops silently dropping events for clients parked on a
+different instance than the one that handled a write.

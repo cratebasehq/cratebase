@@ -1,0 +1,13 @@
+---
+title: "Teams"
+description: "_teams/_team_members and scoping a collection to a team with rules."
+sidebar:
+  order: 11
+---
+
+`_teams` and `_team_members` model workspace membership as ordinary
+collections. Scoping an app collection to a team is a rule, not a new
+primitive: `@collection._team_members.team = @collection._team_members.team && userId = @request.auth.id`-style
+expressions (see [Filter syntax](/docs/concepts/filter-syntax/)) express
+"only members of this record's team" using the same rule engine every
+other access-control decision goes through.

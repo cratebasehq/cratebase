@@ -29,10 +29,10 @@ interface LogRow {
   data?: { method?: string; url?: string; status?: number; error?: string };
 }
 
-/** Collections whose names start with `_` are the server's own plumbing —
- * they have a REST surface but nobody browses them from a home screen. */
+/** System collections are the server's own plumbing — they have a REST
+ * surface but nobody browses them from a home screen. */
 function isUserCollection(collection: CollectionModel): boolean {
-  return !collection.name.startsWith("_");
+  return !collection.system;
 }
 
 /** What a collection's rules say about who can read it, in three words. */

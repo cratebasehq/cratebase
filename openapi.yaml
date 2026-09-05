@@ -6,6 +6,21 @@ info:
     Dynamic collections, auth, file storage, and realtime over one REST API.
     Error responses always use the shape in `ErrorBody`. Bearer tokens
     (admin or auth-collection) go in `Authorization: Bearer <token>`.
+
+
+    Several features have no dedicated REST surface at all: they are
+    ordinary system collections reached through the generic
+    `/collections/{idOrName}/records` endpoints documented below, gated
+    end to end by that collection's own rules. `_webhooks` configures
+    *outgoing* per-collection webhook dispatch (superuser only); `_teams`
+    and `_team_members` are end-user workspace membership records (not an
+    admin-access mechanism); `_audit_log` is an append-only (even to
+    superusers) history of consequential dashboard/API actions;
+    `_push_subscriptions` holds registered push targets that
+    `POST /push/send` delivers to; `_cron_jobs` and `_api_keys` are listed
+    read-only by `GET /crons` and created by `POST /api-keys`
+    respectively, but otherwise managed the same way. None of these get
+    their own path in this document beyond what is listed above.
 servers:
   - url: /api
 security:
@@ -629,6 +644,981 @@ paths:
         "204": { description: OK }
         "404": { description: Unknown clientId (connection already closed) }
 
+  /collections/import:
+    put:
+      summary: Create/update every collection in the payload in one transaction (superuser only)
+      description: >
+        `deleteMissing: true` also drops any existing non-system collection
+        the payload omits. A single invalid collection fails the whole
+        import and leaves the schema untouched.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                collections:
+                  type: array
+                  items: { $ref: "#/components/schemas/CollectionInput" }
+                deleteMissing: { type: boolean, default: false }
+      responses:
+        "204": { description: Imported }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/meta/scaffolds:
+    get:
+      summary: Field-template starting points for a new base/auth/view collection (superuser only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  base: { $ref: "#/components/schemas/Collection" }
+                  auth: { $ref: "#/components/schemas/Collection" }
+                  view: { $ref: "#/components/schemas/Collection" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/truncate:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      summary: Delete every record in a collection, keeping the collection itself (superuser only)
+      responses:
+        "204": { description: Truncated }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /collections/{name}/tool-schema:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: JSON-Schema / OpenAI-function-calling-shaped description of a collection (superuser only)
+      description: >
+        The same conversion `GET /mcp`'s `tools/list` uses to build its
+        `create_<collection>` tool definition, for callers that want the
+        shape without speaking MCP.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /schema/apply:
+    post:
+      summary: Schema-as-code — diff a checked-in schema document against the live database and apply it (superuser only)
+      description: >
+        Diff-first, unlike `PUT /collections/import`'s replace-first
+        semantics: added/changed fields are always written (they cannot
+        lose data), but a field the payload omits is only actually dropped
+        when `force=1` is passed — otherwise it is left in place and
+        reported with `pendingRemoval: true`. Accepts the same payload
+        shapes as `/collections/import`: a bare array of collections,
+        `{"collections": [...]}`, or `{"items": [...]}` (verbatim `GET
+        /collections` output).
+      parameters:
+        - name: dryRun
+          in: query
+          schema: { type: string, description: "Truthy value (1/true) computes and returns the plan without writing anything" }
+        - name: force
+          in: query
+          schema: { type: string, description: "Truthy value (1/true) actually drops fields the payload omits" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: array
+                  items: { $ref: "#/components/schemas/CollectionInput" }
+                - type: object
+                  properties:
+                    collections: { type: array, items: { $ref: "#/components/schemas/CollectionInput" } }
+                - type: object
+                  properties:
+                    items: { type: array, items: { $ref: "#/components/schemas/CollectionInput" } }
+      responses:
+        "200":
+          description: OK — the diff, whether or not it was applied (see `applied`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  applied: { type: boolean }
+                  force: { type: boolean }
+                  collections:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        action: { type: string, enum: [create, update, unchanged] }
+                        fieldsAdded: { type: array, items: { type: string } }
+                        fieldsRemoved: { type: array, items: { type: string } }
+                        fieldsChanged: { type: array, items: { type: string } }
+                        pendingRemoval: { type: boolean }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api-keys:
+    post:
+      summary: Mint a new API key and return its raw value exactly once (superuser only)
+      description: >
+        Every other operation on `_api_keys` (list/view/rename/disable/
+        delete) goes through the generic Records API at
+        `/collections/_api_keys/records` — this endpoint exists only
+        because that API can never round-trip the raw key (it is stored
+        as a one-way hash). The `key` returned here is the only copy the
+        caller will ever see.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  prefix: { type: string, description: "Non-secret identifying prefix of the key, safe to display" }
+                  key: { type: string, description: "The raw API key. Never shown again." }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /push/send:
+    post:
+      summary: Send a push notification to one record's, or specific, `_push_subscriptions` rows (superuser only)
+      description: >
+        Superuser-only rather than any-authenticated-record, unlike
+        `/llm/chat`: the target (`recordId` or `subscriptionIds`) is
+        caller-chosen and can name any record's subscriptions, so this is
+        an operator/ops action, not something a record's own rules gate.
+        A collection's own record-driven push (configured under
+        `settings.push.triggers`) does not go through this endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                collection: { type: string, description: "Together with recordId, targets that record's subscriptions" }
+                recordId: { type: string }
+                subscriptionIds:
+                  type: array
+                  items: { type: string }
+                  description: "Target specific `_push_subscriptions` rows directly; ignored when collection/recordId are set"
+                title: { type: string }
+                body: { type: string }
+                data: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: OK — per-target delivery outcome, even when some targets failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: integer }
+                  failed: { type: integer }
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        platform: { type: string, example: web }
+                        ok: { type: boolean }
+                        error: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /llm/chat:
+    post:
+      summary: One chat completion against the provider configured in settings.llm (any authenticated record)
+      description: >
+        **The HTTP response below is the final result, not the streamed
+        body.** If `clientId` names an already-open `GET /realtime`
+        connection (the SSE endpoint), the incremental tokens are pushed
+        over *that* connection instead, as three realtime event kinds
+        unique to this feature: `llm_chunk` (`{requestId, delta}`) per
+        chunk, `llm_done` (`{requestId, text}`) once the stream ends, or
+        `llm_error` (`{requestId, message}`) in place of `llm_done` if the
+        provider fails mid-stream. A caller that omits `clientId` still
+        gets this same final JSON response, it just never sees the
+        incremental deltas. When `collection` is set, the exchange
+        (`prompt`/`response`/`model`) is written there after the stream
+        completes, subject to that collection's own `createRule`
+        evaluated against this request's caller — a superuser platform
+        feature does not imply superuser-only write access.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    required: [role, content]
+                    properties:
+                      role: { type: string, enum: [system, user, assistant] }
+                      content: { type: string }
+                collection: { type: string, description: "Optional; persist the exchange as a record here" }
+                clientId: { type: string, description: "An open GET /realtime connection's clientId to stream chunks to" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reply: { type: string }
+                  promptTokens: { type: integer }
+                  completionTokens: { type: integer }
+                  record:
+                    type: object
+                    allOf:
+                      - $ref: "#/components/schemas/Record"
+                    nullable: true
+                    description: Present only when `collection` was set and the write succeeded.
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /mcp:
+    get:
+      summary: Model Context Protocol — SSE handshake leg
+      security: []
+      description: >
+        Opens an SSE stream and immediately emits the spec's `endpoint`
+        handshake event (`data: /api/mcp`), then idle keep-alive comments
+        every 25s. This server answers every `tools/call` synchronously in
+        the `POST` response body below rather than over this stream — it
+        is kept open only so an MCP client expecting the full two-leg
+        HTTP+SSE transport (protocol version `2024-11-05`) finds a working
+        stream to open.
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream: { schema: { type: string } }
+    post:
+      summary: Model Context Protocol — JSON-RPC 2.0 dispatch (single endpoint, method-routed)
+      security:
+        - bearerAuth: []
+        - {}
+      description: >
+        One route implementing every MCP method by JSON-RPC `method` name,
+        not a separate REST path per operation. Every non-system
+        collection (name not starting with `_`) is exposed as up to five
+        tools — `list_<collection>`, `get_<collection>`,
+        `create_<collection>`, `update_<collection>`, `delete_<collection>`
+        (view collections only get `list_`/`get_`) — each authorized
+        exactly like the equivalent HTTP record route, through the same
+        `listRule`/`viewRule`/`createRule`/`updateRule`/`deleteRule` and
+        the caller's own bearer token. Supported `method` values:
+
+        - `initialize` — returns `{protocolVersion, capabilities, serverInfo}`.
+        - `ping` — returns `{}`.
+        - `tools/list` — returns `{"tools": [{name, description, inputSchema}, ...]}`.
+        - `tools/call` — `params: {name, arguments}`; runs the named tool
+          and returns `{content: [{type: "text", text}], structuredContent, isError}`.
+          A denied rule or validation failure comes back as a normal
+          `tools/call` result with `isError: true`, not a JSON-RPC error —
+          only a malformed request (bad method, missing `name`, unknown
+          tool) is a protocol-level JSON-RPC error.
+
+        A request with no `id` (a JSON-RPC *notification*, e.g. the
+        spec's `notifications/initialized`) gets no body — just `202
+        Accepted`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method]
+              properties:
+                jsonrpc: { type: string, example: "2.0" }
+                id: { description: "Omit for a notification (no reply expected)" }
+                method: { type: string, enum: [initialize, ping, "tools/list", "tools/call"] }
+                params:
+                  type: object
+                  additionalProperties: true
+                  properties:
+                    name: { type: string, description: "tools/call only — the tool name, e.g. create_posts" }
+                    arguments: { type: object, additionalProperties: true }
+            examples:
+              toolsCall:
+                value:
+                  jsonrpc: "2.0"
+                  id: 1
+                  method: tools/call
+                  params: { name: list_posts, arguments: { filter: "published = true", perPage: 10 } }
+      responses:
+        "200":
+          description: >
+            A JSON-RPC response envelope — `result` on success, `error`
+            (`{code, message}`) for a protocol-level failure — or, for a
+            notification, an empty `202 Accepted`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc: { type: string, example: "2.0" }
+                  id: {}
+                  result: { type: object, additionalProperties: true }
+                  error:
+                    type: object
+                    properties:
+                      code: { type: integer, example: -32601 }
+                      message: { type: string }
+        "202": { description: Notification acknowledged (no `id` in the request) }
+
+  /webhooks/stripe:
+    post:
+      summary: Worked example of an incoming (inbound) webhook — verifies Stripe's signature, then logs the event
+      security: []
+      description: >
+        The mirror image of the outgoing `_webhooks` system collection
+        (see the note under `/collections/{idOrName}/records`): this
+        endpoint trusts a payload from an *external* service instead of
+        sending one. Authenticated entirely by the `Stripe-Signature`
+        header's HMAC-SHA256 digest against the `STRIPE_WEBHOOK_SECRET`
+        environment variable — there is no `Authorization` header or API
+        key, because Stripe cannot present one. A timestamp more than 5
+        minutes old (or in the future) is rejected even with a valid
+        signature, to block replay of a captured request.
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema: { type: string, example: "t=1690000000,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: Signature verified; event logged }
+        "400":
+          description: Missing/invalid signature header, stale timestamp, digest mismatch, or unparseable JSON body
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /sql:
+    post:
+      summary: Run an ad-hoc SQL statement directly against the database (superuser only)
+      description: >
+        No new capability beyond what a superuser already has through the
+        schema/record APIs — this only skips the UI translation layer.
+        `write: false` (the default) rejects anything that doesn't
+        trimmed-and-uppercase start with `SELECT`/`WITH`; server-enforced,
+        not just a dashboard confirmation dialog. Read responses are
+        truncated to 500 rows (`truncated: true` when more existed) and
+        every statement is cancelled after 10s. Driver errors are returned
+        verbatim, not PocketBase's generic wrapper message, since the
+        caller is already running arbitrary SQL by choice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sql]
+              properties:
+                sql: { type: string, example: "SELECT id, title FROM posts WHERE published = 1" }
+                write: { type: boolean, default: false, description: "Must be true to run INSERT/UPDATE/DELETE/DDL" }
+      responses:
+        "200":
+          description: OK — shape depends on whether the statement was a read or a write
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    properties:
+                      columns: { type: array, items: { type: string } }
+                      rows: { type: array, items: { type: object, additionalProperties: true } }
+                      truncated: { type: boolean }
+                  - type: object
+                    properties:
+                      rowsAffected: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /storage/objects:
+    get:
+      summary: List objects in the record-file object store under a prefix, one level deep (superuser only)
+      description: >
+        Independent of any record — the escape hatch for an operator to
+        see and fix what is actually sitting in the bucket when storage
+        and the database have drifted. Object keys are flat strings;
+        `folders` fakes a directory tree the way an S3 console does, one
+        level per call.
+      parameters:
+        - name: prefix
+          in: query
+          schema: { type: string, default: "" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  folders: { type: array, items: { type: string }, description: "Full prefixes, each ending in /" }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        size: { type: integer }
+                        lastModified: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Upload/overwrite one object at an arbitrary key (superuser only)
+      description: This does **not** touch any record even if the key happens to collide with one a record's file field would use.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [key, file]
+              properties:
+                key: { type: string }
+                file: { type: string, format: binary }
+      responses:
+        "204": { description: Uploaded }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete one object by key (superuser only, does not touch any record)
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /storage/objects/download:
+    get:
+      summary: Download one object by key (superuser only)
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/octet-stream: { schema: { type: string, format: binary } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /backups:
+    get:
+      summary: List backup archives, newest first (superuser only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    key: { type: string, example: pb_backup_20250115103000.zip }
+                    size: { type: integer }
+                    modified: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Take a fresh backup now (superuser only)
+      description: >
+        A ZIP of a consistent snapshot of the main database, the auxiliary
+        database, and the storage tree when files live on local disk. The
+        body is optional; `name` defaults to PocketBase's own
+        `pb_backup_YYYYMMDDHHMMSS.zip` pattern.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        "204": { description: Created }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /backups/upload:
+    post:
+      summary: Upload an existing backup archive (superuser only)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                name: { type: string, description: "Defaults to the uploaded file's own name" }
+      responses:
+        "204": { description: Uploaded }
+        "400":
+          description: Not a valid ZIP, invalid name, or a backup with this name already exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /backups/storage-info:
+    get:
+      summary: Which store backups are written to (Cratebase extension, not a PocketBase route)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  driver: { type: string, enum: [local, s3] }
+                  location: { type: string, example: "my-backups-bucket@s3.us-east-1.amazonaws.com" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /backups/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Download one backup archive
+      description: >
+        Authenticated by a superuser **file token** in the query string
+        (from `POST /files/token`), not `Authorization` — a browser
+        `<a download>`/`window.open` cannot set headers.
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/zip: { schema: { type: string, format: binary } }
+        "403": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete one backup archive (superuser only)
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /backups/{key}/restore:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Restore the database and storage tree from a backup archive (superuser only)
+      description: >
+        Extracts and validates the archive, then swaps the data directory
+        and re-execs the current binary with the same arguments — the
+        process id survives, so a supervisor sees no crash, but every
+        open connection is dropped. The swap happens after this endpoint
+        has already answered `204`.
+      responses:
+        "204": { description: Restore staged; the process is restarting }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /logs:
+    get:
+      summary: Search the request/application log (superuser only)
+      description: >
+        Backed by `_logs` in the auxiliary database. `filter`/`sort` use
+        the ordinary PocketBase filter grammar against a synthetic
+        collection (`level` number, `message` text, `data` json, `created`
+        autodate) — `data.method = "GET"` works because `data` is a json
+        field. Every read flushes the background log writer first.
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: perPage
+          in: query
+          schema: { type: integer, default: 30 }
+        - name: filter
+          in: query
+          schema: { type: string, description: 'e.g. `level >= 8 && data.method = "GET"`' }
+        - name: sort
+          in: query
+          schema: { type: string, default: "-created" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  perPage: { type: integer }
+                  totalItems: { type: integer }
+                  totalPages: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/LogEntry" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /logs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: View one log entry (superuser only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogEntry" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /logs/stats:
+    get:
+      summary: Hourly log volume buckets, for the dashboard's log chart (superuser only)
+      parameters:
+        - name: filter
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    date: { type: string }
+                    total: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /crons:
+    get:
+      summary: List every registered cron job, in registration order (superuser only)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, example: "__pbAutoBackup__" }
+                    expression: { type: string, example: "0 0 * * *" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /crons/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Run one cron job now, synchronously (superuser only)
+      responses:
+        "204": { description: Ran to completion }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { description: Missing or invalid cron job id }
+
+  /functions:
+    get:
+      summary: Read-only view of pb_hooks/*.pb.js files and the HTTP routes they registered (superuser only)
+      description: >
+        There is no write path — hooks are edited as files on disk, not
+        through the dashboard or this API.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hooksDir: { type: string }
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string, example: "increment_view_count.pb.js" }
+                        sizeBytes: { type: integer }
+                        modifiedAt: { type: string, nullable: true }
+                  routes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        method: { type: string, example: POST }
+                        pattern: { type: string, example: "/webhooks/custom" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /settings:
+    get:
+      summary: The instance's settings (superuser only, secrets stripped)
+      description: >
+        Write-only secrets (`smtp.password`, OAuth2 client secrets, S3
+        credentials, ...) never round-trip out; see `PATCH` below for why
+        that is safe.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "401": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Deep-merge a partial settings update onto the stored settings (superuser only)
+      description: >
+        Not a replacement: an omitted key keeps its stored value rather
+        than being cleared, which is what makes write-only secrets work
+        (the client never received `smtp.password`, so it cannot send it
+        back, and omitting it must not erase it). Applies immediately —
+        storage driver, mailer and the built-in backup cron are all
+        rebuilt from the new settings with no restart required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "200":
+          description: OK — the full merged settings, secrets stripped
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /settings/test/s3:
+    post:
+      summary: Round-trip a probe object through the configured S3 filesystem (superuser only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filesystem: { type: string, enum: [storage, backups], description: "Which configured S3 target to test; defaults to the record-file store" }
+      responses:
+        "204": { description: Round trip succeeded }
+        "400":
+          description: "S3 not enabled for the chosen filesystem, or the round trip failed"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /settings/test/email:
+    post:
+      summary: Send a test email using one of an auth collection's real templates (superuser only)
+      description: Placeholders (`{TOKEN}`, `{OTP}`, ...) are filled with obviously-fake test values since there is no real record behind the send.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, template]
+              properties:
+                email: { type: string, format: email }
+                template: { type: string, enum: [verification, password-reset, email-change, otp, login-alert] }
+                collection: { type: string, description: "Auth collection owning the template; defaults to _superusers" }
+      responses:
+        "204": { description: Sent }
+        "400":
+          description: Per-field validation error (data.email / data.template / data.collection)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /settings/apple/generate-client-secret:
+    post:
+      summary: Sign an ES256 JWT to use as Apple OAuth2's "client secret" (superuser only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId, teamId, keyId, privateKey, duration]
+              properties:
+                clientId: { type: string, description: "Apple Services ID" }
+                teamId: { type: string }
+                keyId: { type: string }
+                privateKey: { type: string, description: "PEM-encoded EC private key" }
+                duration: { type: integer, description: "Seconds until expiry; max 15777000 (~6 months, Apple's own ceiling)" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { secret: { type: string, description: "The signed JWT" } } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /files/token:
+    post:
+      summary: Mint a short-lived file token for the caller's own record
+      description: >
+        Any authenticated record may mint one; what it unlocks is decided
+        per file by the owning collection's `viewRule`, evaluated against
+        this token's owner. Pass it as `?token=` on a file download or
+        thumb URL, or on the superuser-only backup download endpoint.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { token: { type: string } } }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /utils/avatar/{seed}:
+    parameters:
+      - name: seed
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Deterministic hashed-identicon PNG avatar, unauthenticated
+      security: []
+      description: The same seed always renders the same image; nothing is cached server-side, but the response is sent with a year-long immutable Cache-Control.
+      parameters:
+        - name: size
+          in: query
+          schema: { type: integer, default: 128 }
+      responses:
+        "200":
+          description: OK
+          content:
+            image/png: { schema: { type: string, format: binary } }
+
+  /utils/qr:
+    get:
+      summary: Render a QR code as a PNG, unauthenticated
+      security: []
+      parameters:
+        - name: data
+          in: query
+          required: true
+          schema: { type: string }
+        - name: size
+          in: query
+          schema: { type: integer, default: 256, description: "Target pixels square; actual output rounds to the nearest whole module" }
+      responses:
+        "200":
+          description: OK
+          content:
+            image/png: { schema: { type: string, format: binary } }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /metrics:
+    servers:
+      - url: /
+    get:
+      summary: Prometheus text-exposition of HTTP request counts, latency and error rate
+      security: []
+      description: >
+        Mounted at the router root, **not** under `/api` — this is
+        `GET https://your-instance/metrics`, not `/api/metrics`. It is
+        deliberately unauthenticated (Prometheus's own scraping
+        convention: firewall the port, don't invent a second auth
+        scheme), is not subject to the `/api` rate limiter, and never
+        appears in `_logs`. Exports three metrics: `cratebase_http_requests_total`
+        (counter, labelled `method`/`status`), `cratebase_http_request_duration_seconds`
+        (histogram), and `cratebase_http_errors_total` (counter, every 4xx/5xx).
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+                example: |
+                  # HELP cratebase_http_requests_total Total HTTP requests, by method and status.
+                  # TYPE cratebase_http_requests_total counter
+                  cratebase_http_requests_total{method="GET",status="200"} 42
+
+                  # HELP cratebase_http_request_duration_seconds Request latency in seconds.
+                  # TYPE cratebase_http_request_duration_seconds histogram
+                  cratebase_http_request_duration_seconds_bucket{le="0.005"} 10
+                  cratebase_http_request_duration_seconds_bucket{le="+Inf"} 42
+                  cratebase_http_request_duration_seconds_sum 3.14
+                  cratebase_http_request_duration_seconds_count 42
+
+                  # HELP cratebase_http_errors_total Total requests answered with a 4xx or 5xx status.
+                  # TYPE cratebase_http_errors_total counter
+                  cratebase_http_errors_total 1
+
+
 components:
   securitySchemes:
     bearerAuth:
@@ -700,3 +1690,11 @@ components:
             id: { type: string }
             created: { type: string }
             updated: { type: string }
+    LogEntry:
+      type: object
+      properties:
+        id: { type: string }
+        level: { type: integer, description: "Standard syslog-style severity, e.g. 0=debug, 4=info, 8=warn, 12=error" }
+        message: { type: string }
+        data: { type: object, additionalProperties: true, description: "Structured context: method, URL, status, duration, etc. for a request-log row" }
+        created: { type: string }

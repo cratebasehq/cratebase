@@ -1,0 +1,12 @@
+---
+title: "Vector search"
+description: "The vector field type, nearestTo, and the 20,000-candidate cap."
+---
+
+A `vector` field stores a fixed-dimension embedding. Query it with
+`?nearestTo=field:<vector|recordId>&nearestLimit=`, which ranks by cosine
+similarity — application-side, over up to 20,000 candidate rows, honestly
+stated as the ceiling rather than silently degrading past it. Ordinary
+`filter` and API rules still apply on top of a `nearestTo` query, so
+"nearest matches this user is allowed to see" is one request, not a
+search step followed by a manual filter step.

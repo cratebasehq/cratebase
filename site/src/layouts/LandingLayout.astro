@@ -1,0 +1,309 @@
+---
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource-variable/red-hat-mono";
+import "../styles/tokens.css";
+import Mark from "../components/Mark.astro";
+
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+
+const navLinks = [
+  { href: "/docs/", label: "Docs" },
+  { href: "/#examples", label: "Examples" },
+  { href: "/docs/migrating/compatibility/", label: "Migrate" },
+  { href: "https://github.com/cratebasehq/cratebase", label: "GitHub" },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <script is:inline>
+      // Applied before paint to avoid a flash of the wrong theme.
+      const stored = localStorage.getItem("cratebase-theme");
+      const theme =
+        stored ?? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.dataset.theme = theme;
+    </script>
+  </head>
+  <body>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <header class="site-nav">
+      <div class="wrap">
+        <a href="/" class="brand">
+          <Mark size={26} />
+          <span>Cratebase</span>
+        </a>
+        <nav aria-label="Primary">
+          {
+            navLinks.map((link) => (
+              <a href={link.href}>{link.label}</a>
+            ))
+          }
+        </nav>
+        <div class="nav-actions">
+          <button id="theme-toggle" type="button" aria-label="Toggle color theme">
+            <span class="theme-icon-light" aria-hidden="true">&#9728;</span>
+            <span class="theme-icon-dark" aria-hidden="true">&#9789;</span>
+          </button>
+          <a class="btn btn-primary" href="/docs/getting-started/install/">Get started</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <slot />
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap footer-grid">
+        <div class="footer-brand">
+          <Mark size={22} />
+          <span>Cratebase</span>
+          <p>A backend in one crate. MIT licensed.</p>
+        </div>
+        <div>
+          <h3>Docs</h3>
+          <ul>
+            <li><a href="/docs/getting-started/install/">Install</a></li>
+            <li><a href="/docs/getting-started/first-run/">First run</a></li>
+            <li><a href="/docs/migrating/compatibility/">Migrating from PocketBase</a></li>
+            <li><a href="/docs/reference/rest-api/">REST API reference</a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>Examples</h3>
+          <ul>
+            <li><a href="/docs/getting-started/examples/">All examples</a></li>
+            <li><a href="https://github.com/cratebasehq/cratebase/tree/main/examples/kanban">Kanban</a></li>
+            <li><a href="https://github.com/cratebasehq/cratebase/tree/main/examples/docmind">DocMind</a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>Project</h3>
+          <ul>
+            <li><a href="https://github.com/cratebasehq/cratebase">GitHub</a></li>
+            <li><a href="/docs/project/changelog/">Changelog</a></li>
+            <li><a href="/docs/project/roadmap/">Roadmap</a></li>
+            <li><a href="/docs/project/contributing-security-license/">Security</a></li>
+            <li><a href="https://github.com/cratebasehq/cratebase/blob/main/LICENSE">MIT license</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="wrap footer-mark" aria-hidden="true">
+        <Mark size={220} />
+      </div>
+    </footer>
+
+    <script>
+      const btn = document.getElementById("theme-toggle");
+      btn?.addEventListener("click", () => {
+        const root = document.documentElement;
+        const next = root.dataset.theme === "dark" ? "light" : "dark";
+        root.dataset.theme = next;
+        localStorage.setItem("cratebase-theme", next);
+      });
+    </script>
+
+    <style is:global>
+      .skip-link {
+        position: absolute;
+        left: -9999px;
+        top: 0;
+        background: var(--color-harbor);
+        color: var(--color-fog);
+        padding: 0.5rem 1rem;
+        z-index: 100;
+      }
+      .skip-link:focus {
+        left: 1rem;
+        top: 1rem;
+      }
+
+      .wrap {
+        max-width: 72rem;
+        margin: 0 auto;
+        padding-inline: 1.5rem;
+      }
+
+      .site-nav {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        background: var(--color-white);
+        border-bottom: 1px solid var(--color-hairline);
+      }
+      :root[data-theme="dark"] .site-nav {
+        background: var(--color-panel);
+      }
+      .site-nav .wrap {
+        display: flex;
+        align-items: center;
+        gap: 2rem;
+        height: 4rem;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 700;
+        font-size: 1.05rem;
+        color: var(--color-harbor);
+        text-decoration: none;
+        color: var(--color-crate);
+      }
+      .brand span {
+        color: var(--color-text);
+      }
+      .site-nav nav {
+        display: flex;
+        gap: 1.5rem;
+        flex: 1;
+      }
+      .site-nav nav a {
+        color: var(--color-text-secondary);
+        text-decoration: none;
+        font-size: 0.95rem;
+      }
+      .site-nav nav a:hover {
+        color: var(--color-text);
+        text-decoration: underline;
+      }
+      .nav-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      #theme-toggle {
+        background: transparent;
+        border: 1px solid var(--color-hairline);
+        border-radius: 999px;
+        width: 2.25rem;
+        height: 2.25rem;
+        cursor: pointer;
+        color: var(--color-text);
+        display: grid;
+        place-items: center;
+      }
+      .theme-icon-dark {
+        display: none;
+      }
+      :root[data-theme="dark"] .theme-icon-light {
+        display: none;
+      }
+      :root[data-theme="dark"] .theme-icon-dark {
+        display: inline;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.6rem 1.15rem;
+        border-radius: var(--radius);
+        font-size: 0.95rem;
+        font-weight: 600;
+        text-decoration: none;
+        border: 1px solid transparent;
+        transition: transform 160ms var(--ease-house), opacity 160ms var(--ease-house);
+      }
+      .btn:hover {
+        opacity: 0.9;
+      }
+      .btn-primary {
+        background: var(--color-button-bg);
+        color: var(--color-button-text);
+      }
+      .btn-secondary {
+        background: transparent;
+        color: var(--color-text);
+        border-color: var(--color-hairline);
+      }
+
+      .site-footer {
+        margin-top: 6rem;
+        background: var(--color-harbor);
+        color: var(--color-fog);
+        position: relative;
+        overflow: hidden;
+        padding-block: 3.5rem 2rem;
+      }
+      .footer-grid {
+        display: grid;
+        grid-template-columns: 1.4fr repeat(3, 1fr);
+        gap: 2rem;
+        position: relative;
+        z-index: 1;
+      }
+      .footer-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .footer-brand > span:nth-child(2) {
+        font-weight: 700;
+      }
+      .site-footer p {
+        color: #93a4b6;
+        font-size: 0.9rem;
+        margin: 0;
+      }
+      .site-footer h3 {
+        font-family: var(--font-mono);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        font-size: 0.75rem;
+        color: #93a4b6;
+        margin: 0 0 0.75rem;
+      }
+      .site-footer ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      .site-footer a {
+        color: var(--color-fog);
+        text-decoration: none;
+        font-size: 0.9rem;
+      }
+      .site-footer a:hover {
+        text-decoration: underline;
+      }
+      .footer-mark {
+        position: absolute;
+        right: -2rem;
+        bottom: -3rem;
+        opacity: 0.12;
+        color: var(--color-fog);
+      }
+
+      @media (max-width: 900px) {
+        .site-nav nav {
+          display: none;
+        }
+        .footer-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+    </style>
+  </body>
+</html>

@@ -6,6 +6,42 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 
+/**
+ * The one page anatomy every settings screen shares: a title and
+ * description derived from the settings registry (`lib/settings-nav.ts`),
+ * an optional right-aligned action, and a body. `width="form"` is the
+ * `max-w-3xl` column a form of `SettingsSection`s wants; `width="wide"`
+ * drops the max-width for a table or console that wants the full column.
+ */
+export function SettingsPage({
+  title,
+  description,
+  action,
+  width,
+  children,
+}: {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+  width: "form" | "wide";
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn("mx-auto flex w-full flex-col gap-4 p-page", width === "form" && "max-w-3xl")}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-col">
+          <h1 className="text-base font-medium tracking-tight">{title}</h1>
+          {description ? (
+            <p className="mt-0.5 max-w-measure text-sm text-muted-foreground">{description}</p>
+          ) : null}
+        </div>
+        {action}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /** A titled block of related settings. */
 export function SettingsSection({
   title,

@@ -1,0 +1,22 @@
+---
+title: "What is and isn't migrated"
+description: "Passwords keep working (re-hashed on next login); sessions and OAuth secrets don't."
+---
+
+**Migrated, verified end-to-end:** collections, records, and files;
+PocketBase's bcrypt password hashes are accepted directly by Cratebase's
+verifier and **log in immediately with the original password** — the
+next successful login transparently re-hashes to Argon2id in the
+background, so the bcrypt hash is only ever used once. Collection and
+record ids are preserved exactly (see
+[The migration tool](/docs/migrating/migration-tool/)).
+
+**Not migrated, by design:** PocketBase's session/auth tokens (signed
+with a secret this tool never reads — every user must log in again, with
+the password they already know); OAuth2 provider client secrets
+(migrated auth collections get `oauth2.enabled: false`, flagged in the
+report, reconfigure with fresh credentials); `_mfas`/`_otps`/
+`_externalAuths`/`_authOrigins` (ephemeral state, meaningless without the
+signing secrets behind it); and PocketBase JS migrations/hooks
+(`pb_migrations/`, `pb_hooks/`) — this tool moves data, not server-side
+application code.

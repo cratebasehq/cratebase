@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { KeyRound, Plus, ShieldUser, Trash2 } from "lucide-react";
 import type { RecordModel } from "pocketbase";
 import { cb, currentSuperuser, describeFailure } from "@/lib/api";
+import { settingsItemFor } from "@/lib/settings-nav";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { SettingsPage } from "@/components/settings/settings-form";
 import {
   Sheet,
   SheetContent,
@@ -97,23 +99,21 @@ export function SuperusersPage() {
   const isOwner = myRole === OWNER;
   const ownerCount = rows.filter((r) => r.role === OWNER).length;
 
+  const item = settingsItemFor("/settings/superusers")!;
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div className="flex flex-col">
-          <h2 className="text-sm font-medium">Superusers</h2>
-          <p className="text-xs text-muted-foreground">
-            Full access to every collection, record and setting. They bypass all API rules. Only owners can add,
-            remove or re-role other superusers.
-          </p>
-        </div>
-        {isOwner ? (
+    <SettingsPage
+      title={item.label}
+      description={item.description}
+      width="form"
+      action={
+        isOwner ? (
           <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
             <Plus className="size-3.5" />
             New superuser
           </Button>
-        ) : null}
-      </div>
+        ) : undefined
+      }
+    >
 
       {superusers.isPending ? (
         <div className="flex flex-col gap-1">
@@ -251,7 +251,7 @@ export function SuperusersPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </SettingsPage>
   );
 }
 

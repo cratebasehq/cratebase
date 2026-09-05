@@ -99,6 +99,11 @@ interface FilterBarProps {
   error?: string | null;
   collectionName: string;
   fields: FieldSchema[];
+  /** Fields a bare-term search should also cover beyond `SEARCHABLE_TYPES` —
+   * an auth collection's identity field(s), which aren't in `fields` (the
+   * schema doesn't carry them) but are exactly what a person means by
+   * typing a bare word on a users-shaped collection. */
+  extraSearchFields?: string[];
   className?: string;
 }
 
@@ -110,7 +115,7 @@ interface FilterBarProps {
  * half-typed expression is a syntax error, and every syntax error is a
  * round trip.
  */
-export function FilterBar({ value, onApply, error, collectionName, fields, className }: FilterBarProps) {
+export function FilterBar({ value, onApply, error, collectionName, fields, extraSearchFields, className }: FilterBarProps) {
   const [draft, setDraft] = useState(value);
   const [appliedValue, setAppliedValue] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -130,7 +135,11 @@ export function FilterBar({ value, onApply, error, collectionName, fields, class
   // let it 400, expand it into a search across this collection's text
   // fields — and put that expression in the box afterwards, so the syntax
   // is learned rather than hidden.
-  const searchable = useMemo(() => searchableFields(fields), [fields]);
+  const searchable = useMemo(() => {
+    const extra = extraSearchFields ?? [];
+    const base = searchableFields(fields);
+    return [...extra, ...base.filter((name) => !extra.includes(name))];
+  }, [fields, extraSearchFields]);
   const bareTerm = looksLikeBareTerm(draft) ? draft.trim() : null;
   const canSearch = bareTerm !== null && searchable.length > 0;
 

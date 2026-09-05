@@ -1,0 +1,14 @@
+---
+title: "OAuth2"
+description: "Google, GitHub, and custom providers via authorization-code + PKCE."
+sidebar:
+  order: 6
+---
+
+`auth-methods` hands back a per-provider `authURL`/`state`/`codeVerifier`;
+`auth-with-oauth2` exchanges the resulting `code` server-side, fetches
+user info, and either signs in the linked record (via `_externalAuths`),
+links onto a same-email match, or creates a new record. `google`/`github`
+only need a client id/secret configured on the collection; any other
+provider name is a hand-configured provider using its own
+authorize/token/userinfo URLs.

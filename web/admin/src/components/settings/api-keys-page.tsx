@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -19,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** An `_api_keys` record as the generic Records API returns it — never
@@ -90,21 +92,19 @@ export function ApiKeysPage() {
 
   const keys = data ?? [];
 
+  const item = settingsItemFor("/settings/api-keys")!;
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 p-page">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium">API keys</h2>
-          <p className="max-w-measure text-sm text-muted-foreground">
-            Bearer credentials for scripts, CI jobs, and MCP clients. Each key resolves to a superuser identity —
-            treat it like a password. The full key is shown once, right after creation, and never again.
-          </p>
-        </div>
-        <Button size="sm" className="gap-1.5 shrink-0" onClick={() => setCreating(true)}>
+    <SettingsPage
+      title={item.label}
+      description={item.description}
+      width="form"
+      action={
+        <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
           <Plus className="size-3.5" />
           New API key
         </Button>
-      </div>
+      }
+    >
 
       {error ? (
         <Empty>
@@ -211,7 +211,7 @@ export function ApiKeysPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </SettingsPage>
   );
 }
 

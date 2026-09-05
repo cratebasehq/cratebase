@@ -1,0 +1,13 @@
+---
+title: "@cratebase/extras"
+description: "Client-side helpers: nearestTo, chat, getToolSchema(s), trackPresence."
+---
+
+[`@cratebase/extras`](https://www.npmjs.com/package/@cratebase/extras)
+is a small companion npm package, versioned independently of the server,
+wrapping the AI endpoints above in ergonomic client calls:
+`nearestTo(pb, collection, field, vector, opts)` for vector search,
+`chat(pb, messages, { onDelta })` for the LLM gateway (handling the
+`llm_chunk` realtime subscription for you), `getToolSchema(s)` for
+function-calling setups, and `trackPresence` for the kind of
+presence-collection pattern the kanban example implements by hand.

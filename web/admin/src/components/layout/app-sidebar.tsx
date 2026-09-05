@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { CratebaseMark } from "@/components/brand/cratebase-mark";
 import { AccountMenu } from "@/components/layout/account-menu";
+import { SettingsNav } from "@/components/settings/settings-nav";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import {
@@ -58,20 +59,7 @@ export function AppSidebar({
   onImportCollections: () => void;
 }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const [systemOpen, setSystemOpen] = useState(false);
 
-  // Collections named with a leading `_` are Cratebase-managed system
-  // collections (superusers, auth origins, MFA, OTP, external auths); the
-  // sidebar keeps them behind a collapsed group so it stays focused on the
-  // collections a developer actually created, matching PocketBase's
-  // convention.
-  const { userCollections, systemCollections } = useMemo(
-    () => ({
-      userCollections: collections.filter((c) => !c.name.startsWith("_")),
-      systemCollections: collections.filter((c) => c.name.startsWith("_")),
-    }),
-    [collections],
-  );
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader className="h-topbar justify-center border-b border-sidebar-border px-2">
@@ -104,7 +92,7 @@ export function AppSidebar({
                   isActive={pathname.startsWith("/settings")}
                   tooltip="Settings"
                 >
-                  <Link to="/settings/logs">
+                  <Link to="/settings">
                     <Settings />
                     <span>Settings</span>
                   </Link>
@@ -114,96 +102,18 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Collections</SidebarGroupLabel>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <SidebarGroupAction title="New collection, export, or import">
-                <Plus />
-                <span className="sr-only">New collection, export, or import</span>
-              </SidebarGroupAction>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={onNewCollection}>
-                <Plus className="size-3.5" />
-                New collection
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => downloadCollectionsExport(collections)}>
-                <Download className="size-3.5" />
-                Export collections
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onImportCollections}>
-                <Upload className="size-3.5" />
-                Import collections
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {loading ? (
-                <>
-                  <SidebarMenuItem>
-                    <SidebarMenuSkeleton showIcon />
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuSkeleton showIcon />
-                  </SidebarMenuItem>
-                  <SidebarMenuItem>
-                    <SidebarMenuSkeleton showIcon />
-                  </SidebarMenuItem>
-                </>
-              ) : userCollections.length === 0 ? (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-                  Nothing here yet. Create a collection to start storing data.
-                </p>
-              ) : (
-                userCollections.map((collection) => (
-                  <CollectionItem
-                    key={collection.id}
-                    collection={collection}
-                    pathname={pathname}
-                  />
-                ))
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {pathname.startsWith("/settings") ? (
+          <SettingsNav pathname={pathname} />
+        ) : (
+          <CollectionsNav
+            collections={collections}
+            loading={loading}
+            pathname={pathname}
+            onNewCollection={onNewCollection}
+            onImportCollections={onImportCollections}
+          />
+        )}
 
-        {systemCollections.length > 0 ? (
-          <Collapsible open={systemOpen} onOpenChange={setSystemOpen} className="group/system">
-            <SidebarGroup>
-              <CollapsibleTrigger asChild>
-                <SidebarGroupLabel className="cursor-pointer hover:text-sidebar-foreground">
-                  <ChevronRight
-                    className={cn(
-                      "mr-1 size-3 shrink-0 transition-transform duration-fast ease-out-strong",
-                      systemOpen && "rotate-90",
-                    )}
-                  />
-                  System
-                  <span className="ml-auto font-tabular text-2xs text-muted-foreground">
-                    {systemCollections.length}
-                  </span>
-                </SidebarGroupLabel>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <SidebarGroupContent>
-                  <SidebarMenu>
-                    {systemCollections.map((collection) => (
-                      <CollectionItem
-                        key={collection.id}
-                        collection={collection}
-                        pathname={pathname}
-                        muted
-                      />
-                    ))}
-                  </SidebarMenu>
-                </SidebarGroupContent>
-              </CollapsibleContent>
-            </SidebarGroup>
-          </Collapsible>
-        ) : null}
       </SidebarContent>
 
       <SidebarSeparator className="mx-0" />
@@ -211,6 +121,116 @@ export function AppSidebar({
         <AccountMenu />
       </SidebarFooter>
     </Sidebar>
+  );
+}
+
+function CollectionsNav({
+  collections,
+  loading,
+  pathname,
+  onNewCollection,
+  onImportCollections,
+}: {
+  collections: CollectionModel[];
+  loading: boolean;
+  pathname: string;
+  onNewCollection: () => void;
+  onImportCollections: () => void;
+}) {
+  const [systemOpen, setSystemOpen] = useState(false);
+
+  const { userCollections, systemCollections } = useMemo(
+    () => ({
+      userCollections: collections.filter((c) => !c.system),
+      systemCollections: collections.filter((c) => c.system),
+    }),
+    [collections],
+  );
+
+  return (
+    <>
+      <SidebarGroup>
+        <SidebarGroupLabel>Collections</SidebarGroupLabel>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <SidebarGroupAction title="New collection, export, or import">
+              <Plus />
+              <span className="sr-only">New collection, export, or import</span>
+            </SidebarGroupAction>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={onNewCollection}>
+              <Plus className="size-3.5" />
+              New collection
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => downloadCollectionsExport(collections)}>
+              <Download className="size-3.5" />
+              Export collections
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onImportCollections}>
+              <Upload className="size-3.5" />
+              Import collections
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <SidebarGroupContent>
+          <SidebarMenu>
+            {loading ? (
+              <>
+                <SidebarMenuItem>
+                  <SidebarMenuSkeleton showIcon />
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuSkeleton showIcon />
+                </SidebarMenuItem>
+                <SidebarMenuItem>
+                  <SidebarMenuSkeleton showIcon />
+                </SidebarMenuItem>
+              </>
+            ) : userCollections.length === 0 ? (
+              <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+                Nothing here yet. Create a collection to start storing data.
+              </p>
+            ) : (
+              userCollections.map((collection) => (
+                <CollectionItem key={collection.id} collection={collection} pathname={pathname} />
+              ))
+            )}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+
+      {systemCollections.length > 0 ? (
+        <Collapsible open={systemOpen} onOpenChange={setSystemOpen} className="group/system">
+          <SidebarGroup>
+            <CollapsibleTrigger asChild>
+              <SidebarGroupLabel className="cursor-pointer hover:text-sidebar-foreground">
+                <ChevronRight
+                  className={cn(
+                    "mr-1 size-3 shrink-0 transition-transform duration-fast ease-out-strong",
+                    systemOpen && "rotate-90",
+                  )}
+                />
+                System
+                <span className="ml-auto font-tabular text-2xs text-muted-foreground">
+                  {systemCollections.length}
+                </span>
+              </SidebarGroupLabel>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {systemCollections.map((collection) => (
+                    <CollectionItem key={collection.id} collection={collection} pathname={pathname} muted />
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+        </Collapsible>
+      ) : null}
+    </>
   );
 }
 

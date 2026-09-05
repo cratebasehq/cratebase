@@ -1,0 +1,41 @@
+---
+title: "Benchmarks"
+description: "Methodology, the full results table, and reading the numbers honestly."
+---
+
+An executed, reproducible HTTP-level benchmark comparing a Cratebase
+release build against PocketBase v0.40.2, run back to back on the same
+machine by one script (`benchmarks/run.sh`). Both servers are driven
+identically by a plain-`fetch` Bun script — no SDKs — across six
+categories (`create`, `auth`, `search`, `search-wide`, `search-auth`,
+`delete`) at four concurrency levels (1, 20, 50, 100), median of 3 runs
+after a discarded warm-up.
+
+**22 of 24 cells were faster on Cratebase** in the latest idle-host run
+(2026-09-04). The standout: `search` at concurrency 50 — **49,986 vs
+4,774 req/s, a 10.47x ratio**, with p99 latency at 1.60ms vs 42.05ms.
+`create` at concurrency 100 was 11,960 vs 6,606 req/s (1.81x), p99 8.87ms
+vs 57.88ms. The two cells that weren't faster — `delete` at concurrency 1
+and 20 (0.95x, 0.97x) — are within noise of parity, not a regression:
+the same category is 2.23x/2.25x at c50/c100 in the same run.
+
+**Read honestly:** the `auth` win (up to 3.87x) is a security-parameter
+difference, not engineering work — Argon2id at OWASP parameters is
+simply cheaper than PocketBase's bcrypt cost-12, and shouldn't be read as
+throughput work. This is a shared, virtualized sandbox, not a dedicated
+benchmark rig — relative comparisons within one run are more trustworthy
+than absolute numbers across runs.
+
+Reproduce it yourself:
+
+```sh
+benchmarks/run.sh                       # builds, downloads PocketBase, runs everything
+benchmarks/run.sh --skip-build          # reuse target/release/cratebase
+benchmarks/run.sh --concurrency=1,20    # any bench.ts flag is forwarded
+```
+
+Full methodology, the complete table, and the WAL-checkpoint story behind
+an earlier `delete` regression are in
+[`benchmarks/README.md`](https://github.com/cratebasehq/cratebase/blob/main/benchmarks/README.md);
+raw numbers in
+[`benchmarks/results/`](https://github.com/cratebasehq/cratebase/tree/main/benchmarks/results).

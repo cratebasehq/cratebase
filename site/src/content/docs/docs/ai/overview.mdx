@@ -1,0 +1,14 @@
+---
+title: "AI overview"
+description: "What ships: vector search, auto-embedding, an LLM chat gateway, and MCP."
+---
+
+Cratebase's AI surface is four primitives on top of the same collections
+engine, not a separate service: a `vector` field type with `nearestTo`
+search, auto-embedding on write, an LLM chat gateway that streams over
+the realtime connection you already have, and an MCP server that exposes
+every collection as agent tools automatically. What it explicitly is
+**not**: an approximate-nearest-neighbor index at massive scale — ranking
+is application-side cosine similarity over a capped candidate set (see
+[Vector search](/docs/ai/vector-search/)), which is honest and fast
+enough for most app-scoped corpora, not a dedicated vector database.

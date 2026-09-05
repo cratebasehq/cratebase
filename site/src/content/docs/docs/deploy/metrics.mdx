@@ -1,0 +1,10 @@
+---
+title: "Metrics"
+description: "GET /metrics \u2014 unauthenticated Prometheus exposition, outside /api."
+---
+
+`GET /metrics` exposes Prometheus-format metrics. It's deliberately
+outside the `/api` namespace and unauthenticated, matching the
+convention most metrics scrapers expect (a sidecar or scrape target on an
+internal network, not a public API surface) — put it behind your own
+network boundary rather than exposing it publicly.

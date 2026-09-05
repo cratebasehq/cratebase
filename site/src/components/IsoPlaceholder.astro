@@ -1,0 +1,59 @@
+---
+/**
+ * Stand-in for a piece of the isometric illustration system (design doc
+ * §3, "Illustration system" — ~10 pieces, currently unbuilt). Every
+ * consumer names which real asset should replace it so Wave 2 is a
+ * find-and-swap, not a design decision.
+ */
+interface Props {
+  label: string;
+  swapFor: string;
+  class?: string;
+  height?: number;
+}
+const { label, swapFor, class: className = "", height = 280 } = Astro.props;
+---
+
+{/* TODO(illustration-system): swap for {swapFor} once it lands */}
+<svg
+  viewBox={`0 0 400 ${height}`}
+  role="img"
+  aria-label={label}
+  class={`iso-placeholder ${className}`}
+  style={`--h:${height}px`}
+>
+  <rect x="1" y="1" width="398" height={height - 2} rx="12" />
+  <text x="200" y={height / 2 - 8} text-anchor="middle" class="iso-placeholder-label">
+    {label}
+  </text>
+  <text x="200" y={height / 2 + 16} text-anchor="middle" class="iso-placeholder-swap">
+    swap for {swapFor}
+  </text>
+</svg>
+
+<style>
+  .iso-placeholder {
+    width: 100%;
+    height: var(--h);
+    display: block;
+  }
+  .iso-placeholder rect {
+    fill: var(--color-fog);
+    stroke: var(--color-hairline);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 6;
+  }
+  :root[data-theme="dark"] .iso-placeholder rect {
+    fill: #101f30;
+  }
+  .iso-placeholder-label {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    fill: var(--color-slate);
+  }
+  .iso-placeholder-swap {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--color-crate);
+  }
+</style>

@@ -9,12 +9,13 @@ import { keymap } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
 import { cb, describeFailure } from "@/lib/api";
 import { useCollections } from "@/hooks/use-collections";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { HoldToConfirm } from "@/components/ui/hold-to-confirm";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ToggleSetting } from "@/components/settings/settings-form";
+import { SettingsPage, ToggleSetting } from "@/components/settings/settings-form";
 
 /** As `POST /api/sql` returns them — see `crate::routes::sql_console`. A
  * `SELECT`/`WITH` answers with `columns`/`rows`/`truncated`, anything else
@@ -112,8 +113,9 @@ export function SqlConsolePage() {
     [schema],
   );
 
+  const item = settingsItemFor("/settings/sql")!;
   return (
-    <div className="flex flex-col gap-page p-page">
+    <SettingsPage title={item.label} description={item.description} width="wide">
       <div className="flex flex-wrap items-start gap-3 rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2">
         <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
         <p className="min-w-0 flex-1 text-sm">
@@ -243,6 +245,6 @@ export function SqlConsolePage() {
           </div>
         )}
       </div>
-    </div>
+    </SettingsPage>
   );
 }

@@ -4,6 +4,7 @@ import { Pencil, Plus, Trash2, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { useCollections } from "@/hooks/use-collections";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -28,6 +29,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const EVENT_KINDS = ["create", "update", "delete"] as const;
@@ -80,22 +82,19 @@ export function WebhooksPage() {
 
   const webhooks = data ?? [];
 
+  const item = settingsItemFor("/settings/webhooks")!;
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 p-page">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium">Webhooks</h2>
-          <p className="max-w-measure text-sm text-muted-foreground">
-            POST a JSON payload to a URL whenever a record event fires on a chosen collection — no code, no
-            redeploy. If a secret is set, the body is signed with HMAC-SHA256 in the{" "}
-            <code className="font-mono">X-Cratebase-Signature</code> header.
-          </p>
-        </div>
-        <Button size="sm" className="gap-1.5 shrink-0" onClick={() => setDialogWebhook("new")}>
+    <SettingsPage
+      title={item.label}
+      description={item.description}
+      width="form"
+      action={
+        <Button size="sm" className="gap-1.5" onClick={() => setDialogWebhook("new")}>
           <Plus className="size-3.5" />
           New webhook
         </Button>
-      </div>
+      }
+    >
 
       {error ? (
         <Empty>
@@ -236,7 +235,7 @@ export function WebhooksPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </SettingsPage>
   );
 }
 

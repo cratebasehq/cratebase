@@ -1,0 +1,16 @@
+---
+title: "Roadmap"
+description: "What's shipped, what's next, and what's explicitly out of scope."
+---
+
+Cratebase's v1 scope is dynamic collections, auth, files, and realtime on
+SQLite or Postgres, with an admin dashboard, in one binary — and by the
+0.1.0 line, that scope plus the full auth surface, AI bundle (vector
+search, LLM gateway, MCP), teams, an audit log, schema-as-code, and
+JS hooks have all shipped. The compile-time `Plugin` trait is the
+current extension point for anything beyond that; feature flags and a
+durable job queue are scoped as plugins on that foundation but not yet
+built. Explicitly out of scope for now: a visual filter-query builder,
+and multi-tenant/workspace-scoped superusers. See the full
+[ROADMAP.md](https://github.com/cratebasehq/cratebase/blob/main/ROADMAP.md)
+for the complete, dated list.

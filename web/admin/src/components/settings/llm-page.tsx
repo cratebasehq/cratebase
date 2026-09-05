@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   SecretSetting,
   SettingRow,
+  SettingsPage,
   SettingsSaveBar,
   SettingsSection,
   TextSetting,
@@ -70,8 +72,9 @@ export function LlmPage() {
     });
   }
 
+  const item = settingsItemFor("/settings/llm")!;
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
+    <SettingsPage title={item.label} description={item.description} width="form">
       <SettingsSection
         title="LLM provider"
         description="Backs POST /api/llm/chat and any vector field whose auto-embedding provider isn't the echo test provider. Off answers with a deterministic, network-free echo provider instead of a real model."
@@ -128,6 +131,6 @@ export function LlmPage() {
         onSave={submit}
         onReset={() => setDraft(draftOf(settings))}
       />
-    </div>
+    </SettingsPage>
   );
 }

@@ -1,0 +1,13 @@
+---
+title: "Logs"
+description: "A separate *.logs.db file, request log facets, and retention."
+---
+
+Request logging writes to a dedicated `data.logs.db` file rather than the
+primary database, so read-only API traffic never contends for the
+primary SQLite writer connection. The dashboard's **Logs** page facets
+by method, status, and path over that log; the **Audit log** page is a
+separate, append-only `_audit_log` collection recording collection
+schema changes, settings updates, superuser account changes, and any
+record delete where a superuser bypassed the collection's own
+`deleteRule`.

@@ -1,0 +1,18 @@
+---
+title: "Fields"
+description: "Every field type and how it's physically stored on SQLite vs Postgres."
+---
+
+Cratebase supports `text`, `editor`, `number`, `bool`, `email`, `url`,
+`date`, `autodate`, `select`, `json`, `relation`, `file`, `password`,
+`geoPoint`, and `vector` fields — every PocketBase field type, plus
+`vector` as a Cratebase addition.
+
+Physically, only three column shapes exist regardless of field type:
+`number` fields are `REAL`/`DOUBLE PRECISION`, `bool` fields are
+`INTEGER` (bound as `0`/`1`, since sqlx's `Any` driver can't decode
+SQLite's native `BOOLEAN`), and everything else — including JSON, dates
+(RFC3339 text), and multi-value fields (JSON-array text) — is `TEXT` on
+both backends. This is what makes one query string valid against both
+SQLite and Postgres unmodified. See
+[Architecture](/docs/project/architecture/) for the full rationale.

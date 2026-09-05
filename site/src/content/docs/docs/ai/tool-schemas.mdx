@@ -1,0 +1,10 @@
+---
+title: "Tool schemas"
+description: "GET /api/collections/{name}/tool-schema for function-calling without MCP."
+---
+
+Not every integration speaks MCP. `GET /api/collections/{name}/tool-schema`
+returns the same tool definitions MCP exposes, shaped for a
+function-calling API directly (OpenAI-style tool/function schemas), for
+an agent framework that wants to wire up tools itself rather than
+through an MCP client.

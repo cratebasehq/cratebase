@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Code2, Route as RouteIcon } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** As `GET /api/functions` returns them. */
@@ -42,18 +44,9 @@ export function FunctionsPage() {
   const files = data?.files ?? [];
   const routes = data?.routes ?? [];
 
+  const item = settingsItemFor("/settings/functions")!;
   return (
-    <div className="flex flex-col gap-page p-page">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium">Functions</h2>
-        <p className="max-w-measure text-sm text-muted-foreground">
-          Custom server-side JavaScript — PocketBase-style <code className="font-mono text-xs">pb_hooks/*.pb.js</code>{" "}
-          files evaluated at startup by the embedded QuickJS runtime. This page is read-only: a hook is added or
-          changed by dropping a file into <code className="font-mono text-xs">{hooksDir}</code> next to the data
-          directory, not from the dashboard. In dev mode the runtime watches that directory and reloads without a
-          restart; in production, restart the server after editing a file.
-        </p>
-      </div>
+    <SettingsPage title={item.label} description={item.description} width="form">
 
       {error ? (
         <Empty>
@@ -153,6 +146,6 @@ export function FunctionsPage() {
           </div>
         </>
       )}
-    </div>
+    </SettingsPage>
   );
 }

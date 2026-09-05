@@ -1,0 +1,13 @@
+---
+title: "S3-compatible storage"
+description: "AWS S3, R2, B2, MinIO/RustFS \u2014 three environment variables."
+---
+
+File storage switches from local disk to any S3-compatible bucket — AWS
+S3, Cloudflare R2, Backblaze B2, or self-hosted
+[RustFS](https://rustfs.com)/MinIO — with three environment variables
+(endpoint, bucket, credentials; see
+[.env.example](https://github.com/cratebasehq/cratebase/blob/main/.env.example)
+for the exact names). All backends go through the same `object_store`
+code path, and downloads stream rather than buffer the whole file in
+memory.

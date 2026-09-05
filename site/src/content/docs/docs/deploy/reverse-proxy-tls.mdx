@@ -1,0 +1,10 @@
+---
+title: "Reverse proxy & TLS"
+description: "Trusted proxy config, client IP for rate limiting, and CORS."
+---
+
+Cratebase doesn't terminate TLS itself — put it behind nginx, Caddy, or a
+platform load balancer, and set the trusted-proxy configuration so
+rate-limiting and login-alert logic sees the real client IP (from
+`X-Forwarded-For`) instead of the proxy's. CORS defaults permissively for
+local development; lock it to your deployed origin(s) in production.

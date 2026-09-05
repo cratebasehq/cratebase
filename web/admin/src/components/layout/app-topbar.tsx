@@ -29,7 +29,7 @@ export function AppTopbar({ onOpenSearch }: { onOpenSearch: () => void }) {
           className="hidden h-control-sm w-64 justify-start gap-2 px-2 font-normal text-muted-foreground md:flex"
         >
           <Search className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate">Search collections</span>
+          <span className="min-w-0 truncate">Search…</span>
           <Kbd className="ml-auto shrink-0">⌘K</Kbd>
         </Button>
         <Button

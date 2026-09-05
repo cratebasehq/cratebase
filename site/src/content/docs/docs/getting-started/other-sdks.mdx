@@ -1,0 +1,18 @@
+---
+title: "Other official SDKs"
+description: "PocketBase's Dart and other official SDKs work against Cratebase unchanged."
+sidebar:
+  order: 5
+---
+
+Because Cratebase speaks PocketBase's wire API, PocketBase's other
+official SDKs (Dart, and the rest of the `pocketbase`-family clients)
+work against a Cratebase instance the same way the JS SDK does — point
+the client at your Cratebase URL and nothing else changes.
+
+The handful of places where behavior genuinely diverges (all minor, all
+documented, not SDK-breaking) are listed verbatim in
+[`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md)
+in the repository — worth a skim before relying on an edge case a
+different SDK might exercise that the JS conformance suite (180/181
+passing) doesn't happen to cover.

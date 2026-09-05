@@ -1,0 +1,12 @@
+---
+title: "Login alerts"
+description: "New-location detection via _authOrigins, best-effort emailed."
+sidebar:
+  order: 8
+---
+
+Every successful login records a fingerprint in the `_authOrigins`
+collection. A genuinely new device for a record that already had a prior
+origin on file fires a best-effort emailed alert — it never fails the
+login it rides along with. A record's very first login ever is never
+alerted, since there's no prior origin to compare against.

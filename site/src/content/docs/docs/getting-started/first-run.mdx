@@ -1,0 +1,62 @@
+---
+title: "First run"
+description: "What happens the first time you start cratebase serve."
+sidebar:
+  order: 2
+---
+
+```sh
+cratebase serve
+```
+
+starts listening on `:8090` immediately — SQLite database and data
+directory are created on first run, there is nothing to provision ahead
+of time.
+
+## The inline setup form (no CLI required)
+
+Open `http://localhost:8090` in a browser. `GET /api/setup/status`
+reports `{"needsSetup": true}` until a superuser exists, and the
+dashboard renders an inline superuser-creation form instead of a bare
+login screen. Fill it in — email + password — and `POST /api/setup`
+creates your first `_superusers` record and logs you straight into the
+dashboard. This is a one-time, self-closing endpoint: once a superuser
+exists, `POST /api/setup` is permanently rejected, from either the form
+or a direct API call.
+
+## Headless / scripted setup
+
+Prefer not to click through a form (CI, a Docker entrypoint, a
+first-boot script)? Create the superuser directly:
+
+```sh
+cratebase superuser create you@example.com yourpassword
+```
+
+Both paths are equivalent and race-safe: `setup.rs` re-checks "does a
+superuser exist" at write time, so whichever one runs first closes the
+other out — you never end up with two conflicting first-superuser flows.
+
+## Data directory layout
+
+By default Cratebase writes to `./data` (override with
+`CRATEBASE_DATA_DIR` or `cratebase serve --dir <path>`):
+
+```
+data/
+├── data.db          # the primary SQLite database (or unused if DATABASE_URL points at Postgres)
+├── data.logs.db      # request/audit log, kept in a separate file so logging never takes the writer lock
+└── storage/          # local file storage (uploads), unless S3-compatible storage is configured
+```
+
+A `pb_hooks/` directory placed next to the data directory (or pointed at
+via `CB_HOOKS_DIR`) is picked up at startup for
+[JavaScript hooks](/docs/extending/js-hooks/); its absence is a
+complete no-op.
+
+## What's next
+
+- [Your first collection](/docs/getting-started/first-collection/) —
+  define a schema and start writing records.
+- [Using the JavaScript SDK](/docs/getting-started/using-js-sdk/) — talk
+  to your instance from a web app.

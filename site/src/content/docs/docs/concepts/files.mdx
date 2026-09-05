@@ -1,0 +1,16 @@
+---
+title: "Files"
+description: "Multipart upload, multi-file append/remove, thumbnails, and protected files."
+---
+
+A `file` field accepts multipart uploads; local disk is the zero-config
+default, or point at any S3-compatible bucket. Multi-file fields support
+PocketBase's append/remove convention: a field named `field+` appends
+newly uploaded files without disturbing the rest, `field-` removes named
+files (deleting their storage blobs, not just the JSON list entry), and
+an unsuffixed field name fully replaces. `?thumb=WxH` (and the
+`f`/`t`/`b` fit variants) generates and caches an image thumbnail on
+first request. Files on a `protected` field need a short-lived token
+from `POST /api/files/token` instead of a bearer header, for embedding a
+gated file where an `Authorization` header can't be sent (e.g. an
+`<img src>`).

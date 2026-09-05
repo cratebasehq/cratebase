@@ -1,0 +1,13 @@
+---
+title: "Rate limiting"
+description: "Label = path/prefix/tag, scoped by audience, most-specific-first."
+---
+
+`settings.rateLimits` rules match by `label` — an exact path, a prefix
+like `/api/`, or a tag like `*:auth` — scoped by `audience`
+(`""`/`@guest`/`@auth`), matched most-specific-first (exact path beats
+prefix beats tag) so a narrow rule doesn't get shadowed by a broader one
+you already have. `PATCH /api/settings` or the dashboard's **Network**
+page manage rules; per-collection tags fall out of the same
+`{collection}:{action}` derivation from the request's own URL shape, with
+a collection-name autocomplete in the dashboard editor.

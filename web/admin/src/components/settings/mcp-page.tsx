@@ -3,11 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { cb, describeFailure } from "@/lib/api";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SettingsPage } from "@/components/settings/settings-form";
 
 /** One entry of the MCP server's `tools/list` response
  * (`crates/server/src/mcp.rs`'s `build_tools`) — a `list_`/`get_`/
@@ -82,19 +84,9 @@ export function McpPage() {
     2,
   );
 
+  const item = settingsItemFor("/settings/mcp")!;
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-page">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium">MCP server</h2>
-        <p className="max-w-measure text-sm text-muted-foreground">
-          Every non-system collection is exposed to{" "}
-          <a href="https://modelcontextprotocol.io" target="_blank" rel="noreferrer" className="underline underline-offset-2">
-            Model Context Protocol
-          </a>{" "}
-          clients over JSON-RPC, rule-gated exactly like the REST API — an agent authenticates as an ordinary caller
-          and gets exactly the access its token allows, nothing more.
-        </p>
-      </div>
+    <SettingsPage title={item.label} description={item.description} width="form">
 
       <Card>
         <CardHeader>
@@ -175,6 +167,6 @@ export function McpPage() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </SettingsPage>
   );
 }

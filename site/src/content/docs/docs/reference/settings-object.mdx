@@ -1,0 +1,10 @@
+---
+title: "Settings object"
+description: "Every settings.* key, read/written via GET/PATCH /api/settings."
+---
+
+`GET /api/settings` (superuser-only) returns the full settings object;
+`PATCH /api/settings` updates a subset without touching the rest.
+Top-level groups include `meta` (app name/URL), `mail`, `rateLimits`,
+`llm`, `push`, `batch`, and the analytics/backup-related toggles surfaced
+in their respective dashboard settings pages.

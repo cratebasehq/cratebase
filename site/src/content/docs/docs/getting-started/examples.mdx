@@ -1,0 +1,30 @@
+---
+title: "Examples"
+description: "Seven runnable example apps covering auth, realtime, AI, and webhooks."
+sidebar:
+  order: 6
+---
+
+Seven runnable apps live under [`examples/`](https://github.com/cratebasehq/cratebase/tree/main/examples)
+in the repository, each with its own `setup.sh` that provisions the
+collections it needs:
+
+- **todo** — the minimal register → login → authenticated CRUD path,
+  zero-build.
+- **realtime-chat** — a shared chat room built on realtime subscriptions.
+- **realtime-cursors** — live cursor positions broadcast between open tabs.
+- **kanban** — the flagship demo: a realtime, drag-and-drop board (Vite +
+  React + TypeScript) with optimistic updates, FLIP-animated reflow, and
+  a presence bar.
+- **docmind** — a RAG knowledge-base copilot built entirely on
+  collections + one `pb_hooks` file: upload → chunk → auto-embed →
+  retrieve → stream an LLM answer.
+- **memories** — an agent-memory service (vector search + MCP + cron
+  expiry + realtime) with zero new server code.
+- **incoming-webhooks-stripe** — verifying an inbound HMAC-signed webhook
+  (Stripe's `Stripe-Signature` scheme) from a Rust route and from a
+  `pb_hooks` JS file.
+
+`bun run examples:serve` serves the zero-build examples from the repo
+root; `examples/kanban` has its own Vite dev server since it has an
+actual build step.

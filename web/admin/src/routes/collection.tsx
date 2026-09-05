@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Code2, MoreHorizontal, Plus, Search, Settings as SettingsIcon, ShieldUser, X } from "lucide-react";
+import { ArrowRight, MoreHorizontal, Plus, ShieldUser, X } from "lucide-react";
 import { ClientResponseError, type CollectionModel, type RecordModel } from "pocketbase";
 import { avatarUrl, cb, describeFailure } from "@/lib/api";
 import { userFields, type FieldSchema } from "@/lib/field-types";
@@ -30,7 +30,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { settingsItemForCollection } from "@/lib/settings-nav";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -44,10 +46,6 @@ import { GridFooter } from "@/components/records/grid-footer";
 import { RecordDrawer } from "@/components/records/record-drawer";
 import { CollectionSettings } from "@/components/collections/collection-settings";
 import { ApiDocsTab } from "@/components/collections/api-docs-tab";
-
-/** Matches the debounce the old expanding-search field committed its
- * query with, so typing still doesn't fire a request per keystroke. */
-const SEARCH_DEBOUNCE_MS = 220;
 
 /** Column widths, in px, by field type. Fixed widths are what let the grid
  * virtualize and still keep the header, the rows and the scrollbar in
@@ -75,9 +73,8 @@ type CollectionSearch = {
   page?: number;
   perPage?: number;
   sort?: string;
-  q?: string;
   filter?: string;
-  tab?: "records" | "settings" | "docs";
+  tab?: "records" | "schema" | "api";
   /** Set by a relation-value popover's "Open record" link elsewhere in the
    * dashboard — jumps straight to this collection and pops the record
    * drawer open for the given id, then clears itself from the URL. */
@@ -90,24 +87,6 @@ function isDensity(value: unknown): value is Density {
 
 function isBoolean(value: unknown): value is boolean {
   return typeof value === "boolean";
-}
-
-/** The `q` box is a convenience over the filter language: it ORs a
- * case-insensitive `~` across every text-ish column. Anything more precise
- * is what the filter bar is for. */
-function buildSearchFilter(search: string, textFields: { name: string }[], identityField?: string): string {
-  const q = search.trim();
-  const names = identityField ? [identityField, ...textFields.map((f) => f.name)] : textFields.map((f) => f.name);
-  if (!q || names.length === 0) return "";
-  const escaped = q.replace(/"/g, '\\"');
-  return names.map((name) => `${name} ~ "${escaped}"`).join(" || ");
-}
-
-function combineFilters(...parts: (string | undefined)[]): string {
-  const kept = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
-  if (kept.length === 0) return "";
-  if (kept.length === 1) return kept[0]!;
-  return kept.map((part) => `(${part})`).join(" && ");
 }
 
 function CollectionPage() {
@@ -126,7 +105,6 @@ function CollectionPage() {
   const tab = urlSearch.tab ?? "records";
   const page = urlSearch.page ?? 1;
   const perPage = urlSearch.perPage ?? DEFAULT_PAGE_SIZE;
-  const search = urlSearch.q ?? "";
   const userFilter = urlSearch.filter ?? "";
 
   const [density, setDensity] = useLocalState<Density>("cratebase:grid-density", "comfortable", isDensity);
@@ -137,8 +115,6 @@ function CollectionPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [newSince, setNewSince] = useState(0);
-  const [searchInput, setSearchInput] = useState(search);
-  const [committedSearch, setCommittedSearch] = useState(search);
   const [selectionCollection, setSelectionCollection] = useState(name);
   // Switching tabs unmounts the schema form, so the same unsaved-changes
   // guard that covers navigation has to cover this too.
@@ -146,18 +122,18 @@ function CollectionPage() {
   const [confirmLeaveSettings, setConfirmLeaveSettings] = useState(false);
   const [pendingTab, setPendingTab] = useState<CollectionSearch["tab"]>(undefined);
 
-  // Any tab switch away from "settings" has to run through the same
+  // Any tab switch away from "schema" has to run through the same
   // unsaved-changes guard the settings button used to gate on its own —
-  // otherwise the new docs tab could silently discard an in-progress
+  // otherwise the new api tab could silently discard an in-progress
   // schema edit the way clicking "records" already couldn't.
   const goToTab = useCallback(
     (next: CollectionSearch["tab"]) => {
-      if (tab === "settings" && next !== "settings" && settingsDirty) {
+      if (tab === "schema" && next !== "schema" && settingsDirty) {
         setPendingTab(next);
         setConfirmLeaveSettings(true);
         return;
       }
-      updateSearch({ tab: next });
+      updateSearch({ tab: next === "records" ? undefined : next });
     },
     [tab, settingsDirty, updateSearch],
   );
@@ -193,28 +169,13 @@ function CollectionPage() {
     };
   }, [urlSearch.openId, name, updateSearch]);
 
-  // The URL is the source of truth for the query; the field keeps its own
-  // state so typing stays responsive and only the committed value lands in
-  // the URL (and therefore in the records query). Both of these follow a
-  // change from outside — a back navigation, a different collection — and
-  // are adjusted during render rather than in an effect, so nothing paints
-  // the previous collection's selection or the previous search term.
-  if (committedSearch !== search) {
-    setCommittedSearch(search);
-    setSearchInput(search);
-  }
+  // The URL is the source of truth for the selection; adjusted during
+  // render rather than in an effect, so nothing paints the previous
+  // collection's selection after switching collections.
   if (selectionCollection !== name) {
     setSelectionCollection(name);
     setSelected(new Set());
   }
-
-  useEffect(() => {
-    if (searchInput === search) return;
-    const timer = setTimeout(() => {
-      updateSearch({ q: searchInput || undefined, page: undefined });
-    }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [searchInput, search, updateSearch]);
 
   const fields = useMemo(() => (collection ? userFields(collection) : []), [collection]);
   // `created` is part of PocketBase's own scaffold but not guaranteed: a
@@ -224,14 +185,6 @@ function CollectionPage() {
   const sortParam = urlSearch.sort ?? (hasCreated ? "-created" : "-id");
   const identityField =
     (collection?.type === "auth" ? collection.passwordAuth?.identityFields?.[0] : undefined) ?? "email";
-
-  const searchFilter = collection
-    ? buildSearchFilter(
-        search,
-        fields.filter((f) => ["text", "email", "url"].includes(f.type)),
-        collection.type === "auth" ? identityField : undefined,
-      )
-    : "";
 
   // One request, not one per relation cell: ask the server to inline every
   // relation this grid renders.
@@ -243,7 +196,7 @@ function CollectionPage() {
   const query: RecordsQuery = {
     page,
     perPage,
-    filter: combineFilters(searchFilter, userFilter),
+    filter: userFilter,
     sort: sortParam,
     expand,
     skipTotal: !countTotal,
@@ -261,7 +214,7 @@ function CollectionPage() {
   // scrolls away.
   const failure = records.error ? describeFailure(records.error) : null;
   const filterError =
-    failure && failure.status === 400 && (userFilter.length > 0 || search.length > 0)
+    failure && failure.status === 400 && userFilter.length > 0
       ? failure.serverMessage || failure.detail || "The server rejected this filter."
       : null;
 
@@ -418,6 +371,11 @@ function CollectionPage() {
 
   const totalKnown = (result?.totalItems ?? -1) >= 0;
   const status = records.isError ? "error" : records.isPending ? "loading" : "ready";
+  // System collections back a dedicated Settings page (webhooks, cron
+  // jobs, superusers, …) that applies its own validation on write — a raw
+  // row created here would bypass that, so the record view points at the
+  // page that owns the collection instead of pretending to manage it.
+  const managingItem = collection.system ? settingsItemForCollection(collection.name) : undefined;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -433,52 +391,52 @@ function CollectionPage() {
         </div>
 
         <div className="flex flex-1 items-center justify-end gap-2">
-          {tab === "records" ? (
-            <>
-              <InputGroup className="h-control-sm w-48">
-                <InputGroupAddon>
-                  <Search className="size-3.5" />
-                </InputGroupAddon>
-                <InputGroupInput
-                  type="search"
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Search…"
-                  aria-label={`Search ${collection.name}`}
-                />
-              </InputGroup>
-              <Button size="sm" className="h-control-sm gap-1.5" onClick={() => setEditing(null)}>
-                <Plus className="size-3.5" />
-                New record
-              </Button>
-            </>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="View"
+            value={tab}
+            onValueChange={(next) => {
+              // A segmented control always has exactly one option picked —
+              // Radix reports "" when the pressed item is toggled off.
+              if (next) goToTab(next as CollectionSearch["tab"]);
+            }}
+          >
+            <ToggleGroupItem value="records">Records</ToggleGroupItem>
+            <ToggleGroupItem value="schema">Schema</ToggleGroupItem>
+            <ToggleGroupItem value="api">API</ToggleGroupItem>
+          </ToggleGroup>
+          {tab === "records" && !managingItem ? (
+            <Button size="sm" className="h-control-sm gap-1.5" onClick={() => setEditing(null)}>
+              <Plus className="size-3.5" />
+              New record
+            </Button>
           ) : null}
-          <Button
-            variant={tab === "docs" ? "secondary" : "ghost"}
-            size="icon-sm"
-            aria-label="API docs"
-            aria-pressed={tab === "docs"}
-            onClick={() => goToTab(tab === "docs" ? undefined : "docs")}
-          >
-            <Code2 className="size-4" />
-          </Button>
-          <Button
-            variant={tab === "settings" ? "secondary" : "ghost"}
-            size="icon-sm"
-            aria-label="Collection settings"
-            aria-pressed={tab === "settings"}
-            onClick={() => goToTab(tab === "settings" ? undefined : "settings")}
-          >
-            <SettingsIcon className="size-4" />
-          </Button>
         </div>
       </header>
 
-      {tab === "settings" ? (
+      {managingItem ? (
+        <Alert className="mx-page mt-3 shrink-0">
+          <AlertTitle>Managed in Settings › {managingItem.label}</AlertTitle>
+          <AlertDescription>
+            <Link to={managingItem.to} className="inline-flex items-center gap-1">
+              Go to {managingItem.label} <ArrowRight className="size-3.5" />
+            </Link>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {tab === "schema" ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <CollectionSettings collection={collection} onDirtyChange={setSettingsDirty} />
+          <CollectionSettings
+            collection={collection}
+            onDirtyChange={setSettingsDirty}
+            onOpenApiDocs={() => goToTab("api")}
+          />
         </div>
-      ) : tab === "docs" ? (
+      ) : tab === "api" ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ApiDocsTab collection={collection} />
         </div>
@@ -492,6 +450,7 @@ function CollectionPage() {
               error={filterError}
               collectionName={collection.name}
               fields={fields}
+              extraSearchFields={collection.type === "auth" ? collection.passwordAuth?.identityFields : undefined}
             />
             <div className="flex shrink-0 items-center gap-2">
               <ColumnsMenu prefs={columnPrefs} labels={columnLabels} locked={["id"]} />
@@ -559,23 +518,30 @@ function CollectionPage() {
               refreshing={records.isFetching && !records.isPending}
               density={density}
               emptyTitle={
-                userFilter || search ? "Nothing matches that query" : `No records in ${collection.name} yet`
+                userFilter ? "Nothing matches that query" : `No records in ${collection.name} yet`
               }
               emptyDescription={
-                userFilter || search
+                userFilter
                   ? "Loosen the filter, or clear it to see the whole collection."
                   : "Rows added here — or written through the API — show up in this grid."
               }
               emptyAction={
-                userFilter || search ? (
+                userFilter ? (
                   <Button
                     size="sm"
                     variant="outline"
                     className="gap-1.5"
-                    onClick={() => updateSearch({ filter: undefined, q: undefined, page: undefined })}
+                    onClick={() => updateSearch({ filter: undefined, page: undefined })}
                   >
                     <X className="size-3.5" />
                     Clear filters
+                  </Button>
+                ) : managingItem ? (
+                  <Button size="sm" className="gap-1.5" asChild>
+                    <Link to={managingItem.to}>
+                      Go to {managingItem.label}
+                      <ArrowRight className="size-3.5" />
+                    </Link>
                   </Button>
                 ) : (
                   <Button size="sm" className="gap-1.5" onClick={() => setEditing(null)}>
@@ -676,7 +642,7 @@ function CollectionPage() {
               onClick={() => {
                 setConfirmLeaveSettings(false);
                 setSettingsDirty(false);
-                updateSearch({ tab: pendingTab });
+                updateSearch({ tab: pendingTab === "records" ? undefined : pendingTab });
                 setPendingTab(undefined);
               }}
             >
@@ -758,9 +724,8 @@ export const collectionRoute = createRoute({
         ? search.perPage
         : undefined,
     sort: typeof search.sort === "string" ? search.sort : undefined,
-    q: typeof search.q === "string" ? search.q : undefined,
     filter: typeof search.filter === "string" ? search.filter : undefined,
-    tab: search.tab === "settings" ? "settings" : search.tab === "docs" ? "docs" : undefined,
+    tab: search.tab === "schema" ? "schema" : search.tab === "api" ? "api" : undefined,
     openId: typeof search.openId === "string" ? search.openId : undefined,
   }),
   component: CollectionPage,

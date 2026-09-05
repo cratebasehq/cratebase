@@ -1,0 +1,11 @@
+---
+title: "Schema as code"
+description: "Export collections to checked-in JSON, apply with dry-run and force."
+---
+
+`GET /api/collections` exports every collection's schema as JSON — check
+that into version control, and `POST /api/schema/apply` (with `?dryRun=1`
+to preview and `?force=1` to proceed past destructive changes) applies it
+to a target instance. A dry-run plan flags `pendingRemoval: true` on any
+field a real apply would drop, so a CI pipeline can gate on "does this
+change silently delete a column" before it ever runs against production.

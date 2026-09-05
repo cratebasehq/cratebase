@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Send, TestTube } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +13,7 @@ import {
   NumberSetting,
   SecretSetting,
   SettingRow,
+  SettingsPage,
   SettingsSaveBar,
   SettingsSection,
   TextSetting,
@@ -111,8 +113,9 @@ export function MailStoragePage() {
     });
   }
 
+  const item = settingsItemFor("/settings/mail-storage")!;
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
+    <SettingsPage title={item.label} description={item.description} width="form">
       <SettingsSection
         title="SMTP"
         description="Where verification, password-reset and OTP emails are sent from. Off means the server only logs them."
@@ -284,7 +287,7 @@ export function MailStoragePage() {
         onSave={submit}
         onReset={() => setDraft(draftOf(settings))}
       />
-    </div>
+    </SettingsPage>
   );
 }
 

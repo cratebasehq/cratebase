@@ -1,0 +1,12 @@
+---
+title: "Field types"
+description: "Every field type and its options, at a glance."
+---
+
+`text`, `editor`, `number`, `bool`, `email`, `url`, `date`, `autodate`,
+`select` (single/multi via `maxSelect`), `json`, `relation` (single/multi
+via `maxSelect`, points at a target collection), `file` (single/multi,
+`protected`, thumbnail sizes), `password` (auth collections only),
+`geoPoint`, and `vector` (fixed `dimensions`, optional `embedding`
+config) — see [Fields](/docs/concepts/fields/) for how each is physically
+stored on SQLite vs Postgres.

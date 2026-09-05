@@ -1,0 +1,13 @@
+---
+title: "Records API"
+description: "list/view/create/update/delete records, pagination, filtering, and expand."
+---
+
+Every collection gets a generic CRUD surface:
+`GET /api/collections/:c/records` (list, with `page`/`perPage`/`skipTotal`,
+`filter`, `sort`, `expand`), `GET .../records/:id` (view, with `expand`),
+`POST .../records` (create), `PATCH .../records/:id` (update), and
+`DELETE .../records/:id`. `expand` resolves `relation` fields inline in
+the same response, following PocketBase's own dot-notation for nested
+relations. Errors follow a consistent shape across every endpoint — see
+[Error responses](/docs/reference/error-responses/).

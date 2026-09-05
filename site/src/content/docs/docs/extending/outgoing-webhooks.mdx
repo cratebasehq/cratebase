@@ -1,0 +1,12 @@
+---
+title: "Outgoing webhooks"
+description: "_webhooks: configure a URL and get a signed POST on record events."
+---
+
+Configure a URL, a target collection, and which events to fire on from
+the dashboard (backed by the `_webhooks` system collection), and
+Cratebase `POST`s the event payload to that URL whenever it happens,
+optionally signing the body with an `X-Cratebase-Signature` header the
+receiver can verify with the same HMAC-SHA256 primitive
+[incoming webhooks](/docs/extending/incoming-webhooks/) documents from
+the other direction.

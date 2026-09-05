@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { cb } from "@/lib/api";
 import { describeFailure } from "@/lib/api";
 import { describeJob, describeSchedule } from "@/lib/cron";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -83,8 +85,9 @@ export function CronJobsPage() {
 
   const jobs = (data ?? []).filter((job) => !job.id.startsWith("custom:"));
 
+  const item = settingsItemFor("/settings/cron")!;
   return (
-    <div className="flex flex-col gap-page p-page">
+    <SettingsPage title={item.label} description={item.description} width="wide">
       <div className="flex flex-col gap-2">
         <h2 className="text-sm font-medium">System jobs</h2>
         <p className="max-w-measure text-sm text-muted-foreground">
@@ -170,7 +173,7 @@ export function CronJobsPage() {
       )}
 
       <CustomCronJobsSection onRun={(id) => run.mutate(id)} runningId={run.isPending ? (run.variables ?? null) : null} />
-    </div>
+    </SettingsPage>
   );
 }
 

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ChevronRight, Copy, Download, FilePlus2, Folder, FolderOpen, FolderPlus, Pencil, Trash2, Upload } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
+import { settingsItemFor } from "@/lib/settings-nav";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,6 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** As `crate::routes::file_manager::list` returns it: `folders` are full
@@ -284,8 +286,9 @@ export function FileManagerPage() {
   const isEmpty = !isLoading && folders.length === 0 && files.length === 0;
   const takenNames = new Set([...folders.map((f) => baseName(f)), ...files.map((f) => baseName(f.key))]);
 
+  const item = settingsItemFor("/settings/file-manager")!;
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <SettingsPage title={item.label} description={item.description} width="wide">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Breadcrumb>
           <BreadcrumbList>
@@ -507,7 +510,7 @@ export function FileManagerPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </SettingsPage>
   );
 }
 

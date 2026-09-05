@@ -82,6 +82,18 @@ export async function checkHealth(): Promise<{ message: string }> {
   return cb.send<{ message: string }>("/api/health", { method: "GET", requestKey: null });
 }
 
+/** `GET /api/health`, authenticated — a superuser gets an extra `data`
+ * envelope carrying `canBackup`: whether this server's storage backend
+ * (SQLite, not Postgres) and `backups_storage` are both configured for
+ * backups. Used by the backups page to hide actions that would just 403. */
+export async function checkBackupCapability(): Promise<boolean> {
+  const response = await cb.send<{ data?: { canBackup?: boolean } }>("/api/health", {
+    method: "GET",
+    requestKey: null,
+  });
+  return response.data?.canBackup ?? true;
+}
+
 /** `GET /api/setup/status` — unauthenticated. Tells the login screen
  * whether to render the ordinary login form or the first-run "create your
  * first superuser" form. */

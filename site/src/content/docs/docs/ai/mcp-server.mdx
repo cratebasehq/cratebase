@@ -1,0 +1,16 @@
+---
+title: "MCP server"
+description: "Every collection auto-exposed as list_/get_/create_/update_/delete_ tools."
+---
+
+`GET/POST /api/mcp` implements the Model Context Protocol. No extra
+wiring is needed: every collection is automatically exposed as MCP tools
+(`list_<collection>`, `get_<collection>`, `create_<collection>`,
+`update_<collection>`, `delete_<collection>`) — `POST /api/mcp
+{"method":"tools/list"}` reflects whatever collections currently exist.
+An agent authenticates with an [API key](/docs/concepts/authentication/api-keys/)
+like any other identity and gets exactly the rule-gated access that key's
+record has — the same authorization path a normal HTTP request goes
+through, nothing bespoke for agent traffic. Connect Claude, Cursor, or
+any MCP-speaking client by pointing it at this endpoint; the dashboard's
+**Settings → MCP** page shows the connection details.

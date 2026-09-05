@@ -1,0 +1,10 @@
+---
+title: "Impersonation"
+description: "Superuser-minted, non-refreshable tokens for another record."
+sidebar:
+  order: 7
+---
+
+`POST .../impersonate/{id}` (superuser-only) mints a session token for
+another record. It's deliberately non-refreshable — a one-shot loan the
+impersonated record can't extend into a standing session on its own.

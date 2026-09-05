@@ -1,0 +1,15 @@
+---
+title: "CLI"
+description: "serve, superuser create, migrate-from-pocketbase, and env precedence."
+---
+
+```
+cratebase serve                                   # start the server
+cratebase superuser create <email> <password>     # headless first-superuser (or any additional one)
+cratebase migrate-from-pocketbase <pb_data> --dir <dir>   # one-shot PocketBase import
+```
+
+Flags generally mirror their environment-variable equivalents (e.g.
+`--dir` vs `CRATEBASE_DATA_DIR`); an explicit flag on the command line
+wins over the environment variable when both are set for the same
+option.

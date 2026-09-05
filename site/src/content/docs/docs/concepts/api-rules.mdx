@@ -1,0 +1,17 @@
+---
+title: "API rules"
+description: "list/view/create/update/delete rules enforced in SQL, not application code."
+---
+
+Every collection has five independent rule strings —
+`listRule`/`viewRule`/`createRule`/`updateRule`/`deleteRule` — written in
+Cratebase's small filter expression language
+(`owner = @request.auth.id`). Rules are compiled into the `WHERE` clause
+of the underlying `SELECT`/`UPDATE`/`DELETE` itself, so a record a rule
+denies is indistinguishable from one that doesn't exist — this is
+enforced in SQL, not in application code you have to trust.
+`createRule` has no row yet to attach a `WHERE` to, so it's evaluated as
+a FROM-less `SELECT 1 WHERE <expr>` against the submitted payload
+instead. `@request.auth.*`, `@request.body.*`, `@request.query.*`, and
+`@collection.<name>...` are all available inside a rule — see
+[Filter syntax](/docs/concepts/filter-syntax/) for the full grammar.

@@ -1,0 +1,14 @@
+---
+title: "MFA"
+description: "The 401 {mfaId} flow, requiring a second, different auth method."
+sidebar:
+  order: 5
+---
+
+`authOptions.mfa.enabled` (with `authOptions.mfa.rule` selecting which
+records need it) gates a successful first-factor login behind a second
+one: the first successful credential check opens a pending `_mfas`
+session and answers `401 {"mfaId": "..."}` instead of a token. Completing
+it is a second call to `auth-with-password` or `auth-with-otp` carrying
+that `mfaId` — using a *different* method than the one that already
+succeeded. There is no separate `mfa/confirm` endpoint.

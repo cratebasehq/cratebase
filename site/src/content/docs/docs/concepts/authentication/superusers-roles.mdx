@@ -1,0 +1,14 @@
+---
+title: "Superusers & roles"
+description: "_superusers as an ordinary auth collection, owner vs admin."
+sidebar:
+  order: 9
+---
+
+`_superusers` isn't a separate concept — it's an ordinary built-in
+`type: "auth"` collection, going through the same code path as any
+user-defined one. Every superuser row has an `owner`/`admin` role:
+creating, deleting, or changing another superuser's role needs `owner`;
+`admin` has identical access to everything else, including self-service
+on its own row. The sole remaining `owner` can't be demoted or deleted,
+so no installation can lock itself out of admin access.

@@ -1,0 +1,20 @@
+---
+title: "Architecture"
+description: "The crate map, the dynamic collection engine, and why sqlx's Any driver."
+---
+
+Cratebase is a single Rust process split into `crates/core` (domain
+types, zero I/O), `crates/filter` (the filter parser + SQL compiler),
+`crates/db` (the storage engine — sqlx's `Any` driver, one query string
+against both SQLite and Postgres), `crates/storage` (local disk or any
+S3-compatible bucket via `object_store`), `crates/auth` (Argon2id, HS256
+JWT sessions, OAuth2, OTP/MFA), `crates/jsvm` (an embedded QuickJS
+runtime for `pb_hooks`), `crates/mailer` (Resend/SMTP/log-only), and
+`crates/server` (axum HTTP API, CLI, plugin system, the embedded admin
+dashboard). Dependencies flow one way — `server` depends on everything
+else; `jsvm`/`mailer` depend on neither `db` nor `server`, talking back
+through a `HostApi` trait and a plain `Message` type respectively. Every
+user-defined collection is a row in `_collections` plus a real SQL table,
+`cb_<name>`, with schema edits applied as live `ALTER TABLE` — see the
+[full architecture doc](https://github.com/cratebasehq/cratebase/blob/main/ARCHITECTURE.md)
+for the complete crate map and the trade-offs behind each choice.

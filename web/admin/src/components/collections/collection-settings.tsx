@@ -24,7 +24,6 @@ import {
   collectionToFormValue,
   type CollectionFormValue,
 } from "@/lib/collection-form-value";
-import { ApiPreview } from "@/components/collections/api-preview";
 import { useCollections } from "@/hooks/use-collections";
 import { cb, describeFailure } from "@/lib/api";
 import { managedFields } from "@/lib/field-types";
@@ -39,11 +38,15 @@ function serialise(value: CollectionFormValue): string {
 export function CollectionSettings({
   collection,
   onDirtyChange,
+  onOpenApiDocs,
 }: {
   collection: CollectionModel;
   /** Reported upward so the screen around this form can guard its own tab
    * switch, which unmounts the form and would otherwise drop the edits. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Switches the collection page to its API tab — the expanded version of
+   * the reference this used to render inline. */
+  onOpenApiDocs?: () => void;
 }) {
   const { data: collections = [] } = useCollections();
   const queryClient = useQueryClient();
@@ -197,7 +200,9 @@ export function CollectionSettings({
         />
       </form>
 
-      <ApiPreview collection={baseline} />
+      <Button variant="link" size="sm" className="h-auto p-0" onClick={onOpenApiDocs}>
+        API reference for this collection →
+      </Button>
 
       {collection.name === "users" ? (
         <div className="rounded-lg border border-border bg-surface-sunken/60 p-4">

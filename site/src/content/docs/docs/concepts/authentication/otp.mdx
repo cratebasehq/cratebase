@@ -1,0 +1,13 @@
+---
+title: "OTP (passwordless)"
+description: "request-otp / auth-with-otp, backed by the _otps collection."
+sidebar:
+  order: 4
+---
+
+`POST .../request-otp` issues a one-time code for a passwordless login,
+backed by the `_otps` system collection — codes are SHA-256 hashed, not
+Argon2id, since a code is single-use and discarded within minutes.
+`POST .../auth-with-otp` completes the login with the code. This is the
+same second-factor mechanism [MFA](/docs/concepts/authentication/mfa/)
+can require as its second step.

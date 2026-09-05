@@ -1,0 +1,26 @@
+---
+title: "Your first collection"
+description: "Create a collection and its first records via the API or dashboard."
+sidebar:
+  order: 3
+---
+
+`POST /api/collections` defines a collection's fields and access rules; Cratebase creates and migrates the real SQL table for you (a `cb_<name>` table with one physical column per field — see [Collections](/docs/concepts/collections/)):
+
+```sh
+curl -X POST localhost:8090/api/collections \
+  -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"posts","type":"base",
+       "schema":[{"id":"f1","name":"title","type":"text","required":true},
+                 {"id":"f2","name":"published","type":"bool"}],
+       "listRule":"","viewRule":"","createRule":"","updateRule":"","deleteRule":null}'
+
+curl -X POST localhost:8090/api/collections/posts/records \
+  -H 'content-type: application/json' -d '{"title":"Hello","published":true}'
+
+curl "localhost:8090/api/collections/posts/records?filter=published%20%3D%20true&sort=-created"
+```
+
+The same thing works from the dashboard: **Collections → New collection**
+walks through the same fields and rules, and the per-collection **API**
+tab shows the request shapes for whatever you just defined.

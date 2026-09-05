@@ -1,0 +1,11 @@
+---
+title: "Error responses"
+description: "The error shape, and why a denied rule looks like 404, not 405."
+---
+
+Every API error follows the same JSON shape (`code`, `message`, and a
+per-field `data` map for validation errors). A rule-denied record is
+deliberately indistinguishable from a nonexistent one — both come back
+as a `404`, never a `403`, since the rule is compiled directly into the
+query's `WHERE` clause rather than checked as a separate authorization
+step (see [API rules](/docs/concepts/api-rules/)).

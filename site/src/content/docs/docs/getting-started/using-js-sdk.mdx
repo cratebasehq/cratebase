@@ -1,0 +1,44 @@
+---
+title: "Using the JavaScript SDK"
+description: "Talk to Cratebase from TypeScript/JavaScript with the official pocketbase package."
+sidebar:
+  order: 4
+---
+
+Cratebase's API is byte-compatible with PocketBase v0.23+, so the official
+[`pocketbase`](https://www.npmjs.com/package/pocketbase) npm package works
+against it unmodified:
+
+```ts
+import PocketBase from "pocketbase";
+
+const cb = new PocketBase("http://localhost:8090");
+const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
+const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
+```
+
+`getList`/`filter`/`sort`/`expand`, `authWithPassword`, and `subscribe`
+all behave exactly as documented in PocketBase's own SDK docs.
+
+## Server-side rendering
+
+For SSR frameworks (TanStack Start, Next.js, SvelteKit), construct a
+fresh client per request and hydrate its auth store from a cookie:
+
+```ts
+import PocketBase from "pocketbase";
+
+const pb = new PocketBase(process.env.CRATEBASE_URL);
+pb.autoCancellation(false); // required in every server context — see below
+pb.authStore.loadFromCookie(getCookie("pb_auth") ?? "");
+
+const posts = await pb.collection("posts").getList(1, 20);
+
+setCookie("pb_auth", pb.authStore.exportToCookie());
+```
+
+**`autoCancellation(false)` is required in every server context.** The
+SDK cancels an in-flight request when an identical one is issued again —
+a de-duplication behavior meant for client-side UI. On the server, two
+independent incoming requests can look like the same repeated call and
+one gets silently cancelled unless auto-cancellation is disabled.

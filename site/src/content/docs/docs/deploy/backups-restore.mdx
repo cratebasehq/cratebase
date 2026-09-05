@@ -1,0 +1,13 @@
+---
+title: "Backups & restore"
+description: "VACUUM INTO snapshots, streaming upload to S3, dashboard upload/restore."
+---
+
+Backups are a `VACUUM INTO` SQLite snapshot streamed straight into a ZIP
+and then into storage (local or S3) without ever buffering the whole
+archive in memory — verified on a 1.6 GB database peaking at ~330 MB
+RSS. The dashboard's **Backups** page can trigger, list, download, and
+restore a backup. One conformance test against the real PocketBase SDK
+suite is skipped specifically because it restarts the server mid-run to
+exercise restore, which would kill the test harness itself — see
+[`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md).

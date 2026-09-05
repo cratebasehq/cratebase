@@ -2,10 +2,12 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   NumberSetting,
   SettingRow,
+  SettingsPage,
   SettingsSaveBar,
   SettingsSection,
   TextSetting,
@@ -15,10 +17,10 @@ import {
 /** The slice of settings this page owns. Keeping it explicit is what lets
  * the save send only these keys, so two people editing different pages
  * don't overwrite each other's sections. */
-type Draft = Pick<ServerSettings, "meta" | "batch" | "logs">;
+type Draft = Pick<ServerSettings, "meta" | "batch">;
 
 function draftOf(settings: ServerSettings): Draft {
-  return { meta: { ...settings.meta }, batch: { ...settings.batch }, logs: { ...settings.logs } };
+  return { meta: { ...settings.meta }, batch: { ...settings.batch } };
 }
 
 /** The same rules the server applies, so a bad value is named here rather
@@ -36,7 +38,6 @@ function validate(draft: Draft): string[] {
   if (draft.meta.senderAddress.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.meta.senderAddress)) {
     errors.push("Sender address must be an email address");
   }
-  if (draft.logs.maxDays < 0) errors.push("Log retention can't be negative");
   if (draft.batch.maxRequests < 1) errors.push("A batch must allow at least one request");
   if (draft.batch.timeout < 1) errors.push("Batch timeout must be at least 1 second");
   return errors;
@@ -80,7 +81,7 @@ export function ApplicationPage() {
   function submit() {
     if (!draft || errors.length > 0) return;
     save.mutate(
-      { meta: draft.meta, batch: draft.batch, logs: draft.logs },
+      { meta: draft.meta, batch: draft.batch },
       {
         onSuccess: () => toast.success("Settings saved"),
         onError: (error) => {
@@ -94,8 +95,9 @@ export function ApplicationPage() {
     );
   }
 
+  const item = settingsItemFor("/settings/application")!;
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
+    <SettingsPage title={item.label} description={item.description} width="form">
       <SettingsSection
         title="Application"
         description="How this instance identifies itself in emails and links."
@@ -175,38 +177,6 @@ export function ApplicationPage() {
         </SettingRow>
       </SettingsSection>
 
-      <SettingsSection title="Request logs" description="What the server records about incoming requests.">
-        <SettingRow label="Retention" htmlFor="logs-days" help="0 keeps logs forever. Older rows are pruned.">
-          <NumberSetting
-            id="logs-days"
-            min={0}
-            value={draft.logs.maxDays}
-            onChange={(maxDays) => patch({ logs: { ...draft.logs, maxDays } })}
-            suffix="days"
-          />
-        </SettingRow>
-        <SettingRow label="Record client IP" htmlFor="logs-ip">
-          <ToggleSetting
-            id="logs-ip"
-            checked={draft.logs.logIP}
-            onChange={(logIP) => patch({ logs: { ...draft.logs, logIP } })}
-            label={draft.logs.logIP ? "Stored with each request" : "Not stored"}
-          />
-        </SettingRow>
-        <SettingRow
-          label="Record caller id"
-          htmlFor="logs-auth"
-          help="Stores which authenticated record made the request, so a log line can be traced to a user."
-        >
-          <ToggleSetting
-            id="logs-auth"
-            checked={draft.logs.logAuthId}
-            onChange={(logAuthId) => patch({ logs: { ...draft.logs, logAuthId } })}
-            label={draft.logs.logAuthId ? "Stored with each request" : "Not stored"}
-          />
-        </SettingRow>
-      </SettingsSection>
-
       <SettingsSaveBar
         dirty={dirty}
         pending={save.isPending}
@@ -214,7 +184,7 @@ export function ApplicationPage() {
         onSave={submit}
         onReset={() => setDraft(draftOf(settings))}
       />
-    </div>
+    </SettingsPage>
   );
 }
 

@@ -1,0 +1,16 @@
+---
+title: "Authentication overview & token model"
+description: "Stateless HS256 JWTs, tokenKey rotation, and what invalidates a session."
+sidebar:
+  order: 1
+---
+
+Any collection with `type: "auth"` gets password auth, refresh, and the
+rest of the auth surface below for free — registration is just
+`POST .../records` with `password`/`passwordConfirm`, there's no separate
+"register" endpoint. Session tokens are stateless HS256 JWTs signed with
+`app secret + record.tokenKey + authToken.secret` — there's no
+server-side revocation list. Rotating a record's `tokenKey` (which every
+password or email change does) invalidates every outstanding session for
+that record without a lookup table; rotating the app-wide `AUTH_SECRET`
+invalidates every session at once, everywhere.

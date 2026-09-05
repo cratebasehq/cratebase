@@ -1,0 +1,12 @@
+---
+title: "Configuration reference"
+description: "Every environment variable, grouped by area."
+---
+
+Every configuration variable — server, database, storage, auth, mail,
+rate limits, and the hooks directory — is documented with its default in
+[`.env.example`](https://github.com/cratebasehq/cratebase/blob/main/.env.example)
+at the repository root. Common ones: `DATABASE_URL` (defaults to a local
+SQLite file; `postgres://...` switches backends with no code change),
+`CRATEBASE_DATA_DIR`, `PORT`, `AUTH_SECRET`, `AUTH_RATE_LIMIT_ENABLED`,
+and `CB_HOOKS_DIR`.

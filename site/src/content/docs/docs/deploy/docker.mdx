@@ -1,0 +1,13 @@
+---
+title: "Docker"
+description: "Image tags, volumes, compose profiles, and pinning CRATEBASE_VERSION."
+---
+
+`ghcr.io/cratebasehq/cratebase` is published multi-arch
+(`linux/amd64`/`linux/arm64`) on every tagged release, tagged both
+`:latest` and `:<version>`. `docker compose up` at the repo root pulls it
+directly; `--profile postgres --profile s3` swap Postgres and
+S3-compatible storage in for the SQLite/local-disk defaults. Pin a
+version for a reproducible deploy with `CRATEBASE_VERSION=0.1.0 docker
+compose up`, or `docker run -p 8090:8090 -v cratebase_data:/app/data
+ghcr.io/cratebasehq/cratebase:latest` directly.

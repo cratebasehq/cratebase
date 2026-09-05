@@ -1,0 +1,14 @@
+---
+title: "Compatibility"
+description: "What wire-compatible means: PocketBase v0.23+ shape, 180/181 conformance."
+---
+
+Cratebase implements PocketBase's own v0.23+ wire API — same endpoint
+shapes, same field option names, same auth-config layout — verified
+directly against the official `pocketbase` JS SDK's own conformance
+suite: **180 of 181 tests pass** (the one skip restarts the server
+mid-run to test backup restore, which would kill the test harness
+itself). The handful of intentional, documented divergences are listed
+verbatim in
+[`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md) —
+worth reading before migrating an app that leans on an edge case.

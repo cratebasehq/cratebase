@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Archive, Download, RotateCcw, Trash2, Upload } from "lucide-react";
-import { cb, describeFailure } from "@/lib/api";
+import { cb, checkBackupCapability, describeFailure } from "@/lib/api";
+import { settingsItemFor } from "@/lib/settings-nav";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -17,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** As the server returns it — PocketBase names the file `key` and its
@@ -85,6 +87,13 @@ export function BackupsPage() {
       cb.send<{ driver: "local" | "s3"; location: string }>("/api/backups/storage-info", {
         method: "GET",
       }),
+    staleTime: 5 * 60 * 1000,
+  });
+  // Postgres-backed servers have nothing under `sqlite_main_path` to
+  // snapshot — the create/upload/restore actions would just 403.
+  const { data: canBackup } = useQuery({
+    queryKey: ["backups", "capability"],
+    queryFn: checkBackupCapability,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -179,30 +188,35 @@ export function BackupsPage() {
     if (file) upload.mutate(file);
   }
 
+  const item = settingsItemFor("/settings/backups")!;
+
+  if (canBackup === false) {
+    return (
+      <SettingsPage title={item.label} description={item.description} width="wide">
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Archive />
+            </EmptyMedia>
+            <EmptyTitle>Backups are SQLite-only</EmptyTitle>
+            <EmptyDescription>
+              On Postgres, snapshot with <code className="font-mono">pg_dump</code>; uploaded files are still under{" "}
+              <code className="font-mono">storage/</code>.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </SettingsPage>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Full-database snapshots, stored alongside your uploaded files. SQLite only.
-          {storageInfo ? (
-            <>
-              {" "}
-              Currently{" "}
-              <span className="font-mono text-foreground">
-                {storageInfo.driver === "s3" ? `S3 (${storageInfo.location})` : `local disk (${storageInfo.location})`}
-              </span>
-              .
-            </>
-          ) : null}
-        </p>
+    <SettingsPage
+      title={item.label}
+      description={item.description}
+      width="wide"
+      action={
         <div className="flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={handleFileSelected}
-          />
+          <input ref={fileInputRef} type="file" accept=".zip" className="hidden" onChange={handleFileSelected} />
           <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending}>
             {upload.isPending ? <Spinner /> : <Upload className="size-3.5" />}
             {upload.isPending ? "Uploading…" : "Upload backup"}
@@ -212,7 +226,17 @@ export function BackupsPage() {
             {pending ? "Creating…" : "Create backup"}
           </Button>
         </div>
-      </div>
+      }
+    >
+      {storageInfo ? (
+        <p className="text-sm text-muted-foreground">
+          Currently{" "}
+          <span className="font-mono text-foreground">
+            {storageInfo.driver === "s3" ? `S3 (${storageInfo.location})` : `local disk (${storageInfo.location})`}
+          </span>
+          .
+        </p>
+      ) : null}
 
       <Table>
         <TableHeader>
@@ -342,6 +366,6 @@ export function BackupsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </SettingsPage>
   );
 }

@@ -1,0 +1,14 @@
+---
+title: "Cron jobs"
+description: "Schedule a raw SQL statement from the dashboard, reactive, no redeploy."
+---
+
+A `_cron_jobs` record is the whole job: `name`, a 5-field cron
+expression, and a raw SQL statement to run on it — editable from the
+dashboard's **Cron jobs** screen or the generic Records API, no
+match-arm registry and no rebuild for a new job type. Changes are
+reactive: creating, updating, or deleting a `_cron_jobs` row takes effect
+on the live scheduler immediately, no restart. `lastRunAt`/`lastStatus`/
+`lastMessage` are written back after every run, including the real
+driver error on failure, and a job can be run on demand via
+`POST /api/crons/custom:<id>`.

@@ -1,0 +1,37 @@
+---
+title: "The migration tool"
+description: "cratebase migrate-from-pocketbase <pb_data> --dir <dir>, and a real report."
+---
+
+```sh
+cratebase migrate-from-pocketbase <path-to-pb_data> --dir <cratebase-data-dir>
+```
+
+reads PocketBase's `pb_data` directly (its SQLite file and `storage/`
+folder) — no running PocketBase server required, and nothing on the
+PocketBase side is modified. A real run against a real PocketBase
+v0.40.2 instance produced this report:
+
+```
+collections created: 2
+  + categories
+  + books
+collections updated (existing schema, fields merged): 1
+  ~ users
+PocketBase system collections skipped (already exist identically in Cratebase, or are ephemeral auth state not carried across): _mfas, _otps, _externalAuths, _authOrigins
+records migrated:
+  _superusers: 1
+  books: 3
+  categories: 2
+  users: 1
+files copied: 4
+```
+
+Collection and record ids don't change — Cratebase reimplements
+PocketBase's own deterministic id derivation
+(`pbc_<crc32(type + name)>`), verified directly: a `categories`
+collection created independently in both systems gets the identical id
+`pbc_3292755704`. See the full
+[worked example](https://github.com/cratebasehq/cratebase/blob/main/docs/migrating-from-pocketbase.md)
+for the complete verification, including byte-identical file downloads
+after migrating.

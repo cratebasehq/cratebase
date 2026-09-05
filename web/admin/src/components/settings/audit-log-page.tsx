@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { History, ShieldAlert } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { settingsAuditRoute } from "@/routes/settings-audit";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -10,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** Every action `crates/server/src/audit.rs` writes. Kept in sync with that
@@ -106,16 +108,9 @@ export function AuditLogPage() {
     });
   }
 
+  const item = settingsItemFor("/settings/audit")!;
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium">Audit log</h2>
-        <p className="max-w-measure text-sm text-muted-foreground">
-          Every schema change, settings edit, superuser account change and superuser-bypassed record deletion, in the
-          order it happened. This log is append-only — nothing here can be edited or deleted, not even by a
-          superuser.
-        </p>
-      </div>
+    <SettingsPage title={item.label} description={item.description} width="wide">
 
       <div className="flex flex-wrap items-end gap-2">
         <div className="flex flex-col gap-1">
@@ -275,7 +270,7 @@ export function AuditLogPage() {
           />
         </div>
       ) : null}
-    </div>
+    </SettingsPage>
   );
 }
 

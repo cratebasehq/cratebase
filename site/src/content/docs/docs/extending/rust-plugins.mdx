@@ -1,0 +1,16 @@
+---
+title: "Rust plugins"
+description: "The Plugin trait: setup(), routes(), and scheduled_tasks() on your own binary."
+---
+
+Extend the server without forking it: implement the `Plugin` trait
+(`crates/server/src/plugin.rs`) for one-time async `setup()` work, extra
+HTTP routes under `/api/plugins/<name>` via `routes()`, and
+fixed-interval background jobs via `scheduled_tasks()`, then register it
+in a `PluginRegistry` — including from a downstream binary that depends
+on `cratebase-server` as a library, not just this repo's own `cratebase`
+binary. This is a compile-time Rust trait, not a dynamically loaded or
+scripted plugin format. `crates/server/src/cron_jobs.rs` (the built-in
+SQL cron feature) is the closest in-repo reference for the "reactive
+system collection" shape a plugin author would follow, even though it
+isn't built on the `Plugin` trait itself.

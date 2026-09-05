@@ -1,0 +1,10 @@
+---
+title: "Upgrading"
+description: "Migrations run automatically on start; read the changelog first."
+---
+
+Schema migrations for Cratebase's own system collections (e.g. the
+superuser `role` backfill) run automatically on `cratebase serve`
+startup — there's no separate migration command to run yourself. Read
+[Changelog](/docs/project/changelog/) before upgrading across a version
+boundary that touches something you depend on.

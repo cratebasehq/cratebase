@@ -1,14 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { cb } from "@/lib/api";
+import { toast } from "sonner";
+import { cb, describeFailure } from "@/lib/api";
+import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import { settingsLogsRoute } from "@/routes/settings-logs";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/ui/pagination";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  NumberSetting,
+  SettingRow,
+  SettingsPage,
+  SettingsSaveBar,
+  SettingsSection,
+  ToggleSetting,
+} from "@/components/settings/settings-form";
 import { ListTree } from "lucide-react";
 
 /** `GET /api/logs/stats` — hourly request counts for whatever filter the
@@ -141,6 +152,18 @@ function pathOf(entry: RequestLogEntry): string {
   }
 }
 
+/** The slice of settings this page owns — moved here from Application so
+ * retention lives next to the log table it governs. */
+type LogsDraft = Pick<ServerSettings, "logs">;
+
+function logsDraftOf(settings: ServerSettings): LogsDraft {
+  return { logs: { ...settings.logs } };
+}
+
+function logsDirtyAgainst(draft: LogsDraft, settings: ServerSettings): boolean {
+  return JSON.stringify(draft) !== JSON.stringify(logsDraftOf(settings));
+}
+
 /** Superuser-only view over `_request_logs`, the bounded history the
  * `request_log` middleware writes on every `/api/*` call. Read-only —
  * there's nothing to edit here, just something to search. */
@@ -150,6 +173,41 @@ export function RequestLogsPage() {
   const page = urlSearch.page ?? 1;
   const filter = urlSearch.filter ?? "";
   const [filterInput, setFilterInput] = useState(filter);
+
+  const { data: settings } = useSettings();
+  const saveLogs = useSettingsMutation();
+  const [logsDraft, setLogsDraft] = useState<LogsDraft | null>(null);
+  const [logsSeedKey, setLogsSeedKey] = useState<ServerSettings | undefined>(settings);
+
+  // Adopt server state on first load and on any refetch that lands while
+  // nothing is being edited; never clobber an edit in progress.
+  if (settings && (logsSeedKey !== settings || logsDraft === null)) {
+    setLogsSeedKey(settings);
+    setLogsDraft(logsDraftOf(settings));
+  }
+
+  const logsErrors = useMemo(() => {
+    if (!logsDraft) return [];
+    const errors: string[] = [];
+    if (logsDraft.logs.maxDays < 0) errors.push("Log retention can't be negative");
+    return errors;
+  }, [logsDraft]);
+
+  function patchLogs(next: Partial<ServerSettings["logs"]>) {
+    setLogsDraft((d) => (d ? { logs: { ...d.logs, ...next } } : d));
+  }
+  const logsDirty = logsDraft && settings ? logsDirtyAgainst(logsDraft, settings) : false;
+
+  function submitLogs() {
+    if (!logsDraft || logsErrors.length > 0) return;
+    saveLogs.mutate(logsDraft, {
+      onSuccess: () => toast.success("Request log settings saved"),
+      onError: (error) => {
+        const failed = describeFailure(error);
+        toast.error(failed.title, { description: failed.detail || failed.serverMessage || undefined });
+      },
+    });
+  }
 
   useEffect(() => {
     setFilterInput(filter);
@@ -170,8 +228,9 @@ export function RequestLogsPage() {
     void navigate({ search: { page: undefined, filter: filterInput.trim() || undefined }, replace: true });
   }
 
+  const item = settingsItemFor("/settings/logs")!;
   return (
-    <div className="flex flex-col gap-4 p-6">
+    <SettingsPage title={item.label} description={item.description} width="wide">
       <RequestLogsChart filter={filter} />
 
       <form onSubmit={submitFilter} className="flex max-w-sm items-center gap-2">
@@ -252,6 +311,49 @@ export function RequestLogsPage() {
           />
         </div>
       ) : null}
-    </div>
+
+      {logsDraft ? (
+        <SettingsSection title="Retention" description="What the server records about incoming requests.">
+          <SettingRow label="Retention" htmlFor="logs-days" help="0 keeps logs forever. Older rows are pruned.">
+            <NumberSetting
+              id="logs-days"
+              min={0}
+              value={logsDraft.logs.maxDays}
+              onChange={(maxDays) => patchLogs({ maxDays })}
+              suffix="days"
+            />
+          </SettingRow>
+          <SettingRow label="Record client IP" htmlFor="logs-ip">
+            <ToggleSetting
+              id="logs-ip"
+              checked={logsDraft.logs.logIP}
+              onChange={(logIP) => patchLogs({ logIP })}
+              label={logsDraft.logs.logIP ? "Stored with each request" : "Not stored"}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Record caller id"
+            htmlFor="logs-auth"
+            help="Stores which authenticated record made the request, so a log line can be traced to a user."
+          >
+            <ToggleSetting
+              id="logs-auth"
+              checked={logsDraft.logs.logAuthId}
+              onChange={(logAuthId) => patchLogs({ logAuthId })}
+              label={logsDraft.logs.logAuthId ? "Stored with each request" : "Not stored"}
+            />
+          </SettingRow>
+        </SettingsSection>
+      ) : null}
+      {logsDraft ? (
+        <SettingsSaveBar
+          dirty={logsDirty}
+          pending={saveLogs.isPending}
+          errors={logsErrors}
+          onSave={submitLogs}
+          onReset={() => settings && setLogsDraft(logsDraftOf(settings))}
+        />
+      ) : null}
+    </SettingsPage>
   );
 }

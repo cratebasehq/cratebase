@@ -1,0 +1,26 @@
+---
+title: "Collections"
+description: "Base, auth, and view collections; system collections; deterministic ids."
+---
+
+A collection is a row in the system `_collections` table (JSON-encoded
+schema + rules) backed by a real SQL table, `cb_<name>`, with one
+physical column per field. Editing a collection's schema runs live
+`ALTER TABLE ADD/DROP COLUMN` — there is no separate migration DSL, and
+changing a field's type or single/multi cardinality drops and recreates
+that column (data loss on that column only).
+
+Three collection types exist: **base** (plain data), **auth** (gets
+`password`/`tokenKey`/`email`/`emailVisibility`/`verified` columns and
+the full auth-endpoint surface for free), and **view** (backed by a real
+SQL `VIEW`; writes are rejected).
+
+System collections ship built in: `_superusers`, `_mfas`, `_otps`,
+`_externalAuths`, `_authOrigins`, `_teams`, `_team_members`,
+`_cron_jobs`, `_webhooks`, `_audit_log`, `_push_subscriptions`, and the
+default `users` auth collection.
+
+Collection ids are deterministic — `pbc_<crc32(type + name)>` — the same
+formula PocketBase itself uses internally, which is what lets
+[`migrate-from-pocketbase`](/docs/migrating/migration-tool/) skip an
+id-remapping step entirely.

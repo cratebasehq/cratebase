@@ -3,11 +3,13 @@ import { toast } from "sonner";
 import { Plus, Trash2 } from "lucide-react";
 import { describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { settingsItemFor } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
   SettingRow,
+  SettingsPage,
   SettingsSaveBar,
   SettingsSection,
   TextSetting,
@@ -138,18 +140,9 @@ export function PushPage() {
     });
   }
 
+  const item = settingsItemFor("/settings/push")!;
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-medium">Push notifications</h2>
-        <p className="max-w-measure text-sm text-muted-foreground">
-          Configures push notification delivery for the <code className="font-mono">_push_subscriptions</code>{" "}
-          collection across three channels. A subscription's own <code className="font-mono">platform</code>{" "}
-          field (<code className="font-mono">web</code>/<code className="font-mono">android</code>/
-          <code className="font-mono">ios</code>) picks which of the three channels below serves it.
-        </p>
-      </div>
-
+    <SettingsPage title={item.label} description={item.description} width="form">
       <SettingsSection
         title="Web Push (VAPID)"
         description="Delivers to browsers subscribed with the Push API. No per-platform app registration needed."
@@ -377,7 +370,7 @@ export function PushPage() {
         onSave={submit}
         onReset={() => setDraft(draftOf(settings))}
       />
-    </div>
+    </SettingsPage>
   );
 }
 

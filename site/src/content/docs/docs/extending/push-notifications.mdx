@@ -1,0 +1,11 @@
+---
+title: "Push notifications"
+description: "Web Push, FCM, and APNs via _push_subscriptions."
+---
+
+Devices register a `_push_subscriptions` row (Web Push, FCM, or APNs,
+depending on platform); a send endpoint delivers to a target's
+subscriptions through whichever provider that subscription is for. The
+send path sits behind a stricter access gate than an ordinary record
+write, since it triggers real external delivery rather than just storing
+data.

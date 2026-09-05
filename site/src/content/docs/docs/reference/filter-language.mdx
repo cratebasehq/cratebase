@@ -1,0 +1,13 @@
+---
+title: "Filter language"
+description: "The full grammar: operators, ?= family, modifiers, date macros, relations."
+---
+
+The `crates/filter` grammar backs `filter`, every API rule, and
+`createRule`. Operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `~`/`!~` (like),
+and the `?=`/`?!=`/... "any of" family for multi-value fields. Modifiers:
+`:isset`, `:length`, `:each`, `:lower`. Date macros (`@now`, `@today`,
+...), relation dot-notation (`author.name`), and back-relations are all
+supported. Not supported by design: a general-purpose scripting layer —
+the language is intentionally small enough to be hand-written and
+audited in a rule field.

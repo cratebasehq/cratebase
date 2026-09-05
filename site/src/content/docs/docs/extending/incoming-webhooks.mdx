@@ -1,0 +1,17 @@
+---
+title: "Incoming webhooks"
+description: "Verifying a signed inbound webhook (Stripe as the worked example)."
+---
+
+Trusting a payload an external service POSTs *at* Cratebase (Stripe,
+GitHub, another Cratebase instance's own outgoing webhook) is the
+opposite direction from `_webhooks` above, and reduces to one primitive:
+`verify_hmac_sha256_hex(secret, signed_content, hex_signature)`, a
+constant-time HMAC-SHA256 comparison exposed both natively
+(`crates/server/src/incoming_webhooks.rs`) and to `pb_hooks` JS via
+`$security.hs256(data, secret)`. `POST /api/webhooks/stripe` is a worked
+endpoint implementing Stripe's specific `Stripe-Signature` scheme
+end-to-end (timestamp tolerance + multi-secret rotation window); see the
+[incoming-webhooks-stripe example](https://github.com/cratebasehq/cratebase/tree/main/examples/incoming-webhooks-stripe)
+for the full pattern, including the equivalent `pb_hooks` version with no
+Rust changes needed.

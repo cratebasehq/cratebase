@@ -1,0 +1,71 @@
+/*
+ * Maps Direction C's tokens onto Starlight's own CSS custom properties.
+ * Imported as Starlight's `customCss` entry (see astro.config.mjs).
+ */
+@import "./tokens.css";
+
+:root {
+  --sl-font: var(--font-display);
+  --sl-font-mono: var(--font-mono);
+
+  --sl-color-white: var(--color-harbor);
+  --sl-color-gray-1: #1c2b3a;
+  --sl-color-gray-2: #33465a;
+  --sl-color-gray-3: var(--color-slate);
+  --sl-color-gray-4: var(--color-hairline);
+  --sl-color-gray-5: #e4e9ee;
+  --sl-color-gray-6: #f5f7f9;
+  --sl-color-black: var(--color-fog);
+
+  --sl-color-accent-low: #fbe3d2;
+  --sl-color-accent: var(--color-crate);
+  --sl-color-accent-high: #8a4116;
+
+  --sl-color-bg: var(--color-fog);
+  --sl-color-bg-nav: var(--color-white);
+  --sl-color-bg-sidebar: var(--color-white);
+  --sl-color-bg-inline-code: #e4e9ee;
+  --sl-color-text: var(--color-harbor);
+  --sl-color-text-accent: var(--color-harbor);
+
+  --sl-color-hairline: var(--color-hairline);
+  --sl-color-hairline-light: var(--color-hairline);
+  --sl-color-hairline-shade: var(--color-hairline);
+
+  --sl-nav-height: 3.75rem;
+}
+
+:root[data-theme="dark"] {
+  --sl-color-white: var(--color-fog);
+  --sl-color-gray-1: #e4e9ee;
+  --sl-color-gray-2: #b9c4cf;
+  --sl-color-gray-3: #93a4b6;
+  --sl-color-gray-4: #2a3a4c;
+  --sl-color-gray-5: #182635;
+  --sl-color-gray-6: #101f30;
+  --sl-color-black: #0a1622;
+
+  --sl-color-accent-low: #3a2413;
+  --sl-color-accent: var(--color-crate);
+  --sl-color-accent-high: #ffbe93;
+
+  --sl-color-bg: #0a1622;
+  --sl-color-bg-nav: #101f30;
+  --sl-color-bg-sidebar: #101f30;
+  --sl-color-bg-inline-code: #182635;
+  --sl-color-text: #eef1f4;
+
+  --sl-color-hairline: rgba(238, 241, 244, 0.14);
+  --sl-color-hairline-light: rgba(238, 241, 244, 0.14);
+  --sl-color-hairline-shade: rgba(238, 241, 244, 0.14);
+}
+
+/* Starlight's default site title/logo area — keep hairline, no shadow */
+.header {
+  box-shadow: none !important;
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+.sidebar-pane {
+  border-right: 1px solid var(--sl-color-hairline);
+}

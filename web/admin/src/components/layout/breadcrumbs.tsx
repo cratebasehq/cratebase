@@ -8,33 +8,31 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
+import { settingsItemFor } from "@/lib/settings-nav";
 
 type Crumb = { label: string; to?: string; mono?: boolean };
-
-const SETTINGS_TABS: Record<string, string> = {
-  logs: "Request logs",
-  backups: "Backups",
-  cron: "Scheduled jobs",
-};
 
 /**
  * Breadcrumbs are derived from the pathname rather than from route static
  * data: the router is code-based and there are six screens, so a single
  * readable mapping beats threading a `crumb` through every route definition.
  */
-function crumbsFor(pathname: string): Crumb[] {
+function crumbsFor(pathname: string, tab?: string): Crumb[] {
   const segments = pathname.split("/").filter(Boolean);
 
   if (segments[0] === "collections") {
     const name = segments[1];
     if (!name) return [{ label: "Collections" }];
-    return [{ label: "Collections" }, { label: decodeURIComponent(name), mono: true }];
+    const crumbs: Crumb[] = [{ label: "Collections" }, { label: decodeURIComponent(name), mono: true }];
+    if (tab === "schema") crumbs.push({ label: "Schema" });
+    else if (tab === "api") crumbs.push({ label: "API" });
+    return crumbs;
   }
 
   if (segments[0] === "settings") {
-    const tab = segments[1];
-    const crumbs: Crumb[] = [{ label: "Settings", to: "/settings/logs" }];
-    if (tab && SETTINGS_TABS[tab]) crumbs.push({ label: SETTINGS_TABS[tab] });
+    const crumbs: Crumb[] = [{ label: "Settings", to: "/settings" }];
+    const item = settingsItemFor(pathname);
+    if (item) crumbs.push({ label: item.label });
     return crumbs;
   }
 
@@ -42,8 +40,13 @@ function crumbsFor(pathname: string): Crumb[] {
 }
 
 export function Breadcrumbs() {
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const crumbs = crumbsFor(pathname);
+  const { pathname, tab } = useRouterState({
+    select: (state) => ({
+      pathname: state.location.pathname,
+      tab: (state.location.search as { tab?: string }).tab,
+    }),
+  });
+  const crumbs = crumbsFor(pathname, tab);
 
   return (
     <Breadcrumb>
