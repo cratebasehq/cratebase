@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * Turns a Cratebase "schema as code" document into a single `.d.ts`-style
  * file with one `interface` per non-system collection.
@@ -21,6 +21,8 @@
  * bun run src/codegen.ts https://api.example.com --token <superuser-jwt> -o types.d.ts
  * ```
  */
+
+import { readFile, writeFile } from "node:fs/promises";
 
 interface FieldDoc {
   name: string;
@@ -129,7 +131,7 @@ async function loadCollections(input: string, token?: string): Promise<Collectio
     }
     raw = await response.text();
   } else {
-    raw = await Bun.file(input).text();
+    raw = await readFile(input, "utf8");
   }
   return extractCollections(JSON.parse(raw));
 }
@@ -183,12 +185,18 @@ async function main() {
   const { input, out, token } = parseArgs(process.argv.slice(2));
   const collections = await loadCollections(input, token);
   const generated = generate(collections);
-  await Bun.write(out, generated);
+  await writeFile(out, generated);
   const count = collections.filter((c) => !c.system).length;
   console.log(`wrote ${count} interface(s) to ${out}`);
 }
 
-if (import.meta.main) {
+/** True when this module was invoked directly as the CLI entry point
+ * (`node dist/codegen.js ...` / `bun run src/codegen.ts ...`), false when
+ * it's only being `import`ed for its exported helpers (e.g. from tests). */
+const isMainModule =
+  typeof process.argv[1] === "string" && import.meta.url === `file://${process.argv[1]}`;
+
+if (isMainModule) {
   main().catch((error) => {
     console.error(`cratebase-codegen: ${error instanceof Error ? error.message : error}`);
     process.exit(1);

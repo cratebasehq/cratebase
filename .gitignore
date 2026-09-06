@@ -32,6 +32,11 @@ sdk/js/dist/
 # source before every publish, so it never needs to be committed.
 sdk/js/extras/dist
 
+# @cratebase/schema-codegen's dist/ is likewise a build artifact, not
+# something to commit — CI builds it fresh from source before every
+# publish.
+tools/schema-codegen/dist
+
 # Agent skills installed via `npx skills add` — local dev aids, not
 # part of the shipped product; keep them out of the open-source repo.
 .claude/skills/

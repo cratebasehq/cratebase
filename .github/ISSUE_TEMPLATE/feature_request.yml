@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose something Cratebase doesn't do yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [ROADMAP.md](../../ROADMAP.md) first — it lists what's
+        already planned and, just as importantly, what was previously
+        described as planned/shipped and turned out not to exist (the
+        roadmap corrects itself when that happens). ROADMAP.md is also
+        explicit about the bar for what gets built on top of the plugin
+        system: a "named user asked for this" bar, not speculative
+        capability. This template asks for the same thing — a concrete
+        problem you (or someone you can point to) actually have, not a
+        capability that seems generically nice to have.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: >-
+        What are you trying to do that Cratebase currently makes
+        difficult or impossible? Describe the concrete situation, not
+        the feature — e.g. "I'm building X and need Y because Z",
+        ideally with the collection/API shape involved.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: >-
+        What would solve the problem above? If it's an API change, sketch
+        the request/response shape. If it overlaps with existing
+        PocketBase behavior, say whether you're asking Cratebase to match
+        PocketBase or to diverge from it (and why) — see CONTRIBUTING.md's
+        compatibility rule.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >-
+        What have you already tried or ruled out? This includes existing
+        Cratebase features (JS hooks, the `Plugin` trait, cron jobs,
+        webhooks — see ARCHITECTURE.md/ROADMAP.md) that might already
+        cover this, and why they don't.
+    validations:
+      required: true
+
+  - type: input
+    id: who
+    attributes:
+      label: Who needs this
+      description: >-
+        You, specifically, building what? A named, real use case is what
+        ROADMAP.md's bar for landing new capability actually looks for —
+        this is not a formality.
+    validations:
+      required: true
+

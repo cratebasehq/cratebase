@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://cratebase.dev/docs/
+    about: >-
+      Check the docs site first — configuration reference, deployment
+      guides, and the full API reference are all there, not just this
+      repo's README.
+  - name: Security vulnerability
+    url: https://github.com/cratebasehq/cratebase/security/advisories/new
+    about: >-
+      Report vulnerabilities privately per SECURITY.md, not as a public
+      issue.
+

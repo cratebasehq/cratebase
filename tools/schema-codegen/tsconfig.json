@@ -6,7 +6,7 @@
     "moduleResolution": "bundler",
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
-    "types": ["bun-types"],
+    "types": ["node"],
     "skipLibCheck": true,
 
     "strict": true,

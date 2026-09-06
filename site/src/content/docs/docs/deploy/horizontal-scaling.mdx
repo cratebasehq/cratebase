@@ -1,0 +1,272 @@
+---
+title: "Horizontal scaling"
+description: "Running N stateless Cratebase instances behind a load balancer, in front of one Postgres database: what's actually stateless, how cross-node realtime works, proxy config, migration races, and rolling deploys."
+---
+
+This guide is for running more than one Cratebase process in front of a
+single Postgres database, load-balanced. It assumes you've already read
+[Postgres](/docs/deploy/postgres/) for the single-node `DATABASE_URL`
+switch; this page covers what changes once there's more than one `app`
+process sharing that database.
+
+SQLite does not apply to anything below: it is one file, opened by one
+process, and is single-node by construction. Everything here is
+Postgres-only.
+
+## What's actually stateless
+
+**Auth tokens are stateless by design.** A Cratebase auth token is an
+HS256 JWT whose signing key is `app_secret + record.tokenKey +
+per-type-secret` (`crates/auth/src/token.rs`, `signing_key`). Any
+instance can verify a token any other instance issued as long as both
+read the same `app_secret` and the same record's `tokenKey` from the
+same database — there is no server-side session store, sticky session,
+or in-memory token cache that has to be shared or replicated between
+instances. Revocation is rotating the record's `tokenKey` column, not a
+blocklist, so that too needs no coordination beyond the database write
+itself.
+
+**What is not stateless: SSE realtime connections.** Each `GET
+/api/realtime` connection is a long-lived stream held open by exactly
+one process's in-memory client registry (`RealtimeService` in
+`crates/server/src/realtime.rs`). A client's subscription list, and the
+open socket itself, live only on the instance it connected to. That's
+the problem the next section is about.
+
+## Cross-node realtime: `pg_notify`/`LISTEN`
+
+Without anything bridging instances, a write handled by instance B never
+reaches a client parked on instance A's SSE stream — A's `fan_out` only
+ever runs against writes A itself performed. Cratebase closes that gap
+with Postgres's own `LISTEN`/`NOTIFY` (module doc, `crates/server/src/realtime.rs`,
+"Cross-node fan-out" section):
+
+- After a write commits and does its normal local (in-process) fan-out,
+  `publish` also calls `notify_cross_node`, which sends a small JSON
+  payload — `{origin, collection, action, id}` — over Postgres `NOTIFY`
+  on a fixed channel, `cratebase_realtime` (`REALTIME_CHANNEL` in
+  `crates/db/src/postgres.rs`). It never carries the full record: on
+  `create`/`update` the receiving instance re-fetches the row itself.
+- Postgres hard-caps a `NOTIFY` payload at 8000 bytes
+  (`NOTIFY_PAYLOAD_LIMIT` in `crates/db/src/postgres.rs`, enforced
+  server-side); `notify_realtime` checks this up front and returns a
+  `DbError::Other` rather than letting the driver reject it or the
+  server silently truncate it. `notify_cross_node` logs a warning and
+  drops the cross-node notify on that error — the local, same-process
+  fan-out for that write still happened.
+  - `delete` is the one case that must carry data, since the row is
+    already gone by the time any other node could re-`SELECT` it: the
+    writer's own pre-delete snapshot rides along, hidden fields
+    stripped (`with_hidden: false` — Postgres logs bound statement
+    parameters, and every `LISTEN` client on the channel sees this
+    payload). If that snapshot alone would push the payload at or over
+    8000 bytes, `notify_cross_node` falls back to an id-only snapshot
+    (`{"id": record.id()}`) instead of dropping the notify — enough for
+    a client to drop the row from local state, which is all a delete
+    event needs. `crates/server/tests/postgres_multi_node.rs` proves
+    exactly this fallback: it creates a `posts` row whose `body` field
+    alone is 20,000 bytes, deletes it from node B, and asserts the
+    delete event *does* arrive on node A's stream with the row's `id`
+    but with `body` empty — the minimal-payload path, not a dropped
+    notify.
+- Each process opens one **dedicated, unpooled** connection for
+  `LISTEN` (`subscribe_realtime` in `crates/db/src/postgres.rs`) rather
+  than borrowing one from the query pool: a pooled connection can be
+  recycled out from under a long-lived listener. `App::bootstrap` calls
+  `start_cross_node_listener` once per process to start it. On a
+  connect failure, a setup failure, or the connection dying, the loop
+  retries after a 3-second sleep (interruptible immediately by
+  `close()`) rather than giving up — so a Postgres restart or network
+  blip degrades cross-node realtime for that window rather than
+  permanently.
+- A process's own writes are echoed back to itself over the same
+  channel (`LISTEN` sees every `NOTIFY` on the channel, including your
+  own). Each `RealtimeService` carries a random `origin` id generated
+  once per instance (`RealtimeService.origin`, doc comment: per
+  *instance*, not per *process*, since more than one `App` can share a
+  process in tests or embedders); `receive_cross_node` drops any
+  payload whose `origin` matches its own, since that write already went
+  through the synchronous local fan-out.
+- **The receiving instance re-runs the access decision itself.** For
+  `create`/`update`, `receive_cross_node` re-fetches the record with
+  *its own* executor and hands it to the same `fan_out` a local write
+  uses; for `delete` it renders the snapshot that rode in the payload.
+  Either way, `deliver_decision` re-evaluates the collection's
+  `listRule` (and each subscriber's own topic filter) against *this*
+  process's own loaded settings and rule text — never anything the
+  writing instance serialized or decided. This matters operationally:
+  it's also why a schema/rule change needs its own propagation — the
+  module doc notes explicitly that nothing here re-teaches an
+  already-running instance about a *later* schema change; a collection
+  a receiving instance doesn't have loaded yet (see `app.db().collections.get(collection_id)`
+  returning `None` in `receive_cross_node`) is silently skipped, not
+  queued or retried.
+
+This is proven end-to-end, not just at the unit level, by
+`crates/server/tests/postgres_multi_node.rs`
+(`cross_node_realtime_round_trip_through_postgres_listen_notify`): it
+boots two real `App`s on two real `axum::serve` listeners against one
+Postgres database, opens `GET /api/realtime` against instance A and
+subscribes to `posts`, then `POST`s a record create against instance
+B's REST API — a connection B has never touched. The test asserts A's
+stream receives a `posts` event with `action: "create"` and the correct
+`record.id`/`title`, and clocks the whole round trip (network + two
+pools + `LISTEN`/`NOTIFY`) coming in well under its own 5-second
+timeout.
+
+## Reverse proxy / load balancer
+
+Example in nginx; the same three points apply to any LB.
+
+```nginx
+upstream cratebase {
+    server app1.internal:8090;
+    server app2.internal:8090;
+    server app3.internal:8090;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.example.com;
+
+    location / {
+        proxy_pass http://cratebase;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # SSE: GET /api/realtime is a long-lived stream, not a
+    # request/response round trip. nginx's default proxy_read_timeout
+    # is 60s; an SSE connection that sits idle longer than that (no
+    # keep-alive comment or event in the window) gets cut by the proxy,
+    # not the app, and the client has to reconnect and re-POST its
+    # subscriptions. Raise it well past your expected idle window:
+    location /api/realtime {
+        proxy_pass http://cratebase;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+    }
+
+    # /api/health backs the upstream health check, not just external
+    # monitoring — see below.
+}
+```
+
+- **Health check target: `GET /api/health`.** It's a plain,
+  unauthenticated (`MaybeAuth`) route (`crates/server/src/routes/health.rs`)
+  that returns `{"code": 200, "message": "API is healthy.", "data": {}}`
+  for anyone but a superuser — no credentials needed for an LB probe,
+  and it does no privileged work for an anonymous caller (the
+  superuser-only branch that touches storage/backup config and resolves
+  the caller's real IP never runs). Point nginx's `upstream` health
+  check (or your LB's native health check, e.g. an ALB target group) at
+  this path over `/`, which for most routes requires auth or returns
+  404s that don't distinguish "app is down" from "route doesn't exist."
+- **No session affinity / sticky sessions required.** This follows
+  directly from the statelessness section above: an auth token is
+  self-verifying against `app_secret` + the record's own `tokenKey`, so
+  instance B can validate a token instance A issued with zero shared
+  state beyond the same `AUTH_SECRET` env var and the same database.
+  There is nothing pinning a *request* to a particular instance. A
+  long-lived SSE *connection* obviously stays on whichever instance
+  accepted it for its own lifetime (that's just what a persistent TCP
+  connection is), but that's not the same thing as sticky routing — a
+  reconnect after a proxy timeout or instance restart is free to land
+  on any instance and re-subscribe, and cross-node `NOTIFY` fan-out
+  (above) is exactly what makes it not matter which instance a given
+  client ends up parked on.
+- **SSE needs a raised idle timeout, not affinity.** Every instance
+  behind the LB independently satisfies subscriptions after the
+  cross-node bridge above; the proxy-level requirement is purely about
+  not killing an idle-but-alive stream (`proxy_read_timeout 3600s`
+  above, or the equivalent on your LB — e.g. an ALB's idle timeout
+  attribute).
+
+## Migration coordination
+
+**The real answer: `Runner::up` (`crates/db/src/migrations.rs`) takes no
+lock.** It reads the `_migrations` ledger, and for every registered
+migration not already listed, runs its `up` function and then records it
+— a plain check-then-act with no `pg_advisory_lock`, no `SELECT ... FOR
+UPDATE`, nothing serializing two processes calling `up()` at the same
+time. `App::bootstrap` → `Db::bootstrap` (`crates/db/src/db.rs`) always
+calls `migrations::Runner::core().up(self)`, so this runs on every
+process boot, not just the first one ever.
+
+Two mitigating facts, verified from source, keep this from being silent
+corruption:
+
+- The system tables themselves (`_collections`, `_params`,
+  `_migrations`, `_logs` — `crates/db/src/system.rs`) are all `CREATE
+  TABLE IF NOT EXISTS`/`CREATE INDEX IF NOT EXISTS`, so two processes
+  racing to create them is harmless — whichever runs second gets a
+  no-op.
+- The one migration that actually inserts rows on a fresh database,
+  `INIT_SYSTEM`'s `init_system_up`, seeds `_collections` through
+  `db.collections.insert`, and `_collections.name` is `UNIQUE`
+  (`crates/db/src/system.rs`). If two fresh-booting instances both see
+  `INIT_SYSTEM` as unapplied and both attempt to seed the same
+  collection name concurrently, the loser hits that unique constraint
+  and its `insert` returns an error, which propagates out through
+  `Runner::up`'s `?` and fails that instance's `bootstrap()` — a hard,
+  visible failure, not a corrupted or half-seeded database.
+
+**Practical implication:** booting N instances simultaneously against a
+brand-new (or mid-migration) database is a real race, not a supported
+concurrent-safe path. A losing instance's `bootstrap()` returns an
+error and that process should exit non-zero rather than serve traffic
+half-initialized — `docker-compose.yml`'s `restart: unless-stopped` (or
+an equivalent orchestrator restart policy) is what turns that into a
+non-event: by the time it restarts, the winning instance has already
+committed the ledger row, so the retry's `Runner::up` sees `INIT_SYSTEM`
+already applied and boots cleanly. If you'd rather not depend on a
+restart policy to paper over a boot-time race, run one instance to a
+successful `bootstrap()` first (e.g. a one-off `cratebase serve` against
+the target `DATABASE_URL`, or scale to 1 first) before scaling out to N.
+
+## Rolling zero-downtime deploys
+
+The repo's own deployment story is the `Dockerfile`/`docker-compose.yml`
+pair: a single statically-configured binary (`ENTRYPOINT ["cratebase"]`,
+`CMD ["serve"]`) reading `DATABASE_URL`/`AUTH_SECRET`/etc. from the
+environment, with no baked-in orchestration of its own — so "rolling
+deploy" here means driving `docker compose` (or your platform's
+equivalent) through the same instance-at-a-time replacement, gated on
+`/api/health`:
+
+1. Bring up one additional instance of the new version alongside the
+   running old ones, pointed at the same `DATABASE_URL`/`AUTH_SECRET`.
+   With Compose: `docker compose up --scale cratebase=<old+1> --no-recreate`,
+   or, more simply, start a second `docker-compose.yml`-shaped service
+   definition pinned to the new `CRATEBASE_VERSION` tag on the same
+   network.
+2. Wait for that instance's own `GET /api/health` to return 200 before
+   adding it to the LB `upstream` (or letting the LB's own health check
+   promote it) — the route above never requires auth and does no
+   privileged work for the check, so there's no credential to wire in
+   just to gate a rollout.
+3. Remove one old-version instance from the `upstream`/target group
+   (drain: stop sending it *new* requests) and let its in-flight
+   requests finish. Its existing SSE clients will see their connection
+   drop when the container actually stops; because there's no session
+   affinity, their SDK's reconnect lands on any remaining instance and
+   re-subscribes there, and cross-node `NOTIFY` fan-out means it still
+   hears about writes made anywhere else in the cluster.
+4. Stop that drained old-version container (`docker compose stop
+   <old-instance>` or `docker rm`).
+5. Repeat steps 1–4 for each remaining old-version instance, one at a
+   time, so the fleet's `upstream` capacity never drops by more than one
+   instance during the rollout.
+
+Because every instance in the fleet is running the same migrations
+runner against the same database (`Db::bootstrap` on every boot), the
+first new-version instance to boot during the rollout applies any new
+migration to the shared database; every old-version instance still
+serving traffic keeps running against that already-migrated schema
+until it, too, is replaced — the same forward-compatibility discipline
+any rolling deploy against a shared schema requires, not something
+Cratebase automates for you.

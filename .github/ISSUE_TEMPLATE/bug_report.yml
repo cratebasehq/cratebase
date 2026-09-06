@@ -1,0 +1,97 @@
+name: Bug report
+description: Something in Cratebase doesn't work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: please reproduce against current `main`, not an
+        older commit — per [SECURITY.md](../../SECURITY.md) and
+        [CHANGELOG.md](../../CHANGELOG.md), Cratebase is pre-1.0 with no
+        tagged releases yet, so only `main` is supported.
+
+        If this is a security vulnerability, stop here and use
+        [private vulnerability reporting](https://github.com/cratebasehq/cratebase/security/advisories/new)
+        instead of a public issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: Cratebase version / commit
+      description: >-
+        Output of `cratebase --version`, or the commit SHA if you built
+        from source.
+      placeholder: e.g. cratebase 0.1.0 (abcdef1)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment-mode
+    attributes:
+      label: Deployment mode
+      description: >-
+        Cratebase supports SQLite or Postgres via `DATABASE_URL` with an
+        otherwise identical API — which one were you running?
+      options:
+        - SQLite (default)
+        - Postgres
+        - Both / switched between them
+    validations:
+      required: true
+
+  - type: input
+    id: os-arch
+    attributes:
+      label: OS / architecture
+      placeholder: e.g. Linux x86_64, macOS arm64, Docker on Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: >-
+        Exact, minimal steps to trigger the bug — commands run, API
+        calls made (a `curl` sequence is ideal), collection schema
+        involved. "It doesn't work" without steps will be closed as
+        not-reproducible; see CONTRIBUTING.md for the standard this
+        project holds itself to on verification and evidence.
+      placeholder: |
+        1. cratebase serve --dir=/tmp/data
+        2. curl -X POST http://localhost:8090/api/collections/... -d '{...}'
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: >-
+        What should have happened? If this is a REST API surface, note
+        what real PocketBase does here if you know it — Cratebase's
+        stated compatibility rule (CONTRIBUTING.md) is to match
+        PocketBase byte for byte unless there's a documented reason not
+        to.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >-
+        Server output (`RUST_LOG=debug cratebase serve` for more detail),
+        the exact HTTP response body/status if applicable, or a stack
+        trace. Redact secrets first.
+      render: shell
+

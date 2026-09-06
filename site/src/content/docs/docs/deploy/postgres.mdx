@@ -10,4 +10,7 @@ backends (`crates/db/tests/`). The one genuine capability upgrade:
 [realtime](/docs/concepts/realtime/) becomes cross-node via
 `LISTEN`/`NOTIFY`, so a deployment behind a load balancer with more than
 one app instance stops silently dropping events for clients parked on a
-different instance than the one that handled a write.
+different instance than the one that handled a write. See
+[Horizontal scaling](/docs/deploy/horizontal-scaling/) for what that
+takes in practice: what's stateless, the `pg_notify` mechanics, proxy
+config, migration races, and rolling deploys.
