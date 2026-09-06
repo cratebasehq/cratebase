@@ -39,7 +39,11 @@ tools/schema-codegen/dist
 
 # Agent skills installed via `npx skills add` — local dev aids, not
 # part of the shipped product; keep them out of the open-source repo.
+# Exception: .claude/skills/cratebase/ is authored here and shipped
+# intentionally so it's available to anyone who opens this repo.
 .claude/skills/
+!.claude/skills/cratebase/
+!.claude/skills/cratebase/**
 .agents/skills/
 skills-lock.json
 

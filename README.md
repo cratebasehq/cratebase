@@ -161,6 +161,12 @@ shipped and what's still ahead.
   ([CONTRIBUTING.md](./CONTRIBUTING.md) and [LICENSE](./LICENSE) in this
   repo).
 
+**Building an app against Cratebase with Claude Code or another
+skill-aware agent?** Copy [`.claude/skills/cratebase`](./.claude/skills/cratebase)
+into your own project's `.claude/skills/` directory to get schema/API-rule/
+SDK/JS-hook recipes that aren't in the public docs, sourced straight from
+this repo.
+
 ## Development
 
 ```bash
