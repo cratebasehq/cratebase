@@ -1,22 +1,40 @@
 # Changelog
 
 All notable changes to this project are documented in this file. The
-format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project is pre-1.0 (currently `0.1.0`, per `Cargo.toml`) with no
-tagged releases yet — entries below are grouped by merged pull request
-rather than by release tag, reconstructed from the actual merge history
-(`git log --merges` / `gh pr list --state merged`) on this repository.
+format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+This project is pre-1.0 (currently `0.1.0`, per `Cargo.toml`); the 0.1.0
+entries below are grouped by merged pull request rather than by release
+tag, reconstructed from the actual merge history (`git log --merges` /
+`gh pr list --state merged`) on this repository, since they predate the
+first real tagged release.
 
 ## [Unreleased]
-
-- Third-party adoption pass: contribution/security/changelog docs,
-  published `@cratebase/extras` npm package, GHCR Docker image publishing,
-  and a PocketBase migration tool/guide.
 
 ## 0.1.0 — 2026-09-04
 
 ### Added
 
+- **Batch API, plugin foundation, and a YAGNI pass**: the Batch API
+  (`POST /api/batch`), API keys that can optionally act as a real
+  record instead of always granting superuser access, a
+  wasmtime-sandboxed third-party plugin runtime with a manifest format
+  and local install command, Teams/the LLM chat gateway/a new
+  pg_boss-style Queue plugin converted to toggle-gated built-in modules
+  (off by default, zero background cost), and removal of several
+  speculative features that never earned their place (an analytics
+  beacon, SMS/Twilio dead code, an unused QR endpoint, an
+  agent-memory pattern example).
+- **Third-party adoption pass**: contribution/security/changelog docs,
+  the published `@cratebase/extras` npm package, GHCR Docker image
+  publishing, a PocketBase migration tool/guide, OSS community health
+  files (Code of Conduct, issue/PR templates), and
+  `@cratebase/schema-codegen` made publish-ready (schema-as-code to
+  generated TypeScript types).
+- **cratebase.dev**: a marketing site and full docs (Astro/Starlight),
+  deployed to Cloudflare Pages, with an OG image/favicons/manifest/
+  structured-data pass and a horizontal-scaling deploy guide.
+- Repository transferred from `nicoaudy/cratebase` to the `cratebasehq`
+  GitHub org; all repository references updated accordingly.
 - **Value-add Wave 4** (PR [#10](https://github.com/cratebasehq/cratebase/pull/10)):
   fixed cross-node realtime on Postgres, incoming webhooks, OAuth2 login
   (Google/GitHub/custom providers), a DocMind example app, admin

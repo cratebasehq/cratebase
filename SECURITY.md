@@ -26,11 +26,11 @@ before it's been triaged privately.
 ## Supported versions
 
 Cratebase is at an early, pre-1.0 stage (currently `0.1.0`) with no
-tagged releases yet and no long-term-support policy. Until the project
-reaches a more stable release cadence, only the latest code on the `main`
-branch is supported — please reproduce against the current `main` before
-reporting, and expect security fixes to land there rather than being
-backported to an older point-in-time snapshot.
+long-term-support policy yet. Until the project reaches a more stable
+release cadence, only the latest code on the `main` branch and the most
+recent tagged release are supported — please reproduce against current
+`main` before reporting, and expect security fixes to land there rather
+than being backported to an older point-in-time release.
 
 ## Scope
 
