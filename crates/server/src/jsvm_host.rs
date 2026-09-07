@@ -46,7 +46,7 @@ use axum::routing::{MethodFilter, MethodRouter};
 use axum::Router;
 use cratebase_core::{AppError, Collection, Record, Settings};
 use cratebase_db::context::{CollectionResolver, RequestContext};
-use cratebase_db::engine::Executor;
+use cratebase_db::engine::{Executor, Sql};
 use cratebase_db::{query, records};
 use cratebase_jsvm::{
     CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, HttpResponse, JsBody, JsRequest,
@@ -134,6 +134,72 @@ fn substitute_filter_params(filter: &str, params: &Map<String, Value>) -> String
     out
 }
 
+/// Rewrite `{:name}` placeholders in a `$app.rawQuery` statement into the
+/// engine's positional `$1..$n` placeholders (see
+/// `cratebase_db::engine`'s module doc), binding each occurrence to
+/// `params[name]` as a real driver-level [`Sql`] parameter. Unlike
+/// [`substitute_filter_params`] above — which literal-substitutes into
+/// filter-language text the filter compiler re-parses and binds for
+/// real — this never inlines a value into the SQL string, so arbitrary
+/// hook-supplied `sql` carries no more injection risk than a
+/// hand-written parameterized query.
+fn bind_raw_query_params(
+    sql: &str,
+    params: &Map<String, Value>,
+) -> Result<(String, Vec<Sql>), AppError> {
+    let mut out = String::with_capacity(sql.len());
+    let mut bound: Vec<Sql> = Vec::new();
+    let mut chars = sql.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        if c == '{' && sql[i + 1..].starts_with(':') {
+            let rest = &sql[i + 2..];
+            let name_len = rest
+                .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                .unwrap_or(rest.len());
+            if name_len > 0 && rest[name_len..].starts_with('}') {
+                let name = &rest[..name_len];
+                let value = params.get(name).ok_or_else(|| {
+                    AppError::bad_request(format!("rawQuery: missing parameter :{name}"))
+                })?;
+                bound.push(raw_query_sql_param(name, value)?);
+                out.push('$');
+                out.push_str(&bound.len().to_string());
+                for _ in 0..(name_len + 2) {
+                    chars.next();
+                }
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    Ok((out, bound))
+}
+
+/// A `$app.rawQuery` parameter value, restricted to what a single bound
+/// column can hold — objects/arrays have no unambiguous SQL binding, so
+/// they're rejected rather than silently stringified.
+fn raw_query_sql_param(name: &str, value: &Value) -> Result<Sql, AppError> {
+    Ok(match value {
+        Value::Null => Sql::Null,
+        Value::Bool(b) => Sql::Int(*b as i64),
+        Value::Number(n) => n
+            .as_i64()
+            .map(Sql::Int)
+            .or_else(|| n.as_f64().map(Sql::Real))
+            .ok_or_else(|| {
+                AppError::bad_request(format!(
+                    "rawQuery: parameter :{name} is not a finite number"
+                ))
+            })?,
+        Value::String(s) => Sql::Text(s.clone()),
+        Value::Array(_) | Value::Object(_) => {
+            return Err(AppError::bad_request(format!(
+                "rawQuery: parameter :{name} must be a string, number, boolean, or null"
+            )))
+        }
+    })
+}
+
 #[async_trait]
 impl<X: HostExec> HostApi for JsvmHost<X> {
     fn settings(&self) -> Settings {
@@ -200,6 +266,29 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         Ok(rows
             .iter()
             .map(|r| records::row_to_record(&col, r))
+            .collect())
+    }
+
+    async fn raw_query(
+        &self,
+        sql: &str,
+        params: Map<String, Value>,
+    ) -> Result<Vec<Map<String, Value>>, AppError> {
+        if !crate::routes::sql_console::is_read_statement(sql) {
+            return Err(AppError::bad_request(
+                "rawQuery: sql must start with SELECT or WITH; use $app.save/$app.delete for writes",
+            ));
+        }
+        let (bound_sql, bound_params) = bind_raw_query_params(sql, &params)?;
+        let rows = self
+            .0
+            .executor()
+            .query(&bound_sql, &bound_params)
+            .await
+            .map_err(AppError::from)?;
+        Ok(rows
+            .into_iter()
+            .map(crate::routes::sql_console::row_to_map)
             .collect())
     }
 
@@ -745,4 +834,133 @@ fn js_response_into_axum(resp: JsResponse) -> Response {
     builder
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+#[cfg(test)]
+mod raw_query_tests {
+    use std::net::SocketAddr;
+
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use super::{bind_raw_query_params, Map, Sql};
+    use crate::app::App;
+    use crate::config::Config;
+
+    async fn test_app_with_hook(hook_js: &str) -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // `Config::memory`'s `hooks_dir`/`migrations_dir` are *siblings*
+        // of the data dir (see `config::sibling`), so passing `dir.path()`
+        // itself as the data dir would put `pb_hooks` at `dir.path()`'s
+        // *parent* — `/tmp` — shared by every test in the binary that
+        // does the same. A `pb_data` subdirectory keeps every derived
+        // path under this test's own unique tempdir.
+        let cfg = Config::memory(dir.path().join("pb_data"));
+        std::fs::create_dir_all(&cfg.hooks_dir).expect("create hooks dir");
+        std::fs::write(
+            std::path::Path::new(&cfg.hooks_dir).join("main.pb.js"),
+            hook_js,
+        )
+        .expect("write hook file");
+        let app = App::new(cfg);
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    /// `routerAdd`'s handlers require a `ConnectInfo<SocketAddr>` request
+    /// extension (see `js_router`), which only a real listener normally
+    /// supplies; a `Router::oneshot` test has to set it explicitly.
+    fn get(uri: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+        req
+    }
+
+    /// End-to-end proof of the issue's actual ask: a `routerAdd` handler
+    /// reads through `$app.rawQuery` and gets back a plain object with no
+    /// `Record` wrapper, bound through a named `{:email}` placeholder
+    /// rather than string concatenation.
+    #[tokio::test]
+    async fn raw_query_returns_plain_rows_bound_by_name() {
+        let hook = r#"
+            routerAdd("GET", "/raw-query-test", (e) => {
+                const rows = $app.rawQuery(
+                    "SELECT id, email FROM _superusers WHERE email = {:email}",
+                    { email: "rawquery-test@example.com" }
+                );
+                e.json(200, { rows });
+            });
+        "#;
+        let (app, _dir) = test_app_with_hook(hook).await;
+        app.create_superuser("rawquery-test@example.com", "password12345")
+            .await
+            .expect("create superuser");
+
+        let router = crate::router(app);
+        let response = router.oneshot(get("/raw-query-test")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rows = json["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["email"], "rawquery-test@example.com");
+        assert!(rows[0]["id"].is_string());
+        // No Record wrapper: only the selected columns come back, none of
+        // Record's `collectionId`/`collectionName`/etc. bookkeeping.
+        assert_eq!(rows[0].as_object().unwrap().len(), 2);
+    }
+
+    /// The read-only gate: a write statement is rejected server-side, not
+    /// merely left to the caller's discipline.
+    #[tokio::test]
+    async fn raw_query_rejects_non_select_statements() {
+        let hook = r#"
+            routerAdd("GET", "/raw-query-write", (e) => {
+                try {
+                    $app.rawQuery("DELETE FROM _superusers");
+                    e.json(200, { ok: true });
+                } catch (err) {
+                    e.json(400, { error: String(err.message || err) });
+                }
+            });
+        "#;
+        let (app, _dir) = test_app_with_hook(hook).await;
+        let router = crate::router(app);
+        let response = router.oneshot(get("/raw-query-write")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("SELECT"));
+    }
+
+    #[test]
+    fn bind_raw_query_params_binds_named_placeholders_positionally() {
+        let params = serde_json::json!({ "a": 1, "b": "x" })
+            .as_object()
+            .unwrap()
+            .clone();
+        let (sql, bound) =
+            bind_raw_query_params("SELECT * FROM t WHERE x = {:a} AND y = {:b}", &params).unwrap();
+        assert_eq!(sql, "SELECT * FROM t WHERE x = $1 AND y = $2");
+        assert_eq!(bound, vec![Sql::Int(1), Sql::Text("x".into())]);
+    }
+
+    #[test]
+    fn bind_raw_query_params_errors_on_missing_param() {
+        let params = Map::new();
+        let err =
+            bind_raw_query_params("SELECT * FROM t WHERE x = {:missing}", &params).unwrap_err();
+        assert!(err.to_string().contains("missing"));
+    }
 }

@@ -374,6 +374,15 @@ declare const $app: {
   findAllRecords(collection: string | Collection, ...expressions: Array<string | DbxExpression>): Record[];
   findAuthRecordByEmail(collection: string | Collection, email: string): Record;
   countRecords(collection: string | Collection, ...expressions: Array<string | DbxExpression>): number;
+  /**
+   * Read-only escape hatch for SQL a filter string can't express
+   * (`GROUP BY`, window functions, joins): runs `sql` (must be a
+   * `SELECT`/`WITH` statement) and returns plain rows with no `Record`
+   * hydration/FFI-per-field overhead. `{:name}` placeholders in `sql`
+   * are bound to real parameters from `params`, matching the same
+   * syntax `findRecordsByFilter`'s `filter` uses.
+   */
+  rawQuery(sql: string, params?: { [key: string]: any }): Array<{ [column: string]: any }>;
   save(model: Record | Collection): void;
   saveNoValidate(model: Record | Collection): void;
   delete(model: Record | Collection): void;

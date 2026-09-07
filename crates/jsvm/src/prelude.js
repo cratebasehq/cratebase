@@ -576,6 +576,7 @@
     findAuthRecordByEmail: (collection, email) =>
       $app.findFirstRecordByFilter(collection, "email = {:email}", { email }),
     countRecords: (collection, ...exps) => $app.findAllRecords(collection, ...exps).length,
+    rawQuery: (sql, params) => hostCall("rawQuery", String(sql), params || {}),
     save: (model) => {
       if (model instanceof Record) {
         model.__absorb(hostCall("saveRecord", model.__ref()));

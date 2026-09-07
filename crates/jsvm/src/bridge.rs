@@ -223,6 +223,10 @@ pub(crate) fn dispatch(
             ))?;
             Ok(Value::Array(rows.iter().map(record_json).collect()))
         }
+        "rawQuery" => {
+            let rows = state.block_on(host.raw_query(&a.str(0), a.map(1)))?;
+            Ok(Value::Array(rows.into_iter().map(Value::Object).collect()))
+        }
         "saveRecord" => {
             let r: RecordRef = a.parse(0, "record")?;
             let rec = record_from_ref(state, &host, &r)?;
