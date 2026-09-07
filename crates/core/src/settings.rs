@@ -343,6 +343,18 @@ pub struct Queue {
     pub enabled: bool,
 }
 
+/// Toggle for the built-in ZIP-export module
+/// (`crates/server/src/zip_export.rs`), a `Plugin` shipped in-tree rather
+/// than a third-party one. Off by default: `App::bootstrap` only calls
+/// `register_plugin` for it when this is `true`, so the `_zip_exports`
+/// collection is never provisioned and the worker tick never spawns until
+/// an operator opts in.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ZipExport {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -358,6 +370,7 @@ pub struct Settings {
     pub push: Push,
     pub teams: Teams,
     pub queue: Queue,
+    pub zip_export: ZipExport,
     #[serde(rename = "superuserIPs")]
     pub superuser_ips: Vec<String>,
 }

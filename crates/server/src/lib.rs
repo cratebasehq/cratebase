@@ -51,6 +51,7 @@ pub mod routes;
 pub mod store;
 pub mod teams;
 pub mod webhooks;
+pub mod zip_export;
 
 use axum::extract::DefaultBodyLimit;
 use axum::Router;

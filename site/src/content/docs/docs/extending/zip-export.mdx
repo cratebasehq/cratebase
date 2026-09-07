@@ -1,0 +1,93 @@
+---
+title: "ZIP export"
+description: "Bundle every file matching a filter into one downloadable ZIP archive."
+---
+
+The ZIP-export plugin (`crates/server/src/zip_export.rs`) bundles every file
+in a chosen collection field, for records matching an arbitrary filter, into
+one ZIP archive — built on the `Plugin` trait (see
+[Rust plugins](/docs/extending/rust-plugins/)). It is **off by default**:
+set `settings.zipExport.enabled` to `true` (`PATCH /api/settings
+{"zipExport": {"enabled": true}}`) and restart the server. While disabled,
+the `_zip_exports` collection is never provisioned and no worker tick ever
+spawns.
+
+## Enqueuing an export
+
+```sh
+curl -X POST http://localhost:8090/api/plugins/zip-export/enqueue \
+  -H "Authorization: $SUPERUSER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "sourceCollection": "photos",
+        "filter": "eventId = \"abc123\"",
+        "fileField": "photo",
+        "nameField": "guestName",
+        "sort": "-created"
+      }'
+```
+
+Superuser-only, the same trust tier as `_queue_jobs`: `filter` is an
+arbitrary query into another collection with no rule enforcement in
+between, and `sourceCollection`/`fileField` name schema the caller could
+otherwise have no rule-checked access to.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `sourceCollection` | yes | Name or id of the collection to read records from. |
+| `filter` | no | A normal filter expression; empty means every record. |
+| `fileField` | no | The file field to fetch from each matched record. Defaults to `file`. |
+| `nameField` | no | A field whose value becomes part of each ZIP entry's filename (sanitized — see below). Omit it and entries are named from the record id alone. |
+| `sort` | no | A normal sort expression, applied before the (implicit) 10,000-record cap. |
+
+The response is the created row and its initial `status`:
+
+```json
+{ "id": "9xp32joh8k91oxl", "status": "pending" }
+```
+
+## Polling for completion
+
+Read the row back through the normal Records API:
+
+```sh
+curl http://localhost:8090/api/collections/_zip_exports/records/9xp32joh8k91oxl \
+  -H "Authorization: $SUPERUSER_TOKEN"
+```
+
+`status` is one of:
+
+- `pending` — queued, not yet claimed by a worker tick.
+- `running` — a worker is downloading source files and building the archive.
+- `done` — `outputFile`/`bytes`/`sourceCount`/`completedAt` are set; download
+  it like any other file field (`/api/files/<collectionId>/<id>/<outputFile>`).
+- `failed` — `error` explains why (no matching records, a matched record
+  with nothing in `fileField`, a missing `sourceCollection`, ...). Nothing
+  is retried automatically; enqueue a fresh row once the underlying problem
+  is fixed.
+
+## No retry, unlike the Queue plugin
+
+An export request is for a fresh snapshot of whatever matches right now,
+not a fire-and-forget background task with a business reason to retry on
+its own — a failure surfaces immediately in `error` and the caller decides
+whether to enqueue a new attempt.
+
+## Crash recovery and claim atomicity
+
+Same guarantees as the [Queue plugin](/docs/extending/queue/): every worker
+tick first reclaims any `running` row whose `startedAt` is older than 30
+minutes back to `pending`, and claiming the next `pending` row runs inside
+one transaction (`SELECT ... FOR UPDATE SKIP LOCKED` on Postgres, an
+`UPDATE ... WHERE status = 'pending'` re-check on both engines) so two
+concurrent workers can never double-claim the same export.
+
+## Entry naming and path-traversal
+
+`nameField`'s value is usually untrusted end-user input (a guest's display
+name, a customer's company name) and becomes a real filesystem path
+component the moment someone unzips the result. Rather than escaping it,
+anything outside ASCII letters/digits/space/dash/underscore is stripped
+outright, whitespace is collapsed to single dashes, and the result is
+truncated to 60 characters — deleting the dangerous part rather than
+attempting to encode around it.

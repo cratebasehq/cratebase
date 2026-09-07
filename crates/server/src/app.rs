@@ -413,6 +413,12 @@ impl App {
             crate::queue::ensure_collection(self).await?;
             self.register_plugin(crate::queue::QueuePlugin::new())?;
         }
+        // Same toggle-gated pattern as Queue above:
+        // `settings.zipExport.enabled` defaults `false`.
+        if self.settings().zip_export.enabled {
+            crate::zip_export::ensure_collection(self).await?;
+            self.register_plugin(crate::zip_export::ZipExportPlugin::new())?;
+        }
         let plugins = {
             let guard = self.inner.plugins.lock().expect("plugin registry poisoned");
             guard.clone_plugins()
