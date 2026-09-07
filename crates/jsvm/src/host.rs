@@ -233,6 +233,20 @@ pub trait HostApi: Send + Sync + 'static {
         params: Map<String, Value>,
     ) -> Result<Vec<Record>, AppError>;
 
+    /// A read-only escape hatch for hook authors who need SQL a filter
+    /// string cannot express (`GROUP BY`, window functions, joins): run
+    /// `sql` (must be a `SELECT`/`WITH` statement) and hand back plain
+    /// rows with no `Record` hydration, matching PocketBase's `$app.db()`
+    /// use case at a fraction of its API surface. `{:name}` placeholders
+    /// in `sql` are bound to real, driver-level parameters from `params`
+    /// (never string-substituted), so this carries no more injection risk
+    /// than a hand-written parameterized query.
+    async fn raw_query(
+        &self,
+        sql: &str,
+        params: Map<String, Value>,
+    ) -> Result<Vec<Map<String, Value>>, AppError>;
+
     /// Create (`record.is_new()`) or update a record, returning the
     /// persisted state.
     async fn save_record(&self, record: Record) -> Result<Record, AppError>;

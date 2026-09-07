@@ -10,6 +10,14 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **`$app.rawQuery(sql, params?)` (JS hooks)**: a read-only escape hatch
+  for SQL a `findRecordsByFilter` filter string can't express (`GROUP
+  BY`, window functions, joins) — runs a `SELECT`/`WITH` statement with
+  `{:name}`-bound parameters and returns plain rows with no `Record`
+  hydration, closing [#15](https://github.com/cratebasehq/cratebase/issues/15).
+
 ## 0.1.0 — 2026-09-04
 
 ### Added

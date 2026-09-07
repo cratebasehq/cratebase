@@ -117,7 +117,7 @@ enum SqlResponse {
 /// SQLite and Postgres). Anything else — `INSERT`, `UPDATE`, `DELETE`,
 /// `CREATE`, `PRAGMA`, `VACUUM`, ... — is a write for the purposes of
 /// both the read-only gate and the query/execute dispatch below.
-fn is_read_statement(sql: &str) -> bool {
+pub(crate) fn is_read_statement(sql: &str) -> bool {
     let trimmed = sql.trim_start();
     let head: String = trimmed
         .chars()
@@ -247,7 +247,9 @@ async fn run_sql(
     }
 }
 
-fn row_to_map(row: Row) -> Map<String, Value> {
+/// `pub(crate)`: also used by `jsvm_host::raw_query` to shape
+/// `$app.rawQuery`'s plain-object rows the same way this endpoint does.
+pub(crate) fn row_to_map(row: Row) -> Map<String, Value> {
     row.into_pairs().map(|(k, v)| (k, sql_to_json(v))).collect()
 }
 
@@ -256,7 +258,7 @@ fn row_to_map(row: Row) -> Map<String, Value> {
 /// addition: a raw `BLOB` column has no field-type context here to
 /// decode it against, so it comes back base64-encoded rather than as
 /// lossy UTF-8.
-fn sql_to_json(value: Sql) -> Value {
+pub(crate) fn sql_to_json(value: Sql) -> Value {
     match value {
         Sql::Null => Value::Null,
         Sql::Int(i) => Value::from(i),
