@@ -377,6 +377,7 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
             "superuserIPs",
             "teams",
             "trustedProxy",
+            "zipExport",
         ]
     );
     assert!(body["smtp"].get("password").is_none());
