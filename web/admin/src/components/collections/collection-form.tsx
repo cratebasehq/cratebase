@@ -279,7 +279,11 @@ export function CollectionForm({
       </section>
 
       {value.type === "auth" && value.auth ? (
-        <AuthOptionsEditor value={value.auth} onChange={(auth) => onChange({ ...value, auth })} />
+        <AuthOptionsEditor
+          value={value.auth}
+          onChange={(auth) => onChange({ ...value, auth })}
+          collectionName={value.name}
+        />
       ) : null}
 
       <section className="flex flex-col gap-3">
