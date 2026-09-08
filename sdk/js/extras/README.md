@@ -4,12 +4,16 @@ Optional client extensions for the handful of [Cratebase](https://github.com/cra
 endpoints the official [`pocketbase`](https://www.npmjs.com/package/pocketbase) npm SDK has no
 first-class surface for: vector search, MCP tool schemas, and the LLM chat gateway.
 
-This package does **not** replace or fork the SDK — see
-`docs/superpowers/specs/2026-09-04-value-add-strategy.md` §1 for the reasoning. A project that
-only wants PocketBase-parity behavior never installs `@cratebase/extras` and pays zero cost. A
-project that wants the extra surface adds one dependency on top of the `pocketbase` client it
-already has, and passes that existing client instance in — nothing here constructs its own
-connection or duplicates auth/session handling.
+This surface is available two ways. `@cratebase/client`, Cratebase's first-party SDK, has it
+built in — no extra package needed, and it's the default recommendation for new projects. This
+package, `@cratebase/extras`, is the other way: for projects that stay on the official
+`pocketbase` SDK, it bolts the same methods on top of an existing `PocketBase` client instance
+without replacing or forking it — see `docs/superpowers/specs/2026-09-04-value-add-strategy.md`
+§1 for the original reasoning (superseded as the default path, still valid for this audience). A
+project that only wants PocketBase-parity behavior never installs `@cratebase/extras` and pays
+zero cost. A project that wants the extra surface on the `pocketbase` SDK adds one dependency on
+top of the client it already has, and passes that existing client instance in — nothing here
+constructs its own connection or duplicates auth/session handling.
 
 ```
 bun add pocketbase @cratebase/extras

@@ -84,6 +84,7 @@ use crate::extract::{Auth, MaybeAuth, RequestInfo, RequireOwner};
 use crate::hooks::{Hook, HookResult, Hooks};
 use crate::http_error::{ApiError, ApiJson, ApiResult};
 use crate::routes::common;
+use crate::sessions;
 
 /// PocketBase's deliberately uninformative login failure.
 const AUTH_FAILED: &str = "Failed to authenticate.";
@@ -214,6 +215,12 @@ async fn auth_with_password(
     if !cratebase_auth::verify_password_async(&body.password, &hash).await {
         return Err(ApiError::bad_request(AUTH_FAILED));
     }
+    if crate::routes::session::active_ban(&app, &collection, record.id())
+        .await
+        .is_some()
+    {
+        return Err(ApiError::forbidden("This account is banned."));
+    }
 
     // `authRule` gates the login itself, separately from `listRule` and
     // friends. `null` means superusers only.
@@ -243,13 +250,12 @@ async fn auth_with_password(
         MfaGate::Passed => {}
     }
 
-    record_login_origin(&app, &collection, &record, &headers, peer).await;
+    let origin = record_login_origin(&app, &collection, &record, &headers, peer).await;
 
     respond_with_token(&app, &collection, record, info, raw, |hooks| {
         &hooks.on_record_auth_with_password_request
-    })
+    }, Some(("password", origin)), None)
     .await
-    .map(IntoResponse::into_response)
 }
 
 /// Look the record up by each configured identity field in turn.
@@ -348,9 +354,8 @@ async fn auth_refresh(
     State(app): State<App>,
     Path(name): Path<String>,
     auth: Auth,
-    headers: HeaderMap,
     info: RequestInfo,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
     if auth.collection_id != collection.id {
         // PocketBase names the *authenticated* record's collection here.
@@ -359,23 +364,54 @@ async fn auth_refresh(
             auth.collection_name
         )));
     }
+    if crate::routes::session::active_ban(&app, &collection, &auth.id)
+        .await
+        .is_some()
+    {
+        return Err(ApiError::forbidden("This account is banned."));
+    }
 
     // An impersonation token (or any other token deliberately minted
     // non-refreshable) is echoed back unchanged rather than extended:
     // `auth-refresh` does not reject it, it just declines to renew it.
-    if let Some(token) = bearer_token(&headers) {
-        if let Ok(claims) = cratebase_auth::decode_unverified(token) {
-            if !claims.is_refreshable() {
-                let serialized = common::enrich_and_serialize(
-                    &app,
-                    &collection,
-                    auth.record.clone(),
-                    Some(auth.clone()),
-                    true,
-                )
-                .await?;
-                return Ok(Json(json!({ "token": token, "record": serialized })));
-            }
+    if let Ok(claims) = cratebase_auth::decode_unverified(&auth.token) {
+        if !claims.is_refreshable() {
+            let serialized = common::enrich_and_serialize(
+                &app,
+                &collection,
+                auth.record.clone(),
+                Some(auth.clone()),
+                true,
+            )
+            .await?;
+            return Ok(
+                Json(json!({ "token": auth.token, "record": serialized })).into_response()
+            );
+        }
+    }
+
+    // The token this request carried is superseded by the one about to
+    // be minted: sever it from the live-sessions set first, so it stops
+    // working the instant the replacement is issued rather than staying
+    // valid until it naturally expires. `exp` is the only time-varying
+    // claim and has 1-second resolution (the claim set is frozen — see
+    // this module's doc — so there is no per-mint nonce to break a tie),
+    // which means a refresh in the same wall-clock second as the login
+    // (or a previous refresh) it's replacing mints a byte-identical
+    // token. Revoking "the old one" in that case would revoke the very
+    // token this request is about to hand back — check first and skip
+    // the revoke entirely when they collide; the session is unchanged
+    // either way, so there's nothing to revoke.
+    if mint(&app, &collection, &auth.record)? != auth.token {
+        if let Err(e) = sessions::revoke_digest(
+            &app,
+            &auth.collection_id,
+            &auth.id,
+            &sessions::digest(&auth.token),
+        )
+        .await
+        {
+            tracing::warn!(error = %e, "failed to revoke the refreshed session");
         }
     }
 
@@ -387,21 +423,12 @@ async fn auth_refresh(
         info,
         Value::Object(Map::new()),
         |hooks| &hooks.on_record_auth_refresh_request,
+        Some(("refresh", sessions::OriginContext::default())),
+        None,
     )
     .await
 }
 
-/// Extracts a bearer token from `Authorization`, the same way
-/// [`crate::extract::Auth`] does — duplicated here (rather than exported
-/// from `extract`) because it takes a raw [`HeaderMap`] instead of
-/// request `Parts`.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    let raw = headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?;
-    Some(raw.strip_prefix("Bearer ").unwrap_or(raw).trim()).filter(|t| !t.is_empty())
-}
 
 async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiResult<Json<Value>> {
     let collection = app
@@ -447,6 +474,52 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
     })))
 }
 
+/// The shared OAuth2 authorize-URL builder: `response_type=code`,
+/// `client_id`, `state`, the provider's configured/preset `scope` when
+/// non-empty, `code_challenge`/`code_challenge_method=S256` when
+/// `code_challenge` is non-empty, and `redirect_uri` (possibly empty —
+/// [`oauth2_provider_info`] calls this with an empty one and leaves it
+/// for the SDK's popup flow to fill in itself; `oauth2_flow::start` (the
+/// server-driven flow) calls it with the real callback URL). `None`
+/// when the provider has no usable `authURL` (neither configured nor a
+/// known preset).
+pub(crate) fn provider_auth_url(
+    config: &cratebase_core::OAuth2Provider,
+    state: &str,
+    code_challenge: &str,
+    redirect_uri: &str,
+) -> Option<String> {
+    let known = cratebase_auth::KnownProvider::from_name(&config.name);
+    let auth_url = if !config.auth_url.is_empty() {
+        config.auth_url.as_str()
+    } else {
+        known.map(cratebase_auth::KnownProvider::auth_url).unwrap_or("")
+    };
+    let scope = config
+        .extra
+        .get("scope")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| known.map(|k| k.default_scope().to_string()))
+        .unwrap_or_default();
+    let mut url = reqwest::Url::parse(auth_url).ok()?;
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", &config.client_id)
+        .append_pair("state", state);
+    if !scope.is_empty() {
+        url.query_pairs_mut().append_pair("scope", &scope);
+    }
+    if !code_challenge.is_empty() {
+        url.query_pairs_mut()
+            .append_pair("code_challenge", code_challenge)
+            .append_pair("code_challenge_method", "S256");
+    }
+    url.query_pairs_mut().append_pair("redirect_uri", redirect_uri);
+    Some(url.to_string())
+}
+
 /// One `oauth2.providers[]` entry — everything the SDK's
 /// `authWithOAuth2` popup flow needs to send the browser to the
 /// provider itself: a fresh `state`, freshly generated PKCE
@@ -458,21 +531,6 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
 /// PocketBase's own `authURL + "&redirect_uri="`.
 fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
     let known = cratebase_auth::KnownProvider::from_name(&config.name);
-    let auth_url = if !config.auth_url.is_empty() {
-        config.auth_url.as_str()
-    } else {
-        known
-            .map(cratebase_auth::KnownProvider::auth_url)
-            .unwrap_or("")
-    };
-    let scope = config
-        .extra
-        .get("scope")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| known.map(|k| k.default_scope().to_string()))
-        .unwrap_or_default();
     let display_name = if !config.display_name.is_empty() {
         config.display_name.clone()
     } else {
@@ -482,33 +540,14 @@ fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
     };
     let state = cratebase_auth::random_state();
     let pkce = config.pkce.unwrap_or(true);
-    let mut url = reqwest::Url::parse(auth_url).ok();
-    if let Some(url) = url.as_mut() {
-        url.query_pairs_mut()
-            .append_pair("response_type", "code")
-            .append_pair("client_id", &config.client_id)
-            .append_pair("state", &state);
-        if !scope.is_empty() {
-            url.query_pairs_mut().append_pair("scope", &scope);
-        }
-    }
     let (code_verifier, code_challenge, code_challenge_method) = if pkce {
         let verifier = cratebase_auth::code_verifier();
         let challenge = cratebase_auth::code_challenge_s256(&verifier);
-        if let Some(url) = url.as_mut() {
-            url.query_pairs_mut()
-                .append_pair("code_challenge", &challenge)
-                .append_pair("code_challenge_method", "S256");
-        }
         (verifier, challenge, "S256".to_string())
     } else {
         (String::new(), String::new(), String::new())
     };
-    // Empty `redirect_uri=` left for the SDK to append its own value to,
-    // matching PocketBase's `authURL` shape exactly.
-    let auth_url = url
-        .map(|u| format!("{u}&redirect_uri="))
-        .unwrap_or_default();
+    let auth_url = provider_auth_url(config, &state, &code_challenge, "").unwrap_or_default();
     json!({
         "name": config.name,
         "displayName": display_name,
@@ -520,8 +559,11 @@ fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
     })
 }
 
-/// Mint the session token, run the auth hooks and render
-/// `{token, record}`.
+
+/// Mint the session token, run the auth hooks, best-effort record a
+/// `_sessions` row (when `session` is given) and render `{token,
+/// record}` plus whatever `extra` fields the caller wants merged in
+/// (`auth-with-oauth2`'s `meta`).
 async fn respond_with_token(
     app: &App,
     collection: &Arc<Collection>,
@@ -529,7 +571,44 @@ async fn respond_with_token(
     info: RequestInfo,
     body: Value,
     hook: fn(&Hooks) -> &Hook<RecordRequestEvent>,
-) -> ApiResult<Json<Value>> {
+    session: Option<(&'static str, sessions::OriginContext)>,
+    extra: Option<Value>,
+) -> ApiResult<Response> {
+    let info_auth = info.auth.clone();
+    let (token, record) = mint_and_record(app, collection, record, info, body, hook, session).await?;
+    // The owner of a session always sees their own address.
+    let serialized = common::enrich_and_serialize(app, collection, record, info_auth, true).await?;
+    let mut rendered = json!({ "token": token, "record": serialized });
+    if let (Some(obj), Some(Value::Object(extra))) = (rendered.as_object_mut(), extra) {
+        obj.extend(extra);
+    }
+    let mut response = Json(rendered).into_response();
+    if app.config().session_cookie {
+        let ttl = collection.auth.auth_token.duration.max(1);
+        crate::cookie::attach(
+            response.headers_mut(),
+            crate::cookie::session(app.config(), &token, ttl),
+        );
+    }
+    Ok(response)
+}
+
+/// The hook-chain-then-mint-then-record-session core [`respond_with_token`]
+/// and `oauth2_flow::callback` (the server-driven redirect flow) both
+/// need, factored out so the redirect flow renders a `303` instead of a
+/// JSON body without duplicating the hook/session logic. Runs `hook`
+/// then `on_record_auth_request`, lets either replace `event.record`,
+/// mints the session token for whatever record survives, and — when
+/// `session` is given — best-effort writes the `_sessions` row.
+pub(crate) async fn mint_and_record(
+    app: &App,
+    collection: &Arc<Collection>,
+    record: Record,
+    info: RequestInfo,
+    body: Value,
+    hook: fn(&Hooks) -> &Hook<RecordRequestEvent>,
+    session: Option<(&'static str, sessions::OriginContext)>,
+) -> ApiResult<(String, Record)> {
     let info = info.with_body(body.as_object().cloned().unwrap_or_default());
     let mut event = RecordRequestEvent::new(
         app.clone(),
@@ -553,10 +632,12 @@ async fn respond_with_token(
         .record
         .ok_or_else(|| ApiError::bad_request(AUTH_FAILED))?;
     let token = mint(app, collection, &record)?;
-    // The owner of a session always sees their own address.
-    let serialized =
-        common::enrich_and_serialize(app, collection, record, info.auth.clone(), true).await?;
-    Ok(Json(json!({ "token": token, "record": serialized })))
+    if let Some((kind, origin)) = session {
+        let expires_at =
+            chrono::Utc::now().timestamp() + collection.auth.auth_token.duration.max(1);
+        sessions::record(app, collection, &record, &token, kind, &origin, expires_at).await;
+    }
+    Ok((token, record))
 }
 
 /// A PocketBase-shaped session token: `{collectionId, exp, id,
@@ -1335,6 +1416,13 @@ async fn auth_with_otp(
             .await
             .map_err(|e| ApiError(e.into()))?;
 
+    if crate::routes::session::active_ban(&app, &collection, record.id())
+        .await
+        .is_some()
+    {
+        return Err(ApiError::forbidden("This account is banned."));
+    }
+
     match mfa_gate(&app, &collection, &record, "otp", body.mfa_id.as_deref()).await? {
         MfaGate::Pending(mfa_id) => return Ok(mfa_pending_response(mfa_id)),
         MfaGate::Passed => {}
@@ -1349,13 +1437,12 @@ async fn auth_with_otp(
             .map_err(|e| ApiError(e.into()))?;
     }
 
-    record_login_origin(&app, &collection, &record, &headers, peer).await;
+    let origin = record_login_origin(&app, &collection, &record, &headers, peer).await;
 
     respond_with_token(&app, &collection, record, info, raw, |hooks| {
         &hooks.on_record_auth_with_otp_request
-    })
+    }, Some(("otp", origin)), None)
     .await
-    .map(IntoResponse::into_response)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1459,6 +1546,137 @@ async fn fetch_oauth2_user(
     Ok(parsed)
 }
 
+/// The full outcome of completing an OAuth2 login: the record signed in
+/// as, the provider `meta` block `auth-with-oauth2`'s response carries,
+/// and whatever the MFA gate decided. Callers (the direct
+/// `auth-with-oauth2` handler and `oauth2_flow::callback`, the
+/// server-driven redirect flow) render `mfa: MfaGate::Pending` however
+/// fits their own transport — a JSON `401 {mfaId}` for the former, a
+/// `303` with `?cb_mfa=` for the latter — rather than this function
+/// picking one.
+pub(crate) struct Oauth2Outcome {
+    pub record: Record,
+    pub meta: Value,
+    pub mfa: MfaGate,
+}
+
+/// Everything `auth-with-oauth2` does after parsing its own request
+/// body: exchange `code` for a provider access token, fetch userinfo,
+/// resolve/create the record, check `authRule`, and run the MFA gate.
+/// Shared verbatim by `oauth2_flow::callback` so the server-driven
+/// redirect flow can never diverge from the security-critical decisions
+/// in [`resolve_oauth2_record`] (pre-hijacking protection, `createRule`
+/// enforcement, `_externalAuths` linking).
+pub(crate) async fn complete_oauth2(
+    app: &App,
+    collection: &Arc<Collection>,
+    provider: &str,
+    code: &str,
+    code_verifier: &str,
+    redirect_url: &str,
+    create_data: Map<String, Value>,
+    mfa_id: Option<&str>,
+    caller: Option<&Auth>,
+) -> Result<Oauth2Outcome, ApiError> {
+    if !collection.auth.oauth2.enabled {
+        return Err(ApiError::forbidden(OAUTH2_DISABLED));
+    }
+    let Some(config) = collection.auth.oauth2.providers.iter().find(|p| p.name == provider)
+    else {
+        let mut errors = BTreeMap::new();
+        errors.insert(
+            "provider".into(),
+            FieldError::new(
+                OAUTH2_INVALID_PROVIDER,
+                format!("Provider with name \"{provider}\" is missing or is not enabled."),
+            ),
+        );
+        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
+    };
+
+    let known = cratebase_auth::KnownProvider::from_name(provider);
+    let token_url = effective_url(
+        &config.token_url,
+        known.map(cratebase_auth::KnownProvider::token_url),
+    );
+    let user_info_url = effective_url(
+        &config.user_info_url,
+        known.map(cratebase_auth::KnownProvider::user_info_url),
+    );
+    if config.client_id.is_empty()
+        || config.client_secret.is_empty()
+        || token_url.is_empty()
+        || user_info_url.is_empty()
+    {
+        return Err(ApiError::internal(
+            "Missing or invalid provider config.".to_string(),
+        ));
+    }
+
+    let exchange = cratebase_auth::TokenExchange {
+        code,
+        client_id: &config.client_id,
+        client_secret: &config.client_secret,
+        redirect_uri: redirect_url,
+        code_verifier: (!code_verifier.is_empty()).then_some(code_verifier),
+    };
+    let client = oauth2_client();
+    let token_res = client
+        .post(&token_url)
+        .header("Accept", "application/json")
+        .form(&exchange.form())
+        .send()
+        .await
+        .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
+    if !token_res.status().is_success() {
+        return Err(ApiError::bad_request("Failed to fetch OAuth2 token."));
+    }
+    let token_body = token_res.bytes().await.unwrap_or_default();
+    let token = cratebase_auth::parse_token_response(&token_body)
+        .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
+
+    let oauth_user = fetch_oauth2_user(client, &user_info_url, known, &token.access_token).await?;
+
+    // A caller already signed in to *this* collection links a second
+    // provider onto their own record instead of creating (or matching
+    // by email into) a different one.
+    let fallback = caller
+        .filter(|a| a.collection.id == collection.id)
+        .map(|a| a.record.clone());
+
+    let (record, is_new) = resolve_oauth2_record(
+        app,
+        collection,
+        provider,
+        &oauth_user,
+        &collection.auth.oauth2.mapped_fields,
+        &create_data,
+        fallback.as_ref(),
+    )
+    .await?;
+
+    if !passes_auth_rule(app, collection, &record).await? {
+        return Err(ApiError::forbidden(AUTH_RULE_FAILED));
+    }
+    if crate::routes::session::active_ban(app, collection, record.id())
+        .await
+        .is_some()
+    {
+        return Err(ApiError::forbidden("This account is banned."));
+    }
+
+    let mfa = mfa_gate(app, collection, &record, "oauth2", mfa_id).await?;
+    let meta = json!({
+        "id": oauth_user.id,
+        "name": oauth_user.name,
+        "username": oauth_user.username,
+        "email": oauth_user.email,
+        "avatarURL": oauth_user.avatar_url,
+        "isNew": is_new,
+    });
+    Ok(Oauth2Outcome { record, meta, mfa })
+}
+
 async fn auth_with_oauth2(
     State(app): State<App>,
     Path(name): Path<String>,
@@ -1492,120 +1710,37 @@ async fn auth_with_oauth2(
         return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
     }
 
-    let Some(config) = collection
-        .auth
-        .oauth2
-        .providers
-        .iter()
-        .find(|p| p.name == body.provider)
-    else {
-        let mut errors = BTreeMap::new();
-        errors.insert(
-            "provider".into(),
-            FieldError::new(
-                OAUTH2_INVALID_PROVIDER,
-                format!(
-                    "Provider with name \"{}\" is missing or is not enabled.",
-                    body.provider
-                ),
-            ),
-        );
-        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
-    };
-
-    let known = cratebase_auth::KnownProvider::from_name(&body.provider);
-    let token_url = effective_url(
-        &config.token_url,
-        known.map(cratebase_auth::KnownProvider::token_url),
-    );
-    let user_info_url = effective_url(
-        &config.user_info_url,
-        known.map(cratebase_auth::KnownProvider::user_info_url),
-    );
-    if config.client_id.is_empty()
-        || config.client_secret.is_empty()
-        || token_url.is_empty()
-        || user_info_url.is_empty()
-    {
-        return Err(ApiError::internal(
-            "Missing or invalid provider config.".to_string(),
-        ));
-    }
-
-    let exchange = cratebase_auth::TokenExchange {
-        code: &body.code,
-        client_id: &config.client_id,
-        client_secret: &config.client_secret,
-        redirect_uri: &body.redirect_url,
-        code_verifier: (!body.code_verifier.is_empty()).then_some(body.code_verifier.as_str()),
-    };
-    let client = oauth2_client();
-    let token_res = client
-        .post(&token_url)
-        .header("Accept", "application/json")
-        .form(&exchange.form())
-        .send()
-        .await
-        .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
-    if !token_res.status().is_success() {
-        return Err(ApiError::bad_request("Failed to fetch OAuth2 token."));
-    }
-    let token_body = token_res.bytes().await.unwrap_or_default();
-    let token = cratebase_auth::parse_token_response(&token_body)
-        .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
-
-    let oauth_user = fetch_oauth2_user(client, &user_info_url, known, &token.access_token).await?;
-
-    // A caller already signed in to *this* collection links a second
-    // provider onto their own record instead of creating (or matching
-    // by email into) a different one.
-    let fallback = caller
-        .0
-        .as_ref()
-        .filter(|a| a.collection.id == collection.id)
-        .map(|a| a.record.clone());
-
-    let (record, is_new) = resolve_oauth2_record(
+    let outcome = complete_oauth2(
         &app,
         &collection,
         &body.provider,
-        &oauth_user,
-        &collection.auth.oauth2.mapped_fields,
-        &body.create_data,
-        fallback.as_ref(),
+        &body.code,
+        &body.code_verifier,
+        &body.redirect_url,
+        body.create_data.clone(),
+        body.mfa_id.as_deref(),
+        caller.0.as_ref(),
     )
     .await?;
 
-    if !passes_auth_rule(&app, &collection, &record).await? {
-        return Err(ApiError::forbidden(AUTH_RULE_FAILED));
-    }
-
-    match mfa_gate(&app, &collection, &record, "oauth2", body.mfa_id.as_deref()).await? {
+    let record = match outcome.mfa {
         MfaGate::Pending(mfa_id) => return Ok(mfa_pending_response(mfa_id)),
-        MfaGate::Passed => {}
-    }
+        MfaGate::Passed => outcome.record,
+    };
 
-    record_login_origin(&app, &collection, &record, &headers, peer).await;
+    let origin = record_login_origin(&app, &collection, &record, &headers, peer).await;
 
-    let response = respond_with_token(&app, &collection, record, info, raw, |hooks| {
-        &hooks.on_record_auth_with_oauth2_request
-    })
-    .await?;
-    let mut rendered = response.0;
-    if let Some(obj) = rendered.as_object_mut() {
-        obj.insert(
-            "meta".into(),
-            json!({
-                "id": oauth_user.id,
-                "name": oauth_user.name,
-                "username": oauth_user.username,
-                "email": oauth_user.email,
-                "avatarURL": oauth_user.avatar_url,
-                "isNew": is_new,
-            }),
-        );
-    }
-    Ok(Json(rendered).into_response())
+    respond_with_token(
+        &app,
+        &collection,
+        record,
+        info,
+        raw,
+        |hooks| &hooks.on_record_auth_with_oauth2_request,
+        Some(("oauth2", origin)),
+        Some(json!({ "meta": outcome.meta })),
+    )
+    .await
 }
 
 /// Finds or creates the record `oauth_user` should sign in as, and makes
@@ -1860,7 +1995,7 @@ async fn create_oauth2_record(
     Ok(record)
 }
 
-enum MfaGate {
+pub(crate) enum MfaGate {
     Passed,
     /// A first factor just succeeded; `.0` is the new `_mfas` row id the
     /// caller must echo back as `mfaId` with a *different* method.
@@ -1959,33 +2094,38 @@ async fn mfa_gate(
 ///
 /// Best-effort: a failure here must never fail the login it rides along
 /// with, so the caller only gets a log line.
-async fn record_login_origin(
+pub(crate) async fn record_login_origin(
     app: &App,
     collection: &Arc<Collection>,
     record: &Record,
     headers: &HeaderMap,
     peer: crate::middleware::client_ip::PeerAddr,
-) {
-    if let Err(e) = record_login_origin_inner(app, collection, record, headers, peer).await {
+) -> sessions::OriginContext {
+    let settings = app.settings();
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ip = crate::middleware::client_ip::client_ip(headers, peer.0, &settings.trusted_proxy);
+    let fingerprint = cratebase_auth::auth_origin_fingerprint(&user_agent, &ip);
+    let origin = sessions::OriginContext {
+        fingerprint,
+        ip,
+        user_agent,
+    };
+    if let Err(e) = record_login_origin_inner(app, collection, record, &origin).await {
         tracing::warn!(error = %e.error, "failed to record the auth origin");
     }
+    origin
 }
 
 async fn record_login_origin_inner(
     app: &App,
     collection: &Arc<Collection>,
     record: &Record,
-    headers: &HeaderMap,
-    peer: crate::middleware::client_ip::PeerAddr,
+    origin: &sessions::OriginContext,
 ) -> ApiResult<()> {
-    let settings = app.settings();
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let ip = crate::middleware::client_ip::client_ip(headers, peer.0, &settings.trusted_proxy);
-    let fingerprint = cratebase_auth::auth_origin_fingerprint(user_agent, &ip);
-
     let origins = app
         .db()
         .collections
@@ -1994,7 +2134,7 @@ async fn record_login_origin_inner(
     let mut params = Map::new();
     params.insert("c".into(), Value::String(collection.id.clone()));
     params.insert("r".into(), Value::String(record.id().to_string()));
-    params.insert("f".into(), Value::String(fingerprint.clone()));
+    params.insert("f".into(), Value::String(origin.fingerprint.clone()));
 
     let known = records::find_first_by_filter(
         app.db(),
@@ -2023,13 +2163,13 @@ async fn record_login_origin_inner(
     let mut row = Record::new(origins.clone());
     row.set("collectionRef", Value::String(collection.id.clone()));
     row.set("recordRef", Value::String(record.id().to_string()));
-    row.set("fingerprint", Value::String(fingerprint));
+    row.set("fingerprint", Value::String(origin.fingerprint.clone()));
     records::create(app.db(), &app.db().collections, &mut row)
         .await
         .map_err(|e| ApiError(e.into()))?;
 
     if had_prior_origin && collection.auth.auth_alert.enabled {
-        let alert_info = format!("{user_agent} ({ip})");
+        let alert_info = format!("{} ({})", origin.user_agent, origin.ip);
         let _ = send_record_mail(
             app,
             collection,
@@ -2048,8 +2188,10 @@ async fn impersonate(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
     caller: crate::extract::ImpersonateAuth,
+    headers: HeaderMap,
+    peer: crate::middleware::client_ip::PeerAddr,
     ApiJson(raw): ApiJson<Value>,
-) -> ApiResult<Json<Value>> {
+) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
     let caller = caller.0;
     // Impersonating a `_superusers` record has to hold to the same
@@ -2099,9 +2241,71 @@ async fn impersonate(
     )
     .map_err(|e| ApiError::internal(e.to_string()))?;
 
+    // The session row records the *impersonator's* device, not the
+    // target's — this is not "the record logged in from a new place",
+    // so it deliberately does not go through `record_login_origin` (that
+    // writes `_authOrigins` and can trigger a login-alert email to the
+    // impersonated record, which would be wrong here).
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ip = crate::middleware::client_ip::client_ip(
+        &headers,
+        peer.0,
+        &app.settings().trusted_proxy,
+    );
+    let fingerprint = cratebase_auth::auth_origin_fingerprint(&user_agent, &ip);
+    let origin = sessions::OriginContext {
+        fingerprint,
+        ip,
+        user_agent,
+    };
+    let expires_at = chrono::Utc::now().timestamp() + duration;
+    sessions::record(
+        &app,
+        &collection,
+        &record,
+        &token,
+        "impersonation",
+        &origin,
+        expires_at,
+    )
+    .await;
+
+    let caller_token = caller.token.clone();
+    let caller_exp = caller.exp;
+    let caller_via_cookie = caller.via_cookie;
     let serialized =
         common::enrich_and_serialize(&app, &collection, record, Some(caller), true).await?;
-    Ok(Json(json!({ "token": token, "record": serialized })))
+    let mut response = Json(json!({ "token": token, "record": serialized })).into_response();
+    if app.config().session_cookie {
+        crate::cookie::attach(
+            response.headers_mut(),
+            crate::cookie::session(app.config(), &token, duration),
+        );
+        // Stash the impersonator's own session so `stop-impersonating`
+        // can restore it — only meaningful when the impersonator itself
+        // authenticated via cookie; a bearer-mode caller's SDK keeps its
+        // original store in memory instead (see `crate::routes::session`'s
+        // module doc).
+        if caller_via_cookie {
+            let now = chrono::Utc::now().timestamp();
+            let prev_ttl = (caller_exp - now).min(duration).max(1);
+            crate::cookie::attach(
+                response.headers_mut(),
+                crate::cookie::build(
+                    app.config(),
+                    crate::routes::session::PREV_SESSION_COOKIE,
+                    &caller_token,
+                    prev_ttl,
+                    "/",
+                ),
+            );
+        }
+    }
+    Ok(response)
 }
 
 #[cfg(test)]

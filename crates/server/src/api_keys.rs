@@ -169,6 +169,14 @@ pub async fn resolve(app: &App, token: &str) -> Option<Auth> {
             is_superuser: target_collection.is_superusers(),
             collection: target_collection,
             record: target_record,
+            // API keys have no session concept: no `_sessions` row is
+            // ever written for this identity, and nothing revokes an
+            // API key by digest (disabling the `_api_keys` row does
+            // that). `token`/`exp` exist only so `Auth` has one shape
+            // for every resolution path.
+            token: token.to_string(),
+            exp: i64::MAX,
+            via_cookie: false,
         });
     }
 
@@ -180,6 +188,9 @@ pub async fn resolve(app: &App, token: &str) -> Option<Auth> {
         is_superuser: true,
         collection,
         record: candidate,
+        token: token.to_string(),
+        exp: i64::MAX,
+        via_cookie: false,
     })
 }
 

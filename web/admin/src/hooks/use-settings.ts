@@ -102,7 +102,7 @@ export const SETTINGS_KEY = ["settings"] as const;
 export function useSettings() {
   return useQuery({
     queryKey: SETTINGS_KEY,
-    queryFn: async () => (await cb.settings.getAll()) as unknown as ServerSettings,
+    queryFn: async () => (await cb.admin.settings.get()) as unknown as ServerSettings,
     staleTime: 30_000,
   });
 }
@@ -113,7 +113,7 @@ export function useSettingsMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (patch: Record<string, unknown>) =>
-      (await cb.settings.update(patch)) as unknown as ServerSettings,
+      (await cb.admin.settings.update(patch)) as unknown as ServerSettings,
     onSuccess: (settings) => {
       queryClient.setQueryData(SETTINGS_KEY, settings);
       // The grid's bulk delete reads `batch` through its own key.

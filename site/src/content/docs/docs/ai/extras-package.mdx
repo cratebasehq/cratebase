@@ -3,6 +3,12 @@ title: "@cratebase/extras"
 description: "Client-side helpers: nearestTo, chat, getToolSchema(s), enqueue, trackPresence."
 ---
 
+`@cratebase/client` now has this surface built in — `client.vector`,
+`client.llm`, `client.mcp`, `client.queue`, and `client.presence` — so
+projects on the first-party SDK need nothing extra. `@cratebase/extras`
+is for projects staying on the official `pocketbase` SDK that still want
+these features.
+
 [`@cratebase/extras`](https://www.npmjs.com/package/@cratebase/extras)
 is a small companion npm package, versioned independently of the server,
 wrapping the AI endpoints above in ergonomic client calls:

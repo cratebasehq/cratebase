@@ -62,6 +62,19 @@ pub struct Auth {
     /// [`cratebase_db::context::auth_value`] resolves them to `null` for
     /// rules and filters.
     pub record: Record,
+    /// The raw bearer token this caller resolved from — `sha256` of this
+    /// is a `_sessions.tokenHash`. Used by `crate::sessions` (revoke the
+    /// caller's own session, know which row is "current") and by
+    /// `auth-refresh`, which reads it instead of re-parsing the
+    /// `Authorization` header.
+    pub token: String,
+    /// The verified `exp` claim (unix seconds).
+    pub exp: i64,
+    /// Whether this request's token was read from the session cookie
+    /// rather than the `Authorization` header. Only ever `true` when
+    /// `Config::session_cookie` is on; a bearer-only deployment always
+    /// resolves with this `false`.
+    pub via_cookie: bool,
 }
 
 impl Auth {
@@ -102,6 +115,13 @@ impl Auth {
 #[derive(Clone, Debug, Default)]
 struct CachedAuth(Option<Auth>);
 
+/// Where a resolved token came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TokenSource {
+    Header,
+    Cookie,
+}
+
 fn bearer_token(parts: &Parts) -> Option<&str> {
     let raw = parts
         .headers
@@ -110,6 +130,25 @@ fn bearer_token(parts: &Parts) -> Option<&str> {
         .ok()?;
     // PocketBase accepts both `Bearer <token>` and a bare token.
     Some(raw.strip_prefix("Bearer ").unwrap_or(raw).trim()).filter(|t| !t.is_empty())
+}
+
+/// The bearer token for this request: the `Authorization` header when
+/// present, otherwise — only when `cfg.session_cookie` is on — the
+/// session cookie. The header always wins, so a client that sends both
+/// (e.g. mid-migration) behaves exactly as it did before cookies
+/// existed.
+pub(crate) fn request_token<'a>(
+    parts: &'a Parts,
+    cfg: &crate::config::Config,
+) -> Option<(&'a str, TokenSource)> {
+    if let Some(t) = bearer_token(parts) {
+        return Some((t, TokenSource::Header));
+    }
+    if !cfg.session_cookie {
+        return None;
+    }
+    let t = crate::cookie::get(parts, &cfg.session_cookie_name)?;
+    (!t.is_empty()).then_some((t, TokenSource::Cookie))
 }
 
 /// Resolve the caller once and cache it on the request.
@@ -123,7 +162,19 @@ pub async fn resolve_and_cache(parts: &mut Parts, app: &App) -> Option<Auth> {
 }
 
 async fn resolve(parts: &Parts, app: &App) -> Option<Auth> {
-    let token = bearer_token(parts)?;
+    let (token, source) = request_token(parts, app.config())?;
+    // A cookie-borne token on a state-changing request must pass the
+    // same-origin check `middleware::csrf` performs — this is the
+    // fail-safe backstop for any future route that skips that layer, not
+    // the primary defense (see the layer's own doc for why it runs
+    // first). A header-borne token needs no such check: an attacker
+    // controlling the `Authorization` header already has the token.
+    if source == TokenSource::Cookie
+        && !crate::middleware::csrf::is_safe_method(parts)
+        && !crate::middleware::csrf::origin_allowed(parts, app)
+    {
+        return None;
+    }
     // Everything past this point costs a signature check and a query, so
     // this is where "how often did we really resolve?" is counted.
     app.note_auth_resolution();
@@ -156,6 +207,9 @@ async fn resolve(parts: &Parts, app: &App) -> Option<Auth> {
     if claims.id != unverified.id {
         return None;
     }
+    if crate::sessions::is_revoked(app, token) {
+        return None;
+    }
 
     Some(Auth {
         id: claims.id,
@@ -164,6 +218,9 @@ async fn resolve(parts: &Parts, app: &App) -> Option<Auth> {
         is_superuser: collection.is_superusers(),
         collection,
         record,
+        token: token.to_string(),
+        exp: claims.exp,
+        via_cookie: source == TokenSource::Cookie,
     })
 }
 
@@ -509,6 +566,9 @@ mod tests {
             is_superuser: false,
             collection,
             record,
+            token: "test-token".into(),
+            exp: i64::MAX,
+            via_cookie: false,
         };
         let v = auth.to_filter_value();
         assert_eq!(v["id"], "u1");

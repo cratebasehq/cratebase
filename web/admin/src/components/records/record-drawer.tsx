@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Check, Copy, Trash2 } from "lucide-react";
-import type { CollectionModel, RecordModel } from "pocketbase";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Ban, Check, Copy, ShieldUser, Trash2, UserCog } from "lucide-react";
+import type { CollectionModel, RecordModel } from "@cratebase/client";
 import { isMultiValue, userFields, type FieldSchema } from "@/lib/field-types";
 import { singularize, validateRecordDraft, type FileDraft } from "@/lib/record-validation";
 import {
@@ -31,7 +32,15 @@ import { RecordFieldInput } from "@/components/records/record-field-input";
 import { FileField } from "@/components/records/file-field";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useRecordMutations } from "@/hooks/use-records";
-import { describeFailure } from "@/lib/api";
+import { cb, describeFailure, superuserAuth } from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface RecordDrawerProps {
   collection: CollectionModel;
@@ -159,6 +168,58 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
 
   const { create, update, remove } = useRecordMutations(collection.name);
   const pending = create.isPending || update.isPending;
+
+  // Impersonation and bans only make sense for a real, already-saved auth
+  // record — never a brand-new draft, and never a base/view collection.
+  const isAuth = collection.type === "auth";
+  const queryClient = useQueryClient();
+  const [impersonateToken, setImpersonateToken] = useState<string | null>(null);
+  const [confirmBan, setConfirmBan] = useState(false);
+
+  const banStatus = useQuery({
+    queryKey: ["ban-status", collection.id, record?.id],
+    queryFn: async () => {
+      const list = await cb
+        .collection("_bans")
+        .list({ filter: `collectionRef = "${collection.id}" && recordRef = "${record!.id}"`, perPage: 1 });
+      return list.items[0] ?? null;
+    },
+    enabled: isAuth && record !== null,
+    staleTime: 10_000,
+  });
+
+  const impersonate = useMutation({
+    mutationFn: () => superuserAuth.admin.impersonate(collection.name, record!.id),
+    onSuccess: (ns) => setImpersonateToken(ns.token),
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
+    },
+  });
+
+  const ban = useMutation({
+    mutationFn: () => superuserAuth.admin.ban(collection.name, record!.id),
+    onSuccess: () => {
+      toast.success("Record banned", { description: "Every live session for it was revoked." });
+      void queryClient.invalidateQueries({ queryKey: ["ban-status", collection.id, record?.id] });
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
+    },
+  });
+
+  const unban = useMutation({
+    mutationFn: () => superuserAuth.admin.unban(collection.name, record!.id),
+    onSuccess: () => {
+      toast.success("Ban lifted");
+      void queryClient.invalidateQueries({ queryKey: ["ban-status", collection.id, record?.id] });
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
+    },
+  });
 
   /** Errors as of this keystroke — what gates Save and drives the count. */
   const clientErrors = useMemo(
@@ -434,6 +495,48 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
                 </Button>
               ) : null}
 
+              {record && isAuth ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => impersonate.mutate()}
+                  disabled={pending || impersonate.isPending}
+                >
+                  {impersonate.isPending ? <Spinner className="size-3.5" /> : <UserCog className="size-3.5" />}
+                  Impersonate
+                </Button>
+              ) : null}
+
+              {record && isAuth ? (
+                banStatus.data ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => unban.mutate()}
+                    disabled={pending || unban.isPending}
+                  >
+                    {unban.isPending ? <Spinner className="size-3.5" /> : <ShieldUser className="size-3.5" />}
+                    Unban
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => setConfirmBan(true)}
+                    disabled={pending || ban.isPending}
+                  >
+                    {ban.isPending ? <Spinner className="size-3.5" /> : <Ban className="size-3.5" />}
+                    Ban
+                  </Button>
+                )
+              ) : null}
+
               {blocked ? (
                 <span className="min-w-0 truncate text-xs text-destructive">
                   {invalidCount} {invalidCount === 1 ? "field needs" : "fields need"} attention
@@ -512,7 +615,79 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={confirmBan} onOpenChange={setConfirmBan}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ban this record?</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="font-mono">{record?.id}</span> will be signed out of every live session and unable to
+              authenticate again in <span className="font-mono">{collection.name}</span> until unbanned. This takes
+              effect immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmBan(false);
+                ban.mutate();
+              }}
+            >
+              Ban record
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {impersonateToken ? (
+        <ImpersonationTokenDialog token={impersonateToken} onOpenChange={(open) => !open && setImpersonateToken(null)} />
+      ) : null}
     </>
+  );
+}
+
+/** Shows a freshly minted impersonation token exactly once — the same
+ * one-time-secret convention as an API key's reveal dialog and a
+ * webhook's signing secret, and for the same reason: the server never
+ * returns it a second time (`crate::routes::auth::impersonate` mints it
+ * fresh per call and stores only a hash in `_sessions`). Non-refreshable
+ * and short-lived by design — a superuser's one-shot loan of a session,
+ * not a credential the impersonated record can extend on its own. */
+function ImpersonationTokenDialog({ token, onOpenChange }: { token: string; onOpenChange: (open: boolean) => void }) {
+  const { copy, status } = useCopyToClipboard();
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Impersonation token</DialogTitle>
+          <DialogDescription>
+            A bearer token signed in as this record. It is not refreshable and expires with the collection's own
+            auth token duration — shown once; the server keeps only a hash of it after this dialog closes.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="relative">
+          <pre className="overflow-x-auto rounded-lg border border-border bg-surface-sunken px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground">
+            {token}
+          </pre>
+          <button
+            type="button"
+            onClick={() => void copy(token)}
+            aria-label={status === "copied" ? "Copied" : "Copy token"}
+            className="absolute right-1.5 top-1.5 grid size-control-xs place-items-center rounded border border-border bg-background text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {status === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          </button>
+        </div>
+
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>I've copied it</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

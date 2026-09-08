@@ -72,7 +72,10 @@ export function ApiKeysPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["api-keys"],
-    queryFn: () => cb.collection("_api_keys").getFullList<ApiKeyRecord>({ sort: "-created", requestKey: null }),
+    queryFn: async () =>
+      // `_api_keys` is a system collection with no `Schema` entry — the
+      // server's own shape (`crates/core/src/collection.rs`) is trusted here.
+      (await cb.collection("_api_keys").fullList({ sort: "-created" })) as unknown as ApiKeyRecord[],
   });
 
   function invalidate() {
@@ -157,7 +160,7 @@ export function ApiKeysPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {keys.map((key) => (
+            {keys.map((key: ApiKeyRecord) => (
               <TableRow key={key.id}>
                 <TableCell className="font-medium">{key.name || <span className="text-muted-foreground">Untitled</span>}</TableCell>
                 <TableCell className="font-mono text-xs text-muted-foreground">cb_{key.prefix}…</TableCell>

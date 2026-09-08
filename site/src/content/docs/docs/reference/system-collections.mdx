@@ -5,7 +5,28 @@ description: "Names, fixed ids, and rules for every built-in collection."
 
 `_superusers`, `_mfas`, `_otps`, `_externalAuths`, `_authOrigins`,
 `_teams`, `_team_members`, `_cron_jobs`, `_webhooks`, `_audit_log`,
-`_push_subscriptions`, and the default `users` auth collection all ship
-with fixed, deterministic ids shared with PocketBase's own equivalents
-where one exists — see [Collections](/docs/concepts/collections/) for
-the id-derivation formula that makes this consistent.
+`_push_subscriptions`, `_sessions`, `_bans`, and the default `users`
+auth collection all ship with fixed, deterministic ids shared with
+PocketBase's own equivalents where one exists — see
+[Collections](/docs/concepts/collections/) for the id-derivation
+formula that makes this consistent.
+
+`_sessions` is a live-session table: one row per issued token, written
+by the login/refresh/impersonation handlers rather than through any
+rule-driven client write path (`createRule`/`updateRule`/`deleteRule`
+all stay superuser-only). `listRule`/`viewRule` let a record see its
+own rows: `id`, `collectionRef`, `recordRef`, `tokenHash` (hidden),
+`kind` (`password` | `otp` | `oauth2` | `impersonation` | `refresh`),
+`fingerprint`, `ip`, `userAgent`, `expiresAt`, `lastSeenAt`, and
+`revoked`. Populated only when `SESSION_TRACKING=true` (the default).
+See [REST API → Auth](/docs/reference/rest-api/auth/) for the
+`sessions`/`auth-signout` endpoints that read and write it.
+
+`_bans` is superuser-only end to end — never listable or viewable by
+the banned record itself, unlike `_sessions`/`_authOrigins`: `id`,
+`collectionRef`, `recordRef`, `reason`, `expiresAt`, `bannedBy`, with a
+unique index over `(collectionRef, recordRef)`. Banning rotates the
+target's signing key and revokes every one of its `_sessions` rows, so
+a ban takes effect on live sessions immediately, not just on the next
+login attempt. See [REST API → Auth](/docs/reference/rest-api/auth/)'s
+`ban/{id}` entry.

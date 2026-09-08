@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ChevronRight, Copy, Download, FilePlus2, Folder, FolderOpen, FolderPlus, Pencil, Trash2, Upload } from "lucide-react";
-import { cb, describeFailure } from "@/lib/api";
+import { cb, describeFailure, superuserAuth } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
 import {
   AlertDialog,
@@ -73,7 +73,7 @@ function baseName(path: string): string {
  * host literally named `api`, not this origin. */
 async function fetchObjectBytes(key: string): Promise<Blob> {
   const headers: Record<string, string> = {};
-  if (cb.authStore.token) headers.authorization = `Bearer ${cb.authStore.token}`;
+  if (superuserAuth.token) headers.authorization = `Bearer ${superuserAuth.token}`;
   const url = cb.buildURL(`/api/storage/objects/download?key=${encodeURIComponent(key)}`);
   const response = await fetch(url, { headers });
   if (!response.ok) {
@@ -103,11 +103,11 @@ async function putObject(key: string, data: Blob, filename: string): Promise<voi
   const form = new FormData();
   form.append("key", key);
   form.append("file", data, filename);
-  await cb.send<void>("/api/storage/objects", { method: "POST", body: form, requestKey: null });
+  await cb.send<void>("/api/storage/objects", { method: "POST", body: form });
 }
 
 async function deleteObject(key: string): Promise<void> {
-  await cb.send<void>("/api/storage/objects", { method: "DELETE", query: { key }, requestKey: null });
+  await cb.send<void>("/api/storage/objects", { method: "DELETE", query: { key } });
 }
 
 /** Every object under `prefix`, walking into subfolders — `list` itself
@@ -115,7 +115,7 @@ async function deleteObject(key: string): Promise<void> {
  * object beneath it) recurses over it client-side. Cheap enough for an
  * operator tool; this is not a hot path. */
 async function listAllKeysUnder(prefix: string): Promise<string[]> {
-  const page = await cb.send<ListResponse>("/api/storage/objects", { method: "GET", query: { prefix }, requestKey: null });
+  const page = await cb.send<ListResponse>("/api/storage/objects", { method: "GET", query: { prefix } });
   const nested = await Promise.all(page.folders.map((folder) => listAllKeysUnder(folder)));
   return [...page.files.map((file) => file.key), ...nested.flat()];
 }

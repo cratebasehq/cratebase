@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import type { RecordSubscription } from "pocketbase";
-import { PRESENCE_COLLECTION, pb } from "../pocketbase";
+import { PRESENCE_COLLECTION, cb } from "../cratebase";
 import type { AuthUser } from "./useAuth";
 import type { PresenceRecord } from "../types";
 
@@ -27,18 +26,17 @@ export function usePresence(user: AuthUser | null) {
     let cancelled = false;
     let ownRecordId = localStorage.getItem(`kanban:presenceId:${user.id}`) || null;
 
-    async function upsertOwnPresence() {
+    async function upsertOwnPresence(): Promise<PresenceRecord> {
       const name = user!.email || user!.id;
       try {
         if (ownRecordId) {
-          const record = await pb.collection<PresenceRecord>(PRESENCE_COLLECTION).update(ownRecordId, { name });
-          return record;
+          return (await cb.collection(PRESENCE_COLLECTION).update(ownRecordId, { name })) as unknown as PresenceRecord;
         }
         throw new Error("no existing presence record");
       } catch {
-        const record = await pb
-          .collection<PresenceRecord>(PRESENCE_COLLECTION)
-          .create({ userId: user!.id, name });
+        const record = (await cb
+          .collection(PRESENCE_COLLECTION)
+          .create({ userId: user!.id, name })) as unknown as PresenceRecord;
         ownRecordId = record.id;
         localStorage.setItem(`kanban:presenceId:${user!.id}`, record.id);
         return record;
@@ -46,7 +44,7 @@ export function usePresence(user: AuthUser | null) {
     }
 
     async function boot() {
-      const initial = await pb.collection<PresenceRecord>(PRESENCE_COLLECTION).getFullList();
+      const initial = (await cb.collection(PRESENCE_COLLECTION).fullList()) as unknown as PresenceRecord[];
       if (cancelled) return;
       setPeers(new Map(initial.map((r) => [r.userId, r])));
 
@@ -61,15 +59,16 @@ export function usePresence(user: AuthUser | null) {
         console.error("presence upsert failed", err);
       }
 
-      await pb
-        .collection<PresenceRecord>(PRESENCE_COLLECTION)
-        .subscribe("*", (event: RecordSubscription<PresenceRecord>) => {
+      await cb
+        .collection(PRESENCE_COLLECTION)
+        .subscribe("*", (event) => {
+          const record = event.record as unknown as PresenceRecord;
           setPeers((prev) => {
             const next = new Map(prev);
             if (event.action === "delete") {
-              next.delete(event.record.userId);
+              next.delete(record.userId);
             } else {
-              next.set(event.record.userId, event.record);
+              next.set(record.userId, record);
             }
             return next;
           });
@@ -88,7 +87,7 @@ export function usePresence(user: AuthUser | null) {
     const onUnload = () => {
       if (!ownRecordId) return;
       navigator.sendBeacon?.(
-        `${pb.baseURL}/api/collections/${PRESENCE_COLLECTION}/records/${ownRecordId}`,
+        `${cb.buildURL(`/api/collections/${PRESENCE_COLLECTION}/records/${ownRecordId}`)}`,
         new Blob([], { type: "application/json" }),
       );
     };
@@ -98,7 +97,6 @@ export function usePresence(user: AuthUser | null) {
       cancelled = true;
       window.clearInterval(heartbeat);
       window.removeEventListener("beforeunload", onUnload);
-      pb.collection(PRESENCE_COLLECTION).unsubscribe("*");
     };
   }, [user]);
 

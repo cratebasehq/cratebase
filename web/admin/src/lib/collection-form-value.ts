@@ -1,4 +1,4 @@
-import type { CollectionModel, OAuth2Provider } from "pocketbase";
+import type { CollectionModel, OAuth2Provider } from "@cratebase/client";
 import { type FieldSchema, userFields } from "@/lib/field-types";
 
 /** One OAuth2 provider, as this dashboard edits it. The SDK types `pkce`

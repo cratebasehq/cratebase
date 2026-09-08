@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { Link, useRouterState } from "@tanstack/react-router";
 import {
   ChevronRight,

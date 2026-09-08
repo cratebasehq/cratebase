@@ -1,44 +1,67 @@
 ---
-title: "Using the JavaScript SDK"
-description: "Talk to Cratebase from TypeScript/JavaScript with the official pocketbase package."
+title: "Using the TypeScript SDK"
+description: "Talk to Cratebase from TypeScript/JavaScript with the first-party @cratebase/client SDK."
 sidebar:
   order: 4
 ---
 
-Cratebase's API is byte-compatible with PocketBase v0.23+, so the official
-[`pocketbase`](https://www.npmjs.com/package/pocketbase) npm package works
-against it unmodified:
+[`@cratebase/client`](https://www.npmjs.com/package/@cratebase/client) is
+the first-party TypeScript SDK — a typed client covering records, auth,
+realtime, files, batch, admin, and Cratebase's AI/queue/presence
+value-adds:
+
+```bash
+bun add @cratebase/client
+```
 
 ```ts
-import PocketBase from "pocketbase";
+import { createClient } from "@cratebase/client";
 
-const cb = new PocketBase("http://localhost:8090");
-const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
+const cb = createClient("http://localhost:8090");
+const posts = await cb.collection("posts").list({ filter: "published = true" });
 const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
 ```
 
-`getList`/`filter`/`sort`/`expand`, `authWithPassword`, and `subscribe`
-all behave exactly as documented in PocketBase's own SDK docs.
+`list`/`fullList`/`first`/`one` all take a single options object
+(`page`, `perPage`, `sort`, `filter`, `expand`, `fields`, `skipTotal`,
+`signal`) rather than positional arguments. Build filter strings with
+the exported `` filter` ` `` tagged template to get automatic
+quoting/escaping instead of hand-rolling them:
+
+```ts
+import { filter } from "@cratebase/client";
+
+const posts = await cb.collection("posts").list({
+  filter: filter`published = ${true} && author = ${userId}`,
+});
+```
 
 ## Server-side rendering
 
 For SSR frameworks (TanStack Start, Next.js, SvelteKit), construct a
-fresh client per request and hydrate its auth store from a cookie:
+fresh client per request and attach the incoming request's cookie
+directly:
 
 ```ts
-import PocketBase from "pocketbase";
+import { createClient } from "@cratebase/client";
 
-const pb = new PocketBase(process.env.CRATEBASE_URL);
-pb.autoCancellation(false); // required in every server context — see below
-pb.authStore.loadFromCookie(getCookie("pb_auth") ?? "");
+const cb = createClient(process.env.CRATEBASE_URL, {
+  cookie: getCookie("cb_session"),
+});
 
-const posts = await pb.collection("posts").getList(1, 20);
+const posts = await cb.collection("posts").list();
 
-setCookie("pb_auth", pb.authStore.exportToCookie());
+setCookie("cb_session", cb.auth.exportCookie());
 ```
 
-**`autoCancellation(false)` is required in every server context.** The
-SDK cancels an in-flight request when an identical one is issued again —
-a de-duplication behavior meant for client-side UI. On the server, two
-independent incoming requests can look like the same repeated call and
-one gets silently cancelled unless auto-cancellation is disabled.
+**No auto-cancellation to disable.** PocketBase's SDK auto-cancels a
+same-key in-flight request — a de-duplication behavior meant for
+client-side UI that requires explicitly opting out (`autoCancellation(false)`)
+in every server context, since two independent incoming requests can look
+like the same repeated call. `@cratebase/client` has no such behavior:
+callers pass an `AbortSignal` when they want cancellation, so there is
+nothing to disable here.
+
+Staying on the official `pocketbase` npm package instead? Cratebase's
+API is wire-compatible with it — see
+[PocketBase SDK interop](/docs/sdk/pocketbase-interop/).

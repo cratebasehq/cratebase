@@ -25,6 +25,16 @@ for the token model these endpoints share.
 | `POST .../request-otp` | none | Email a one-time login code |
 | `POST .../auth-with-otp` | none | Complete OTP login |
 | `POST .../impersonate/{id}` | bearer (superuser) | Mint a non-refreshable token for another record |
+| `POST .../auth-signout` | bearer | Revoke the session backing the current token |
+| `GET .../sessions` | bearer | List the caller's own sessions (or another record's, as superuser) |
+| `DELETE .../sessions/{id}` | bearer | Revoke one session by id |
+| `POST .../sessions/revoke-others` | bearer | Revoke every session but the current one |
+| `POST .../sessions/revoke-all` | bearer | Revoke every session, including the current one |
+| `POST .../stop-impersonating` | cookie | Restore the impersonator's session (cookie mode only) |
+| `POST .../ban/{id}` | bearer (superuser) | Ban a record, revoking its sessions immediately |
+| `DELETE .../ban/{id}` | bearer (superuser) | Lift a ban |
+| `GET .../oauth2/{provider}/start` | none | Begin the server-driven OAuth2 redirect flow |
+| `GET .../oauth2/{provider}/callback` | none | Complete it, landing the session in a cookie |
 
 ### `auth-with-password`
 
@@ -67,3 +77,70 @@ collection's own `authToken.duration`). Returns a normal
 `{ "token", "record" }` pair, but the token is flagged non-refreshable —
 calling `auth-refresh` on it returns the same token unchanged rather
 than failing. See [Impersonation](/docs/concepts/authentication/impersonation/).
+
+### `auth-signout`
+
+Bearer-authenticated. Revokes the `_sessions` row backing the current
+token and, in cookie mode, clears the session cookie. Returns `204`
+regardless of prior state.
+
+### `sessions`
+
+```json
+{ "items": [{ "id": "...", "kind": "password", "fingerprint": "...", "ip": "...", "userAgent": "...", "current": true, "created": "...", "lastSeenAt": "...", "expiresAt": "..." }] }
+```
+
+`GET .../sessions` lists the caller's own sessions; pass `?recordId=` to
+look at another record's sessions, which requires superuser. `kind` is
+one of `password`, `otp`, `oauth2`, `impersonation`, or `refresh`.
+Requires `SESSION_TRACKING=true` (the default) — with it off, this
+always returns an empty list and revocation is a no-op.
+
+`DELETE .../sessions/{id}` revokes one session by id: `204` whether or
+not the id existed, and requires either being the session's own owner
+or a superuser (`403` otherwise). `POST .../sessions/revoke-others`
+revokes every session but the current one and returns
+`200 { "revoked": <count> }`. `POST .../sessions/revoke-all` revokes
+every session, including the current one — `204`, clearing the session
+cookie in cookie mode.
+
+### `stop-impersonating`
+
+Cookie mode only. Reads the `cb_session_prev` cookie stashed by
+`impersonate/{id}`, re-verifies it still signs correctly, and restores
+it as the active session cookie, clearing `cb_session_prev`. Returns
+`200 { "record" }`. `400` if there's no impersonation session to stop
+(missing, unverifiable, or already-consumed cookie). Bearer-mode
+impersonation restoration has no server-side counterpart — the client
+just discards the impersonated token and keeps using the original.
+
+### `ban/{id}` / `unban`
+
+Superuser-only. `POST .../ban/{id}` body: `{ "reason": "...", "expiresAt": "..." }`
+(both optional). Upserts a `_bans` row, rotates the target's signing
+key, and revokes every one of its live sessions — a ban locks out live
+sessions immediately, not just future logins. Returns
+`200 { "recordRef", "reason", "expiresAt" }`. `DELETE .../ban/{id}`
+removes the ban, if any, and returns `204`. A banned record's next
+`auth-with-password`/`auth-with-otp`/`auth-with-oauth2`/`auth-refresh`
+call fails with `403 "This account is banned."`.
+
+### `oauth2/{provider}/start` / `oauth2/{provider}/callback`
+
+Cookie mode only — the server drives the whole provider round trip.
+`GET .../oauth2/{provider}/start?redirect=&createData=` requires
+`redirect` to be same-origin with `settings.meta.appURL` or an exact
+member of `CORS_ALLOW_ORIGINS` (a `"*"` entry never qualifies); an
+untrusted `redirect` answers `400` JSON — the one failure this flow
+answers directly instead of by redirecting, since redirecting to an
+untrusted target is exactly the open redirect this guards against.
+Every later failure instead redirects to the now-trusted `redirect`
+with `?cb_error=<code>`: `cookie_sessions_disabled`,
+`app_url_not_configured`, `oauth2_disabled`, or `provider_not_enabled`.
+
+`GET .../oauth2/{provider}/callback` is the provider's own redirect
+target — never called directly — and on success redirects to
+`redirect` with the session already set in an httpOnly cookie. A
+pending MFA challenge redirects with `?cb_mfa=<mfaId>` instead of
+setting the cookie. The exact URL to register with the provider is
+`{appURL}/api/collections/{collection}/oauth2/{provider}/callback`.

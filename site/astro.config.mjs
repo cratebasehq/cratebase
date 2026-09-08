@@ -72,6 +72,10 @@ export default defineConfig({
           items: [{ autogenerate: { directory: "docs/getting-started" } }],
         },
         {
+          label: "TypeScript SDK",
+          items: [{ autogenerate: { directory: "docs/sdk" } }],
+        },
+        {
           label: "Concepts",
           items: [
             { label: "Collections", slug: "docs/concepts/collections" },

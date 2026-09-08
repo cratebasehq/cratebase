@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { AlertCircle, Upload } from "lucide-react";
 import {
   Dialog,
@@ -60,7 +60,7 @@ export function ImportCollectionsDialog({ open, onOpenChange }: ImportCollection
   const importMutation = useMutation({
     mutationFn: async () => {
       const collections = parseCollections(text);
-      await cb.collections.import(collections, deleteMissing);
+      await cb.admin.collections.import(collections, deleteMissing);
       return collections.length;
     },
     onSuccess: async (count) => {

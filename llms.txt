@@ -62,8 +62,13 @@ source. Everything referenced below is real and current, not aspirational.
   - `POST /collections/{c}/request-password-reset`, `POST /collections/{c}/confirm-password-reset`
   - `POST /collections/{c}/request-email-change`, `POST /collections/{c}/confirm-email-change`
   - `POST /collections/{c}/request-otp`, `POST /collections/{c}/auth-with-otp`
-  - `POST /collections/{c}/impersonate/{id}` (superuser only)
-- `GET /files/{collection}/{recordId}/{filename}`
+  - `POST /collections/{c}/impersonate/{id}` (superuser only), `POST /collections/{c}/stop-impersonating` (cookie mode only)
+  - `POST /collections/{c}/auth-signout` — server-side session revocation (not just clearing the local auth store)
+  - `GET /collections/{c}/sessions?recordId=`, `DELETE /collections/{c}/sessions/{id}`,
+    `POST /collections/{c}/sessions/revoke-others`, `POST /collections/{c}/sessions/revoke-all`
+  - `POST /collections/{c}/ban/{id}`, `DELETE /collections/{c}/ban/{id}` (superuser only)
+  - `GET /collections/{c}/oauth2/{provider}/start?redirect=`, `GET /collections/{c}/oauth2/{provider}/callback`
+    — server-driven OAuth2 redirect flow, requires `SESSION_COOKIE=true` and `settings.meta.appURL` set
 - `GET /realtime` (SSE; first event carries a `clientId`),
   `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`
 - JS hooks: a `pb_hooks/*.pb.js` file next to the data directory can add
@@ -76,11 +81,15 @@ Error bodies are always `{ "code": 400, "message": "...", "data": { field: { cod
 
 ## Client SDK
 
-Cratebase's API is byte-compatible with PocketBase v0.23+, so there's no
-bespoke client to install: `npm install pocketbase` (or any of
-PocketBase's other official SDKs) works unchanged — persisted
-`authStore`, multipart file upload helpers, and realtime subscriptions
-included. See the [pocketbase package](https://www.npmjs.com/package/pocketbase).
+`@cratebase/client` (`npm install @cratebase/client`) is Cratebase's
+first-party TypeScript SDK — `createClient(url)`, object-options
+`list`/`create`/`update`/`delete`, tagged-template filter builders, and
+the new session/impersonation/ban/OAuth2-redirect surface above built in.
+Cratebase's API is also byte-compatible with PocketBase v0.23+, so the
+official `npm install pocketbase` SDK (or any of PocketBase's other
+official SDKs) still works unchanged against it — persisted `authStore`,
+multipart file upload helpers, and realtime subscriptions included. See
+the [pocketbase package](https://www.npmjs.com/package/pocketbase).
 
 ## Source map
 

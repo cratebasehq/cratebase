@@ -12,3 +12,26 @@ links onto a same-email match, or creates a new record. `google`/`github`
 only need a client id/secret configured on the collection; any other
 provider name is a hand-configured provider using its own
 authorize/token/userinfo URLs.
+
+## Server-driven redirect flow
+
+With [cookie sessions](/docs/concepts/authentication/cookie-sessions/)
+enabled and `settings.meta.appURL` configured, the server can drive
+the whole provider round trip itself instead of the client handling
+`authURL`/`code` exchange: `GET
+.../oauth2/{provider}/start?redirect=` sends the browser straight to
+the provider, and `GET .../oauth2/{provider}/callback` completes the
+login and lands the session in a cookie before redirecting back to
+`redirect`. The URL to register with the provider is always
+`{appURL}/api/collections/{collection}/oauth2/{provider}/callback`.
+`start`'s `redirect` must be same-origin with `appURL` or an exact
+entry in `CORS_ALLOW_ORIGINS`; a `*` origins entry doesn't count. An
+untrusted `redirect` answers `400 "Untrusted redirect target."`
+directly — the one failure that doesn't redirect, since redirecting to
+an untrusted target is exactly what that check prevents. Every other
+failure redirects to the (now-trusted) `redirect` with
+`?cb_error=<code>`: `cookie_sessions_disabled`, `app_url_not_configured`,
+`oauth2_disabled`, or `provider_not_enabled`. On the client this is
+`cb.auth.signIn.social({provider, mode: "redirect"})` (the default in
+a browser) or `mode: "popup"`, which opens the same URL in a popup and
+resolves once it closes.

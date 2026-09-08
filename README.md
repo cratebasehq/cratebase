@@ -38,13 +38,13 @@ password there and that's your superuser account, no CLI step required.
 yourpassword` works too, before or after that first visit.)
 
 From there, create a collection and start reading/writing records over
-HTTP or from the official PocketBase SDK:
+HTTP or from `@cratebase/client`, Cratebase's first-party SDK:
 
 ```ts
-import PocketBase from "pocketbase";
+import { createClient } from "@cratebase/client";
 
-const cb = new PocketBase("http://localhost:8090");
-const posts = await cb.collection("posts").getList(1, 20, { filter: "published = true" });
+const cb = createClient("http://localhost:8090");
+const posts = await cb.collection("posts").list({ filter: "published = true" });
 const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
 ```
 

@@ -1,0 +1,146 @@
+---
+title: "Authentication"
+description: "The client.auth namespace: sign-in, sessions, MFA, and admin actions."
+sidebar:
+  order: 3
+---
+
+`cb.auth` is one `AuthNamespace` bound to a single auth collection
+(`options.authCollection`, default `"users"`). `cb.auth.as("_superusers")`
+returns an independent namespace, with its own store and session, for
+another collection. This page is the *how*; see
+[Authentication overview](/docs/concepts/authentication/overview/) and
+the rest of the Concepts → Authentication section for the *why* behind
+tokens, sessions, and each auth method.
+
+## Sign up and sign in
+
+```ts
+await cb.auth.signUp(
+  { email: "user@example.com", password: "hunter2", passwordConfirm: "hunter2" },
+  { autoSignIn: true },
+);
+
+const { token, record } = await cb.auth.signIn.password({
+  identity: "user@example.com",
+  password: "hunter2",
+});
+```
+
+`signIn.otp({ otpId, code, mfaId? })` completes an OTP flow started
+with `cb.auth.otp.request({ email })`. `signIn.code({ provider, code,
+codeVerifier?, redirectUrl, createData? })` completes a manual/PKCE
+OAuth2 exchange the caller drove itself.
+
+### Social sign-in
+
+`signIn.social({ provider, mode?, redirect?, createData? })` has four
+modes:
+
+- `"redirect"` (default in a browser) — navigates to the server's own
+  `GET .../oauth2/{provider}/start?redirect=...`. The server drives the
+  whole provider round trip and lands the session in an httpOnly
+  cookie. Requires `SESSION_COOKIE=true` and `settings.meta.appURL`
+  set server-side (see [SSR & cookies](/docs/sdk/ssr-and-cookies/)).
+- `"popup"` — opens that same URL in a popup and resolves via
+  `refresh()` once it closes.
+- `"manual"` — returns `{ url }` for the caller to navigate however it
+  wants.
+- `"pkce"` — the bearer-only fallback: the caller drives the
+  provider's own authURL/redirect itself and completes with
+  `signIn.code(...)`.
+
+```ts
+await cb.auth.signIn.social({ provider: "google", mode: "redirect", redirect: "/dashboard" });
+```
+
+After a `"redirect"`/`"popup"` round trip lands back on your page,
+`cb.auth.completeSocial()` reads `cb_error`/MFA state from the URL and
+resolves the session (or throws).
+
+## Session lifecycle
+
+```ts
+await cb.auth.signOut();   // server-side revocation, not just a local store clear
+await cb.auth.refresh();
+await cb.auth.methods();   // enabled auth methods for this collection
+
+cb.auth.token;        // current JWT, "" when signed out
+cb.auth.record;        // current record, null when signed out
+cb.auth.isValid;
+cb.auth.isSuperuser;
+cb.auth.onChange((token, record) => { /* ... */ }, true);
+```
+
+## Sessions
+
+```ts
+const sessions = await cb.auth.sessions.list();
+await cb.auth.sessions.revoke(sessions[0].id);
+await cb.auth.sessions.revokeOthers();
+await cb.auth.sessions.revokeAll();
+```
+
+Each row is `{ id, kind, fingerprint, ip, userAgent, current, created,
+lastSeenAt, expiresAt }` (`kind` is one of `password`, `otp`, `oauth2`,
+`impersonation`, `refresh`). A superuser can list another collection's
+sessions with `sessions.list({ collection, recordId })`. Requires
+`SESSION_TRACKING=true` (the default) — with it off, `list()` returns
+empty and revoke calls are a no-op.
+
+## MFA
+
+A first-factor sign-in under MFA throws a `CratebaseError` with
+`status 401` and `.mfaId` set, instead of the usual
+`{status, message, data}` envelope. Pass that `mfaId` into the second
+`signIn.*` call:
+
+```ts
+try {
+  await cb.auth.signIn.password({ identity, password });
+} catch (err) {
+  if (err instanceof CratebaseError && err.mfaId) {
+    await cb.auth.signIn.otp({ otpId, code, mfaId: err.mfaId });
+  }
+}
+```
+
+## Email flows
+
+```ts
+await cb.auth.verifyEmail.request(email);
+await cb.auth.verifyEmail.confirm(token);
+
+await cb.auth.resetPassword.request(email);
+await cb.auth.resetPassword.confirm({ token, password, passwordConfirm });
+
+await cb.auth.changeEmail.request(newEmail);
+await cb.auth.changeEmail.confirm({ token, password });
+```
+
+## External auths
+
+```ts
+await cb.auth.externalAuths.list(recordId);
+await cb.auth.externalAuths.unlink(recordId, "google");
+```
+
+## Admin actions
+
+Superuser-only, authenticated with *this* namespace's own token
+(typically a `_superusers` session):
+
+```ts
+const impersonated = await cb.auth.as("_superusers").admin.impersonate("users", recordId);
+// impersonated is a new, independent AuthNamespace — the caller's own session is untouched
+
+await cb.auth.as("_superusers").admin.ban("users", recordId, { reason: "abuse" });
+await cb.auth.as("_superusers").admin.unban("users", recordId);
+await cb.auth.as("_superusers").admin.stopImpersonating(); // cookie mode only
+```
+
+`admin.stopImpersonating()` restores the impersonator's session from
+the `cb_session_prev` cookie — cookie mode only. In bearer mode
+there's nothing server-side to call: just discard the impersonated
+`AuthNamespace` and keep using the original one. See
+[Impersonation](/docs/concepts/authentication/impersonation/).

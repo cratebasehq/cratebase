@@ -1,6 +1,6 @@
 import { useId } from "react";
 import { AlertCircle, ChevronRight, GripVertical, Trash2 } from "lucide-react";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { cn } from "@/lib/utils";
 import { FIELD_TYPES, type FieldSchema, isMultiValue, newField } from "@/lib/field-types";
 import { Checkbox } from "@/components/ui/checkbox";

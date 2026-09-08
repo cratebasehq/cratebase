@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ClientResponseError } from "pocketbase";
+import { CratebaseError } from "@cratebase/client";
 import { createRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { Eye, EyeOff, TriangleAlert } from "lucide-react";
 import { CratebaseMark } from "@/components/brand/cratebase-mark";
@@ -108,7 +108,7 @@ function LoginPage() {
         kind: "succeeded",
         token: result.token,
         id: result.record.id,
-        email: result.record.email,
+        email: typeof result.record.email === "string" ? result.record.email : "",
         ms: Math.round(performance.now() - startedAt),
       });
       setReachability("up");
@@ -336,7 +336,7 @@ function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => voi
       }
     } catch (error) {
       const described = describeFailure(error, "generic");
-      if (error instanceof ClientResponseError && error.status === 403) {
+      if (error instanceof CratebaseError && error.status === 403) {
         // Someone else finished setup in the gap between this page loading
         // and this submit — re-derive from a fresh read, not the stale
         // "needed" state that got us here.

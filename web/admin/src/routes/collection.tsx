@@ -3,7 +3,7 @@ import { createRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ArrowRight, MoreHorizontal, Plus, ShieldUser, X } from "lucide-react";
-import { ClientResponseError, type CollectionModel, type RecordModel } from "pocketbase";
+import { CratebaseError, type CollectionModel, type RecordModel } from "@cratebase/client";
 import { avatarUrl, cb, describeFailure } from "@/lib/api";
 import { userFields, type FieldSchema } from "@/lib/field-types";
 import { appRoute } from "@/routes/app";
@@ -139,7 +139,7 @@ function CollectionPage() {
   );
   const { data: collection, error: collectionError } = useQuery({
     queryKey: ["collections", name],
-    queryFn: () => cb.collections.getOne(name),
+    queryFn: () => cb.admin.collections.one(name),
   });
   // Already in cache for the sidebar; used here to resolve relation targets
   // for sort keys and value labels without a request of its own.
@@ -154,7 +154,7 @@ function CollectionPage() {
     if (!openId) return;
     let cancelled = false;
     cb.collection(name)
-      .getOne(openId)
+      .one(openId)
       .then((record) => {
         if (!cancelled) setEditing(record);
       })
@@ -293,7 +293,7 @@ function CollectionPage() {
         sortKey: identityField,
         cell: (row) => {
           const filename = avatarField ? (row[avatarField.name] as string | undefined) : undefined;
-          const avatarSrc = filename ? cb.files.getURL(row, filename) : avatarUrl(row.id);
+          const avatarSrc = filename ? cb.files.url(row, filename) : avatarUrl(row.id);
           return (
             <div className="flex min-w-0 items-center gap-2">
               <Avatar className="size-5 shrink-0 rounded-full">
@@ -340,7 +340,7 @@ function CollectionPage() {
             onDoubleClick={() => openDrawer(row)}
             title="Double-click, or press Enter, to open this record"
           >
-            {new Date(row.created).toLocaleString()}
+            {row.created ? new Date(row.created).toLocaleString() : ""}
           </span>
         ),
       });
@@ -682,7 +682,7 @@ function CollectionPage() {
                       const failed = describeFailure(error);
                       toast.error(failed.title, {
                         description:
-                          error instanceof ClientResponseError && error.status === 403
+                          error instanceof CratebaseError && error.status === 403
                             ? "The batch API is disabled — enable it in Settings to delete in bulk."
                             : failed.serverMessage || failed.detail || undefined,
                       });

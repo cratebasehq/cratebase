@@ -6,7 +6,11 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["bun-types"],
-    "noEmit": true
+    "noEmit": true,
+
+    "paths": {
+      "@cratebase/client": ["../../sdk/js/client/src/index.ts"]
+    }
   },
   "include": ["*.ts"]
 }

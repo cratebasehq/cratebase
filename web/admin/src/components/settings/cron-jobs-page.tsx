@@ -196,7 +196,7 @@ function CustomCronJobsSection({
   const { data, isLoading, error } = useQuery({
     queryKey: ["custom-cron-jobs"],
     queryFn: () =>
-      cb.collection("_cron_jobs").getFullList<CustomCronJob>({ sort: "-created", requestKey: null }),
+      cb.collection("_cron_jobs").fullList({ sort: "-created" }) as unknown as Promise<CustomCronJob[]>,
   });
 
   const remove = useMutation({

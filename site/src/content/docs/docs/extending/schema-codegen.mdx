@@ -60,7 +60,37 @@ Field types follow `FieldKind`'s variants in `crates/core/src/field.rs` one-for-
 `{ lon: number; lat: number }`, ...). System collections (`_superusers`, `_admins`, and the like)
 are skipped, since a project's own code has no business constructing rows in those directly.
 
+## The `Schema` interface, for `createClient<Schema>()`
+
+Alongside the per-collection interfaces, the generated file also
+exports a `Schema` interface mapping every non-system collection's
+name to its `<Name>Record` type, plus `type Collections = keyof Schema`.
+For the `posts` schema above, the tail of `cratebase-types.d.ts` is:
+
+```ts title="cratebase-types.d.ts"
+/** Every non-system collection, keyed by name — pass to `createClient<Schema>()`. */
+export interface Schema {
+  posts: PostsRecord;
+}
+
+export type Collections = keyof Schema;
+```
+
+Pass `Schema` straight to [`@cratebase/client`](/docs/getting-started/using-js-sdk/)'s
+`createClient<Schema>()` for a fully typed `client.collection(name)` —
+an unknown collection name becomes a compile error, and
+`client.collection("posts").list()` resolves to `PostsRecord[]` with no
+per-call type argument needed:
+
+```ts
+import { createClient } from "@cratebase/client";
+import type { Schema } from "./cratebase-types.js";
+
+const cb = createClient<Schema>("http://localhost:8090");
+const posts = await cb.collection("posts").list(); // typed PostsRecord[]
+```
+
 A CI pipeline typically checks the generated `.d.ts` into the repo alongside the checked-in
 `schema.json` from [Schema as code](/docs/extending/schema-as-code/), regenerating both whenever
-the schema changes so `pb.collection("posts").getOne<PostsRecord>(id)` stays in sync with what the
-server actually serves.
+the schema changes so `cb.collection("posts").one(id)` stays in sync with what the server actually
+serves.

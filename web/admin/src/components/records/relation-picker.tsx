@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronsUpDown, Loader2, X } from "lucide-react";
-import type { RecordModel } from "pocketbase";
+import type { RecordModel, CollectionModel } from "@cratebase/client";
+import { filter, raw } from "@cratebase/client";
 import { cb } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { userFields } from "@/lib/field-types";
@@ -82,7 +83,7 @@ export function RelationPicker({
     return () => clearTimeout(timer);
   }, [search]);
 
-  const target = collections?.find((c) => c.id === collectionId);
+  const target = collections?.find((c: CollectionModel) => c.id === collectionId);
   const targetFields = useMemo(() => (target ? userFields(target) : []), [target]);
   const display = displayFieldOf(targetFields);
   const secondary = targetFields.find((f) => f.type === "email" && f.name !== display)?.name;
@@ -91,12 +92,12 @@ export function RelationPicker({
   const candidates = useQuery({
     queryKey: ["relation-candidates", collectionId, committed],
     queryFn: async () => {
-      const term = committed.trim().replace(/"/g, '\\"');
-      const filter = term && display ? `${display} ~ "${term}"` : undefined;
-      const list = await cb.collection(collectionId!).getList<RecordModel>(1, PAGE_SIZE, {
-        filter,
+      const term = committed.trim();
+      const filterExpr = term && display ? filter`${raw(display)} ~ ${term}` : undefined;
+      const list = await cb.collection(collectionId!).list({
+        filter: filterExpr,
+        perPage: PAGE_SIZE,
         skipTotal: true,
-        requestKey: null,
       });
       return list.items.map((item) => toOption(item, display, secondary));
     },
@@ -110,11 +111,11 @@ export function RelationPicker({
     queryKey: ["relation-selected", collectionId, [...value].sort().join(",")],
     queryFn: async () => {
       if (value.length === 0) return [] as Option[];
-      const filter = value.map((id) => `id = "${id}"`).join(" || ");
-      const list = await cb.collection(collectionId!).getList<RecordModel>(1, Math.min(value.length, 200), {
-        filter,
+      const filterExpr = value.map((id) => filter`id = ${id}`).join(" || ");
+      const list = await cb.collection(collectionId!).list({
+        filter: filterExpr,
+        perPage: Math.min(value.length, 200),
         skipTotal: true,
-        requestKey: null,
       });
       return list.items.map((item) => toOption(item, display, secondary));
     },

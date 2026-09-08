@@ -4,7 +4,7 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "paths": { "@/*": ["./src/*"] },
+    "paths": { "@/*": ["./src/*"], "@cratebase/client": ["../../sdk/js/client/src/index.ts"] },
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,

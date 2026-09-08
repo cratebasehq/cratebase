@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { cn } from "@/lib/utils";
 import { buildDocEndpoints, type DocEndpoint, type Method } from "@/lib/api-docs";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";

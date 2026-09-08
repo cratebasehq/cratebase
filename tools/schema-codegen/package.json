@@ -1,6 +1,6 @@
 {
   "name": "@cratebase/schema-codegen",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI that turns a Cratebase schema-as-code JSON file (or a live GET /api/collections response) into a single .d.ts with one TypeScript interface per non-system collection.",
   "type": "module",
   "license": "MIT",

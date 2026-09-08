@@ -1,0 +1,81 @@
+---
+title: "TypeScript SDK — overview"
+description: "@cratebase/client: the first-party typed SDK for records, auth, realtime, files, batch, and admin."
+sidebar:
+  order: 1
+---
+
+`@cratebase/client` is Cratebase's first-party TypeScript SDK — typed
+end to end, with the vector/LLM/queue/presence value-adds built in
+rather than bolted on. It's the recommended client for new projects;
+the official `pocketbase` npm package still works unmodified against
+Cratebase (see [PocketBase SDK interop](/docs/sdk/pocketbase-interop/))
+if you're already using it.
+
+```sh
+bun add @cratebase/client
+```
+
+```ts
+import { createClient } from "@cratebase/client";
+
+const cb = createClient("http://localhost:8090");
+const { record } = await cb.auth.signIn.password({
+  identity: "user@example.com",
+  password: "hunter2",
+});
+const posts = await cb.collection("posts").list({ filter: "published = true" });
+```
+
+## Typed collections
+
+Generate a `Schema` interface with
+[`@cratebase/schema-codegen`](/docs/extending/schema-codegen/) and pass
+it as `createClient`'s type parameter for a typed
+`cb.collection("posts")`:
+
+```ts
+import { createClient } from "@cratebase/client";
+import type { Schema } from "./cratebase-types";
+
+const cb = createClient<Schema>("http://localhost:8090");
+const post = await cb.collection("posts").one("abc123"); // typed as PostsRecord & RecordModel
+```
+
+## Client shape
+
+`createClient(url, options)` returns a `CratebaseClient` with:
+
+- `collection(name)` — typed CRUD + realtime for one collection (see
+  [Records](/docs/sdk/records/)).
+- `auth` — the default auth namespace, bound to `options.authCollection`
+  (default `"users"`); `auth.as(collection)` for another collection (see
+  [Authentication](/docs/sdk/auth/)).
+- `files` — file URLs and protected-file tokens (see
+  [Files](/docs/sdk/files/)).
+- `batch()` — multi-write transactions (see
+  [Batch & admin](/docs/sdk/batch-and-admin/)).
+- `admin` — superuser-only management endpoints (see
+  [Batch & admin](/docs/sdk/batch-and-admin/)).
+- `vector`, `llm`, `mcp`, `queue`, `presence` — Cratebase-only
+  value-add surface, built into this SDK (also available as
+  `@cratebase/extras` for projects staying on the official
+  `pocketbase` SDK).
+- `send(path, options)` — raw escape hatch for anything not wrapped.
+
+`CreateClientOptions`:
+
+```ts
+interface CreateClientOptions {
+  authCollection?: string;              // default "users"
+  authStore?: AuthStore;                // default LocalAuthStore in a browser, MemoryAuthStore elsewhere
+  cookie?: string;                      // SSR: attach a raw Cookie header value
+  credentials?: RequestCredentials;     // default "same-origin"
+  headers?: Record<string, string>;
+  fetch?: typeof fetch;
+  lang?: string;
+}
+```
+
+Errors are `CratebaseError` (`.status`, `.message`, `.response`,
+`.isAbort`), never PocketBase's `ClientResponseError`.

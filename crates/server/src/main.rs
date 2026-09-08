@@ -125,6 +125,26 @@ struct ServeArgs {
     /// Comma-separated CORS origins.
     #[arg(long = "origins")]
     origins: Option<String>,
+    /// Also accept/set an httpOnly session cookie alongside the bearer
+    /// token.
+    #[arg(long = "session-cookie")]
+    session_cookie: Option<bool>,
+    /// The session cookie's name (default `cb_session`).
+    #[arg(long = "session-cookie-name")]
+    session_cookie_name: Option<String>,
+    /// The session cookie's `Domain` attribute (default: host-only).
+    #[arg(long = "session-cookie-domain")]
+    session_cookie_domain: Option<String>,
+    /// The session cookie's `SameSite` attribute: lax, strict, or none.
+    #[arg(long = "session-cookie-samesite", value_parser = ["lax", "strict", "none"])]
+    session_cookie_samesite: Option<String>,
+    /// Whether the session cookie carries `Secure` (default true).
+    #[arg(long = "session-cookie-secure")]
+    session_cookie_secure: Option<bool>,
+    /// Whether logins write a `_sessions` row for listing/revocation
+    /// (default true).
+    #[arg(long = "session-tracking")]
+    session_tracking: Option<bool>,
     /// Verbose logging and hook reloading.
     #[arg(long = "dev", default_value_t = false)]
     dev: bool,
@@ -224,6 +244,27 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     if let Some(origins) = args.origins {
         config.origins = cratebase_server::config::split_csv(&origins);
+    }
+    if let Some(v) = args.session_cookie {
+        config.session_cookie = v;
+    }
+    if let Some(v) = args.session_cookie_name {
+        config.session_cookie_name = v;
+    }
+    if let Some(v) = args.session_cookie_domain {
+        config.session_cookie_domain = v;
+    }
+    if let Some(v) = args.session_cookie_samesite {
+        // `value_parser` already rejects anything but these three at
+        // argument-parsing time, so this always matches.
+        config.session_cookie_same_site =
+            cratebase_server::config::SameSite::parse(&v).unwrap_or_default();
+    }
+    if let Some(v) = args.session_cookie_secure {
+        config.session_cookie_secure = v;
+    }
+    if let Some(v) = args.session_tracking {
+        config.session_tracking = v;
     }
     config.public_dir = args.public_dir;
     config.dev = args.dev;

@@ -367,6 +367,14 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             push("auth");
             push(&lower_camel(action));
         }
+        // `.../oauth2/{provider}/start` and `.../oauth2/{provider}/callback`
+        // (`crate::routes::oauth2_flow`) are the server-driven login
+        // flow's two legs; both count against the same login bucket as
+        // the popup-driven `auth-with-oauth2` rather than a new one.
+        "oauth2" => {
+            push("auth");
+            push("authWithOauth2");
+        }
         "request-otp"
         | "request-password-reset"
         | "confirm-password-reset"
@@ -374,7 +382,11 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
         | "confirm-verification"
         | "request-email-change"
         | "confirm-email-change"
-        | "impersonate" => push(&lower_camel(action)),
+        | "impersonate"
+        | "sessions"
+        | "auth-signout"
+        | "stop-impersonating"
+        | "ban" => push(&lower_camel(action)),
         _ => {}
     }
     tags

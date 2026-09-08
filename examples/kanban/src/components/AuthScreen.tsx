@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { describeError } from "../pocketbase";
+import { describeError } from "../cratebase";
 
 type Mode = "login" | "register";
 

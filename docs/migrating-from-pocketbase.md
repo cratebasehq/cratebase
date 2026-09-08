@@ -6,6 +6,11 @@ Cratebase instance. It reads PocketBase's `pb_data` directly (its SQLite
 file and its `storage/` folder) — no running PocketBase server is required,
 and nothing on the PocketBase side is modified.
 
+The migrated instance is a normal Cratebase server: the official
+`pocketbase` SDK keeps working unchanged against it, and
+`@cratebase/client`, Cratebase's first-party typed SDK, is also available
+for anyone starting fresh or wanting the extra typed surface.
+
 This document describes exactly what the command does, what it verifiably
 does and does not carry across, and walks through a real run against a real
 PocketBase v0.40.2 instance.

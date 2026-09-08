@@ -23,9 +23,11 @@ pub mod health;
 pub mod llm;
 pub mod logs;
 pub mod metrics;
+pub mod oauth2_flow;
 pub mod push;
 pub mod records;
 pub mod schema;
+pub mod session;
 pub mod settings;
 pub mod setup;
 pub mod sql_console;
@@ -53,6 +55,8 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(collections::router())
         .merge(records::router())
         .merge(auth::router())
+        .merge(oauth2_flow::router())
+        .merge(session::router())
         .merge(files::router())
         .merge(crate::realtime::router())
         .merge(batch::router())

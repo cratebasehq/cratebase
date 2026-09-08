@@ -1,0 +1,35 @@
+{
+  "name": "@cratebase/client",
+  "version": "0.1.0",
+  "description": "First-party typed TypeScript SDK for Cratebase: records, auth (password/OTP/OAuth2/MFA, cookie sessions, impersonation, bans), realtime, files, batch, and admin APIs.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cratebasehq/cratebase.git",
+    "directory": "sdk/js/client"
+  },
+  "homepage": "https://github.com/cratebasehq/cratebase/tree/main/sdk/js/client#readme",
+  "bugs": "https://github.com/cratebasehq/cratebase/issues",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2"
+  }
+}

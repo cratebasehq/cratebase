@@ -114,14 +114,16 @@ and registration is just `POST .../records` with `password`/
 
 Session tokens are stateless HS256 JWTs (`{collectionId, exp, id,
 refreshable, type}`) signed with `app secret + record.tokenKey +
-authToken.secret` — no server-side revocation list. Rotating a record's
-`tokenKey` (which every password or email change does) invalidates every
-outstanding session for that record without a lookup table; rotating the
-app-wide `AUTH_SECRET` invalidates everything at once. Verification,
-password-reset, and email-change tokens reuse the same signed-JWT
-machinery under a different `type` and their own `TokenConfig` secret,
-which is what makes them single-use for free: the same `tokenKey`
-rotation that ends a session also burns any outstanding one-shot token.
+authToken.secret`. Rotating a record's `tokenKey` (which every password
+or email change does) invalidates every outstanding session for that
+record without a lookup table; rotating the app-wide `AUTH_SECRET`
+invalidates everything at once. On top of that, targeted single-session
+revocation is layered in via the `_sessions` ledger described below.
+Verification, password-reset, and email-change tokens reuse the same
+signed-JWT machinery under a different `type` and their own
+`TokenConfig` secret, which is what makes them single-use for free: the
+same `tokenKey` rotation that ends a session also burns any outstanding
+one-shot token.
 
 Beyond password login, `crates/server/src/routes/auth.rs` implements the
 rest of PocketBase's auth surface on auth collections: email verification
@@ -132,6 +134,26 @@ and password reset (`request-`/`confirm-verification`,
 session, OAuth2 (Google/GitHub, `oauth2.rs`), superuser impersonation
 (`POST .../impersonate/{id}`), and best-effort new-location login alerts
 tracked in the `_authOrigins` collection.
+
+Sessions travel as either a bearer `Authorization` header or, when
+`SESSION_COOKIE=true`, an `HttpOnly` cookie set by the server on
+`auth-with-password`/`auth-with-otp`/`auth-with-oauth2`/`auth-refresh`;
+both transports are accepted on every authenticated request regardless of
+which one issued the session. Cookie mode also turns on a same-origin
+CSRF check on unsafe methods (`Origin` header must match) and enables
+CORS `allow_credentials`, so `CORS_ALLOW_ORIGINS` must be an explicit
+origin list rather than the default `*`.
+
+Because sessions are stateless JWTs, revoking one before its `exp` still
+needs somewhere to record that fact: `_sessions` is a system collection
+acting as a revocation ledger (one row per session, keyed by a digest of
+its token, tagged with `kind` — `password`/`otp`/`oauth2`/`impersonation`/
+`refresh`) that the token-verification hot path checks against an
+in-memory digest set kept in sync with the table, so a normal request
+never costs a DB round trip to confirm a session is still live — only
+`auth-signout`, `sessions.revoke*`, and banning (which also rotates the
+banned record's signing key, invalidating every session at once) touch
+the table and the in-memory set together.
 
 ## Realtime
 

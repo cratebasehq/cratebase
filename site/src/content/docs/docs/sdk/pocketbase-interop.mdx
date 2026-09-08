@@ -1,0 +1,36 @@
+---
+title: "PocketBase SDK interop"
+description: "Cratebase stays wire-compatible with the official pocketbase npm SDK."
+sidebar:
+  order: 8
+---
+
+Cratebase's API is byte-compatible with PocketBase v0.23+, and that
+compatibility is a first-class commitment, not an incidental side
+effect of `@cratebase/client`'s existence. The official
+[`pocketbase`](https://www.npmjs.com/package/pocketbase) npm package
+still works against a Cratebase instance unmodified — `getList`,
+`authWithPassword`, `subscribe`, and the rest all behave exactly as
+documented in PocketBase's own SDK docs. This is verified continuously
+by `tests/conformance`, which runs the real `pocketbase` SDK against a
+live Cratebase server.
+
+Stay on `pocketbase` if your project already uses it and has no
+pressing need to migrate, or if you specifically want parity-only
+behavior with no Cratebase-specific extensions in the client. There's
+no forced migration — nothing about `@cratebase/client` shipping
+changes what `pocketbase` does against this server.
+
+## Value-adds without switching clients
+
+`@cratebase/client` bundles Cratebase's vector/LLM/MCP/queue/presence
+surface in directly (`cb.vector`, `cb.llm`, `cb.mcp`, `cb.queue`,
+`cb.presence`). Projects staying on the official `pocketbase` SDK get
+the same surface from the separate
+[`@cratebase/extras`](https://www.npmjs.com/package/@cratebase/extras)
+package, layered on top of a `pocketbase` client instance instead of
+built in.
+
+See [Other official SDKs](/docs/getting-started/other-sdks/) for the
+full landscape — Dart and PocketBase's other official clients work
+the same way, unmodified, against Cratebase.

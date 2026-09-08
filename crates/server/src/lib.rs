@@ -27,6 +27,7 @@ pub mod api_keys;
 pub mod app;
 pub mod audit;
 pub mod config;
+pub mod cookie;
 pub mod cron;
 pub mod cron_jobs;
 mod dashboard;
@@ -48,6 +49,7 @@ pub mod realtime;
 #[cfg(test)]
 mod records_multi_file_tests;
 pub mod routes;
+pub mod sessions;
 pub mod store;
 pub mod teams;
 pub mod webhooks;
@@ -78,6 +80,14 @@ pub const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 /// the embedded dashboard, and PocketBase's error envelope on every
 /// fallback.
 pub fn router(app: App) -> Router {
+    let cfg = app.config();
+    if cfg.session_cookie && (cfg.origins.iter().any(|o| o == "*") || cfg.origins.is_empty()) {
+        tracing::warn!(
+            "SESSION_COOKIE is on with a wildcard CORS origin; browsers refuse credentialed \
+             cross-origin requests and the CSRF origin check will reject cross-site writes. \
+             Set CORS_ALLOW_ORIGINS to an explicit list."
+        );
+    }
     let api = routes::api_router(&app)
         // Order matters: the rate limiter runs *before* the handler but
         // after logging, so a 429 is logged like any other response.
@@ -85,22 +95,53 @@ pub fn router(app: App) -> Router {
             app.clone(),
             middleware::rate_limit::rate_limit,
         ))
+        // CSRF sits between the rate limiter and request logging: a
+        // rejected cross-site cookie write is still logged and counted
+        // in `/metrics` (both wrap this layer), but never spends a
+        // caller's rate-limit budget (rate limiting is *inside* this
+        // layer — reached only once CSRF has passed). See
+        // `middleware::csrf`'s module doc.
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            middleware::csrf::csrf,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),
             middleware::request_log::log_requests,
         ))
-        // Outermost of the three: counts what a caller actually
-        // received, including a 429 from the rate limiter, so
-        // `/metrics` reflects the real response mix rather than only
-        // what reached a handler.
+        // Outermost of the four: counts what a caller actually
+        // received, including a 429 from the rate limiter or a 403 from
+        // CSRF, so `/metrics` reflects the real response mix rather
+        // than only what reached a handler.
         .layer(axum::middleware::from_fn(routes::metrics::record_metrics));
+
+    // `pb_hooks` `routerAdd` routes (mounted at the root, unprefixed,
+    // exactly as registered, same as PocketBase) get the identical four
+    // layers as the `/api` nest above — a hook route (e.g. a public
+    // webhook receiver, or a downstream project's own custom
+    // subscribe/unsubscribe endpoint) is otherwise a fully anonymous,
+    // unauthenticated write with no per-caller rule of its own to fall
+    // back on: exactly the shape both rate limiting and CSRF exist to
+    // blunt. A rule/cookie with no matching path/tag/session is simply a
+    // no-op, so this changes nothing for an install with neither
+    // configured.
+    let js_routes = jsvm_host::js_router(&app)
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            middleware::rate_limit::rate_limit,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            middleware::csrf::csrf,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            middleware::request_log::log_requests,
+        ));
 
     Router::new()
         .nest("/api", api)
-        // `pb_hooks` `routerAdd` routes mount at the root, exactly as
-        // registered, same as PocketBase; empty when no JS route was
-        // ever registered.
-        .merge(jsvm_host::js_router(&app))
+        .merge(js_routes)
         .merge(dashboard::router())
         // Deliberately outside the `/api` nest and its rate-limit/
         // logging layers — see `routes::metrics` for why (Prometheus
@@ -112,7 +153,11 @@ pub fn router(app: App) -> Router {
         // 405 (verified against v0.40.2), so both fallbacks are the same.
         .method_not_allowed_fallback(http_error::not_found_fallback)
         .layer(TraceLayer::new_for_http())
-        .layer(middleware::cors::layer(&app.config().origins))
+        .layer(middleware::cors::layer(
+            &app.config().origins,
+            app.config().session_cookie,
+        ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
 }
+

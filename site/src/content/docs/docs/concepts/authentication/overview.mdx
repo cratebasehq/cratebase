@@ -14,3 +14,21 @@ server-side revocation list. Rotating a record's `tokenKey` (which every
 password or email change does) invalidates every outstanding session for
 that record without a lookup table; rotating the app-wide `AUTH_SECRET`
 invalidates every session at once, everywhere.
+
+## Token transport & revocation
+
+A session token travels one of two ways: as a bearer `Authorization`
+header (the default, and the only option for non-browser clients), or
+as an `HttpOnly` cookie when [cookie
+sessions](/docs/concepts/authentication/cookie-sessions/) are enabled
+server-side. `tokenKey`/`AUTH_SECRET` rotation still invalidates
+sessions the way described above regardless of transport, but that was
+previously the *only* way to end a session early — signing out was a
+client-side-only affair, clearing the local store while the token
+itself stayed valid until it expired on its own. `_sessions` tracking
+(on by default) adds real server-side enforcement on top: `POST
+auth-signout` now revokes the current session rather than just
+forgetting it locally, and `cb.auth.sessions.revoke/revokeOthers/
+revokeAll` end sessions on demand. See
+[Sessions](/docs/concepts/authentication/sessions/) for the full
+revocation model.

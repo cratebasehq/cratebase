@@ -5,7 +5,7 @@ import { useFlipOnChange, useFlipRegistry, FlipRegistryContext } from "../hooks/
 import type { AuthUser } from "../hooks/useAuth";
 import { STATUSES } from "../types";
 import type { CardRecord, Status } from "../types";
-import { describeError } from "../pocketbase";
+import { describeError } from "../cratebase";
 import { Column } from "./Column";
 import { PresenceBar } from "./PresenceBar";
 import { Avatar } from "./Avatar";

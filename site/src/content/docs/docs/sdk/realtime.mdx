@@ -1,0 +1,45 @@
+---
+title: "Realtime"
+description: "Subscribing from the TypeScript SDK — no EventSource, works server-side too."
+sidebar:
+  order: 4
+---
+
+```ts
+const unsubscribe = await cb.collection("posts").subscribe("*", (event) => {
+  console.log(event.action, event.record); // "create" | "update" | "delete"
+});
+
+// later
+unsubscribe();
+```
+
+`topic` is `"*"` (the whole collection) or a bare record id — matching
+the topic grammar described in [Realtime](/docs/concepts/realtime/).
+The third argument, `SubscribeOptions` (`filter`, `fields`, `expand`),
+scopes the subscription server-side:
+
+```ts
+await cb.collection("posts").subscribe(
+  "*",
+  (event) => console.log(event.record.title),
+  { filter: "published = true" },
+);
+```
+
+## No EventSource polyfill
+
+The SDK's realtime transport is built on `fetch` and a streamed
+`ReadableStream` response, not `EventSource`. That means:
+
+- No polyfill needed in any environment `fetch` runs in, including
+  Node/SSR — subscriptions work outside the browser, unlike
+  `EventSource`, which is browser-only without a shim.
+- The stream carries whatever auth the client already uses — bearer
+  token or session cookie — since it's an ordinary authenticated
+  `fetch` request, not `EventSource`'s cookie-only, header-less
+  connection.
+
+Subscriptions are still filtered server-side by the collection's
+`listRule`, so a subscriber never receives an event for a record it
+couldn't otherwise read.

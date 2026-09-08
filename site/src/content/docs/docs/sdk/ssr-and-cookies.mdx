@@ -1,0 +1,83 @@
+---
+title: "SSR & cookies"
+description: "Per-request clients for server-side rendering, and the server's own httpOnly cookie sessions."
+sidebar:
+  order: 7
+---
+
+There are two independent cookie mechanisms: the client-side pattern
+for hydrating a per-request SDK instance from whatever cookie your SSR
+framework already has, and the server's own httpOnly session cookie
+feature. Most projects only need one.
+
+## SSR: per-request client hydration
+
+For SSR frameworks (TanStack Start, Next.js RSC, SvelteKit), construct
+a fresh client per request and hydrate it from the incoming request's
+`Cookie` header via the `cookie` option:
+
+```ts
+import { createClient } from "@cratebase/client";
+
+const cb = createClient(process.env.CRATEBASE_URL!, {
+  cookie: request.headers.get("cookie") ?? "",
+});
+
+const posts = await cb.collection("posts").list();
+```
+
+To write a session back into your framework's own cookie handling
+(rather than relying on the server's cookie sessions below), use
+`exportCookie()`:
+
+```ts
+setCookie(cb.auth.exportCookie("my_app_session"));
+```
+
+`exportCookie(name = "cb_session")` returns a `Set-Cookie`-shaped
+string (`HttpOnly`, `Path=/`, `SameSite=Lax`) for a host framework's
+own cookie API to apply.
+
+## Server-side cookie sessions
+
+Separately, the server itself can issue and manage an httpOnly session
+cookie, so a browser client never has to hold or attach a bearer token
+at all. This is boot-time configuration, not a runtime `Settings`
+field:
+
+| env | default | flag |
+|---|---|---|
+| `SESSION_COOKIE` | `false` | `--session-cookie` |
+| `SESSION_COOKIE_NAME` | `cb_session` | `--session-cookie-name` |
+| `SESSION_COOKIE_DOMAIN` | unset (host-only) | `--session-cookie-domain` |
+| `SESSION_COOKIE_SAMESITE` | `Lax` (`Lax`\|`Strict`\|`None`) | `--session-cookie-samesite` |
+| `SESSION_COOKIE_SECURE` | `true` | `--session-cookie-secure` |
+| `SESSION_TRACKING` | `true` | `--session-tracking` |
+
+With `SESSION_COOKIE=true`, `auth-with-password`/`auth-with-otp`/
+`auth-with-oauth2`/`auth-refresh` also set the session cookie, and
+`signIn.social({ mode: "redirect" | "popup" })` becomes available —
+those modes need the server to land the session in a cookie itself,
+since there's no bearer token for the client to receive mid-redirect.
+
+Enabling the cookie also enables `allow_credentials` on CORS, so
+`CORS_ALLOW_ORIGINS` must be an explicit origin list — the server
+refuses to boot if it's still the default `*` combined with
+`allow_credentials(true)`.
+
+A same-origin CSRF check on unsafe methods (`POST`/`PATCH`/`DELETE`/
+etc.) rejects a cookie-borne request whose `Origin` header doesn't
+match, with `403 "Cross-site request rejected."`. A bearer-token
+request is unaffected — an attacker controlling the `Authorization`
+header already has the token, so there's nothing a CSRF check adds.
+
+### Which to prefer
+
+Prefer server-side cookie sessions when the client is a browser talking
+directly to Cratebase and you want zero token handling in JS at all —
+`SESSION_COOKIE=true` plus `credentials: "include"` (the client default
+is `"same-origin"`, override it if the app is cross-origin) is enough.
+Prefer the SSR per-request hydration pattern above when a host
+framework (Next.js, TanStack Start, SvelteKit) already owns its own
+cookie/session story and you just need a Cratebase client scoped to
+one incoming request.

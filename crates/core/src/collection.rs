@@ -731,6 +731,109 @@ impl Collection {
             "CREATE UNIQUE INDEX `idx_authOrigins_unique_pairs` ON `_authOrigins` (collectionRef, recordRef, fingerprint)".into(),
         ];
 
+        // Session ledger: one row per minted auth token (password/otp/
+        // oauth2/impersonation/refresh), letting a session be listed and
+        // revoked without touching the stateless token verification path
+        // (`crates/server/src/extract.rs`). `tokenHash` is `sha256(token)`,
+        // never the raw token — session identity is derived the same way
+        // an incoming request re-derives it, so nothing here can be used
+        // to forge a session. `list_rule`/`view_rule` let a record see its
+        // own sessions; `create_rule`/`update_rule`/`delete_rule` stay
+        // `None` (superuser-only) because the only intended mutation path
+        // is `crates/server/src/sessions.rs`'s own functions, called from
+        // the auth/session routes — not a second, rule-driven write path
+        // that would have to be kept in sync with them.
+        let mut sessions = Collection::new("_sessions", CollectionType::Base);
+        sessions.system = true;
+        sessions.list_rule = owner_rule.clone();
+        sessions.view_rule = owner_rule.clone();
+        let mut s_token_hash = text("tokenHash");
+        s_token_hash.hidden = true;
+        let s_kind = text("kind");
+        let s_fingerprint = text("fingerprint");
+        let mut s_ip = text("ip");
+        s_ip.required = false;
+        let mut s_user_agent = text("userAgent");
+        s_user_agent.required = false;
+        let mut s_expires_at = Field::new(
+            "expiresAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        s_expires_at.system = true;
+        s_expires_at.required = true;
+        let mut s_last_seen_at = Field::new(
+            "lastSeenAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        s_last_seen_at.system = true;
+        s_last_seen_at.required = false;
+        let mut s_revoked = Field::new("revoked", FieldKind::Bool {});
+        s_revoked.system = true;
+        let pos = sessions.fields.len() - 2;
+        sessions.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                s_token_hash,
+                s_kind,
+                s_fingerprint,
+                s_ip,
+                s_user_agent,
+                s_expires_at,
+                s_last_seen_at,
+                s_revoked,
+            ],
+        );
+        sessions.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_sessions_token` ON `_sessions` (tokenHash)".into(),
+            "CREATE INDEX `idx_sessions_record` ON `_sessions` (collectionRef, recordRef)".into(),
+        ];
+
+        // Bans: superuser-only end to end (never listable/viewable by
+        // the banned record itself, unlike `_sessions`/`_authOrigins` —
+        // a banned user has no reason to see why). `active_ban` in
+        // `crates/server/src/routes/session.rs` reads this table
+        // directly; there is no rule-driven path a client could use to
+        // ban/unban itself.
+        let mut bans = Collection::new("_bans", CollectionType::Base);
+        bans.system = true;
+        let mut b_reason = text("reason");
+        b_reason.required = false;
+        let mut b_expires_at = Field::new(
+            "expiresAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        b_expires_at.system = true;
+        b_expires_at.required = false;
+        let mut b_banned_by = text("bannedBy");
+        b_banned_by.system = true;
+        b_banned_by.required = false;
+        let pos = bans.fields.len() - 2;
+        bans.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                b_reason,
+                b_expires_at,
+                b_banned_by,
+            ],
+        );
+        bans.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_bans_unique_pairs` ON `_bans` (collectionRef, recordRef)"
+                .into(),
+        ];
+
         // Superuser-only end to end (list/view/create/update/delete all
         // stay at `Collection::new`'s default `None`) — a custom cron
         // job runs arbitrary SQL on a schedule with no rule enforcement
@@ -1088,6 +1191,8 @@ impl Collection {
             mfas,
             otps,
             origins,
+            sessions,
+            bans,
             cron_jobs,
             webhooks,
             teams,
@@ -1246,6 +1351,8 @@ mod tests {
                 "pbc_2279338944",
                 "pbc_1638494021",
                 crate::ids::collection_id("base", "_authOrigins").as_str(),
+                crate::ids::collection_id("base", "_sessions").as_str(),
+                crate::ids::collection_id("base", "_bans").as_str(),
                 crate::ids::collection_id("base", "_cron_jobs").as_str(),
                 crate::ids::collection_id("base", "_webhooks").as_str(),
                 crate::ids::collection_id("base", "_teams").as_str(),
