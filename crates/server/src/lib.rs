@@ -160,4 +160,3 @@ pub fn router(app: App) -> Router {
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
 }
-

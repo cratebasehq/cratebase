@@ -121,7 +121,10 @@ fn redirect_is_trusted(redirect: &str, app_url: &str, extra_origins: &[String]) 
 /// providers reject a token exchange whose `redirect_uri` doesn't match
 /// the one the authorize request used byte-for-byte.
 fn callback_url(app_url: &str, collection: &str, provider: &str) -> String {
-    format!("{}/api/collections/{collection}/oauth2/{provider}/callback", app_url.trim_end_matches('/'))
+    format!(
+        "{}/api/collections/{collection}/oauth2/{provider}/callback",
+        app_url.trim_end_matches('/')
+    )
 }
 
 fn append_query(url: &str, key: &str, value: &str) -> String {
@@ -148,7 +151,8 @@ async fn start(
         return Err(ApiError::bad_request("Untrusted redirect target."));
     }
 
-    let bail = |code: &str| Ok(Redirect::to(&append_query(&q.redirect, "cb_error", code)).into_response());
+    let bail =
+        |code: &str| Ok(Redirect::to(&append_query(&q.redirect, "cb_error", code)).into_response());
 
     if !cfg.session_cookie {
         return bail("cookie_sessions_disabled");
@@ -237,9 +241,15 @@ async fn callback(
         return Err(ApiError::bad_request("Invalid or expired OAuth2 state."));
     }
     let state_provider = claims.extra_str("provider").unwrap_or_default().to_string();
-    let code_verifier = claims.extra_str("codeVerifier").unwrap_or_default().to_string();
+    let code_verifier = claims
+        .extra_str("codeVerifier")
+        .unwrap_or_default()
+        .to_string();
     let redirect = claims.extra_str("redirect").unwrap_or_default().to_string();
-    let create_data_b64 = claims.extra_str("createData").unwrap_or_default().to_string();
+    let create_data_b64 = claims
+        .extra_str("createData")
+        .unwrap_or_default()
+        .to_string();
     if state_provider != provider {
         return Err(ApiError::bad_request("Invalid or expired OAuth2 state."));
     }
@@ -290,8 +300,7 @@ async fn callback(
         MfaGate::Passed => outcome.record,
     };
 
-    let origin =
-        record_login_origin(&app, &collection, &record, &parts.headers, peer).await;
+    let origin = record_login_origin(&app, &collection, &record, &parts.headers, peer).await;
 
     let (token, record) = crate::routes::auth::mint_and_record(
         &app,

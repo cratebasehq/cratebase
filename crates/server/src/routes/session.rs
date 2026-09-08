@@ -14,7 +14,6 @@
 //! target's `tokenKey` and revokes every `_sessions` row, so a ban locks
 //! out live sessions too, not just future logins.
 
-
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -46,10 +45,7 @@ pub fn router() -> Router<App> {
             "/collections/{collection}/sessions/revoke-all",
             post(revoke_all),
         )
-        .route(
-            "/collections/{collection}/auth-signout",
-            post(auth_signout),
-        )
+        .route("/collections/{collection}/auth-signout", post(auth_signout))
         .route(
             "/collections/{collection}/stop-impersonating",
             post(stop_impersonating),
@@ -145,12 +141,13 @@ async fn revoke_session(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
     let mut response = axum::http::StatusCode::NO_CONTENT.into_response();
-    let is_current = is_own && sessions::hex(&sessions::digest(&auth.token)) == {
-        // Re-derive rather than re-query: the row is already gone from
-        // the "live" set, but its hash is still exactly `digest(token)`
-        // when it was the caller's own current session.
-        sessions::hex(&sessions::digest(&auth.token))
-    };
+    let is_current = is_own
+        && sessions::hex(&sessions::digest(&auth.token)) == {
+            // Re-derive rather than re-query: the row is already gone from
+            // the "live" set, but its hash is still exactly `digest(token)`
+            // when it was the caller's own current session.
+            sessions::hex(&sessions::digest(&auth.token))
+        };
     if is_current && app.config().session_cookie {
         crate::cookie::attach(
             response.headers_mut(),
@@ -198,9 +195,14 @@ async fn auth_signout(
     auth: Auth,
 ) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
-    sessions::revoke_digest(&app, &collection.id, &auth.id, &sessions::digest(&auth.token))
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    sessions::revoke_digest(
+        &app,
+        &collection.id,
+        &auth.id,
+        &sessions::digest(&auth.token),
+    )
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?;
     let mut response = axum::http::StatusCode::NO_CONTENT.into_response();
     if app.config().session_cookie {
         crate::cookie::attach(
@@ -218,7 +220,10 @@ async fn auth_signout(
 /// SDK just keeps the caller's original store in memory).
 pub(crate) const PREV_SESSION_COOKIE: &str = "cb_session_prev";
 
-async fn stop_impersonating(State(app): State<App>, parts: axum::http::request::Parts) -> ApiResult<Response> {
+async fn stop_impersonating(
+    State(app): State<App>,
+    parts: axum::http::request::Parts,
+) -> ApiResult<Response> {
     let cfg = app.config();
     let Some(prev_token) = crate::cookie::get(&parts, PREV_SESSION_COOKIE).map(str::to_string)
     else {
@@ -241,8 +246,7 @@ async fn stop_impersonating(State(app): State<App>, parts: axum::http::request::
     cratebase_auth::verify(&prev_token, &key)
         .map_err(|_| ApiError::bad_request("No impersonation session to stop."))?;
 
-    let serialized =
-        common::enrich_and_serialize(&app, &collection, record, None, true).await?;
+    let serialized = common::enrich_and_serialize(&app, &collection, record, None, true).await?;
     let mut response = Json(json!({ "record": serialized })).into_response();
     let ttl = collection.auth.auth_token.duration.max(1);
     crate::cookie::attach(

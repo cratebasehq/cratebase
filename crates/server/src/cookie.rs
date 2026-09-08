@@ -17,7 +17,11 @@ use crate::config::Config;
 /// present. Cookies are `;`-separated `name=value` pairs with optional
 /// surrounding whitespace (RFC 6265 §4.2.1).
 pub fn get<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
-    let raw = parts.headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    let raw = parts
+        .headers
+        .get(axum::http::header::COOKIE)?
+        .to_str()
+        .ok()?;
     raw.split(';').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
         (k.trim() == name).then(|| v.trim())
@@ -29,7 +33,10 @@ pub fn get<'a>(parts: &'a Parts, name: &str) -> Option<&'a str> {
 /// `Max-Age` of `max_age` seconds (0 or negative clears it — the same
 /// convention `clear_session` uses with an empty value).
 pub fn build(cfg: &Config, name: &str, value: &str, max_age: i64, path: &str) -> HeaderValue {
-    let mut out = format!("{name}={value}; Path={path}; HttpOnly; SameSite={}", cfg.session_cookie_same_site.as_str());
+    let mut out = format!(
+        "{name}={value}; Path={path}; HttpOnly; SameSite={}",
+        cfg.session_cookie_same_site.as_str()
+    );
     out.push_str(&format!("; Max-Age={}", max_age.max(0)));
     if cfg.session_cookie_secure {
         out.push_str("; Secure");
@@ -88,7 +95,10 @@ mod tests {
         let mut cfg = Config::memory("/tmp/x");
         cfg.session_cookie_secure = true;
         cfg.session_cookie_domain = "example.com".into();
-        let v = build(&cfg, "cb_session", "tok", 3600, "/").to_str().unwrap().to_string();
+        let v = build(&cfg, "cb_session", "tok", 3600, "/")
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(v.contains("HttpOnly"));
         assert!(v.contains("Secure"));
         assert!(v.contains("SameSite=Lax"));

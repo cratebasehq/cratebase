@@ -80,7 +80,9 @@ pub async fn csrf(State(app): State<App>, req: Request, next: Next) -> Response 
     }
     let (parts, body) = req.into_parts();
     let protects = !is_safe_method(&parts)
-        && !parts.headers.contains_key(axum::http::header::AUTHORIZATION)
+        && !parts
+            .headers
+            .contains_key(axum::http::header::AUTHORIZATION)
         && crate::cookie::get(&parts, &cfg.session_cookie_name).is_some();
     if protects && !origin_allowed(&parts, &app) {
         return ApiError::forbidden("Cross-site request rejected.").into_response();
@@ -147,7 +149,10 @@ mod tests {
         let app = App::new(cfg);
         let p = parts(
             Method::POST,
-            &[("host", "example.com"), ("origin", "https://trusted.example")],
+            &[
+                ("host", "example.com"),
+                ("origin", "https://trusted.example"),
+            ],
         );
         assert!(origin_allowed(&p, &app));
     }

@@ -252,9 +252,16 @@ async fn auth_with_password(
 
     let origin = record_login_origin(&app, &collection, &record, &headers, peer).await;
 
-    respond_with_token(&app, &collection, record, info, raw, |hooks| {
-        &hooks.on_record_auth_with_password_request
-    }, Some(("password", origin)), None)
+    respond_with_token(
+        &app,
+        &collection,
+        record,
+        info,
+        raw,
+        |hooks| &hooks.on_record_auth_with_password_request,
+        Some(("password", origin)),
+        None,
+    )
     .await
 }
 
@@ -384,9 +391,7 @@ async fn auth_refresh(
                 true,
             )
             .await?;
-            return Ok(
-                Json(json!({ "token": auth.token, "record": serialized })).into_response()
-            );
+            return Ok(Json(json!({ "token": auth.token, "record": serialized })).into_response());
         }
     }
 
@@ -428,7 +433,6 @@ async fn auth_refresh(
     )
     .await
 }
-
 
 async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiResult<Json<Value>> {
     let collection = app
@@ -493,7 +497,9 @@ pub(crate) fn provider_auth_url(
     let auth_url = if !config.auth_url.is_empty() {
         config.auth_url.as_str()
     } else {
-        known.map(cratebase_auth::KnownProvider::auth_url).unwrap_or("")
+        known
+            .map(cratebase_auth::KnownProvider::auth_url)
+            .unwrap_or("")
     };
     let scope = config
         .extra
@@ -516,7 +522,8 @@ pub(crate) fn provider_auth_url(
             .append_pair("code_challenge", code_challenge)
             .append_pair("code_challenge_method", "S256");
     }
-    url.query_pairs_mut().append_pair("redirect_uri", redirect_uri);
+    url.query_pairs_mut()
+        .append_pair("redirect_uri", redirect_uri);
     Some(url.to_string())
 }
 
@@ -559,11 +566,11 @@ fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
     })
 }
 
-
 /// Mint the session token, run the auth hooks, best-effort record a
 /// `_sessions` row (when `session` is given) and render `{token,
 /// record}` plus whatever `extra` fields the caller wants merged in
 /// (`auth-with-oauth2`'s `meta`).
+#[allow(clippy::too_many_arguments)]
 async fn respond_with_token(
     app: &App,
     collection: &Arc<Collection>,
@@ -575,7 +582,8 @@ async fn respond_with_token(
     extra: Option<Value>,
 ) -> ApiResult<Response> {
     let info_auth = info.auth.clone();
-    let (token, record) = mint_and_record(app, collection, record, info, body, hook, session).await?;
+    let (token, record) =
+        mint_and_record(app, collection, record, info, body, hook, session).await?;
     // The owner of a session always sees their own address.
     let serialized = common::enrich_and_serialize(app, collection, record, info_auth, true).await?;
     let mut rendered = json!({ "token": token, "record": serialized });
@@ -1439,9 +1447,16 @@ async fn auth_with_otp(
 
     let origin = record_login_origin(&app, &collection, &record, &headers, peer).await;
 
-    respond_with_token(&app, &collection, record, info, raw, |hooks| {
-        &hooks.on_record_auth_with_otp_request
-    }, Some(("otp", origin)), None)
+    respond_with_token(
+        &app,
+        &collection,
+        record,
+        info,
+        raw,
+        |hooks| &hooks.on_record_auth_with_otp_request,
+        Some(("otp", origin)),
+        None,
+    )
     .await
 }
 
@@ -1567,6 +1582,7 @@ pub(crate) struct Oauth2Outcome {
 /// redirect flow can never diverge from the security-critical decisions
 /// in [`resolve_oauth2_record`] (pre-hijacking protection, `createRule`
 /// enforcement, `_externalAuths` linking).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn complete_oauth2(
     app: &App,
     collection: &Arc<Collection>,
@@ -1581,7 +1597,12 @@ pub(crate) async fn complete_oauth2(
     if !collection.auth.oauth2.enabled {
         return Err(ApiError::forbidden(OAUTH2_DISABLED));
     }
-    let Some(config) = collection.auth.oauth2.providers.iter().find(|p| p.name == provider)
+    let Some(config) = collection
+        .auth
+        .oauth2
+        .providers
+        .iter()
+        .find(|p| p.name == provider)
     else {
         let mut errors = BTreeMap::new();
         errors.insert(
@@ -2251,11 +2272,8 @@ async fn impersonate(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    let ip = crate::middleware::client_ip::client_ip(
-        &headers,
-        peer.0,
-        &app.settings().trusted_proxy,
-    );
+    let ip =
+        crate::middleware::client_ip::client_ip(&headers, peer.0, &app.settings().trusted_proxy);
     let fingerprint = cratebase_auth::auth_origin_fingerprint(&user_agent, &ip);
     let origin = sessions::OriginContext {
         fingerprint,
