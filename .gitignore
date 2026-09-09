@@ -41,6 +41,10 @@ tools/schema-codegen/dist
 # above: a real npm build artifact, rebuilt fresh by CI before publish.
 sdk/js/client/dist
 
+# @cratebase/react's dist/ — same reasoning as client/extras/schema-codegen
+# above: a real npm build artifact, rebuilt fresh by CI before publish.
+sdk/js/react/dist
+
 # TypeScript incremental build info for the zero-build example apps
 # (examples/kanban's own tsconfig `-b` run) — a local build cache, not
 # something to commit.

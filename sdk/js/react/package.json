@@ -1,0 +1,42 @@
+{
+  "name": "@cratebase/react",
+  "version": "0.1.0",
+  "description": "First-party React hooks for @cratebase/client: useAuth, useRecords, useRecord, and useSubscription. Bolts onto an existing CratebaseClient instance rather than replacing it.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cratebasehq/cratebase.git",
+    "directory": "sdk/js/react"
+  },
+  "homepage": "https://github.com/cratebasehq/cratebase/tree/main/sdk/js/react#readme",
+  "bugs": "https://github.com/cratebasehq/cratebase/issues",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@cratebase/client": "^0.1.0",
+    "react": "^18 || ^19"
+  },
+  "devDependencies": {
+    "@cratebase/client": "^0.1.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "~6.0.2"
+  }
+}

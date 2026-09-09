@@ -1,0 +1,30 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "@cratebase/react",
+      "devDependencies": {
+        "@cratebase/client": "^0.1.0",
+        "@types/react": "^19.0.0",
+        "react": "^19.0.0",
+        "typescript": "~6.0.2",
+      },
+      "peerDependencies": {
+        "@cratebase/client": "^0.1.0",
+        "react": "^18 || ^19",
+      },
+    },
+  },
+  "packages": {
+    "@cratebase/client": ["@cratebase/client@0.1.0", "", {}, "sha512-owq/YwdsrDUUDSD0W24/76SBeB6HFypP8nbn5DjwP2E2OjVnRZI6undqb/AtziDBeNDhQIYcpYbq5XqaYvXCOQ=="],
+
+    "@types/react": ["@types/react@19.2.18", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w=="],
+
+    "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
+
+    "react": ["react@19.2.8", "", {}, "sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw=="],
+
+    "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
+  }
+}
