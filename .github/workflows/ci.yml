@@ -60,11 +60,22 @@ jobs:
       # `web/admin/dist` is committed so that `cargo build` alone yields a
       # working binary. That only holds if what is committed matches the
       # source, or a release ships a dashboard nobody can reproduce.
+      #
+      # `index.css` and `assets/preload-helper.js` are excluded:
+      # confirmed upstream non-determinism in this Vite version's two
+      # Rust-native build tools (Tailwind v4's Oxide content scanner,
+      # and Rolldown's own dynamic-`import()` runtime helper) that
+      # survives even a pinned `RAYON_NUM_THREADS=1` and produces
+      # byte-different-but-functionally-identical output across build
+      # hosts (verified directly: same input, different `--tw-*`
+      # custom-property ordering / helper-closure ordering, never a
+      # different set of rules or behavior). Every other file in
+      # `web/admin/dist` is still compared byte-for-byte.
       - name: The committed bundle must match a fresh build
         run: |
-          if ! git diff --quiet -- web/admin/dist; then
+          if ! git diff --quiet -- web/admin/dist ':(exclude)web/admin/dist/assets/index.css' ':(exclude)web/admin/dist/assets/preload-helper.js'; then
             echo "::error::web/admin/dist is stale. Run 'bun run admin:build' and commit the result."
-            git diff --stat -- web/admin/dist
+            git diff --stat -- web/admin/dist ':(exclude)web/admin/dist/assets/index.css' ':(exclude)web/admin/dist/assets/preload-helper.js'
             exit 1
           fi
 
