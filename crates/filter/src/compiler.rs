@@ -199,6 +199,18 @@ impl<'a> Compiler<'a> {
                                 multi_match,
                             )
                         }
+                        MacroTerm::BodyRelation {
+                            value,
+                            multi,
+                            target,
+                            path: rel,
+                        } => {
+                            let key = self.push_param(value);
+                            let r = self
+                                .paths
+                                .resolve_body_relation(key, multi, target, &rel, path)?;
+                            self.field_term(r, *modifier, path, None, &rel, multi_match)
+                        }
                     };
                 }
                 let r = self.paths.resolve(path)?;

@@ -393,9 +393,9 @@ fn eval_operand(
                     } else {
                         EvalTerm::Scalar(value)
                     }),
-                    MacroTerm::Collection { .. } => Err(FilterError::Unsupported(format!(
-                        "'{path}' requires SQL evaluation"
-                    ))),
+                    MacroTerm::Collection { .. } | MacroTerm::BodyRelation { .. } => Err(
+                        FilterError::Unsupported(format!("'{path}' requires SQL evaluation")),
+                    ),
                 };
             }
             eval_field(path, *modifier, record, ctx)

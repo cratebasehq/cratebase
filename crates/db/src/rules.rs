@@ -360,4 +360,157 @@ mod tests {
                 .unwrap()
         );
     }
+
+    /// GH #18: `createRule` combining `@request.body.<relation> =
+    /// @request.auth.<relation>` with `@request.body.<relation>.<field> =
+    /// @request.auth.<field>` — a child collection creating into any
+    /// sibling row that shares the caller's own scope, not just the
+    /// caller's default relation target. Reproduces the reported
+    /// multi-outlet `customers`/`shops`/`businesses` schema.
+    #[tokio::test]
+    async fn create_rule_body_relation_dot_path_scopes_to_callers_business() {
+        let db = Db::memory().await.unwrap();
+        let store = CollectionStore::new();
+
+        let businesses = Collection::new("businesses", CollectionType::Base);
+
+        let mut shops = Collection::new("shops", CollectionType::Base);
+        shops.fields.insert(
+            0,
+            Field::new(
+                "business",
+                FieldKind::Relation {
+                    collection_id: businesses.id.clone(),
+                    cascade_delete: false,
+                    min_select: 0,
+                    max_select: 1,
+                },
+            ),
+        );
+
+        let mut users = Collection::default_users();
+        let pos = users.fields.len() - 2;
+        users.fields.insert(
+            pos,
+            Field::new(
+                "shop",
+                FieldKind::Relation {
+                    collection_id: shops.id.clone(),
+                    cascade_delete: false,
+                    min_select: 0,
+                    max_select: 1,
+                },
+            ),
+        );
+        users.fields.insert(
+            pos + 1,
+            Field::new(
+                "business",
+                FieldKind::Relation {
+                    collection_id: businesses.id.clone(),
+                    cascade_delete: false,
+                    min_select: 0,
+                    max_select: 1,
+                },
+            ),
+        );
+
+        let mut customers = Collection::new("customers", CollectionType::Base);
+        customers.fields.insert(
+            0,
+            Field::new(
+                "shop",
+                FieldKind::Relation {
+                    collection_id: shops.id.clone(),
+                    cascade_delete: false,
+                    min_select: 0,
+                    max_select: 1,
+                },
+            ),
+        );
+
+        store.replace(vec![businesses, shops, users, customers]);
+        let shops = store.get("shops").unwrap();
+        let customers = store.get("customers").unwrap();
+        let users = store.get("users").unwrap();
+
+        db.execute(
+            &crate::schema::create_table_sql(db.backend, &shops).unwrap(),
+            &[],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO shops (id, business) VALUES ('shop1', 'biz1')",
+            &[],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO shops (id, business) VALUES ('shop2', 'biz1')",
+            &[],
+        )
+        .await
+        .unwrap();
+        db.execute(
+            "INSERT INTO shops (id, business) VALUES ('shop3', 'biz2')",
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let create_rule = Some(
+            "@request.body.shop = @request.auth.shop || \
+             (@request.auth.business != \"\" && @request.body.shop.business = @request.auth.business)"
+                .to_string(),
+        );
+
+        let mut owner = Record::new(users);
+        owner.set_id("owner1");
+        owner.set("shop", Value::String("shop1".into()));
+        owner.set("business", Value::String("biz1".into()));
+
+        // Same-shop create: the plain `@request.body.shop = @request.auth.shop`
+        // clause already covers this.
+        let ctx = RequestContext {
+            body: json!({"shop": "shop1"}).as_object().cloned().unwrap(),
+            auth: Some(AuthContext::new(owner.clone())),
+            ..Default::default()
+        };
+        let r = CollectionResolver::new(customers.clone(), &store, &ctx, Dialect::Sqlite);
+        assert!(check_create_rule(&db, &r, &create_rule).await.unwrap());
+
+        // Secondary outlet under the *same* business: this is the bug —
+        // `@request.body.shop.business` must resolve against the
+        // submitted `shop2`, not the caller's own row.
+        let ctx = RequestContext {
+            body: json!({"shop": "shop2"}).as_object().cloned().unwrap(),
+            auth: Some(AuthContext::new(owner.clone())),
+            ..Default::default()
+        };
+        let r = CollectionResolver::new(customers.clone(), &store, &ctx, Dialect::Sqlite);
+        assert!(check_create_rule(&db, &r, &create_rule).await.unwrap());
+
+        // A shop under a *different* business is still rejected.
+        let ctx = RequestContext {
+            body: json!({"shop": "shop3"}).as_object().cloned().unwrap(),
+            auth: Some(AuthContext::new(owner.clone())),
+            ..Default::default()
+        };
+        let r = CollectionResolver::new(customers.clone(), &store, &ctx, Dialect::Sqlite);
+        assert!(!check_create_rule(&db, &r, &create_rule).await.unwrap());
+
+        // A solo owner with no `business` set at all stays scoped to their
+        // own shop only (the `@request.auth.business != ""` guard).
+        let mut solo = Record::new(store.get("users").unwrap());
+        solo.set_id("owner2");
+        solo.set("shop", Value::String("shop1".into()));
+        let ctx = RequestContext {
+            body: json!({"shop": "shop2"}).as_object().cloned().unwrap(),
+            auth: Some(AuthContext::new(solo)),
+            ..Default::default()
+        };
+        let r = CollectionResolver::new(customers, &store, &ctx, Dialect::Sqlite);
+        assert!(!check_create_rule(&db, &r, &create_rule).await.unwrap());
+    }
 }
