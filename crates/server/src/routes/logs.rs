@@ -99,23 +99,28 @@ async fn stats(
     // of rows. `$1` is reserved for the cutoff; the user filter (if any)
     // is compiled starting at `$2`.
     let hours = query.hours.unwrap_or(24).clamp(1, 24 * 30);
-    let since = cratebase_core::DateTime::from_utc(chrono::Utc::now() - chrono::Duration::hours(hours));
+    let since =
+        cratebase_core::DateTime::from_utc(chrono::Utc::now() - chrono::Duration::hours(hours));
     let filter = match compile_filter(query.filter.as_deref(), 1)? {
         Some((sql, params)) => {
             let mut bound = vec![Sql::Text(since.to_pb_string())];
             bound.extend(params);
             (format!("({sql}) AND \"created\" >= $1"), bound)
         }
-        None => (r#""created" >= $1"#.to_string(), vec![Sql::Text(since.to_pb_string())]),
+        None => (
+            r#""created" >= $1"#.to_string(),
+            vec![Sql::Text(since.to_pb_string())],
+        ),
     };
-    Ok(Json(
-        logs::stats(&*app.db().logs, Some(filter)).await?,
-    ))
+    Ok(Json(logs::stats(&*app.db().logs, Some(filter)).await?))
 }
 
 /// Compile a PocketBase filter expression into the `(WHERE, params)` pair
 /// `cratebase_db::logs` expects.
-fn compile_filter(filter: Option<&str>, param_offset: usize) -> Result<Option<logs::Filter>, ApiError> {
+fn compile_filter(
+    filter: Option<&str>,
+    param_offset: usize,
+) -> Result<Option<logs::Filter>, ApiError> {
     let Some(src) = filter.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
