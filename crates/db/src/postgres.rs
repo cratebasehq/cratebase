@@ -99,6 +99,13 @@ pub(crate) fn map_err(e: tokio_postgres::Error) -> DbError {
         if code.starts_with("23") {
             return DbError::Constraint(db.message().to_string());
         }
+        // Every other server-reported error keeps the SQLSTATE and the
+        // message. `tokio_postgres::Error`'s own Display is the bare
+        // string "db error" for all of these, which once surfaced a
+        // failed `CREATE VIEW` (an unquoted camelCase column folding to
+        // lowercase) as the undiagnosable `Raw error: db error` of
+        // issue #22.
+        return DbError::Other(format!("db error {code}: {}", db.message()));
     }
     DbError::Postgres(e)
 }

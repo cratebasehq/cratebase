@@ -24,8 +24,9 @@
 //! the same hash from the bearer token it already has, so no session
 //! identifier ever needs to travel anywhere new.
 
+use cratebase_core::codes;
 use cratebase_core::{Collection, Record};
-use cratebase_db::{records, Executor, Sql};
+use cratebase_db::{records, DbError, Executor, Sql};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -104,7 +105,46 @@ pub async fn record(
     );
     row.set("revoked", Value::Bool(false));
     if let Err(e) = records::create(app.db(), &app.db().collections, &mut row).await {
-        tracing::warn!(error = %e, "failed to record session");
+        if is_same_token(&e) {
+            // The claim set is frozen and `exp` has 1-second resolution
+            // (`routes::auth`'s module doc), so two mints for the same
+            // record inside the same wall-clock second produce
+            // byte-identical tokens. The ledger row for that exact token
+            // already exists and is still live — a duplicate insert is
+            // the token being re-recorded, not a failure worth a WARN.
+            tracing::debug!("session already recorded for this token");
+        } else {
+            tracing::warn!(error = describe(&e), "failed to record session");
+        }
+    }
+}
+
+/// Whether the insert failed only because `tokenHash` is already in the
+/// ledger — the unique index `idx_sessions_token`, mapped onto a
+/// `validation_not_unique` error by the write path.
+fn is_same_token(e: &DbError) -> bool {
+    match e {
+        DbError::Validation(fields) => {
+            fields.len() == 1
+                && fields
+                    .get("tokenHash")
+                    .is_some_and(|f| f.code == codes::NOT_UNIQUE)
+        }
+        _ => false,
+    }
+}
+
+/// `DbError::Validation`'s Display is the bare string "validation failed";
+/// a swallowed session record is diagnosed only from this one log line, so
+/// spell out which field failed and why.
+fn describe(e: &DbError) -> String {
+    match e {
+        DbError::Validation(fields) => fields
+            .iter()
+            .map(|(name, fe)| format!("{name}: {} ({})", fe.code, fe.message))
+            .collect::<Vec<_>>()
+            .join("; "),
+        other => other.to_string(),
     }
 }
 
@@ -347,4 +387,46 @@ pub async fn list_for(app: &App, collection_id: &str, record_id: &str) -> anyhow
             expires_at: r.get_str("expiresAt").unwrap_or_default().to_string(),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cratebase_core::FieldError;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn a_duplicate_token_hash_is_the_same_token() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "tokenHash".to_string(),
+            FieldError::new(codes::NOT_UNIQUE, "Value must be unique."),
+        );
+        assert!(is_same_token(&DbError::Validation(fields)));
+
+        // Any other validation failure is a real one: a required field
+        // left blank (the auth-refresh empty fingerprint, for one) must
+        // keep warning.
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "fingerprint".to_string(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
+        assert!(!is_same_token(&DbError::Validation(fields)));
+        assert!(!is_same_token(&DbError::NotFound));
+    }
+
+    #[test]
+    fn validation_errors_are_described_field_by_field() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "fingerprint".to_string(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
+        assert_eq!(
+            describe(&DbError::Validation(fields)),
+            "fingerprint: validation_required (Cannot be blank.)"
+        );
+        assert_eq!(describe(&DbError::NotFound), "not found");
+    }
 }

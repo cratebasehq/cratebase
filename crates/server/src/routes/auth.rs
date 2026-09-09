@@ -361,6 +361,8 @@ async fn auth_refresh(
     State(app): State<App>,
     Path(name): Path<String>,
     auth: Auth,
+    headers: HeaderMap,
+    peer: crate::middleware::client_ip::PeerAddr,
     info: RequestInfo,
 ) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
@@ -421,6 +423,12 @@ async fn auth_refresh(
     }
 
     let record = auth.record.clone();
+    // A refresh rides on an existing device: the new session row records
+    // the requesting device like any other minted token would. A default
+    // (empty) context here used to fail `_sessions.fingerprint`'s
+    // required check on every refresh — the "validation failed" session
+    // recording warnings of issue #21.
+    let origin = origin_context(&app, &headers, peer);
     respond_with_token(
         &app,
         &collection,
@@ -428,7 +436,7 @@ async fn auth_refresh(
         info,
         Value::Object(Map::new()),
         |hooks| &hooks.on_record_auth_refresh_request,
-        Some(("refresh", sessions::OriginContext::default())),
+        Some(("refresh", origin)),
         None,
     )
     .await
@@ -2107,6 +2115,29 @@ async fn mfa_gate(
     }
 }
 
+/// The request's device context, as stored on a `_sessions` row.
+/// Side-effect free — the `_authOrigins` bookkeeping (and the possible
+/// login-alert email) is `record_login_origin`'s, layered on top of this.
+fn origin_context(
+    app: &App,
+    headers: &HeaderMap,
+    peer: crate::middleware::client_ip::PeerAddr,
+) -> sessions::OriginContext {
+    let user_agent = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let ip =
+        crate::middleware::client_ip::client_ip(headers, peer.0, &app.settings().trusted_proxy);
+    let fingerprint = cratebase_auth::auth_origin_fingerprint(&user_agent, &ip);
+    sessions::OriginContext {
+        fingerprint,
+        ip,
+        user_agent,
+    }
+}
+
 /// Records this login's `_authOrigins` fingerprint and, when it is a
 /// genuinely new device for a record that already had at least one
 /// prior origin on file, fires the "login from a new location" alert.
@@ -2122,19 +2153,7 @@ pub(crate) async fn record_login_origin(
     headers: &HeaderMap,
     peer: crate::middleware::client_ip::PeerAddr,
 ) -> sessions::OriginContext {
-    let settings = app.settings();
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let ip = crate::middleware::client_ip::client_ip(headers, peer.0, &settings.trusted_proxy);
-    let fingerprint = cratebase_auth::auth_origin_fingerprint(&user_agent, &ip);
-    let origin = sessions::OriginContext {
-        fingerprint,
-        ip,
-        user_agent,
-    };
+    let origin = origin_context(app, headers, peer);
     if let Err(e) = record_login_origin_inner(app, collection, record, &origin).await {
         tracing::warn!(error = %e.error, "failed to record the auth origin");
     }
@@ -2267,19 +2286,7 @@ async fn impersonate(
     // so it deliberately does not go through `record_login_origin` (that
     // writes `_authOrigins` and can trigger a login-alert email to the
     // impersonated record, which would be wrong here).
-    let user_agent = headers
-        .get(axum::http::header::USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-    let ip =
-        crate::middleware::client_ip::client_ip(&headers, peer.0, &app.settings().trusted_proxy);
-    let fingerprint = cratebase_auth::auth_origin_fingerprint(&user_agent, &ip);
-    let origin = sessions::OriginContext {
-        fingerprint,
-        ip,
-        user_agent,
-    };
+    let origin = origin_context(&app, &headers, peer);
     let expires_at = chrono::Utc::now().timestamp() + duration;
     sessions::record(
         &app,

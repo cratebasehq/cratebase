@@ -794,6 +794,7 @@ fn ddl_error(error: DbError, change: Change) -> AppError {
         Change::Delete => DELETE_FAILED,
     };
     let detail = error.to_string();
+    tracing::warn!(error = %detail, "collection DDL failed");
     match error {
         DbError::UniqueViolation(_) => AppError::validation(
             message,

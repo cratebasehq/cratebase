@@ -11,6 +11,7 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
+use cratebase_db::Executor;
 use cratebase_server::app::App;
 use cratebase_server::config::Config;
 use serde_json::{json, Value};
@@ -917,6 +918,109 @@ async fn a_password_change_invalidates_existing_sessions() {
         )
         .await;
     assert_eq!(status, 200);
+}
+
+/// A refresh mints a token too, so it writes its own `_sessions` row —
+/// and `fingerprint` is a required field on that ledger. The refresh
+/// route used to hand the recorder an empty origin context, so every
+/// refresh failed the required check and only logged the opaque
+/// "validation failed" WARN of issue #21.
+#[tokio::test]
+async fn a_refresh_records_a_session_row_with_the_device_fingerprint() {
+    let harness = Harness::new().await;
+    let (id, token) = member(&harness).await;
+
+    // Past the login's wall-clock second, so the refresh mints a token of
+    // its own (`exp` has 1-second resolution) instead of re-identifying
+    // as the login's session.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let (status, _) = harness
+        .as_user(
+            "POST",
+            "/api/collections/members/auth-refresh",
+            None,
+            Some(&token),
+        )
+        .await;
+    assert_eq!(status, 200);
+
+    let rows = harness
+        .app
+        .db()
+        .query(
+            "SELECT \"kind\", \"fingerprint\", \"ip\" FROM \"_sessions\" WHERE \"recordRef\" = $1 AND \"revoked\" = 0",
+            &[cratebase_db::Sql::Text(id.clone())],
+        )
+        .await
+        .unwrap();
+    let refresh = rows
+        .iter()
+        .find(|r| r.get_str("kind") == Some("refresh"))
+        .expect("auth-refresh must record its own session row");
+    assert!(
+        !refresh
+            .get_str("fingerprint")
+            .unwrap_or_default()
+            .is_empty(),
+        "the refresh session carries a device fingerprint"
+    );
+}
+
+/// The claim set is frozen and `exp` has 1-second resolution, so two
+/// mints for the same record inside one wall-clock second are
+/// byte-identical and the second `_sessions` insert hits the `tokenHash`
+/// unique index. That used to WARN "validation failed" and read like a
+/// lost session (issue #21); a duplicate insert must settle as "already
+/// recorded", leaving exactly one live row.
+#[tokio::test]
+async fn recording_the_same_token_twice_keeps_one_session_row() {
+    let harness = Harness::new().await;
+    let (id, _) = member(&harness).await;
+
+    let collection = harness.app.db().collections.get("members").unwrap();
+    let record = cratebase_db::records::find_by_id_raw(harness.app.db(), &collection, &id)
+        .await
+        .unwrap();
+    let token = harness
+        .app
+        .mint_token("members", &id, cratebase_auth::TokenType::Auth, 3600)
+        .await
+        .unwrap();
+    let origin = cratebase_server::sessions::OriginContext {
+        fingerprint: "0123456789abcdef0123456789abcdef".into(),
+        ip: "127.0.0.1".into(),
+        user_agent: "test".into(),
+    };
+    for _ in 0..2 {
+        cratebase_server::sessions::record(
+            &harness.app,
+            &collection,
+            &record,
+            &token,
+            "password",
+            &origin,
+            chrono::Utc::now().timestamp() + 3600,
+        )
+        .await;
+    }
+
+    let rows = harness
+        .app
+        .db()
+        .query(
+            "SELECT \"tokenHash\" FROM \"_sessions\" WHERE \"recordRef\" = $1 AND \"tokenHash\" = $2 AND \"revoked\" = 0",
+            &[
+                cratebase_db::Sql::Text(id.clone()),
+                cratebase_db::Sql::Text(cratebase_server::sessions::hex(&cratebase_server::sessions::digest(&token))),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "a duplicate insert must not add a second row for this token"
+    );
 }
 
 /// Setting `verified` on yourself is a *values mismatch*, not a
