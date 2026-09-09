@@ -55,6 +55,10 @@ const examples: [string, string, string][] = [
   <section class="hero">
     <div class="wrap hero-grid">
       <div class="hero-copy">
+        <a class="announce" href="https://github.com/cratebasehq/cratebase/releases/tag/v0.2.0">
+          <span class="announce-dot" aria-hidden="true"></span>
+          New in v0.2.0: first-party TypeScript SDK, sessions &amp; OAuth2 redirect
+        </a>
         <h1>A backend in one crate.</h1>
         <p class="lede">
           Collections, auth, files, realtime and an admin dashboard in one Rust
@@ -272,6 +276,33 @@ files copied: 4`}</code></pre>
     grid-template-columns: 1.1fr 0.9fr;
     gap: 3rem;
     align-items: center;
+  }
+  .announce {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.9rem;
+    margin-bottom: 1.1rem;
+    border: 1px solid var(--color-hairline);
+    border-radius: 999px;
+    background: var(--color-white);
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+    text-decoration: none;
+  }
+  .announce:hover {
+    border-color: var(--color-ink);
+    color: var(--color-ink);
+  }
+  :root[data-theme="dark"] .announce {
+    background: var(--color-panel);
+  }
+  .announce-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--color-ink);
+    flex-shrink: 0;
   }
   h1 {
     font-family: var(--font-display);
