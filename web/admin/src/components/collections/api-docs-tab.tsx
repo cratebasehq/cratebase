@@ -139,8 +139,8 @@ export function ApiDocsTab({ collection }: { collection: CollectionModel }) {
         <h2 className="text-sm font-semibold text-foreground">API reference — {collection.name}</h2>
         <p className="text-xs text-muted-foreground">
           Every endpoint this collection exposes, generated from its own fields and rules. Snippets assume{" "}
-          <code className="font-mono">const pb = new PocketBase("{origin}")</code> from the{" "}
-          <code className="font-mono">pocketbase</code> npm package.
+          <code className="font-mono">{'const cb = createClient("{origin}")'}</code> from{" "}
+          <code className="font-mono">@cratebase/client</code>.
         </p>
       </div>
 
