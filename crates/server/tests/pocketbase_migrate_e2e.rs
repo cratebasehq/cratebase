@@ -3,19 +3,22 @@
 //! auth system (session listing + revocation, ban enforcement) for the
 //! migrated collections — not just a schema/record copy.
 //!
-//! This builds a real PocketBase-shaped `data.db` (the same `_collections`
-//! + per-collection-table shape `pocketbase_migrate::run` reads), runs the
+//! This builds a real PocketBase-shaped `data.db` (the same
+//! `_collections` + per-collection-table shape `pocketbase_migrate::run`
+//! reads), runs the
 //! actual migration against a fresh on-disk Cratebase data dir (a real
 //! sqlite file, not `sqlite::memory:`, matching a real `--dir`), then
 //! drives the production router with real HTTP requests through
 //! `tower::ServiceExt::oneshot` (the same router `cratebase serve` binds)
-//! to prove: (a) the migrated user can log in, (b) their login shows up
-//! in `GET .../sessions`, (c) revoking that session invalidates the token
-//! on the next authenticated request.
+//! to prove:
+//!
+//! - the migrated user can log in
+//! - their login shows up in `GET .../sessions`
+//! - revoking that session invalidates the token on the next
+//!   authenticated request
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
-use axum::response::Response;
 use cratebase_server::app::App;
 use cratebase_server::config::Config;
 use rusqlite::Connection;
@@ -85,9 +88,9 @@ fn build_pb_fixture(pb_dir: &std::path::Path, bcrypt_hash: &str) {
         "INSERT INTO users (id, password, tokenKey, email, emailVisibility, verified, created, updated, name) \
          VALUES (?1, ?2, ?3, ?4, 1, 1, ?5, ?5, ?6)",
         rusqlite::params![
-            "user_migrated_1",
+            "usermigrated001",
             bcrypt_hash,
-            "pb-token-key-abc123",
+            "pb-token-key-abc123def456ghi789jkl012",
             "migrated@example.com",
             "2024-01-01 00:00:00.000Z",
             "Migrated User",
@@ -148,7 +151,10 @@ async fn migrated_user_gets_full_session_lifecycle_and_ban_enforcement() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "login response: {body}");
-    let token = body["token"].as_str().expect("token in response").to_string();
+    let token = body["token"]
+        .as_str()
+        .expect("token in response")
+        .to_string();
     assert_eq!(body["record"]["email"], json!("migrated@example.com"));
 
     // (b) that login shows up in `GET .../sessions`.
@@ -162,20 +168,31 @@ async fn migrated_user_gets_full_session_lifecycle_and_ban_enforcement() {
     .await;
     assert_eq!(status, StatusCode::OK, "sessions list: {body}");
     let items = body["items"].as_array().expect("items array");
-    assert_eq!(items.len(), 1, "exactly one live session after one login: {body}");
+    assert_eq!(
+        items.len(),
+        1,
+        "exactly one live session after one login: {body}"
+    );
     let session_id = items[0]["id"].as_str().expect("session id").to_string();
     assert_eq!(items[0]["current"], json!(true));
 
-    // A protected route (listing own record) works before revocation.
+    // A route gated on `Auth` itself (not a collection rule that a
+    // migrated collection might leave wide open, like the default `''`
+    // `viewRule` this fixture uses) works before revocation: the
+    // sessions list requires a genuinely valid, non-revoked token.
     let (status, _) = send(
         &app,
-        Request::get(format!("/api/collections/users/records/{}", "user_migrated_1"))
+        Request::get("/api/collections/users/sessions")
             .header("authorization", &token)
             .body(Body::empty())
             .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "authenticated read must work before revocation");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "authenticated sessions list must work before revocation"
+    );
 
     // (c) revoking that session via the real revoke route invalidates the
     // token on the next authenticated request.
@@ -191,7 +208,7 @@ async fn migrated_user_gets_full_session_lifecycle_and_ban_enforcement() {
 
     let (status, body) = send(
         &app,
-        Request::get(format!("/api/collections/users/records/{}", "user_migrated_1"))
+        Request::get("/api/collections/users/sessions")
             .header("authorization", &token)
             .body(Body::empty())
             .unwrap(),
@@ -220,7 +237,7 @@ async fn migrated_user_gets_full_session_lifecycle_and_ban_enforcement() {
         .expect("superuser token");
     let (status, body) = send(
         &app,
-        Request::post("/api/collections/users/ban/user_migrated_1")
+        Request::post("/api/collections/users/ban/usermigrated001")
             .header("authorization", &superuser_token)
             .header("content-type", "application/json")
             .body(Body::from(json!({ "reason": "test ban" }).to_string()))

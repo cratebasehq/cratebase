@@ -20,3 +20,12 @@ report, reconfigure with fresh credentials); `_mfas`/`_otps`/
 signing secrets behind it); and PocketBase JS migrations/hooks
 (`pb_migrations/`, `pb_hooks/`) — this tool moves data, not server-side
 application code.
+
+**Cratebase-only system collections (`_sessions`, `_bans`) always work,
+migration or not:** these have no PocketBase equivalent, so there is
+nothing to import — `App::bootstrap` provisions them unconditionally
+before a migration import ever runs, on a fresh `--dir` or an existing
+one alike, the same as every other system collection. A migrated user
+logs in, lists/revokes their own sessions, and can be banned exactly
+like a record created natively in Cratebase, verified end-to-end by
+`crates/server/tests/pocketbase_migrate_e2e.rs`.
