@@ -4,7 +4,7 @@
   "workspaces": ["web/admin", "web/email", "tests/conformance"],
   "scripts": {
     "admin:dev": "bun run --cwd web/admin dev",
-    "admin:build": "bun run --cwd web/admin build",
+    "admin:build": "RAYON_NUM_THREADS=1 bun run --cwd web/admin build",
     "email:build": "bun run --cwd web/email build",
     "conformance": "bun run --cwd tests/conformance test",
     "examples:serve": "bash examples/serve.sh",
