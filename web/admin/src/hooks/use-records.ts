@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
-import type { ListResult, RecordModel } from "pocketbase";
-import { ClientResponseError } from "pocketbase";
+import type { ListResult, RecordModel } from "@cratebase/client";
+import { CratebaseError } from "@cratebase/client";
 import { cb } from "@/lib/api";
 
 /** The page sizes the grid offers. The server caps `perPage` at 1000; 500
@@ -33,22 +33,19 @@ export function useRecords(collectionName: string, query: RecordsQuery) {
   return useQuery({
     queryKey: recordsKey(collectionName, query),
     queryFn: () =>
-      cb.collection(collectionName).getList<RecordModel>(query.page, query.perPage, {
+      cb.collection(collectionName).list({
+        page: query.page,
+        perPage: query.perPage,
         filter: query.filter || undefined,
         sort: query.sort || undefined,
         expand: query.expand || undefined,
         skipTotal: query.skipTotal || undefined,
-        // The SDK auto-cancels same-path requests, which surfaces here as a
-        // thrown "autocancelled" error the moment two pages are in flight.
-        // React Query already keys responses by query key, so ordering is
-        // safe without it.
-        requestKey: null,
       }),
     enabled: collectionName.length > 0,
     placeholderData: (previous) => previous,
     // A filter the server rejects is a 400 that won't get better by asking
     // again — surface it immediately instead of after three retries.
-    retry: (count, error) => !(error instanceof ClientResponseError && error.status < 500) && count < 2,
+    retry: (count, error) => !(error instanceof CratebaseError && error.status < 500) && count < 2,
   });
 }
 
@@ -132,8 +129,8 @@ export function useRecordMutations(collectionName: string) {
   const removeMany = useMutation({
     mutationFn: async ({ ids, chunkSize }: { ids: string[]; chunkSize: number }) => {
       for (let i = 0; i < ids.length; i += chunkSize) {
-        const batch = cb.createBatch();
-        for (const id of ids.slice(i, i + chunkSize)) batch.collection(collectionName).delete(id);
+        const batch = cb.batch();
+        for (const id of ids.slice(i, i + chunkSize)) batch.delete(collectionName, id);
         await batch.send();
       }
       return ids;
@@ -167,7 +164,7 @@ export function useBatchCapability() {
   return useQuery<BatchCapability>({
     queryKey: ["settings", "batch"],
     queryFn: async () => {
-      const settings = (await cb.settings.getAll()) as { batch?: { enabled?: boolean; maxRequests?: number } };
+      const settings = (await cb.admin.settings.get()) as { batch?: { enabled?: boolean; maxRequests?: number } };
       return {
         enabled: settings.batch?.enabled === true,
         maxRequests: Math.max(1, Number(settings.batch?.maxRequests ?? 50)),

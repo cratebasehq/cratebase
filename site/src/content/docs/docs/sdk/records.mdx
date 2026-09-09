@@ -1,0 +1,76 @@
+---
+title: "Records"
+description: "Typed CRUD, the filter/raw tagged templates, and skipTotal pagination."
+sidebar:
+  order: 2
+---
+
+`cb.collection(name)` returns a `CollectionService` with one calling
+convention — object options, no positional `getList(page, perPage,
+opts)` alias:
+
+```ts
+const service = cb.collection("posts");
+
+await service.list({ page: 1, perPage: 20, filter: "published = true", sort: "-created" });
+await service.fullList({ filter: "published = true" }); // walks every page, 500/page internally
+await service.first({ filter: "slug = \"hello-world\"" });
+await service.one("RECORD_ID", { expand: "author" });
+await service.create({ title: "Hello", published: false });
+await service.update("RECORD_ID", { published: true });
+await service.delete("RECORD_ID");
+```
+
+`list`/`fullList` accept `page`, `perPage`, `sort`, `filter`, `expand`,
+`fields`, `skipTotal`, `signal`. `one` and `create`/`update` accept the
+narrower `expand`/`fields`/`signal` (`ViewOptions`/`WriteOptions`).
+
+## Building filters
+
+Two tagged template helpers, exported from the package root, build
+`filter` strings without hand-escaping user input:
+
+```ts
+import { filter, raw } from "@cratebase/client";
+
+await cb.collection("posts").list({ filter: filter`title = ${term}` });
+await cb.collection("posts").list({ filter: filter`created >= ${new Date("2024-01-01")}` });
+await cb.collection("posts").list({ filter: filter`${raw(sortField)} ~ ${term}` });
+```
+
+`` filter`...` `` quotes and escapes string values, serializes a `Date`
+as an ISO-8601 string, leaves numbers/booleans bare, and turns an array
+into a parenthesised list (`(a,b,c)`, the `?=`/`?~` multi-match shape).
+`raw(fieldName)` interpolates a bare identifier instead of a quoted
+value — use it when the field name itself is a variable, never by
+writing it directly into the template string.
+
+## Pagination and `skipTotal`
+
+`ListResult<T>` always carries real `totalItems`/`totalPages` numbers.
+Pass `skipTotal: true` to skip the count query — the server returns
+`-1` for both fields rather than omitting them, so check for `-1`, not
+`undefined`, if you conditionally render a total:
+
+```ts
+const page = await cb.collection("posts").list({ skipTotal: true });
+page.totalItems; // -1
+```
+
+## File uploads
+
+`create`/`update` accept a `FormData` in place of a plain object for
+file fields:
+
+```ts
+const form = new FormData();
+form.append("title", "With cover");
+form.append("cover", fileInput.files[0]);
+await cb.collection("posts").create(form);
+```
+
+## Realtime
+
+`service.subscribe(topic, handler, options?)` — see
+[Realtime](/docs/sdk/realtime/) for the topic grammar and transport
+details.

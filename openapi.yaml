@@ -589,6 +589,230 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
 
+  /collections/{idOrName}/auth-signout:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Revoke the session backing the current token
+      responses:
+        "204": { description: OK }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/sessions:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: List the caller's own sessions (or another record's, as superuser)
+      parameters:
+        - name: recordId
+          in: query
+          required: false
+          schema: { type: string }
+          description: Another record's id; requires superuser
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        kind: { type: string, enum: [password, otp, oauth2, impersonation, refresh] }
+                        fingerprint: { type: string }
+                        ip: { type: string }
+                        userAgent: { type: string }
+                        current: { type: boolean }
+                        created: { type: string }
+                        lastSeenAt: { type: string }
+                        expiresAt: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/sessions/{id}:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      summary: Revoke one session by id
+      description: The session's own owner or a superuser only; `204` whether or not the id existed.
+      responses:
+        "204": { description: OK }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/sessions/revoke-others:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Revoke every session but the current one
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { revoked: { type: integer } }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/sessions/revoke-all:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Revoke every session, including the current one
+      responses:
+        "204": { description: OK }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/stop-impersonating:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Cookie mode only — restore the impersonator's session
+      description: >
+        Reads the `cb_session_prev` cookie stashed by `impersonate/{id}`
+        and restores it as the active session cookie.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  record: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/ban/{id}:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Superuser-only — ban a record, revoking its sessions immediately
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+                expiresAt: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recordRef: { type: string }
+                  reason: { type: string }
+                  expiresAt: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Superuser-only — lift a ban
+      responses:
+        "204": { description: OK }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/oauth2/{provider}/start:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Cookie mode only — begin the server-driven OAuth2 redirect flow
+      parameters:
+        - name: redirect
+          in: query
+          required: true
+          schema: { type: string }
+          description: Must be same-origin with settings.meta.appURL or an exact member of CORS_ALLOW_ORIGINS
+        - name: createData
+          in: query
+          required: false
+          schema: { type: string }
+          description: Base64url (no padding) JSON object merged into the created record
+      responses:
+        "302":
+          description: >
+            Redirect to the provider, or (on a recoverable failure) back
+            to `redirect` with `?cb_error=<code>`
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/oauth2/{provider}/callback:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: The provider's own redirect target — never called directly
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: state
+          in: query
+          required: false
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "302":
+          description: >
+            Redirect to the original `redirect`, session set in an
+            httpOnly cookie; `?cb_mfa=<mfaId>` on a pending MFA
+            challenge, or `?cb_error=<code>` on failure
+        "400": { $ref: "#/components/responses/Error" }
+
   /files/{collection}/{recordId}/{filename}:
     parameters:
       - name: collection

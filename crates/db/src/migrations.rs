@@ -155,6 +155,24 @@ impl Runner {
             Box::new(|db| Box::pin(add_api_key_scoping_up(db))),
             Box::new(|db| Box::pin(add_api_key_scoping_down(db))),
         ));
+        // `_sessions` follows the same story as every migration above:
+        // added to `default_system_collections()` after `INIT_SYSTEM`
+        // shipped, so an existing database needs this follow-up
+        // migration to retroactively get the table. A fresh database
+        // already has it from `INIT_SYSTEM` and this migration is a
+        // no-op there.
+        r.register(Migration::new(
+            ADD_SESSIONS,
+            Box::new(|db| Box::pin(add_sessions_up(db))),
+            Box::new(|db| Box::pin(add_sessions_down(db))),
+        ));
+        // `_bans` follows the same story as `_sessions` immediately
+        // above.
+        r.register(Migration::new(
+            ADD_BANS,
+            Box::new(|db| Box::pin(add_bans_up(db))),
+            Box::new(|db| Box::pin(add_bans_down(db))),
+        ));
         r
     }
 
@@ -609,6 +627,58 @@ async fn add_api_key_scoping_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_SESSIONS: &str = "11_add_sessions.rs";
+
+/// `_sessions` follows the same story as every migration above: added to
+/// `default_system_collections()` after `INIT_SYSTEM` shipped, so an
+/// existing database needs this follow-up migration to retroactively get
+/// the table. A fresh database already has it from `INIT_SYSTEM` and this
+/// migration is a no-op there.
+async fn add_sessions_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_sessions").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_sessions")
+        .expect("_sessions is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_sessions_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_sessions").is_some() {
+        db.collections.delete(&*db.engine, "_sessions").await?;
+    }
+    Ok(())
+}
+
+pub const ADD_BANS: &str = "12_add_bans.rs";
+
+/// `_bans` follows the same story as every migration above: added to
+/// `default_system_collections()` after `INIT_SYSTEM` shipped, so an
+/// existing database needs this follow-up migration to retroactively get
+/// the table. A fresh database already has it from `INIT_SYSTEM` and this
+/// migration is a no-op there.
+async fn add_bans_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_bans").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_bans")
+        .expect("_bans is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_bans_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_bans").is_some() {
+        db.collections.delete(&*db.engine, "_bans").await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +710,8 @@ mod tests {
                 ADD_SUPERUSER_ROLE.to_string(),
                 ADD_AUDIT_LOG.to_string(),
                 ADD_API_KEY_SCOPING.to_string(),
+                ADD_SESSIONS.to_string(),
+                ADD_BANS.to_string(),
             ]
         );
         assert_eq!(
@@ -651,6 +723,8 @@ mod tests {
         assert_eq!(db.collections.get("_otps").unwrap().id, "pbc_1638494021");
         assert!(db.collections.get("_externalAuths").is_some());
         assert!(db.collections.get("_authOrigins").is_some());
+        assert!(db.collections.get("_sessions").is_some());
+        assert!(db.collections.get("_bans").is_some());
         assert!(db.collections.get("_cron_jobs").is_some());
         assert!(db.collections.get("_webhooks").is_some());
         assert!(db.collections.get("_teams").is_some());
@@ -667,6 +741,8 @@ mod tests {
             "_otps",
             "_externalAuths",
             "_authOrigins",
+            "_sessions",
+            "_bans",
             "_cron_jobs",
             "_webhooks",
             "_teams",
@@ -682,10 +758,12 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 10).await.unwrap();
+        let reverted = Runner::core().down(&db, 12).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_BANS.to_string(),
+                ADD_SESSIONS.to_string(),
                 ADD_API_KEY_SCOPING.to_string(),
                 ADD_AUDIT_LOG.to_string(),
                 ADD_SUPERUSER_ROLE.to_string(),

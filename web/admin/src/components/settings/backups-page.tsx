@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Archive, Download, RotateCcw, Trash2, Upload } from "lucide-react";
-import { cb, checkBackupCapability, describeFailure } from "@/lib/api";
+import { cb, checkBackupCapability, describeFailure, superuserAuth } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
 import {
   AlertDialog,
@@ -54,8 +54,8 @@ function formatBytes(bytes: number): string {
  * browser a blob URL to save. */
 async function downloadBackup(name: string): Promise<void> {
   const headers: Record<string, string> = {};
-  if (cb.authStore.token) headers.authorization = `Bearer ${cb.authStore.token}`;
-  const response = await fetch(`${cb.baseURL}/api/backups/${encodeURIComponent(name)}/download`, { headers });
+  if (superuserAuth.token) headers.authorization = `Bearer ${superuserAuth.token}`;
+  const response = await fetch(cb.buildURL(`/api/backups/${encodeURIComponent(name)}/download`), { headers });
   if (!response.ok) {
     throw new Error(`download failed with status ${response.status}`);
   }
@@ -139,7 +139,7 @@ export function BackupsPage() {
   // hand-roll a `FormData` here the way the other actions build raw
   // `cb.send()` calls.
   const upload = useMutation({
-    mutationFn: (file: File) => cb.backups.upload({ file }),
+    mutationFn: (file: File) => cb.admin.backups.upload(file),
     onSuccess: async () => {
       await invalidate();
       toast.success("Backup uploaded");
@@ -158,7 +158,7 @@ export function BackupsPage() {
   // restore finished, only that it started. The connection drops out from
   // under whatever screen is open next; there's nothing more to await.
   const restore = useMutation({
-    mutationFn: (key: string) => cb.backups.restore(key),
+    mutationFn: (key: string) => cb.admin.backups.restore(key),
     onSuccess: () => {
       toast.success("Restoring backup", {
         description: "The server is restarting to load it. This page will lose its connection briefly.",

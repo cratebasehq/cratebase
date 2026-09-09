@@ -10,6 +10,7 @@ import {
   KeyRound,
   ListTree,
   Mail,
+  Radio,
   Shield,
   ShieldUser,
   SlidersHorizontal,
@@ -72,6 +73,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         icon: ShieldUser,
         description: "Full-access accounts for administering this server.",
         collection: "_superusers",
+      },
+      {
+        to: "/settings/sessions",
+        label: "Sessions",
+        icon: Radio,
+        description: "Every live bearer/cookie token across every auth collection — revoke one, or browse who is signed in.",
+        collection: "_sessions",
       },
       {
         to: "/settings/api-keys",

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { RecordModel } from "pocketbase";
+import type { RecordModel, CollectionModel } from "@cratebase/client";
 import { type FieldSchema, userFields } from "@/lib/field-types";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -73,7 +73,7 @@ function formatDateTitle(value: string): string | undefined {
 function useRelationTarget(collectionId?: string) {
   const { data: collections } = useCollections();
   return useMemo(() => {
-    const target = collections?.find((c) => c.id === collectionId);
+    const target = collections?.find((c: CollectionModel) => c.id === collectionId);
     if (!target) return undefined;
     const fields = userFields(target);
     return {
@@ -201,7 +201,7 @@ export function IdCell({ id }: { id: string }) {
 
 function FileValue({ record, field, filename }: { record: RecordModel; field: FieldSchema; filename: string }) {
   const [open, setOpen] = useState(false);
-  const url = cb.getFileUrl(record, filename);
+  const url = cb.files.url(record, filename);
   const isImage = IMAGE_EXT.test(filename);
 
   if (!isImage) {

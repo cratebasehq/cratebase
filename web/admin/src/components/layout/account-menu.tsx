@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "@/components/ui/sidebar";
-import { avatarUrl, cb, currentSuperuser, signOut } from "@/lib/api";
+import { avatarUrl, cb, currentSuperuser, signOut, superuserAuth } from "@/lib/api";
 
 /**
  * The signed-in superuser, and every account-scoped action, in one place.
@@ -34,8 +34,8 @@ export function AccountMenu() {
   const email = superuser?.email || "Superuser";
   const initials = email.slice(0, 2).toUpperCase();
   const avatarSrc = superuser
-    ? superuser.avatar
-      ? cb.files.getURL(superuser, superuser.avatar)
+    ? superuser.avatar && superuserAuth.record
+      ? cb.files.url(superuserAuth.record, superuser.avatar)
       : avatarUrl(superuser.id)
     : undefined;
 

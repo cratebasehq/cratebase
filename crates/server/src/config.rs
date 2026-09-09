@@ -27,6 +27,12 @@
 //! | `CB_ENCRYPTION` | unset | 32-char key encrypting `_params` values |
 //! | `CORS_ALLOW_ORIGINS` | `*` | comma-separated origins (`--origins`) |
 //! | `CB_SECRET` / `AUTH_SECRET` | generated once into `<data_dir>/.secret` | app-wide token signing secret |
+//! | `SESSION_TRACKING` | `true` | write a `_sessions` row per login for listing/revocation |
+//! | `SESSION_COOKIE` | `false` | also accept/set an httpOnly session cookie alongside the bearer token |
+//! | `SESSION_COOKIE_NAME` | `cb_session` | the cookie's name |
+//! | `SESSION_COOKIE_DOMAIN` | unset (host-only) | the cookie's `Domain` attribute |
+//! | `SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, or `None` (case-insensitive) |
+//! | `SESSION_COOKIE_SECURE` | `true` | whether the cookie carries `Secure` |
 //!
 //! These seed [`Settings`] on **first boot only** and are ignored once
 //! settings exist in `_params` (an operator editing them in the dashboard
@@ -68,6 +74,55 @@ pub struct Config {
     /// App-wide half of every token signing key (the other halves are the
     /// record's `tokenKey` and the collection's per-type secret).
     pub secret: String,
+    /// Whether logins write a `_sessions` row (`crate::sessions::record`)
+    /// so it can later be listed/revoked. Stateless auth verification
+    /// (`crate::extract::resolve`) never depends on this — it only gates
+    /// the best-effort bookkeeping insert.
+    pub session_tracking: bool,
+    /// Whether `crate::extract::resolve` also accepts a bearer token from
+    /// an httpOnly cookie (`crate::cookie`), and whether token-minting
+    /// routes set that cookie. The CORS layer (`crate::middleware::cors`)
+    /// only enables `allow_credentials` when this is set — see its
+    /// module doc.
+    pub session_cookie: bool,
+    pub session_cookie_name: String,
+    /// Empty means host-only (no `Domain` attribute at all).
+    pub session_cookie_domain: String,
+    pub session_cookie_same_site: SameSite,
+    pub session_cookie_secure: bool,
+}
+
+/// A cookie's `SameSite` attribute. Parsed case-insensitively from
+/// `SESSION_COOKIE_SAMESITE`/`--session-cookie-samesite`; an unrecognised
+/// env value falls back to `Lax` with a warning (env parsing here is
+/// infallible), while the clap flag rejects one outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SameSite {
+    #[default]
+    Lax,
+    Strict,
+    None,
+}
+
+impl SameSite {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SameSite::Lax => "Lax",
+            SameSite::Strict => "Strict",
+            SameSite::None => "None",
+        }
+    }
+
+    /// `None` (not `Some(SameSite::Lax)`-as-fallback) on an unrecognised
+    /// value, so callers can choose how to report it.
+    pub fn parse(raw: &str) -> Option<SameSite> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "lax" => Some(SameSite::Lax),
+            "strict" => Some(SameSite::Strict),
+            "none" => Some(SameSite::None),
+            _ => None,
+        }
+    }
 }
 
 impl Default for Config {
@@ -95,6 +150,12 @@ impl Config {
             encryption_key: None,
             origins: vec!["*".into()],
             secret: String::new(),
+            session_tracking: true,
+            session_cookie: false,
+            session_cookie_name: "cb_session".into(),
+            session_cookie_domain: String::new(),
+            session_cookie_same_site: SameSite::Lax,
+            session_cookie_secure: true,
         }
     }
 
@@ -148,6 +209,21 @@ impl Config {
         config.secret = std::env::var("CB_SECRET")
             .or_else(|_| std::env::var("AUTH_SECRET"))
             .unwrap_or_else(|_| load_or_create_secret(&data_dir));
+        config.session_tracking = env_bool("SESSION_TRACKING", true);
+        config.session_cookie = env_bool("SESSION_COOKIE", false);
+        config.session_cookie_name = env_or("SESSION_COOKIE_NAME", &config.session_cookie_name);
+        config.session_cookie_domain = std::env::var("SESSION_COOKIE_DOMAIN").unwrap_or_default();
+        config.session_cookie_same_site = match std::env::var("SESSION_COOKIE_SAMESITE") {
+            Ok(raw) => SameSite::parse(&raw).unwrap_or_else(|| {
+                tracing::warn!(
+                    value = %raw,
+                    "SESSION_COOKIE_SAMESITE must be Lax, Strict, or None; falling back to Lax"
+                );
+                SameSite::Lax
+            }),
+            Err(_) => SameSite::Lax,
+        };
+        config.session_cookie_secure = env_bool("SESSION_COOKIE_SECURE", true);
         config
     }
 

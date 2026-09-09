@@ -5,10 +5,13 @@ sidebar:
   order: 5
 ---
 
-Because Cratebase speaks PocketBase's wire API, PocketBase's other
-official SDKs (Dart, and the rest of the `pocketbase`-family clients)
-work against a Cratebase instance the same way the JS SDK does — point
-the client at your Cratebase URL and nothing else changes.
+The first-party [`@cratebase/client`](/docs/getting-started/using-js-sdk/)
+SDK — with its full typed surface, including Cratebase's vector/LLM/queue/presence
+value-adds — is the recommended choice for new TypeScript/JavaScript
+projects. The SDKs below are PocketBase's own official clients; because
+Cratebase speaks PocketBase's wire API, they work against a Cratebase
+instance unmodified and unaffected — point one at your Cratebase URL and
+nothing else changes.
 
 The handful of places where behavior genuinely diverges (all minor, all
 documented, not SDK-breaking) are listed verbatim in

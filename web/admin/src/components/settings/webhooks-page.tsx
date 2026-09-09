@@ -64,7 +64,7 @@ export function WebhooksPage() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["webhooks"],
-    queryFn: () => cb.collection("_webhooks").getFullList<WebhookRecord>({ sort: "-created", requestKey: null }),
+    queryFn: () => cb.collection("_webhooks").fullList({ sort: "-created" }) as unknown as Promise<WebhookRecord[]>,
   });
 
   const remove = useMutation({

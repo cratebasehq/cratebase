@@ -32,13 +32,15 @@ required.
 
 ## The PocketBase-compatibility trick
 
-Cratebase's API is byte-compatible with PocketBase v0.23+. Don't
-hand-roll `fetch`/`axios` calls or write a bespoke client — `npm install
-pocketbase` and use the official SDK exactly as its own docs describe.
-You get `AuthStore` persistence, multipart file handling, and realtime
-reconnect for free. The `cratebase` repo's `examples/` directory has six
-real, runnable reference apps (todo list, kanban, chat, webhooks,
-RAG/vector search, realtime cursors):
+Cratebase ships a first-party SDK, `@cratebase/client` — use it by
+default: `npm install @cratebase/client`, typed methods, built-in auth
+state, realtime, plus Cratebase-only extras (vector search, LLM chat, MCP
+tool schemas, presence) with no extra package. Cratebase's API is also
+byte-compatible with PocketBase v0.23+, so the official `pocketbase` SDK
+still works unmodified if a project is already on it — don't hand-roll
+`fetch`/`axios` calls either way. The `cratebase` repo's `examples/`
+directory has six real, runnable reference apps (todo list, kanban, chat,
+webhooks, RAG/vector search, realtime cursors):
 https://github.com/cratebasehq/cratebase/tree/main/examples
 
 ## Recipe: server → collection → rules → auth → data → realtime

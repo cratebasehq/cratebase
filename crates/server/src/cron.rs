@@ -35,6 +35,9 @@ pub const JOB_LOGS_CLEANUP: &str = "__pbLogsCleanup__";
 /// `settings.backups.cron` is non-empty, so `GET /api/crons` lists it only
 /// then — PocketBase behaves the same way.
 pub const JOB_AUTO_BACKUP: &str = "__pbAutoBackup__";
+/// Hourly `_sessions` sweep (`crate::sessions::sweep_expired`). Cratebase-only
+/// — the four ids above are PocketBase's, verbatim.
+pub const JOB_SESSION_SWEEP: &str = "__cbSessionSweep__";
 
 #[derive(Clone)]
 struct Job {

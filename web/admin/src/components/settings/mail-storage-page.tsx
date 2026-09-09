@@ -65,7 +65,7 @@ export function MailStoragePage() {
   }
 
   const sendTestEmail = useMutation({
-    mutationFn: (email: string) => cb.settings.testEmail("_superusers", email, "verification"),
+    mutationFn: (email: string) => cb.admin.settings.testEmail("_superusers", email, "verification"),
     onSuccess: () => toast.success("Test email sent", { description: "Check the inbox, and the request logs." }),
     onError: (error) => {
       const failure = describeFailure(error);
@@ -76,7 +76,7 @@ export function MailStoragePage() {
   });
 
   const testS3 = useMutation({
-    mutationFn: (which: "storage" | "backups") => cb.settings.testS3(which),
+    mutationFn: (which: "storage" | "backups") => cb.admin.settings.testS3(which),
     onSuccess: () => toast.success("S3 reachable", { description: "The bucket answered." }),
     onError: (error) => {
       const failure = describeFailure(error);

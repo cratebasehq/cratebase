@@ -1,4 +1,4 @@
-import type { CollectionField, CollectionModel } from "pocketbase";
+import type { CollectionField, CollectionModel } from "@cratebase/client";
 
 /** PocketBase's own `CollectionField` types every field as
  * `{ [key: string]: any; id, name, type: string, system, hidden, presentable }`

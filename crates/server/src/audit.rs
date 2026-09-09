@@ -532,6 +532,9 @@ mod tests {
             is_superuser: true,
             collection,
             record,
+            token: "test-token".into(),
+            exp: i64::MAX,
+            via_cookie: false,
         }
     }
 
@@ -787,6 +790,9 @@ mod tests {
             is_superuser: false,
             collection: users,
             record: author,
+            token: "test-token".into(),
+            exp: i64::MAX,
+            via_cookie: false,
         };
 
         let notes = app.db().collections.get_by_name("notes").unwrap();

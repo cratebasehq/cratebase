@@ -1,10 +1,13 @@
 import { useId } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { Check, Copy, ExternalLink, Plus, Trash2, TriangleAlert } from "lucide-react";
 import {
   emptyOAuth2Provider,
   type AuthOptionsValue,
   type AuthProviderValue,
 } from "@/lib/collection-form-value";
+import { useSettings } from "@/hooks/use-settings";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -20,7 +23,7 @@ function OptionField({
   className,
 }: {
   label: string;
-  help?: string;
+  help?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -83,14 +86,133 @@ function DurationField({
   );
 }
 
+/** Where to get a client id/secret for the providers PocketBase (and
+ * Cratebase) build endpoints in for — everything else is a "bring your
+ * own OAuth2/OpenID app" case with no console to link to. */
+const PROVIDER_GUIDES: Record<string, { console: string; consoleLabel: string; steps: string }> = {
+  google: {
+    console: "https://console.cloud.google.com/apis/credentials",
+    consoleLabel: "Google Cloud Console → Credentials",
+    steps: 'Create Credentials → OAuth client ID → Application type "Web application", then paste the callback URL below under "Authorized redirect URIs".',
+  },
+  github: {
+    console: "https://github.com/settings/developers",
+    consoleLabel: "GitHub → Settings → Developer settings → OAuth Apps",
+    steps: 'New OAuth App, then paste the callback URL below into "Authorization callback URL".',
+  },
+  gitlab: {
+    console: "https://gitlab.com/-/user_settings/applications",
+    consoleLabel: "GitLab → User Settings → Applications",
+    steps: "Add new application, check the scopes this collection needs, then paste the callback URL below into the Redirect URI field.",
+  },
+  discord: {
+    console: "https://discord.com/developers/applications",
+    consoleLabel: "Discord Developer Portal → Applications",
+    steps: 'New Application → OAuth2 → paste the callback URL below into "Redirects".',
+  },
+  microsoft: {
+    console: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+    consoleLabel: "Azure Portal → App registrations",
+    steps: 'New registration → Authentication → Add a platform → Web, then paste the callback URL below into "Redirect URIs".',
+  },
+};
+
+/** The exact URL a provider redirects back to once someone approves the
+ * sign-in — `crates/server/src/routes/oauth2_flow.rs`'s `callback_url`,
+ * reconstructed client-side the same way. Every provider's console wants
+ * this pasted in byte-for-byte (they reject a mismatch), which is why
+ * this is a copy button next to a read-only field, not something to
+ * retype. */
+function CallbackUrlField({
+  appURL,
+  collectionName,
+  providerName,
+}: {
+  appURL: string;
+  collectionName: string;
+  providerName: string;
+}) {
+  const { copy, copied } = useCopyToClipboard();
+  const guide = PROVIDER_GUIDES[providerName.trim().toLowerCase()];
+
+  if (!appURL) {
+    return (
+      <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/[0.06] px-3 py-2 text-xs sm:col-span-2">
+        <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />
+        <span>
+          Set the app URL in{" "}
+          <Link to="/settings/application" className="underline underline-offset-2 hover:no-underline">
+            Settings → Application
+          </Link>{" "}
+          first — the redirect callback URL a provider needs is built from it, and the server refuses to start
+          this flow (<code className="font-mono">app_url_not_configured</code>) until it's set.
+        </span>
+      </div>
+    );
+  }
+
+  const callbackUrl = `${appURL.replace(/\/+$/, "")}/api/collections/${encodeURIComponent(
+    collectionName || "COLLECTION_NAME",
+  )}/oauth2/${encodeURIComponent(providerName || "PROVIDER_NAME")}/callback`;
+
+  return (
+    <div className="flex flex-col gap-1.5 sm:col-span-2">
+      <OptionField
+        label="Callback URL"
+        help={
+          guide ? (
+            <>
+              Paste this into {guide.consoleLabel}. {guide.steps}
+            </>
+          ) : (
+            "The URL this provider redirects back to once someone approves the sign-in — paste it into that provider's own app settings."
+          )
+        }
+      >
+        <div className="relative">
+          <Input
+            readOnly
+            value={callbackUrl}
+            onFocus={(e) => e.currentTarget.select()}
+            className="h-control-md pr-9 font-mono text-xs"
+          />
+          <button
+            type="button"
+            onClick={() => void copy(callbackUrl)}
+            aria-label={copied ? "Copied" : "Copy callback URL"}
+            className="absolute right-1 top-1/2 grid size-control-xs -translate-y-1/2 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          </button>
+        </div>
+      </OptionField>
+      {guide ? (
+        <a
+          href={guide.console}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex w-fit items-center gap-1 text-2xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        >
+          Open {guide.consoleLabel}
+          <ExternalLink className="size-3" />
+        </a>
+      ) : null}
+    </div>
+  );
+}
+
 function ProviderRow({
   provider,
   onChange,
   onRemove,
+  appURL,
+  collectionName,
 }: {
   provider: AuthProviderValue;
   onChange: (next: AuthProviderValue) => void;
   onRemove: () => void;
+  appURL: string;
+  collectionName: string;
 }) {
   function patch(next: Partial<AuthProviderValue>) {
     onChange({ ...provider, ...next });
@@ -99,6 +221,7 @@ function ProviderRow({
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <CallbackUrlField appURL={appURL} collectionName={collectionName} providerName={provider.name} />
         <OptionField label="Provider name" help='PocketBase presets ("google", "github", …) or your own for a custom OpenID/OAuth2 endpoint.'>
           <Input
             value={provider.name}
@@ -191,10 +314,15 @@ function ProviderRow({
 export function AuthOptionsEditor({
   value,
   onChange,
+  collectionName,
 }: {
   value: AuthOptionsValue;
   onChange: (next: AuthOptionsValue) => void;
+  collectionName: string;
 }) {
+  const { data: settings } = useSettings();
+  const appURL = settings?.meta.appURL ?? "";
+
   function patch(next: Partial<AuthOptionsValue>) {
     onChange({ ...value, ...next });
   }
@@ -254,6 +382,8 @@ export function AuthOptionsEditor({
                 provider={provider}
                 onChange={(next) => updateProvider(i, next)}
                 onRemove={() => removeProvider(i)}
+                appURL={appURL}
+                collectionName={collectionName}
               />
             ))}
           </div>

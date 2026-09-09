@@ -19,12 +19,14 @@ describe("settings", () => {
       "logs",
       "meta",
       "push",
+      "queue",
       "rateLimits",
       "s3",
-      "sms",
       "smtp",
       "superuserIPs",
+      "teams",
       "trustedProxy",
+      "zipExport",
     ]);
     expect(Object.keys(s.meta).sort()).toEqual([
       "accentColor",

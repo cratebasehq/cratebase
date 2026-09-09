@@ -80,6 +80,14 @@ pub struct AppInner {
     /// `crate::jsvm_host::js_router` once `crate::router` assembles the
     /// server.
     js_routes: std::sync::Mutex<Vec<JsRoute>>,
+    /// Digests (`crate::sessions::digest`) of every currently revoked
+    /// session token, loaded at boot by `crate::sessions::load_revoked`
+    /// and kept in sync by every revocation call. `revoked_len` mirrors
+    /// its length in an atomic so `crate::sessions::is_revoked` can skip
+    /// hashing and locking entirely on the overwhelmingly common
+    /// "nothing has ever been revoked" path.
+    revoked_sessions: parking_lot::RwLock<std::collections::HashSet<[u8; 32]>>,
+    revoked_len: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -146,6 +154,8 @@ impl App {
                 auth_resolutions: std::sync::atomic::AtomicU64::new(0),
                 jsvm: Arc::new(OnceLock::new()),
                 js_routes: std::sync::Mutex::new(Vec::new()),
+                revoked_sessions: parking_lot::RwLock::new(std::collections::HashSet::new()),
+                revoked_len: std::sync::atomic::AtomicUsize::new(0),
             }),
         }
     }
@@ -231,6 +241,31 @@ impl App {
 
     pub fn store(&self) -> &Store {
         &self.inner.store
+    }
+
+    /// The in-memory revoked-session-digest set. `pub(crate)` — only
+    /// `crate::sessions` reads or writes it.
+    pub(crate) fn revoked_sessions(
+        &self,
+    ) -> &parking_lot::RwLock<std::collections::HashSet<[u8; 32]>> {
+        &self.inner.revoked_sessions
+    }
+
+    /// `revoked_sessions().len()`, without taking the lock — the fast
+    /// path `crate::sessions::is_revoked` checks first.
+    pub(crate) fn revoked_len(&self) -> usize {
+        self.inner
+            .revoked_len
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Resync `revoked_len` after a caller mutates `revoked_sessions()`
+    /// directly.
+    pub(crate) fn sync_revoked_len(&self) {
+        let n = self.inner.revoked_sessions.read().len();
+        self.inner
+            .revoked_len
+            .store(n, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The running JS runtime, once `App::bootstrap` has started one.
@@ -427,6 +462,9 @@ impl App {
             plugin.setup(self)?;
         }
 
+        if let Err(e) = crate::sessions::load_revoked(self).await {
+            tracing::warn!(error = %e, "failed to load revoked sessions at boot");
+        }
         self.inner.cron.start();
 
         let mut reload = crate::events::SettingsReloadEvent::new(self.clone(), self.settings());
@@ -619,6 +657,15 @@ impl App {
                         Err(e) => tracing::warn!(error = %e, "logs cleanup failed"),
                     }
                 }
+            });
+
+        let app = self.clone();
+        let _ = self
+            .inner
+            .cron
+            .add(cron::JOB_SESSION_SWEEP, "0 * * * *", move || {
+                let app = app.clone();
+                async move { crate::sessions::sweep_expired(&app).await }
             });
     }
 

@@ -89,6 +89,25 @@ async function spawnServer(bin: string): Promise<Spawned> {
     CRATEBASE_DATA_DIR: dir,
     DATABASE_URL: `sqlite://${join(dir, "data.db")}`,
     PORT: String(port),
+    // Cratebase-only: httpOnly cookie sessions are boot config
+    // (`crates/server/src/config.rs`), off by default because turning them
+    // on rebuilds the CORS layer with `allow_credentials`. The conformance
+    // run has no per-file spawn API (one server per run, see the module
+    // doc), so cookie mode is enabled run-wide for this flavour only —
+    // it's purely additive on top of bearer-token auth, so every existing
+    // suite is unaffected. `SESSION_COOKIE_SECURE=0` because the harness
+    // always talks plain HTTP to 127.0.0.1. `CORS_ALLOW_ORIGINS` is pinned
+    // to this run's own origin because the CSRF gate
+    // (`crates/server/src/middleware/csrf.rs`) never treats the default
+    // `"*"` as a same-origin match. PocketBase ignores env vars it
+    // doesn't read, so this is a no-op for the `pocketbase` flavour.
+    ...(flavor === "cratebase"
+      ? {
+          SESSION_COOKIE: "1",
+          SESSION_COOKIE_SECURE: "0",
+          CORS_ALLOW_ORIGINS: url,
+        }
+      : {}),
   };
 
   // 1. create the superuser via the CLI (both binaries share the verb).
@@ -185,6 +204,13 @@ if (!spawned) {
 export const FLAVOR: Flavor =
   (process.env.SERVER_FLAVOR as Flavor) ||
   (process.env.PB_BIN ? "pocketbase" : "cratebase");
+
+/** Whether the running server has httpOnly cookie sessions enabled — true
+ * exactly when the harness spawned a Cratebase binary itself (see the
+ * `SESSION_COOKIE` env block in `spawnServer` above). PocketBase has no
+ * cookie-session support at all, and an externally-supplied `BASE_URL`
+ * server's config is unknown, so both cases stay `false`. */
+export const COOKIE_MODE = FLAVOR === "cratebase" && spawned !== null;
 
 // ---------------------------------------------------------------------------
 // SMTP sink: a minimal in-process SMTP server so that emails sent by the

@@ -74,6 +74,15 @@ well-scoped primitive into a maintenance burden.
 
 ## 1. The core tension
 
+> **Superseded 2026-09-08:** this section's "don't fork the SDK, bolt a
+> thin extension package on top of it" stance was reversed — Cratebase
+> now ships a first-party typed SDK, `@cratebase/client`. See
+> `docs/superpowers/specs/2026-09-08-first-class-auth-sdk-plan.md` for
+> the decision record and the reasoning that changed. `@cratebase/extras`
+> still exists for projects that stay on the official `pocketbase` SDK —
+> it just isn't the default recommendation anymore. The reasoning below
+> is preserved as a record of what was decided at the time.
+
 Parity work (W1–W8) deliberately rides the official `pocketbase` npm SDK
 unchanged — that's the whole point of the conformance suite, and it's why
 the in-house SDK was deleted (see PR #3). But every interesting value-add

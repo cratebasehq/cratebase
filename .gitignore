@@ -37,6 +37,15 @@ sdk/js/extras/dist
 # publish.
 tools/schema-codegen/dist
 
+# @cratebase/client's dist/ — same reasoning as extras/schema-codegen
+# above: a real npm build artifact, rebuilt fresh by CI before publish.
+sdk/js/client/dist
+
+# TypeScript incremental build info for the zero-build example apps
+# (examples/kanban's own tsconfig `-b` run) — a local build cache, not
+# something to commit.
+*.tsbuildinfo
+
 # Agent skills installed via `npx skills add` — local dev aids, not
 # part of the shipped product; keep them out of the open-source repo.
 # Exception: .claude/skills/cratebase/ is authored here and shipped

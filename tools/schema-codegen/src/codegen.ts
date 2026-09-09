@@ -144,7 +144,25 @@ function generate(collections: CollectionDoc[]): string {
     "",
   ];
   const body = nonSystem.map(generateInterface).join("\n\n");
-  return `${banner.join("\n")}${body}\n`;
+  const schema = generateSchema(nonSystem);
+  return `${banner.join("\n")}${body}\n\n${schema}\n`;
+}
+
+/** Every non-system collection, keyed by name, typed to its own
+ * `<Name>Record` interface — pass to `createClient<Schema>()` for a
+ * typed `client.collection(name)`. */
+function generateSchema(nonSystem: CollectionDoc[]): string {
+  const lines: string[] = [
+    "/** Every non-system collection, keyed by name — pass to `createClient<Schema>()`. */",
+    "export interface Schema {",
+  ];
+  for (const collection of nonSystem) {
+    lines.push(`  ${propertyKey(collection.name)}: ${pascalCase(collection.name)}Record;`);
+  }
+  lines.push("}");
+  lines.push("");
+  lines.push("export type Collections = keyof Schema;");
+  return lines.join("\n");
 }
 
 interface Args {
@@ -203,4 +221,4 @@ if (isMainModule) {
   });
 }
 
-export { extractCollections, generate, generateInterface, pascalCase, tsType };
+export { extractCollections, generate, generateInterface, generateSchema, pascalCase, tsType };

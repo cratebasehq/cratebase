@@ -10,3 +10,15 @@ at the repository root. Common ones: `DATABASE_URL` (defaults to a local
 SQLite file; `postgres://...` switches backends with no code change),
 `CRATEBASE_DATA_DIR`, `PORT`, `AUTH_SECRET`, `AUTH_RATE_LIMIT_ENABLED`,
 and `CB_HOOKS_DIR`.
+
+Cookie sessions are off by default and controlled by six more:
+`SESSION_COOKIE` (default `false`) turns on the httpOnly session
+cookie alongside the bearer token; `SESSION_COOKIE_NAME` (default
+`cb_session`), `SESSION_COOKIE_DOMAIN` (default unset, host-only),
+`SESSION_COOKIE_SAMESITE` (default `Lax`; `Lax`, `Strict`, or `None`),
+and `SESSION_COOKIE_SECURE` (default `true`) shape the cookie itself;
+`SESSION_TRACKING` (default `true`) writes a `_sessions` row per login
+for [listing/revocation](/docs/reference/rest-api/auth/). Turning on
+`SESSION_COOKIE` also enables `allow_credentials` on CORS, so
+`CORS_ALLOW_ORIGINS` must be an explicit origin list — the server
+refuses to boot with the default `*` and cookies both enabled.

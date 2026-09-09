@@ -1,15 +1,27 @@
-import PocketBase, { ClientResponseError } from "pocketbase";
+import { createClient, CratebaseError } from "@cratebase/client";
 
-/** Single shared client for the whole dashboard. `authStore` persists the
- * superuser session to `localStorage` under this key so a page reload
- * doesn't require logging back in.
+/** Single shared client for the whole dashboard. The default
+ * `LocalAuthStore` persists the superuser session to `localStorage` under
+ * `cratebase_auth` so a page reload doesn't sign the user back out.
  *
- * The default has to be `"/"`, not `""`: a base URL that doesn't start with
- * a slash is resolved by the SDK against `window.location.pathname`, so on
- * `/collections/posts` every call would go to
- * `/collections/posts/api/...`, get the SPA's own `index.html` back, fail
- * to parse as JSON and resolve to `{}` — a silent, shapeless success. */
-export const cb = new PocketBase(import.meta.env.VITE_API_URL ?? "/");
+ * `baseUrl` is `"/"` in production (the dashboard is served from the same
+ * origin as the API) and the dev server's Vite proxy in development —
+ * `cb.buildURL`/`cb.send` handle joining that against `/api/...` without
+ * producing `//api/...`.
+ *
+ * `authCollection: "_superusers"` matters beyond `client.auth` itself:
+ * every non-collection-scoped call this dashboard makes — `cb.admin.*`
+ * (settings, backups, logs, schema, storage, api keys, crons, push,
+ * sql), `cb.send()`, `cb.files`, `cb.realtime` — authenticates as
+ * *whichever* collection the client was constructed with, defaulting to
+ * `"users"`. Every dashboard page signs in as a superuser, never as an
+ * ordinary `users` record, so leaving the default would silently send
+ * every one of those requests with no bearer token at all. */
+export const cb = createClient(import.meta.env.VITE_API_URL ?? "/", { authCollection: "_superusers" });
+
+/** `client.auth`, already bound to `_superusers` by the `authCollection`
+ * option above — named for what it is at every dashboard call site. */
+export const superuserAuth = cb.auth;
 
 /** The superuser record returned by `auth-with-password`. Superusers are
  * ordinary auth records in the `_superusers` collection (PocketBase v0.23+),
@@ -23,25 +35,25 @@ export interface SuperuserRecord {
   updated?: string;
   verified?: boolean;
   avatar?: string;
-  /** `"owner"` or `"admin"` — see `cratebase_core::SUPERUSER_ROLE_OWNER`/
-   * `SUPERUSER_ROLE_ADMIN`. */
   role?: string;
 }
 
 export function isLoggedIn(): boolean {
-  return cb.authStore.isValid && cb.authStore.record !== null;
+  return superuserAuth.isValid && superuserAuth.record !== null;
 }
 
 /** The signed-in superuser, or `null`. Reads straight off the auth store so
  * it stays correct after a login, a logout, or a page reload. */
 export function currentSuperuser(): SuperuserRecord | null {
-  const record = cb.authStore.record;
+  const record = superuserAuth.record;
   if (!record) return null;
   return {
     id: record.id,
     email: typeof record["email"] === "string" ? record["email"] : "",
+    collectionId: typeof record["collectionId"] === "string" ? record["collectionId"] : undefined,
     collectionName: typeof record["collectionName"] === "string" ? record["collectionName"] : undefined,
     created: typeof record["created"] === "string" ? record["created"] : undefined,
+    updated: typeof record["updated"] === "string" ? record["updated"] : undefined,
     verified: record["verified"] === true,
     avatar: typeof record["avatar"] === "string" ? record["avatar"] : undefined,
     role: typeof record["role"] === "string" ? record["role"] : undefined,
@@ -50,9 +62,8 @@ export function currentSuperuser(): SuperuserRecord | null {
 
 /** `GET /api/utils/avatar/{seed}` — a deterministic, hashed placeholder
  * avatar (`crates/server/src/routes/utils.rs`) for anywhere a record has
- * no uploaded avatar file of its own: the sidebar's own-account menu, and
- * a record table's identity column for an auth collection. The same seed
- * always draws the same image, so a record's placeholder is stable across
+ * no uploaded avatar of its own. `Cache-Control: max-age=31536000,
+ * immutable` on the response means the same seed is free on subsequent
  * reloads without the server storing anything. */
 export function avatarUrl(seed: string, size = 64): string {
   return cb.buildURL(`/api/utils/avatar/${encodeURIComponent(seed)}?size=${size}`);
@@ -64,11 +75,14 @@ export function avatarUrl(seed: string, size = 64): string {
  * *or* username) rather than `email`.
  */
 export async function authWithPassword(identity: string, password: string) {
-  return cb.collection("_superusers").authWithPassword<SuperuserRecord>(identity, password);
+  return superuserAuth.signIn.password({ identity, password });
 }
 
 export function signOut(): void {
-  cb.authStore.clear();
+  superuserAuth.signOut().catch(() => {
+    // Best-effort server-side revocation; the local store is cleared
+    // either way so the UI signs out immediately.
+  });
 }
 
 /** `GET /api/health` — unauthenticated, so it doubles as a reachability
@@ -76,10 +90,7 @@ export function signOut(): void {
  * running?", which is the failure the old login reported as
  * "Invalid email or password." */
 export async function checkHealth(): Promise<{ message: string }> {
-  // `requestKey: null` disables the SDK's auto-cancellation: two callers
-  // probing health at once would otherwise cancel each other and both
-  // report the server as unreachable.
-  return cb.send<{ message: string }>("/api/health", { method: "GET", requestKey: null });
+  return cb.send<{ message: string }>("/api/health");
 }
 
 /** `GET /api/health`, authenticated — a superuser gets an extra `data`
@@ -87,21 +98,15 @@ export async function checkHealth(): Promise<{ message: string }> {
  * (SQLite, not Postgres) and `backups_storage` are both configured for
  * backups. Used by the backups page to hide actions that would just 403. */
 export async function checkBackupCapability(): Promise<boolean> {
-  const response = await cb.send<{ data?: { canBackup?: boolean } }>("/api/health", {
-    method: "GET",
-    requestKey: null,
-  });
-  return response.data?.canBackup ?? true;
+  const res = await cb.send<{ data?: { canBackup?: boolean } }>("/api/health");
+  return res.data?.canBackup === true;
 }
 
 /** `GET /api/setup/status` — unauthenticated. Tells the login screen
  * whether to render the ordinary login form or the first-run "create your
  * first superuser" form. */
 export async function checkSetupStatus(): Promise<{ needsSetup: boolean }> {
-  return cb.send<{ needsSetup: boolean }>("/api/setup/status", {
-    method: "GET",
-    requestKey: null,
-  });
+  return cb.send<{ needsSetup: boolean }>("/api/setup/status");
 }
 
 /** `POST /api/setup` — unauthenticated, and only succeeds once: the server
@@ -113,10 +118,9 @@ export async function createFirstSuperuser(
   password: string,
   passwordConfirm: string,
 ): Promise<void> {
-  await cb.send("/api/setup", {
+  await cb.send<void>("/api/setup", {
     method: "POST",
     body: { email, password, passwordConfirm },
-    requestKey: null,
   });
 }
 
@@ -139,16 +143,16 @@ export interface ApiFailure {
   offline: boolean;
 }
 
-/** The SDK synthesises `request to <url> failed with status <n>` when a
- * response carries no JSON body. That is a restatement of the status line,
- * not a message from the server, so it must not be shown as one. */
-function serverSentence(error: ClientResponseError): string {
-  return /^request to .+ failed with status \d+$/.test(error.message) ? "" : error.message;
+/** The client synthesises a generic message when a response carries no
+ * JSON body. That is a restatement of the status line, not a message from
+ * the server, so it must not be shown as one. */
+function serverSentence(error: CratebaseError): string {
+  return /^Request failed with status \d+\.$/.test(error.message) ? "" : error.message;
 }
 
-function fieldErrors(error: ClientResponseError): Record<string, string> {
+function fieldErrors(error: CratebaseError): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [name, entry] of Object.entries(error.data ?? {})) {
+  for (const [name, entry] of Object.entries(error.response.data ?? {})) {
     if (entry && typeof entry === "object" && typeof entry.message === "string") {
       out[name] = entry.message;
     }
@@ -165,7 +169,7 @@ function fieldErrors(error: ClientResponseError): Record<string, string> {
  * true thing.
  */
 export function describeFailure(error: unknown, context: "auth" | "generic" = "generic"): ApiFailure {
-  if (error instanceof ClientResponseError) {
+  if (error instanceof CratebaseError) {
     const fields = fieldErrors(error);
     const message = serverSentence(error);
     const base = { status: error.status, fields, offline: false, serverMessage: message };
@@ -244,8 +248,12 @@ export function describeFailure(error: unknown, context: "auth" | "generic" = "g
 }
 
 function serverOrigin(): string {
-  if (cb.baseURL) return cb.baseURL;
-  return typeof window === "undefined" ? "the API" : window.location.origin;
+  const base = cb.buildURL("/");
+  try {
+    return new URL(base, window.location.href).origin;
+  } catch {
+    return base;
+  }
 }
 
 /** True for the one failure the whole app must react to identically: the
@@ -253,7 +261,7 @@ function serverOrigin(): string {
  * request the session was allowed to make, and signing the user out for it
  * would hide the real problem. */
 export function isSessionExpired(error: unknown): boolean {
-  return error instanceof ClientResponseError && error.status === 401;
+  return error instanceof CratebaseError && error.status === 401;
 }
 
 /** The server writes PocketBase's datetime form (a space, not a `T`,

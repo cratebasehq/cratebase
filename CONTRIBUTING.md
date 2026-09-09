@@ -89,6 +89,16 @@ pass/fail status (180 passing, 1 skipped against a real PocketBase server;
 181 pass against Cratebase, since two assertions widen for Cratebase's
 extra system collections/settings keys).
 
+`tests/conformance` deliberately keeps its `pocketbase`-SDK-driven suites
+even now that `@cratebase/client` exists — they're what prove wire
+compatibility stays true, and that's a claim worth defending on its own.
+The same directory's `client.test.ts` and `client-auth.test.ts` exercise
+`@cratebase/client` instead; they cover ergonomics and behavior the
+official SDK has no surface for (cookie sessions, impersonation, session
+revocation, and so on). Both suites matter, for different reasons —
+neither replaces the other, and a change to either client's behavior
+should be checked against both.
+
 ## The compatibility rule
 
 The project's stated engineering rule, from the existing

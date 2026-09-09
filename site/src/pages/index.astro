@@ -102,11 +102,11 @@ api:         http://127.0.0.1:8090/api/
           </p>
           <p class="hint">Demo instance coming soon. In the meantime:</p>
         </div>
-        <pre class="try-code"><code>{`import PocketBase from "pocketbase";
+        <pre class="try-code"><code>{`import { createClient } from "@cratebase/client";
 
-const pb = new PocketBase("http://localhost:8090");
-await pb.collection("guestbook").create({ text });
-pb.collection("guestbook").subscribe("*", (e) => render(e.record));`}</code></pre>
+const cb = createClient("http://localhost:8090");
+await cb.collection("guestbook").create({ text });
+cb.collection("guestbook").subscribe("*", (e) => render(e.record));`}</code></pre>
       </div>
     </div>
   </section>

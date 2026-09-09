@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRight, Boxes, Database, Plus, ShieldUser, TriangleAlert } from "lucide-react";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { cb } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { fillHourlyBuckets, type LogBucket } from "@/lib/log-stats";
@@ -131,7 +131,7 @@ export function DashboardHome() {
   const counts = useQueries({
     queries: userCollections.map((collection) => ({
       queryKey: ["record-count", collection.name],
-      queryFn: async () => (await cb.collection(collection.name).getList(1, 1, { requestKey: null })).totalItems,
+      queryFn: async () => (await cb.collection(collection.name).list({ page: 1, perPage: 1 })).totalItems,
       staleTime: 60_000,
     })),
   });
@@ -141,7 +141,7 @@ export function DashboardHome() {
 
   const stats = useQuery({
     queryKey: ["log-stats"],
-    queryFn: () => cb.logs.getStats() as Promise<LogBucket[]>,
+    queryFn: () => cb.admin.logs.stats() as Promise<LogBucket[]>,
     staleTime: 60_000,
     retry: false,
   });
@@ -149,7 +149,7 @@ export function DashboardHome() {
   const failures = useQuery({
     queryKey: ["log-failures"],
     queryFn: async () => {
-      const page = await cb.logs.getList(1, 6, { filter: "level >= 8", sort: "-created", skipTotal: true });
+      const page = await cb.admin.logs.list({ page: 1, perPage: 6, filter: "level >= 8", sort: "-created", skipTotal: true });
       return page.items.map((item) => ({
         id: item.id,
         message: item.message,
@@ -178,7 +178,7 @@ export function DashboardHome() {
         <div className="flex flex-col">
           <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
           <p className="text-sm text-muted-foreground">
-            {cb.baseURL === "/" ? window.location.origin : cb.baseURL} ·{" "}
+            {cb.buildURL("/") === "/" ? window.location.origin : cb.buildURL("/")} ·{" "}
             {state === "connected"
               ? `answering in ${latencyMs ?? 0} ms`
               : state === "connecting"
@@ -276,7 +276,7 @@ export function DashboardHome() {
               <span className="text-right">Records</span>
               <span className="text-right">Read access</span>
             </div>
-            {userCollections.map((collection, i) => {
+            {userCollections.map((collection: CollectionModel, i: number) => {
               const access = accessOf(collection);
               return (
                 <Link

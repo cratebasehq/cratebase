@@ -1,6 +1,6 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import type { FieldSchema } from "@/lib/field-types";
 import { SchemaFieldRow } from "@/components/collections/schema-field-row";
 

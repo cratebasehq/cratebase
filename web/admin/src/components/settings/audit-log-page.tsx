@@ -92,12 +92,13 @@ export function AuditLogPage() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["audit-log", page, action, from, to],
     queryFn: () =>
-      cb.collection("_audit_log").getList<AuditLogEntry>(page, 30, {
+      cb.collection("_audit_log").list({
+        page,
+        perPage: 30,
         filter: filter || undefined,
         sort: "-created",
         expand: "actor",
-        requestKey: null,
-      }) as Promise<AuditLogResult>,
+      }) as unknown as Promise<AuditLogResult>,
     placeholderData: (previous) => previous,
   });
 

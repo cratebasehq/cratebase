@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RecordSubscription } from "pocketbase";
-import { CARDS_COLLECTION, pb } from "../pocketbase";
+import { CARDS_COLLECTION, cb } from "../cratebase";
 import type { CardRecord, Status } from "../types";
 
 const ORDER_STEP = 1000;
@@ -35,22 +34,23 @@ export function useCards(enabled: boolean) {
     async function boot() {
       setLoading(true);
       try {
-        const result = await pb.collection<CardRecord>(CARDS_COLLECTION).getFullList({ sort: "order" });
+        const result = (await cb.collection(CARDS_COLLECTION).fullList({ sort: "order" })) as unknown as CardRecord[];
         if (!cancelled) setCards(result);
       } finally {
         if (!cancelled) setLoading(false);
       }
 
       try {
-        await pb.collection<CardRecord>(CARDS_COLLECTION).subscribe("*", (event: RecordSubscription<CardRecord>) => {
+        await cb.collection(CARDS_COLLECTION).subscribe("*", (event) => {
+          const record = event.record as unknown as CardRecord;
           setCards((prev) => {
             if (event.action === "delete") {
-              return prev.filter((c) => c.id !== event.record.id);
+              return prev.filter((c) => c.id !== record.id);
             }
-            const idx = prev.findIndex((c) => c.id === event.record.id);
-            if (idx === -1) return sortByOrder([...prev, event.record]);
+            const idx = prev.findIndex((c) => c.id === record.id);
+            if (idx === -1) return sortByOrder([...prev, record]);
             const next = [...prev];
-            next[idx] = event.record;
+            next[idx] = record;
             return sortByOrder(next);
           });
         });
@@ -64,14 +64,13 @@ export function useCards(enabled: boolean) {
     boot();
     return () => {
       cancelled = true;
-      pb.collection(CARDS_COLLECTION).unsubscribe("*");
     };
   }, [enabled]);
 
   const createCard = useCallback(async (status: Status, title: string) => {
     const columnCards = sortByOrder(cardsRef.current.filter((c) => c.status === status));
     const order = orderForIndex(columnCards, columnCards.length);
-    const record = await pb.collection<CardRecord>(CARDS_COLLECTION).create({ title, status, order });
+    const record = (await cb.collection(CARDS_COLLECTION).create({ title, status, order })) as unknown as CardRecord;
     // Optimistic insert, deduped by id: the realtime "create" event for
     // this same write can arrive before this continuation runs, so a
     // blind push would double the card — merge instead, matching the
@@ -84,12 +83,13 @@ export function useCards(enabled: boolean) {
     const prev = cardsRef.current;
     setCards((cur) => cur.filter((c) => c.id !== id));
     try {
-      await pb.collection(CARDS_COLLECTION).delete(id);
+      await cb.collection(CARDS_COLLECTION).delete(id);
     } catch (err) {
       setCards(prev); // revert
       throw err;
     }
   }, []);
+
 
   /** Moves `id` to `status` at `index` within that column's cards (the
    * index the dragged card should occupy *after* the move, counted among
@@ -106,7 +106,7 @@ export function useCards(enabled: boolean) {
 
     setCards((cur) => sortByOrder(cur.map((c) => (c.id === id ? { ...c, status, order } : c))));
     try {
-      await pb.collection(CARDS_COLLECTION).update(id, { status, order });
+      await cb.collection(CARDS_COLLECTION).update(id, { status, order });
     } catch (err) {
       setCards(prevCards); // revert
       throw err;

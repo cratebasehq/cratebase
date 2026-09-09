@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { KeyRound, Plus, ShieldUser, Trash2 } from "lucide-react";
-import type { RecordModel } from "pocketbase";
+import type { RecordModel } from "@cratebase/client";
 import { cb, currentSuperuser, describeFailure } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
 import {
@@ -56,7 +56,7 @@ export function SuperusersPage() {
 
   const superusers = useQuery({
     queryKey: ["superusers"],
-    queryFn: () => cb.collection(COLLECTION).getFullList<RecordModel>({ sort: "created" }),
+    queryFn: () => cb.collection(COLLECTION).fullList({ sort: "created" }),
   });
 
   function invalidate() {

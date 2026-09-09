@@ -20,12 +20,16 @@ This example is different on purpose. A polished drag-and-drop board with
 live multi-column reflow, FLIP-animated repositioning, and a presence bar
 is meaningfully easier to get right — and to keep readable — as a small
 component tree with real state management than as hand-rolled
-`document.createElement` calls. So this one has an actual `package.json`,
-installs the official `pocketbase` npm package as a normal dependency
-(rather than the esm.sh CDN import map), and runs on Vite + React +
-TypeScript with its own dev server. `app.js`'s realtime/optimistic-update
-pattern carries over unchanged in spirit — see "How it works" below — it's
-just spread across hooks and components instead of one file.
+`document.createElement` calls. So this one has an actual `package.json`
+and runs on Vite + React + TypeScript with its own dev server. It talks to
+Cratebase with the first-party `@cratebase/client` SDK (`src/cratebase.ts`)
+rather than the `pocketbase` npm package the zero-build examples use —
+`@cratebase/client` isn't published yet, so this example resolves it
+straight from `sdk/js/client/src` via a Vite alias, which only works from
+inside this monorepo checkout; once it ships to npm this becomes an
+ordinary dependency. `app.js`'s realtime/optimistic-update pattern carries
+over unchanged in spirit — see "How it works" below — it's just spread
+across hooks and components instead of one file.
 
 ## 1. Start Cratebase
 
@@ -87,12 +91,12 @@ open the same URL in a second tab to see the two-tab realtime sync.
 ## How it works
 
 - **Auth**: `useAuth` mirrors the todo example's exact calls —
-  `pb.collection("users").create(...)` then `authWithPassword(...)` for
-  register, `authWithPassword` alone for sign in — and subscribes to the
-  SDK's `authStore.onChange` to drive the auth-screen ↔ board swap.
-  `cards` and `presence` share that same client/auth store, so every
-  request after sign-in automatically carries the bearer token; no manual
-  header wiring anywhere in the app.
+  `cb.auth.signUp(...)` for register (auto-signs-in by default),
+  `cb.auth.signIn.password(...)` alone for sign in — and subscribes to the
+  SDK's `auth.onChange` to drive the auth-screen ↔ board swap. `cards` and
+  `presence` share that same client/auth store, so every request after
+  sign-in automatically carries the bearer token; no manual header wiring
+  anywhere in the app.
 - **Cards + ordering**: each card has a `status` and a numeric `order`.
   Reordering (within a column or across columns) computes a new `order`
   as the midpoint between the two neighboring cards' `order` values
@@ -113,7 +117,7 @@ open the same URL in a second tab to see the two-tab realtime sync.
   persists via `cards.update(id, { status, order })` — the same
   optimistic-then-reconcile-via-realtime-event pattern as the todo
   example's toggle/delete.
-- **Realtime**: `useCards` calls `pb.collection("cards").subscribe("*",
+- **Realtime**: `useCards` calls `cb.collection("cards").subscribe("*",
   callback)` once on mount. Every `create`/`update`/`delete` event merges
   into local state by id — the acting tab's own optimistic write and the
   realtime event for that same write converge on an identical record.

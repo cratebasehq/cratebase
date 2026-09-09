@@ -12,3 +12,8 @@ itself). The handful of intentional, documented divergences are listed
 verbatim in
 [`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md) —
 worth reading before migrating an app that leans on an edge case.
+
+This wire compatibility means the official `pocketbase` SDK keeps
+working unchanged against Cratebase; `@cratebase/client`, Cratebase's
+first-party typed SDK, is also available for anyone starting fresh or
+wanting the extra typed surface.

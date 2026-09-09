@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { FileIcon, ImageIcon, Plus, RotateCcw, Upload, X } from "lucide-react";
-import type { RecordModel } from "pocketbase";
+import type { RecordModel } from "@cratebase/client";
 import { cb } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { isMultiValue, type FieldSchema } from "@/lib/field-types";
@@ -21,7 +21,7 @@ function StoredFile({
   onRemove: () => void;
 }) {
   const [preview, setPreview] = useState(false);
-  const url = cb.getFileUrl(record, filename);
+  const url = cb.files.url(record, filename);
   const isImage = IMAGE_EXT.test(filename);
 
   return (

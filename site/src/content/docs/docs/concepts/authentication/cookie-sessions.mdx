@@ -1,0 +1,37 @@
+---
+title: "Cookie sessions"
+description: "SESSION_COOKIE, CORS implications, and the same-origin CSRF check."
+sidebar:
+  order: 13
+---
+
+`SESSION_COOKIE` (off by default, `--session-cookie`) makes every
+successful login/refresh set a session token as an `HttpOnly` cookie
+alongside the usual JSON body, so a browser client never has to hold
+the token itself. It's a boot-time flag, not a `Settings` field — it
+can't be toggled at runtime.
+
+| env | default | flag |
+|---|---|---|
+| `SESSION_COOKIE` | `false` | `--session-cookie` |
+| `SESSION_COOKIE_NAME` | `cb_session` | `--session-cookie-name` |
+| `SESSION_COOKIE_DOMAIN` | unset (host-only) | `--session-cookie-domain` |
+| `SESSION_COOKIE_SAMESITE` | `Lax` (`Lax`\|`Strict`\|`None`) | `--session-cookie-samesite` |
+| `SESSION_COOKIE_SECURE` | `true` | `--session-cookie-secure` |
+
+Turning it on also flips CORS `allow_credentials` on, which means
+`CORS_ALLOW_ORIGINS` must be an explicit origin list from that point
+on — the default `*` is incompatible with credentialed requests and
+the server refuses to boot rather than combine the two. Every unsafe
+method (`POST`/`PATCH`/`DELETE`/etc.) carrying the cookie is also
+checked against the request's `Origin` header; a mismatch answers
+`403 "Cross-site request rejected."`. A bearer-token request is exempt
+from that check — an attacker who controls the `Authorization` header
+already has the token, there's nothing a same-origin check adds.
+
+Reach for this when the browser is talking to Cratebase directly and
+you want the token off the page entirely. If instead your framework's
+own server is the one calling Cratebase and hydrating its own
+first-party cookie for SSR, keep using bearer tokens and pass them
+through your framework's cookie handling — see
+[SSR & cookies](/docs/sdk/ssr-and-cookies/).

@@ -8,3 +8,20 @@ sidebar:
 `POST .../impersonate/{id}` (superuser-only) mints a session token for
 another record. It's deliberately non-refreshable — a one-shot loan the
 impersonated record can't extend into a standing session on its own.
+
+## Ending an impersonation
+
+`cb.auth.admin.impersonate(collection, recordId)` returns a *new*
+`AuthNamespace` backed by its own in-memory store — the impersonator's
+own session is never touched. In [cookie
+sessions](/docs/concepts/authentication/cookie-sessions/) mode, `POST
+.../stop-impersonating` restores the impersonator's session from a
+`cb_session_prev` cookie set alongside the impersonated one; call it
+via `cb.auth.admin.stopImpersonating()`. In bearer mode there's
+nothing server-side to call — there's no cookie to restore from — so
+just discard the impersonated `AuthNamespace` and keep using the
+original client's `cb.auth`.
+
+See also [Bans](/docs/concepts/authentication/bans/) for
+`cb.auth.admin.ban`/`.unban`, the other superuser-only, another-record
+operation in this namespace.

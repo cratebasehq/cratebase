@@ -1,0 +1,22 @@
+---
+title: "Sessions"
+description: "The _sessions collection and O(1) session revocation."
+sidebar:
+  order: 12
+---
+
+`_sessions` is a system collection with one row per minted token —
+`kind` is `password`, `otp`, `oauth2`, `impersonation`, or `refresh`.
+Verifying a token never touches `_sessions`: it's still a stateless JWT
+check, revocation is a digest-set lookup against that row, not a
+database read on every request. `cb.auth.sessions.list({collection?,
+recordId?})` lists a record's own sessions (a superuser can pass
+`recordId` to browse another record's); `.revoke(id)` kills one,
+`.revokeOthers()` kills every session but the current one, and
+`.revokeAll()` kills everything including the current session. Each row
+is `{id, kind, fingerprint, ip, userAgent, current, created,
+lastSeenAt, expiresAt}`. `SESSION_TRACKING` (on by default) gates all of
+this: with it off, `_sessions` rows are never written, `sessions.list()`
+comes back empty, and revoke calls are a no-op — tokens remain valid
+until they expire on their own, same as the stateless-only model in
+[Authentication overview](/docs/concepts/authentication/overview/).

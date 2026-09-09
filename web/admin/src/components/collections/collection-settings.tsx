@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { AlertCircle, RefreshCw, Undo2 } from "lucide-react";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { HoldToConfirm } from "@/components/ui/hold-to-confirm";
@@ -110,7 +110,7 @@ export function CollectionSettings({
 
   const save = useMutation({
     mutationFn: () =>
-      cb.collections.update(collection.id, {
+      cb.admin.collections.update(collection.id, {
         name: value.name,
         type: value.type,
         // Update replaces the whole `fields` array — splice the edited
@@ -142,7 +142,7 @@ export function CollectionSettings({
   });
 
   const remove = useMutation({
-    mutationFn: () => cb.collections.delete(collection.id),
+    mutationFn: () => cb.admin.collections.delete(collection.id),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["collections"] });
       toast.success(`Collection "${collection.name}" deleted`);

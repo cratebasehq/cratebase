@@ -1,0 +1,43 @@
+---
+title: "Files"
+description: "Building file URLs, thumbnails, and protected-file tokens with cb.files."
+sidebar:
+  order: 5
+---
+
+`cb.files.url(record, filename, options?)` builds a file URL from a
+record and its field's filename — no manual path concatenation:
+
+```ts
+const post = await cb.collection("posts").one("RECORD_ID");
+const url = cb.files.url(post, post.cover);
+```
+
+`FileURLOptions`:
+
+```ts
+interface FileURLOptions {
+  thumb?: string;      // "WxH", "WxHt|b|f", "0xH", or "Wx0"
+  download?: boolean;  // force Content-Disposition: attachment
+  token?: string;       // protected-file token
+}
+```
+
+```ts
+cb.files.url(post, post.cover, { thumb: "300x300f" });
+cb.files.url(post, post.attachment, { download: true });
+```
+
+## Protected files
+
+A `protected` field's files need a short-lived token instead of a
+bearer header — for embedding a gated file where an `Authorization`
+header can't be sent, e.g. an `<img src>`:
+
+```ts
+const token = await cb.files.token();
+const url = cb.files.url(post, post.cover, { token });
+```
+
+See [Files](/docs/concepts/files/) for the multi-file `field+`/`field-`
+append/remove convention and thumbnail generation details.

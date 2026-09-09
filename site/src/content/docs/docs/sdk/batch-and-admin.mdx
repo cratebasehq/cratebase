@@ -1,0 +1,98 @@
+---
+title: "Batch & admin"
+description: "cb.batch() for transactional multi-writes, and the cb.admin.* management surface."
+sidebar:
+  order: 6
+---
+
+## Batch
+
+`cb.batch()` builds several record writes into one
+[Batch API](/docs/concepts/batch-api/) call — one HTTP round trip, one
+SQL transaction:
+
+```ts
+const results = await cb
+  .batch()
+  .create("posts", { title: "Hello" })
+  .update("comments", "COMMENT_ID", { approved: true })
+  .delete("drafts", "DRAFT_ID")
+  .upsert("posts", { id: "POST_ID", title: "Renamed" }) // id present → update, absent → create
+  .send();
+```
+
+`send()` resolves to a `BatchResult[]`, one `{ status, body }` per
+sub-request, in call order:
+
+```ts
+const [created, updated] = results;
+if (created.status >= 400) {
+  console.error("create failed:", created.body);
+}
+```
+
+A failing sub-request doesn't reject `send()` — check each result's
+`status`; the transaction guarantee means either every write commits or
+none do, but the promise still resolves with the per-request outcomes.
+
+## Admin
+
+`cb.admin.*` wraps the superuser-only management endpoints — building
+blocks for admin tooling (like the built-in dashboard), not typical app
+code:
+
+```ts
+await cb.admin.collections.list();
+await cb.admin.collections.one("posts");
+await cb.admin.collections.create({ name: "posts", type: "base", fields: [] });
+await cb.admin.collections.update("posts", { fields: [] });
+await cb.admin.collections.delete("posts");
+await cb.admin.collections.truncate("posts");
+await cb.admin.collections.import([...collections], false);
+await cb.admin.collections.scaffolds();
+
+await cb.admin.schema.apply(collections, { dryRun: true });
+
+await cb.admin.settings.get();
+await cb.admin.settings.update({ /* ... */ });
+await cb.admin.settings.testS3();
+await cb.admin.settings.testEmail();
+await cb.admin.settings.generateAppleClientSecret();
+
+await cb.admin.logs.list();
+await cb.admin.logs.one("LOG_ID");
+await cb.admin.logs.stats();
+
+await cb.admin.backups.list();
+await cb.admin.backups.create();
+await cb.admin.backups.upload(file);
+await cb.admin.backups.delete("backup.zip");
+await cb.admin.backups.restore("backup.zip");
+await cb.admin.backups.storageInfo();
+await cb.admin.backups.downloadURL("backup.zip");
+
+await cb.admin.crons.list();
+await cb.admin.crons.run("cronId");
+
+await cb.admin.storage.list();
+await cb.admin.storage.upload(/* ... */);
+await cb.admin.storage.delete(/* ... */);
+await cb.admin.storage.downloadURL(/* ... */);
+
+await cb.admin.apiKeys.create({ /* ... */ });
+await cb.admin.push.send({ /* ... */ });
+```
+
+Plus three flat helpers not grouped under a sub-namespace:
+
+```ts
+await cb.admin.sql("select count(*) from posts", false); // write=false by default
+await cb.admin.functions();   // hooksDir, files, routes
+await cb.admin.health();
+await cb.admin.setupStatus(); // { needsSetup }
+await cb.admin.setup({ email, password, passwordConfirm });
+```
+
+Every `admin.*` call needs a superuser session — sign in on
+`cb.auth.as("_superusers")` (or the default `cb.auth` if
+`authCollection` is already `"_superusers"`) before calling these.

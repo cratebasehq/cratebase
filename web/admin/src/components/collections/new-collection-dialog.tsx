@@ -43,7 +43,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
 
   const create = useMutation({
     mutationFn: () =>
-      cb.collections.create({
+      cb.admin.collections.create({
         name: value.name,
         type: value.type,
         // `id` and, for auth collections, the auth columns are added by the

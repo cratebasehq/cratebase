@@ -24,6 +24,19 @@ otherwise; every other field kind maps straight to its TypeScript scalar (`text`
 `number` → `number`, `bool` → `boolean`, `json` → `unknown`, `geoPoint` →
 `{ lon: number; lat: number }`, ...).
 
+Alongside the per-collection interfaces, the generated file also exports a `Schema` interface
+mapping every non-system collection's name to its `<Name>Record` type, plus
+`type Collections = keyof Schema`. Pass `Schema` to `@cratebase/client`'s `createClient<Schema>()`
+for a typed `client.collection("posts")` — an unknown collection name is then a compile error:
+
+```ts
+import { createClient } from "@cratebase/client";
+import type { Schema } from "./cratebase-types.js";
+
+const client = createClient<Schema>("http://localhost:8090");
+const posts = await client.collection("posts").list(); // typed PostsRecord[]
+```
+
 ## Options
 
 ```

@@ -1,4 +1,4 @@
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { userFields, type FieldSchema } from "@/lib/field-types";
 
 /**

@@ -3,11 +3,15 @@
 # ---- frontend build -----------------------------------------------------
 # Builds the admin dashboard's static assets, which get embedded straight
 # into the Rust binary in the next stage (rust-embed). The dashboard talks
-# to Cratebase with the official `pocketbase` npm client — no in-house SDK
-# to build here anymore.
+# to Cratebase with the first-party `@cratebase/client` SDK, consumed
+# straight from source via a Vite alias (`web/admin/vite.config.ts`) and a
+# matching `tsconfig.json` `paths` entry — not an npm dependency, so
+# `sdk/js/client` has to be present in the build context for that alias
+# to resolve, same reason `web/admin`/`web/email` are copied below.
 FROM oven/bun:1-slim AS frontend
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY sdk/js/client sdk/js/client
 COPY web/admin web/admin
 COPY web/email web/email
 # The root package.json lists `tests/conformance` as a workspace and Bun

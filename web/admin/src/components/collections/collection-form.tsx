@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus } from "lucide-react";
-import type { CollectionModel } from "pocketbase";
+import type { CollectionModel } from "@cratebase/client";
 import { type FieldSchema, newField } from "@/lib/field-types";
 import {
   validateFieldName,
@@ -279,7 +279,11 @@ export function CollectionForm({
       </section>
 
       {value.type === "auth" && value.auth ? (
-        <AuthOptionsEditor value={value.auth} onChange={(auth) => onChange({ ...value, auth })} />
+        <AuthOptionsEditor
+          value={value.auth}
+          onChange={(auth) => onChange({ ...value, auth })}
+          collectionName={value.name}
+        />
       ) : null}
 
       <section className="flex flex-col gap-3">

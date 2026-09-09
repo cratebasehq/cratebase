@@ -1,0 +1,22 @@
+---
+title: "Bans"
+description: "The _bans system collection and immediate, key-rotating account bans."
+sidebar:
+  order: 14
+---
+
+`_bans` is a superuser-only system collection — a banned record can
+never see or list its own ban row, unlike `_sessions`. `POST
+.../ban/{id}` (superuser-only, body `{reason?, expiresAt?}`) bans a
+record; `DELETE .../ban/{id}` lifts it. On the client this is
+`cb.admin.ban(collection, recordId, {reason?, expiresAt?})` /
+`cb.admin.unban(collection, recordId)`.
+
+Banning rotates the record's signing key and revokes every live
+session immediately — it isn't just a flag checked on the next login,
+every outstanding token for that record stops working right away, the
+same way a password change already invalidates sessions via
+`tokenKey` rotation (see [Authentication
+overview](/docs/concepts/authentication/overview/)). Every login path,
+including `auth-refresh`, answers `403 "This account is banned."` for
+a banned record.
