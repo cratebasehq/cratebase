@@ -2,7 +2,11 @@
 //! the in-process evaluator: date macros, `@request.*` values and the
 //! `@collection.X` prefix.
 
+use std::sync::Arc;
+
 use serde_json::Value;
+
+use cratebase_core::{Collection, FieldKind};
 
 use crate::ast::{Literal, Modifier};
 use crate::error::FilterError;
@@ -19,6 +23,18 @@ pub enum MacroTerm {
     /// `@collection.<name>.<field path>`: needs a join, handled by the
     /// path resolver.
     Collection { collection: String, path: String },
+    /// `@request.body.<relation>.<field path>` (also reachable through the
+    /// deprecated `@request.data.` alias): the root collection's
+    /// `<relation>` field is a relation, so the rest of the path walks the
+    /// *submitted* target id rather than a plain JSON key. `value` is the
+    /// relation field's raw submitted value (an id, or a JSON array of ids
+    /// for a multi-valued relation).
+    BodyRelation {
+        value: Value,
+        multi: bool,
+        target: Arc<Collection>,
+        path: String,
+    },
 }
 
 pub fn literal_value(lit: &Literal) -> Value {
@@ -63,6 +79,24 @@ pub fn macro_value(
                         "{path}:isset is only valid on @request.body fields"
                     ))),
                 };
+            }
+            if let RequestPath::Body(body_path) = &req {
+                if let Some((first, rest)) = body_path.split_once('.') {
+                    if let Some(field) = ctx.root().field(first) {
+                        if let FieldKind::Relation { collection_id, .. } = &field.kind {
+                            if let Some(target) = ctx.collection(collection_id) {
+                                let value =
+                                    ctx.request_value(&RequestPath::Body(first.to_string()));
+                                return Ok(MacroTerm::BodyRelation {
+                                    value,
+                                    multi: field.is_multiple(),
+                                    target,
+                                    path: rest.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
             }
             let value = ctx.request_value(&req);
             Ok(apply_value_modifier(value, modifier))

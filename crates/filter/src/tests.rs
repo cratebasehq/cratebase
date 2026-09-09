@@ -977,6 +977,32 @@ fn request_paths() {
     );
 }
 
+// GH #18: `@request.body.<relation>.<field>` must walk the *submitted*
+// relation id against the target collection, not dig a JSON key that was
+// never sent (relation fields are submitted as bare ids).
+#[test]
+fn request_body_relation_dot_path() {
+    let r = TestResolver::sqlite("posts")
+        .with_auth(json!({"id": "u1", "company": "c1"}))
+        .with_body(json!({"author": "u5"}));
+    let c = with("@request.body.author.company = @request.auth.company", &r);
+    assert_eq!(
+        c.sql,
+        "(SELECT \"users\".\"company\" FROM \"users\" WHERE \"users\".\"id\" = $1) = $2"
+    );
+    assert_eq!(c.params, vec![json!("u5"), json!("c1")]);
+    // A relation id that resolves to nothing still compares as empty (via
+    // `IS NULL`), same as a plain relation path — it just isn't a
+    // compile-time constant since the value only resolves inside the
+    // scalar subquery.
+    let missing = TestResolver::sqlite("posts").with_body(json!({}));
+    assert_eq!(
+        with("@request.body.author.company = ''", &missing).sql,
+        "((SELECT \"users\".\"company\" FROM \"users\" WHERE \"users\".\"id\" = $1) = '' \
+         OR (SELECT \"users\".\"company\" FROM \"users\" WHERE \"users\".\"id\" = $1) IS NULL)"
+    );
+}
+
 // --- json, geo ----------------------------------------------------------------
 
 #[test]
@@ -1230,6 +1256,10 @@ fn evaluator_table() {
 #[test]
 fn evaluator_reports_unsupported_and_unknown() {
     let r = TestResolver::sqlite("posts");
+    assert!(matches!(
+        eval("@request.body.author.company = 'x'", &r),
+        Err(FilterError::Unsupported(_))
+    ));
     assert!(matches!(
         eval("author.name = 'x'", &r),
         Err(FilterError::Unsupported(_))

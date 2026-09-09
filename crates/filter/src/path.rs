@@ -327,6 +327,52 @@ impl<'a> PathResolver<'a> {
         self.walk(cursor, path, &full, None, true)
     }
 
+    /// Resolve `@request.body.<relation>.<rest>` (also the deprecated
+    /// `@request.data.` alias): `key_sql` is the already-bound placeholder
+    /// for the relation field's *submitted* value — a single id, or (when
+    /// `multi`) a JSON array of ids. The walk starts addressed by that
+    /// value rather than a column on the root row, so `updateRule` sees
+    /// the newly submitted related row, not whatever the record currently
+    /// points at. Unlike `resolve_collection` this never joins the root
+    /// query: the value is a bound literal, independent of the outer row.
+    pub fn resolve_body_relation(
+        &mut self,
+        key_sql: String,
+        multi: bool,
+        target: Arc<Collection>,
+        rest: &str,
+        full_path: &str,
+    ) -> Result<FieldRef, FilterError> {
+        if rest.is_empty() {
+            return Err(FilterError::UnknownField(full_path.to_string()));
+        }
+        let name = "__body".to_string();
+        if multi {
+            let e = self.next_alias("e");
+            let r = self.next_alias("r");
+            let (elems, elem) = self.elements(&key_sql, &e);
+            let piece = format!(
+                "{elems} JOIN {} AS {} ON {}.\"id\" = {elem}",
+                quote(target.table_name()),
+                quote(&r),
+                quote(&r)
+            );
+            let cursor = Cursor {
+                collection: Coll::Shared(target),
+                row: Row::Table { alias: r },
+                name,
+            };
+            self.walk(cursor, rest, full_path, Some(piece), false)
+        } else {
+            let cursor = Cursor {
+                collection: Coll::Shared(target),
+                row: Row::ById { key: key_sql },
+                name,
+            };
+            self.walk(cursor, rest, full_path, None, false)
+        }
+    }
+
     /// Resolve the same path a second time under `__mm_`-prefixed aliases,
     /// correlated to the outer row. PocketBase pairs a bare comparison over
     /// a joined path with a `NOT EXISTS` over this copy so the comparison
