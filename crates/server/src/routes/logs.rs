@@ -52,6 +52,8 @@ struct ListQuery {
 struct StatsQuery {
     #[serde(default)]
     filter: Option<String>,
+    #[serde(default)]
+    hours: Option<i64>,
 }
 
 async fn list(
@@ -66,7 +68,7 @@ async fn list(
             page: query.page.unwrap_or(1).max(1),
             // PocketBase caps `perPage` at 1000 (see KNOWN_DIVERGENCES §18).
             per_page: query.per_page.unwrap_or(30).clamp(1, 1000),
-            filter: compile_filter(query.filter.as_deref())?,
+            filter: compile_filter(query.filter.as_deref(), 0)?,
             sort: query.sort,
         },
     )
@@ -89,19 +91,36 @@ async fn stats(
     ApiQuery(query): ApiQuery<StatsQuery>,
 ) -> ApiResult<Json<Vec<LogStat>>> {
     app.logger().flush().await;
+    // The chart only ever renders a fixed last-24-hours grid
+    // (`fillHourlyBuckets` on the client), so bound the scan to that
+    // window: it lets SQLite use `_logs_created_idx` for a range seek
+    // instead of a full-table `strftime` scan, which is the difference
+    // between a lookup and minutes of work once `_logs` holds millions
+    // of rows. `$1` is reserved for the cutoff; the user filter (if any)
+    // is compiled starting at `$2`.
+    let hours = query.hours.unwrap_or(24).clamp(1, 24 * 30);
+    let since = cratebase_core::DateTime::from_utc(chrono::Utc::now() - chrono::Duration::hours(hours));
+    let filter = match compile_filter(query.filter.as_deref(), 1)? {
+        Some((sql, params)) => {
+            let mut bound = vec![Sql::Text(since.to_pb_string())];
+            bound.extend(params);
+            (format!("({sql}) AND \"created\" >= $1"), bound)
+        }
+        None => (r#""created" >= $1"#.to_string(), vec![Sql::Text(since.to_pb_string())]),
+    };
     Ok(Json(
-        logs::stats(&*app.db().logs, compile_filter(query.filter.as_deref())?).await?,
+        logs::stats(&*app.db().logs, Some(filter)).await?,
     ))
 }
 
 /// Compile a PocketBase filter expression into the `(WHERE, params)` pair
 /// `cratebase_db::logs` expects.
-fn compile_filter(filter: Option<&str>) -> Result<Option<logs::Filter>, ApiError> {
+fn compile_filter(filter: Option<&str>, param_offset: usize) -> Result<Option<logs::Filter>, ApiError> {
     let Some(src) = filter.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
     let resolver = LogResolver::new();
-    let compiled = cratebase_filter::parse_and_compile(src, &resolver, 0)?;
+    let compiled = cratebase_filter::parse_and_compile(src, &resolver, param_offset)?;
     if !compiled.joins.is_empty() {
         // The log schema has no relations, so this can only mean the
         // filter reached for one.
@@ -201,23 +220,23 @@ mod tests {
 
     #[test]
     fn no_filter_compiles_to_none() {
-        assert!(compile_filter(None).unwrap().is_none());
-        assert!(compile_filter(Some("   ")).unwrap().is_none());
+        assert!(compile_filter(None, 0).unwrap().is_none());
+        assert!(compile_filter(Some("   "), 0).unwrap().is_none());
     }
 
     #[test]
     fn level_and_json_paths_compile() {
-        let (sql, params) = compile_filter(Some("level >= 8")).unwrap().unwrap();
+        let (sql, params) = compile_filter(Some("level >= 8"), 0).unwrap().unwrap();
         assert!(sql.contains("\"_logs\".\"level\""), "{sql}");
         assert_eq!(params.len(), 1);
 
-        let (sql, params) = compile_filter(Some(r#"data.method = "GET""#))
+        let (sql, params) = compile_filter(Some(r#"data.method = "GET""#), 0)
             .unwrap()
             .unwrap();
         assert!(sql.contains("\"_logs\".\"data\""), "{sql}");
         assert_eq!(params, vec![Sql::Text("GET".into())]);
 
-        let (sql, _) = compile_filter(Some(r#"message ~ "health""#))
+        let (sql, _) = compile_filter(Some(r#"message ~ "health""#), 0)
             .unwrap()
             .unwrap();
         assert!(sql.to_uppercase().contains("LIKE"), "{sql}");
@@ -225,7 +244,14 @@ mod tests {
 
     #[test]
     fn a_malformed_filter_is_a_400() {
-        let err = compile_filter(Some("nonsense field")).unwrap_err();
+        let err = compile_filter(Some("nonsense field"), 0).unwrap_err();
         assert_eq!(err.error.status(), 400);
+    }
+
+    #[test]
+    fn a_filter_offset_by_one_reserves_dollar_one_for_the_since_bound() {
+        let (sql, params) = compile_filter(Some("level >= 8"), 1).unwrap().unwrap();
+        assert!(sql.contains("$2"), "{sql}");
+        assert_eq!(params.len(), 1);
     }
 }
