@@ -69,3 +69,8 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 rand.workspace = true
+# `bcrypt::hash` for building a real PocketBase-shaped bcrypt password
+# hash in the `migrate-from-pocketbase` end-to-end test
+# (`tests/pocketbase_migrate_e2e.rs`); `rusqlite` is already a normal
+# dependency above, reused here for building that test's `data.db`.
+bcrypt = "0.17"
