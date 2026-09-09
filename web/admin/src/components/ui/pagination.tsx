@@ -110,8 +110,8 @@ function Pagination({
           <Button
             key={`page-${item}`}
             variant={item === current ? "secondary" : "ghost"}
-            size="icon-sm"
-            className="font-tabular"
+            size="sm"
+            className="min-w-7 px-1.5 font-tabular"
             aria-label={`Page ${item}`}
             aria-current={item === current ? "page" : undefined}
             onClick={() => goTo(item)}
