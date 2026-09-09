@@ -222,7 +222,7 @@ function ProviderRow({
     <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <CallbackUrlField appURL={appURL} collectionName={collectionName} providerName={provider.name} />
-        <OptionField label="Provider name" help='PocketBase presets ("google", "github", …) or your own for a custom OpenID/OAuth2 endpoint.'>
+        <OptionField label="Provider name" help='Built-in presets ("google", "github", …) or your own for a custom OpenID/OAuth2 endpoint.'>
           <Input
             value={provider.name}
             onChange={(e) => patch({ name: e.target.value })}

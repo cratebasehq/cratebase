@@ -212,7 +212,9 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     responseStatus: 200,
     responseBody: { page: 1, perPage: 30, totalItems: 1, totalPages: 1, items: [record] },
     curl: curlFor("GET", `${base}/records?perPage=30&sort=-created`, headersFor(listRule)),
-    js: `const result = await pb.collection("${name}").getList(1, 30, {
+    js: `const result = await cb.collection("${name}").list({
+  page: 1,
+  perPage: 30,
   sort: "-created",
 });`,
   };
@@ -227,7 +229,7 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     responseStatus: 200,
     responseBody: record,
     curl: curlFor("GET", `${base}/records/RECORD_ID`, headersFor(viewRule)),
-    js: `const record = await pb.collection("${name}").getOne("RECORD_ID");`,
+    js: `const record = await cb.collection("${name}").one("RECORD_ID");`,
   };
 
   const create: DocEndpoint = {
@@ -241,7 +243,7 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     responseStatus: 200,
     responseBody: record,
     curl: curlFor("POST", `${base}/records`, headersFor(createRule, [CONTENT_TYPE_JSON]), createRequestBody),
-    js: `const record = await pb.collection("${name}").create(${JSON.stringify(createRequestBody, null, 2)});`,
+    js: `const record = await cb.collection("${name}").create(${JSON.stringify(createRequestBody, null, 2)});`,
   };
 
   const update: DocEndpoint = {
@@ -255,7 +257,7 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     responseStatus: 200,
     responseBody: record,
     curl: curlFor("PATCH", `${base}/records/RECORD_ID`, headersFor(updateRule, [CONTENT_TYPE_JSON]), requestBody),
-    js: `const record = await pb.collection("${name}").update("RECORD_ID", ${JSON.stringify(requestBody, null, 2)});`,
+    js: `const record = await cb.collection("${name}").update("RECORD_ID", ${JSON.stringify(requestBody, null, 2)});`,
   };
 
   const del: DocEndpoint = {
@@ -267,7 +269,7 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
     headers: headersFor(deleteRule),
     responseStatus: 204,
     curl: curlFor("DELETE", `${base}/records/RECORD_ID`, headersFor(deleteRule)),
-    js: `await pb.collection("${name}").delete("RECORD_ID");`,
+    js: `await cb.collection("${name}").delete("RECORD_ID");`,
   };
 
   // Views are read-only: `create_record`/`update_record`/`delete_record`
@@ -291,6 +293,9 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
   };
 
   const passwordAuthEnabled = collection.passwordAuth?.enabled ?? false;
+  // `client.auth` is bound to "users" by default; any other auth
+  // collection needs the explicit `.as(name)` seam.
+  const authVar = name === "users" ? "cb.auth" : `cb.auth.as("${name}")`;
   const authWithPassword: DocEndpoint = {
     id: "auth-with-password",
     label: "Auth with password",
@@ -306,11 +311,11 @@ export function buildDocEndpoints(collection: CollectionModel, origin: string): 
       ? { token: "JWT_TOKEN", record }
       : { status: 403, message: "Password authentication is not allowed for this collection.", data: {} },
     curl: curlFor("POST", `${base}/auth-with-password`, [CONTENT_TYPE_JSON], authBody),
-    js: `const auth = await pb.collection("${name}").authWithPassword(
-  "${authBody.identity}",
-  "${authBody.password}",
-);
-pb.authStore.isValid; // true`,
+    js: `const auth = await ${authVar}.signIn.password({
+  identity: "${authBody.identity}",
+  password: "${authBody.password}",
+});
+${authVar}.isValid; // true`,
   };
 
   const authRefresh: DocEndpoint = {
@@ -323,7 +328,7 @@ pb.authStore.isValid; // true`,
     responseStatus: 200,
     responseBody: { token: "JWT_TOKEN", record },
     curl: curlFor("POST", `${base}/auth-refresh`, headersFor({ value: null, tone: "locked", summary: "" })),
-    js: `const auth = await pb.collection("${name}").authRefresh();`,
+    js: `const auth = await ${authVar}.refresh();`,
   };
 
   const authMethods: DocEndpoint = {
@@ -344,7 +349,7 @@ pb.authStore.isValid; // true`,
       otp: { enabled: collection.otp?.enabled ?? false, duration: collection.otp?.duration ?? 0 },
     },
     curl: curlFor("GET", `${base}/auth-methods`, []),
-    js: `const methods = await pb.collection("${name}").listAuthMethods();`,
+    js: `const methods = await ${authVar}.methods();`,
   };
 
   return [authWithPassword, authRefresh, authMethods, ...crud];
