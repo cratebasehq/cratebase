@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.1.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.2.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
@@ -10,8 +10,34 @@ first real tagged release.
 
 ## [Unreleased]
 
+## 0.2.0 — 2026-09-09
+
 ### Added
 
+- **First-class auth: `@cratebase/client` SDK, sessions, cookies, OAuth2
+  redirect, bans.** A new first-party typed TypeScript SDK
+  (`@cratebase/client`, `sdk/js/client`) covering records/auth/realtime/
+  files/batch/admin plus the value-add surface (vector/LLM/MCP/queue/
+  presence) built in, publishing independently via `client-v*` tags. On
+  the server: `_sessions`/`_bans` system collections with O(1) in-memory
+  revocation and no DB hit on the verify hot path; opt-in httpOnly cookie
+  sessions (`SESSION_COOKIE*`) with a same-origin CSRF gate and
+  credentialed CORS; a server-driven OAuth2 redirect flow (`GET
+  .../oauth2/{provider}/start` + `.../callback`) alongside the existing
+  `POST auth-with-oauth2`; and session/ban/impersonation routes
+  (sign-out, sessions list/revoke/revoke-others/revoke-all,
+  stop-impersonating, ban/unban). The admin dashboard migrated off the
+  `pocketbase` npm SDK onto `@cratebase/client`, gained a Sessions
+  settings panel and Impersonate/Ban actions on auth records, and its
+  OAuth2 provider editor now shows the exact callback URL to register
+  plus a per-provider (Google/GitHub/GitLab/Discord/Microsoft) setup
+  guide with a direct console link.
+- **ZIP-export plugin**: a generic, toggle-gated plugin
+  (`settings.zipExport.enabled`, off by default) that bundles every file
+  in a chosen collection field, for records matching an arbitrary
+  filter, into one ZIP archive via `POST /api/plugins/zip-export/enqueue`
+  (superuser-only), with the same transactional claim and stale-row
+  reclaim as the Queue plugin and path-traversal-safe entry names.
 - **`$app.rawQuery(sql, params?)` (JS hooks)**: a read-only escape hatch
   for SQL a `findRecordsByFilter` filter string can't express (`GROUP
   BY`, window functions, joins) — runs a `SELECT`/`WITH` statement with
@@ -84,4 +110,5 @@ first real tagged release.
   and pinned an previously-unpinned Bun version so the committed dashboard
   bundle byte-comparison stopped failing spuriously (PR [#2](https://github.com/cratebasehq/cratebase/pull/2)).
 
-[Unreleased]: https://github.com/cratebasehq/cratebase/compare/main...HEAD
+[Unreleased]: https://github.com/cratebasehq/cratebase/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/cratebasehq/cratebase/compare/v0.1.0...v0.2.0

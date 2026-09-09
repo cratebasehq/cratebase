@@ -835,7 +835,7 @@ checksum = "b7431dd8c9def94aca43b27915dee0d42103d9b13922cfb044febcd975547d68"
 
 [[package]]
 name = "cratebase-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "crc32fast",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "arc-swap",
@@ -893,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-filter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "cratebase-core",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-jsvm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-mailer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "cratebase-wasm-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",

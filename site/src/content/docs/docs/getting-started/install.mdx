@@ -38,7 +38,7 @@ docker run -p 8090:8090 -v cratebase_data:/app/data ghcr.io/cratebasehq/cratebas
 ```
 
 That's SQLite plus local-disk storage, listening on `:8090`. Pin a
-version instead of `latest` with `ghcr.io/cratebasehq/cratebase:0.1.0`.
+version instead of `latest` with `ghcr.io/cratebasehq/cratebase:0.2.0`.
 Using `docker compose`? A `docker compose up` with
 `--profile postgres --profile s3` swaps in Postgres and S3-compatible
 storage — see [.env.example](https://github.com/cratebasehq/cratebase/blob/main/.env.example)
