@@ -167,7 +167,11 @@ async fn download(
     let served_key = event.key.clone();
     let served_name = event.served_name.clone();
 
-    let disposition = if is_truthy(query.download.as_deref()) {
+    // Active content (HTML, SVG, XML, JS) shares this response's origin
+    // with the admin dashboard — serving it `inline` is arbitrary script
+    // execution there, `?download=` or not. Anything else is served the
+    // way the caller asked.
+    let disposition = if is_truthy(query.download.as_deref()) || is_active_content(&mime) {
         format!("attachment; filename=\"{served_name}\"")
     } else {
         format!("inline; filename=\"{served_name}\"")
@@ -194,6 +198,17 @@ async fn download(
     if let Ok(value) = HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
+    // PocketBase (`tools/filesystem.System.Serve`) sets this exact policy
+    // on every file response, unconditionally — a lone
+    // `Content-Disposition: inline` is not enough on its own, since a
+    // browser that ignores it (or a future field this fix missed) must
+    // still be unable to run anything the response body contains.
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+        ),
+    );
     Ok(response)
 }
 
@@ -264,6 +279,28 @@ fn mime_for(filename: &str) -> String {
         .first_or_octet_stream()
         .essence_str()
         .to_string()
+}
+
+/// A type a browser can execute or render as markup, rather than just
+/// display or download — the stored-XSS surface this module guards
+/// against. None of these appear in PocketBase's own
+/// `inlineServeContentTypes` allow-list either (images, video, audio and
+/// PDF only), so they are forced to `attachment` there too, regardless
+/// of `?download=` — just reached by an allow-list rather than this
+/// narrower, purpose-built list.
+fn is_active_content(mime: &str) -> bool {
+    matches!(
+        mime,
+        "text/html"
+            | "application/xhtml+xml"
+            | "image/svg+xml"
+            | "text/xml"
+            | "application/xml"
+            | "text/javascript"
+            | "application/javascript"
+            | "application/ecmascript"
+            | "text/ecmascript"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,5 +528,14 @@ mod tests {
         assert!(!is_truthy(None));
         assert_eq!(mime_for("a.txt"), "text/plain");
         assert_eq!(mime_for("a.png"), "image/png");
+    }
+
+    #[test]
+    fn active_content_covers_the_stored_xss_shapes() {
+        assert!(is_active_content("text/html"));
+        assert!(is_active_content("image/svg+xml"));
+        assert!(is_active_content("application/javascript"));
+        assert!(!is_active_content("text/plain"));
+        assert!(!is_active_content("image/png"));
     }
 }

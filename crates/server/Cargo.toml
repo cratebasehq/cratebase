@@ -31,11 +31,16 @@ async-trait.workspace = true
 
 axum = { version = "0.8", features = ["multipart"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "set-header"] }
 tokio-util = { version = "0.7", features = ["io"] }
 dotenvy = "0.15"
 clap = { version = "4", features = ["derive"] }
 mime_guess = "2"
+# Sniffs an upload's magic bytes for the `mimeTypes` allow-list check —
+# the client-declared `Content-Type` (and the filename extension) cannot
+# be trusted, and trusting it is how a `.png`-only field ends up storing
+# HTML that then executes on the dashboard's origin.
+infer = { version = "0.22", default-features = false, features = ["std"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path"] }
 croner = { version = "4.0.0", features = ["chrono"] }
