@@ -8,6 +8,8 @@ import { useRecords as useRecordsUntyped } from "@cratebase/react";
 import { cb, useAuth } from "../cratebase.js";
 import type { TeamMemberRecord } from "../lib/teams.js";
 
+// `TeamMemberRecord` already includes `RecordModel` (see src/lib/teams.ts).
+
 const ACTIVE_TEAM_KEY = "team-board:activeTeamId";
 
 export interface TeamOption {

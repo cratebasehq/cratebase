@@ -207,7 +207,7 @@ export function CardDetail({ cardId, onClose }: { cardId: string; onClose: () =>
               <Avatar id={c.authorRef} name={c.expand?.authorRef?.name || c.expand?.authorRef?.email || "?"} size={22} />
               <div className="min-w-0">
                 <p className="text-xs text-ink/50 dark:text-paper/50">
-                  {c.expand?.authorRef?.name || c.expand?.authorRef?.email} · {new Date(c.created).toLocaleString()}
+                  {c.expand?.authorRef?.name || c.expand?.authorRef?.email} · {c.created ? new Date(c.created).toLocaleString() : ""}
                 </p>
                 <p className="text-sm">{c.body}</p>
               </div>

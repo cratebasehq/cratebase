@@ -46,7 +46,7 @@ export function NotificationsMenu({ onOpenCard }: { onOpenCard: (cardId: string)
                 >
                   {n.message}
                   <span className="block text-[11px] font-normal text-ink/40 dark:text-paper/40">
-                    {new Date(n.created).toLocaleString()}
+                    {n.created ? new Date(n.created).toLocaleString() : ""}
                   </span>
                 </button>
               </li>

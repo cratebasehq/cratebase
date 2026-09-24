@@ -6,8 +6,16 @@
 // + `CB_TYPEGEN_OUT` set (scripts/dev.ts already does both), which
 // regenerates it on every collection create/update/delete.
 import { createClient, CratebaseError } from "@cratebase/client";
+import type { RecordModel } from "@cratebase/client";
 import { createCratebaseHooks } from "@cratebase/react";
 import type { Schema, SchemaCreate, SchemaUpdate, UsersRecord } from "./cratebase-types.js";
+
+/** Generated typegen records (`UsersRecord`, `CardsRecord`, ...) don't
+ * declare `collectionId`/`collectionName` — `createCratebaseHooks`'s own
+ * generated hooks intersect with `RecordModel` to add them (see
+ * sdk/js/react/src/createHooks.ts); anything in this app calling a raw,
+ * non-factory hook/helper with an explicit generic needs to do the same. */
+export type WithRecordModel<T> = T & RecordModel;
 
 // Defaults to the Cratebase dev server. Override with `?api=http://host:port`
 // if you're running the server somewhere other than localhost:8090.
@@ -20,7 +28,7 @@ export const { useRecords, useRecord, useInfiniteRecords, useMutation, useCrateb
 /** `hooks.useAuth` defaults its generic to a bare `RecordModel` — pin it
  * to the generated `UsersRecord` so `user.name`/`user.email` are typed
  * everywhere in this app instead of `unknown`. */
-export const useAuth = () => hooks.useAuth<UsersRecord>();
+export const useAuth = () => hooks.useAuth<WithRecordModel<UsersRecord>>();
 
 /** Turns a `CratebaseError` (or anything else) into a human-readable
  * message, preferring field-level validation errors. */

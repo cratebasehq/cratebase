@@ -40,7 +40,7 @@ export function useBoardPresence(teamId: string | null, userId: string | undefin
           // tab's cleanup) — fall through and create a fresh one below.
         }
       }
-      const record = await cb.collection("presence").create({ teamRef: teamId, userRef: userId!, name: name ?? "", lastSeenAt });
+      const record = await cb.collection("presence").create({ teamRef: teamId!, userRef: userId!, name: name ?? "", lastSeenAt });
       ownRecordId = record.id;
       localStorage.setItem(storageKey, record.id);
       return record;

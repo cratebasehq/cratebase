@@ -17,7 +17,7 @@
 // own creator's — `cards`' `listRule`/`viewRule` excludes `isQuery = true`
 // rows, and realtime delivery is gated by that same rule.
 import { useCallback, useState } from "react";
-import { cb } from "../cratebase.js";
+import { cb, type WithRecordModel } from "../cratebase.js";
 import type { CardsRecord } from "../cratebase-types.js";
 
 export function useSearch(teamId: string | null) {
@@ -58,7 +58,7 @@ export function useSearch(teamId: string | null) {
         // confusingly. Worth documenting since `cb.vector.nearestTo(...)`
         // reads like every other bound `cb.x.y()` call in this SDK and
         // isn't.
-        const nearest = await cb.vector.nearestTo<CardsRecord>(cb, "cards", "embedding", temp.embedding as unknown as number[], {
+        const nearest = await cb.vector.nearestTo<WithRecordModel<CardsRecord>>(cb, "cards", "embedding", temp.embedding as unknown as number[], {
           limit: 10,
           filter: `teamRef = "${teamId}" && isQuery = false && id != "${temp.id}"`,
         });

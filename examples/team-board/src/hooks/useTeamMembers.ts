@@ -25,7 +25,7 @@ export function useTeamMembers(teamId: string | null) {
     () =>
       records
         .filter((m) => m.expand?.userRef)
-        .map((m) => ({ id: m.userRef, name: m.expand!.userRef!.name, email: m.expand!.userRef!.email })),
+        .map((m) => ({ id: m.userRef, name: m.expand!.userRef!.name ?? "", email: m.expand!.userRef!.email })),
     [records],
   );
 }
