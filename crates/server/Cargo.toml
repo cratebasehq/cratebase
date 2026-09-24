@@ -63,6 +63,9 @@ web-push-native = "0.5"
 rusqlite = { version = "0.32", features = ["bundled"] }
 cratebase-wasm-plugin.workspace = true
 toml = "1.1.5"
+# CIDR parsing for settings.superuserIPs (10.0.0.0/8-style entries
+# alongside exact IPs).
+ipnet = "2"
 
 [dev-dependencies]
 tempfile = "3"
