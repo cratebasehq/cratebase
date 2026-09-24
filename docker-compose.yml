@@ -2,10 +2,29 @@
 #
 #   docker compose up                                   # sqlite + local disk storage (default)
 #   docker compose --profile postgres up                # + Postgres (set DATABASE_URL below)
-#   docker compose --profile s3 up                       # + RustFS S3-compatible storage (set STORAGE_DRIVER=s3)
+#   docker compose --profile s3 up                       # + RustFS S3-compatible storage
 #   docker compose --profile postgres --profile s3 up    # both
 #
-# See .env.example for every variable these services read.
+# See .env.example for every variable these services read (copy it to
+# `.env` in this directory — `docker compose` loads that file
+# automatically, for both `${VAR}` substitution below and the bare
+# `- VAR` passthrough entries).
+#
+# To actually switch file storage to S3: in `.env`, uncomment the whole
+# S3_* block from .env.example (S3_BUCKET, S3_REGION, S3_ENDPOINT,
+# S3_ACCESS_KEY, S3_SECRET, S3_FORCE_PATH_STYLE — the `rustfsadmin`
+# defaults there match the `rustfs` service below), then run `docker
+# compose --profile s3 up`. Deliberately not on by default: these vars
+# are passed through to the `cratebase` service only when you actually
+# set them (see the comment on the `environment:` block below) — a
+# hardcoded default here would mean plain `docker compose up` (no `s3`
+# profile, `rustfs` not even running) seeds S3 as enabled on first boot
+# and file storage breaks with nothing obviously wrong in this file.
+#
+# S3 settings only seed the database on first boot (see .env.example),
+# so setting them *after* a volume already has settings has no effect;
+# either start from a fresh `cratebase_data` volume or edit Settings >
+# Files from the dashboard instead.
 services:
   cratebase:
     # Pulls the official release image by default — no local build, no
@@ -17,22 +36,49 @@ services:
     ports:
       - "${PORT:-8090}:8090"
     environment:
-      PORT: 8090
-      HOST: 0.0.0.0
-      DATABASE_URL: ${DATABASE_URL:-sqlite:///app/data/cratebase.db}
-      AUTH_SECRET: ${AUTH_SECRET:-}
-      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
-      STORAGE_LOCAL_DIR: /app/data/storage
-      S3_BUCKET: ${S3_BUCKET:-cratebase}
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://rustfs:9000}
-      S3_REGION: ${S3_REGION:-us-east-1}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-rustfsadmin}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
-      S3_FORCE_PATH_STYLE: ${S3_FORCE_PATH_STYLE:-true}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      - PORT=8090
+      - HOST=0.0.0.0
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/data/cratebase.db}
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
+      # Bare `- VAR` entries below are passed through only when actually
+      # set (in your shell or `.env`) — never as an empty string. That
+      # matters: an env var read as `Ok("")` is not the same as unset to
+      # Cratebase, so a literal empty AUTH_SECRET would take effect
+      # instead of falling back to the generated one, and a literal
+      # empty S3_BUCKET would enable S3 storage with a blank bucket name.
+      - AUTH_SECRET
+      # S3 (see the top-of-file note; only takes effect on first boot).
+      # No defaults here on purpose — see the top-of-file note on why a
+      # default bucket/endpoint would leak into the plain (no `s3`
+      # profile) path too. Set these in `.env` to actually use S3.
+      - S3_ENABLED
+      - S3_BUCKET
+      - S3_REGION
+      - S3_ENDPOINT
+      - S3_ACCESS_KEY
+      - S3_SECRET
+      - S3_FORCE_PATH_STYLE
     volumes:
       - cratebase_data:/app/data
+      # JS hooks/migrations (crate::jsvm, PocketBase's `pb_hooks`/
+      # `pb_migrations`), siblings of the data dir by default — see
+      # CB_HOOKS_DIR/CB_MIGRATIONS_DIR in .env.example to relocate them.
+      - ./pb_hooks:/app/pb_hooks
+      - ./pb_migrations:/app/pb_migrations
     restart: unless-stopped
+    healthcheck:
+      # The runtime image (debian:bookworm-slim) has neither curl nor
+      # wget — only bash and coreutils — so this speaks raw HTTP over
+      # bash's /dev/tcp instead of shelling out to either.
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/8090 && printf 'GET /api/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && head -1 <&3 | grep -q ' 200 '"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
   postgres:
     image: postgres:16-alpine
@@ -56,8 +102,8 @@ services:
     image: rustfs/rustfs:latest
     profiles: ["s3"]
     environment:
-      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY_ID:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET:-rustfsadmin}
       RUSTFS_CONSOLE_ENABLE: "true"
     ports:
       - "9000:9000" # S3 API
