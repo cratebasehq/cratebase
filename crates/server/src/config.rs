@@ -41,6 +41,13 @@
 //! `SMTP_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
 //! `SMTP_PASSWORD`, `SMTP_TLS`, `S3_ENABLED`, `S3_BUCKET`, `S3_REGION`,
 //! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`.
+//!
+//! A few more env vars live outside this file but are just as real:
+//! `DATABASE_MAX_CONNECTIONS` (SQLite reader pool size, `crates/db/src/sqlite.rs`)
+//! and `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_API_KEY` (`crate::embeddings`).
+//! [`KNOWN_ENV_VARS`] below is the canonical, exhaustive list across all of
+//! these — it's what keeps `.env.example` from drifting (see
+//! `crates/server/tests/env_example.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -51,6 +58,72 @@ use cratebase_core::Settings;
 pub const DEFAULT_DATA_DIR: &str = "./pb_data";
 /// File holding the generated app secret when none is configured.
 pub const SECRET_FILE: &str = ".secret";
+
+/// Every environment variable Cratebase's server binary reads or accepts,
+/// across every crate — the module doc above has the per-variable
+/// defaults and meaning. `.env.example` at the repo root must document
+/// exactly this set: `crates/server/tests/env_example.rs` parses it and
+/// fails the build if it lists a key that isn't here, so a var can't be
+/// added to (or renamed in) `.env.example` without a matching entry (or
+/// vice versa) — that's the drift this list exists to catch.
+///
+/// Two entries are accepted ahead of their implementation landing here,
+/// because they're real/supported on other in-flight branches and
+/// `.env.example` documents them already: `AUTH_RATE_LIMIT_ENABLED`
+/// (`fix/hardening-defaults`, wired into `seed_settings`) and
+/// `DB_POOL_SIZE` (`fix/sql-console-cte-and-pg-tls`, Postgres pool size).
+/// Whoever lands either branch should wire the read in and drop its
+/// "not yet read" comment below.
+pub const KNOWN_ENV_VARS: &[&str] = &[
+    // --- core --------------------------------------------------------
+    "CRATEBASE_DATA_DIR",
+    "DATABASE_URL",
+    "HOST",
+    "PORT",
+    "CORS_ALLOW_ORIGINS",
+    "CB_HOOKS_DIR",
+    "CB_MIGRATIONS_DIR",
+    "LOG_REQUESTS",
+    // --- database ------------------------------------------------------
+    "DATABASE_MAX_CONNECTIONS", // crates/db/src/sqlite.rs
+    "DB_POOL_SIZE",             // not yet read; see fix/sql-console-cte-and-pg-tls
+    // --- auth / sessions -------------------------------------------
+    "CB_ENCRYPTION",
+    "CB_SECRET",
+    "AUTH_SECRET",
+    "AUTH_RATE_LIMIT_ENABLED", // not yet read; see fix/hardening-defaults
+    "SESSION_TRACKING",
+    "SESSION_COOKIE",
+    "SESSION_COOKIE_NAME",
+    "SESSION_COOKIE_DOMAIN",
+    "SESSION_COOKIE_SAMESITE",
+    "SESSION_COOKIE_SECURE",
+    // --- first-boot settings seed: mail (Settings::smtp/meta) --------
+    "CB_APP_NAME",
+    "CB_APP_URL",
+    "CB_SENDER_NAME",
+    "CB_SENDER_ADDRESS",
+    "SMTP_ENABLED",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_TLS",
+    // --- first-boot settings seed: storage (Settings::s3) -----------
+    "S3_ENABLED",
+    "S3_BUCKET",
+    "S3_REGION",
+    "S3_ENDPOINT",
+    "S3_ACCESS_KEY",
+    "S3_SECRET",
+    "S3_FORCE_PATH_STYLE",
+    // --- AI / embeddings (crates/server/src/embeddings.rs) ----------
+    "EMBEDDINGS_BASE_URL",
+    "EMBEDDINGS_API_KEY",
+    // --- dev -----------------------------------------------------------
+    "CB_DEV",
+    "CB_AUTOMIGRATE",
+];
 
 #[derive(Debug, Clone)]
 pub struct Config {
