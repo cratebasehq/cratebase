@@ -22,6 +22,7 @@
 //! | `PORT` | `8090` | bind port (`--http`) |
 //! | `CB_HOOKS_DIR` | `<data_dir>/../pb_hooks` | JS hooks directory |
 //! | `CB_MIGRATIONS_DIR` | `<data_dir>/../pb_migrations` | JS migrations |
+//! | `CB_SEED_DIR` | `<data_dir>/../pb_seed` | seed data directory for `cratebase seed`/`cratebase dev` (see `crate::seed`) |
 //! | `CB_DEV` | `false` | dev mode (`--dev`) |
 //! | `CB_AUTOMIGRATE` | `true` | write migration files on schema change |
 //! | `LOG_REQUESTS` | `true` | persist request logs (a deliberate divergence, see spec §15.3) |
@@ -78,6 +79,7 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     "CORS_ALLOW_ORIGINS",
     "CB_HOOKS_DIR",
     "CB_MIGRATIONS_DIR",
+    "CB_SEED_DIR",
     "LOG_REQUESTS",
     // --- database ------------------------------------------------------
     "DATABASE_MAX_CONNECTIONS", // crates/db/src/sqlite.rs
@@ -133,6 +135,15 @@ pub struct Config {
     pub hooks_dir: String,
     /// Directory holding `*.js` migrations written by automigrate.
     pub migrations_dir: String,
+    /// Convention directory for `cratebase seed`/the (future) `cratebase
+    /// dev` auto-seed: a JSON file or a directory of `*.json`/`*.js` seed
+    /// files (`CB_SEED_DIR`, default `<data_dir>/../pb_seed`). Only a
+    /// default location — `cratebase seed <path>` always takes its path
+    /// as an explicit argument and ignores this field; it exists so a
+    /// caller that wants the convention (`cratebase dev`, a test) has a
+    /// ready answer for "where is it" without recomputing the sibling
+    /// path itself.
+    pub seed_dir: String,
     /// Static files served at `/` instead of the embedded dashboard.
     pub public_dir: Option<String>,
     pub dev: bool,
@@ -216,6 +227,7 @@ impl Config {
             db_pool_size: cratebase_db::postgres::DEFAULT_POOL_SIZE,
             hooks_dir: sibling(&dir, "pb_hooks"),
             migrations_dir: sibling(&dir, "pb_migrations"),
+            seed_dir: sibling(&dir, "pb_seed"),
             data_dir: dir,
             host: "0.0.0.0".into(),
             port: 8090,
@@ -279,6 +291,7 @@ impl Config {
         config.port = env_or("PORT", "8090").parse().unwrap_or(8090);
         config.hooks_dir = env_or("CB_HOOKS_DIR", &config.hooks_dir);
         config.migrations_dir = env_or("CB_MIGRATIONS_DIR", &config.migrations_dir);
+        config.seed_dir = env_or("CB_SEED_DIR", &config.seed_dir);
         config.dev = env_bool("CB_DEV", false);
         config.automigrate = env_bool("CB_AUTOMIGRATE", true);
         config.log_requests = env_bool("LOG_REQUESTS", true);
@@ -485,6 +498,7 @@ mod tests {
         assert_eq!(c.database_url, "sqlite:./pb_data/data.db");
         assert!(c.hooks_dir.ends_with("pb_hooks"));
         assert!(c.migrations_dir.ends_with("pb_migrations"));
+        assert!(c.seed_dir.ends_with("pb_seed"));
         assert!(c.automigrate);
         assert_eq!(c.port, 8090);
         assert_eq!(
