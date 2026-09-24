@@ -3,11 +3,11 @@
 //! an `Authorization` header).
 //!
 //! A backup is a ZIP of the data directory: a consistent snapshot of the
-//! main database (`Engine::snapshot_to`, i.e. `VACUUM INTO`, not a raw
-//! file copy that could catch a half-written page), the same for
-//! `auxiliary.db`, and the `storage/` tree when files live on local disk.
-//! The `backups/` directory itself is excluded, so a backup never
-//! contains its own siblings.
+//! main database (`Engine::snapshot_to` — `VACUUM INTO` on SQLite, `pg_dump
+//! --format=custom` on Postgres, never a raw file copy that could catch a
+//! half-written page), the same for `auxiliary.db`, and the `storage/`
+//! tree when files live on local disk. The `backups/` directory itself is
+//! excluded, so a backup never contains its own siblings.
 //!
 //! # Streaming, not buffering
 //!
@@ -19,26 +19,40 @@
 //!
 //! # Why a restore restarts the process
 //!
-//! Restoring swaps the files the open SQLite connections are mapped to.
-//! There is no safe way to keep serving from those handles, so the
+//! On SQLite, restoring swaps the files the open connections are mapped
+//! to — there is no safe way to keep serving from those handles, so the
 //! engines are closed, the directories swapped, and the current binary
-//! `exec`s itself with the same arguments — the process id survives, so
+//! `exec`s itself with the same arguments. On Postgres there is no file
+//! to swap (`pg_restore` runs against the live connection), but the
+//! process still restarts anyway: every schema/settings cache loaded at
+//! boot (`Db::bootstrap`'s `CollectionStore`, `App::settings`) has to be
+//! rebuilt from whatever the restore just put in `_collections`/
+//! `_params`, and re-exec'ing is the same "start from a clean slate"
+//! mechanism SQLite already needs, reused rather than duplicated with an
+//! in-place reload path. Either way the process id survives, so
 //! systemd/Docker see no crash. PocketBase restarts for the same reason.
 //!
 //! # What actually gets swapped
 //!
-//! The archive always names the main database `data.db` and the logs
-//! database `auxiliary.db` (`MAIN_DB_ENTRY` / `AUXILIARY_DB`), but the
-//! *live* main database can be named anything `DATABASE_URL` says and
-//! need not even live under the data directory. `swap_data_dir` maps the
-//! archive's fixed names onto the live paths derived from config, rather
-//! than assuming the data directory's own layout — and replaces only
-//! what `write_backup` actually captured (the main db, the logs db, a
-//! local `storage/` tree), leaving `.secret`, `plugins/`, `backups/` and
+//! The archive always names the main database `data.db` (SQLite) or
+//! `data.pgdump` (Postgres) and the logs database `auxiliary.db`
+//! (`MAIN_DB_ENTRY`/`MAIN_DB_ENTRY_PG`/`AUXILIARY_DB`; see
+//! `main_db_entry`) — an archive's main-database entry name is also how
+//! `validate_archive_for_backend` tells a SQLite backup apart from a
+//! Postgres one, and rejects the wrong kind with a clear 400 instead of
+//! a confusing failure partway through. The *live* SQLite main database
+//! can be named anything `DATABASE_URL` says and need not even live
+//! under the data directory. `swap_data_dir` maps the archive's fixed
+//! names onto the live paths derived from config, rather than assuming
+//! the data directory's own layout — and replaces only what
+//! `write_backup` actually captured (the main db, the logs db, a local
+//! `storage/` tree), leaving `.secret`, `plugins/`, `backups/` and
 //! anything else untouched. Each file is swapped by parking the live
 //! version next to it instead of deleting it outright, so a failure
 //! partway through rolls back instead of leaving a half-restored data
-//! directory.
+//! directory. A Postgres restore only ever swaps the logs
+//! database/storage tree this way (`swap_side_files_only`) — the main
+//! database was already restored in place by `pg_restore` itself.
 
 use std::path::{Path, PathBuf};
 
@@ -49,9 +63,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cratebase_core::{codes, AppError, DateTime, FieldError};
+use cratebase_db::Backend;
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::app::App;
 use crate::extract::RequireSuperuser;
@@ -59,8 +74,15 @@ use crate::http_error::{ApiError, ApiResult};
 
 /// Directory (inside the data dir) used to stage a restore.
 const RESTORE_STAGING: &str = ".cb_restore";
-/// The main database's name inside the archive.
+/// The main database's name inside the archive, for a SQLite main
+/// database.
 const MAIN_DB_ENTRY: &str = "data.db";
+/// As `MAIN_DB_ENTRY`, for a Postgres main database — a `pg_dump
+/// --format=custom` archive rather than a raw database file. The two
+/// names double as how a restore tells which engine an archive was
+/// taken from (see `validate_archive_for_backend`): an archive only ever
+/// has one or the other, never both.
+const MAIN_DB_ENTRY_PG: &str = "data.pgdump";
 /// Suffix a live file/directory gets while it is parked during a restore
 /// swap, so a crash between moving it out and moving the restored one in
 /// can be recovered by hand. Removed on success, renamed back on failure.
@@ -69,6 +91,26 @@ const RESTORE_OLD_SUFFIX: &str = ".cb_restore_old";
 /// check an archive gets is that it's a well-formed ZIP, so nothing else
 /// stops one whose `data.db` entry isn't actually a database.
 const SQLITE_HEADER: [u8; 16] = *b"SQLite format 3\0";
+/// `pg_dump --format=custom`'s own magic header
+/// (`pg_backup_archiver.c`'s `K_MAGIC`), checked the same way
+/// `SQLITE_HEADER` is for a SQLite archive.
+const PGDUMP_MAGIC: [u8; 5] = *b"PGDMP";
+/// The `_params` key `create_scheduled` persists its outcome under, read
+/// back by `storage_info` so the dashboard's Backups page can show
+/// whether the last `settings.backups.cron` run succeeded — otherwise a
+/// failure is only ever a `tracing::error!` nobody but an operator
+/// tailing logs would see.
+const LAST_SCHEDULED_KEY: &str = "backups_last_scheduled";
+
+/// The name of the archive's main-database entry for `backend`, and (via
+/// [`validate_archive_for_backend`]) how a restore recognizes which
+/// engine produced a given archive.
+fn main_db_entry(backend: Backend) -> &'static str {
+    match backend {
+        Backend::Sqlite => MAIN_DB_ENTRY,
+        Backend::Postgres => MAIN_DB_ENTRY_PG,
+    }
+}
 
 pub fn router() -> Router<App> {
     Router::new()
@@ -89,12 +131,29 @@ pub fn router() -> Router<App> {
 /// screen otherwise says which, so a superuser configuring S3 has no way
 /// to confirm it took effect short of writing a backup and looking.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StorageInfo {
     /// `"local"` or `"s3"`.
     driver: &'static str,
     /// Where backups land: the on-disk directory, or `bucket[@endpoint]`
     /// for S3-compatible stores. Never includes credentials.
     location: String,
+    /// The outcome of the most recent `settings.backups.cron` run, if
+    /// any has happened yet. `None` before the cron job has ever fired
+    /// (including when it isn't configured at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_scheduled: Option<LastScheduledBackup>,
+}
+
+/// What `create_scheduled` recorded about its most recent run — see
+/// [`LAST_SCHEDULED_KEY`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastScheduledBackup {
+    pub at: DateTime,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 async fn storage_info(
@@ -103,6 +162,7 @@ async fn storage_info(
 ) -> ApiResult<Json<StorageInfo>> {
     let settings = app.settings();
     let s3 = &settings.backups.s3;
+    let last_scheduled = load_last_scheduled_backup(&app).await;
     let info = if s3.enabled {
         StorageInfo {
             driver: "s3",
@@ -111,6 +171,7 @@ async fn storage_info(
             } else {
                 format!("{}@{}", s3.bucket, s3.endpoint)
             },
+            last_scheduled,
         }
     } else {
         // Ask the store itself rather than rebuilding the path here, so
@@ -122,9 +183,20 @@ async fn storage_info(
                 .local_root()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default(),
+            last_scheduled,
         }
     };
     Ok(Json(info))
+}
+
+/// Best-effort read of [`LAST_SCHEDULED_KEY`] — a missing or corrupt
+/// value (an older Cratebase never wrote one, say) just means the
+/// dashboard shows nothing yet, not an error.
+async fn load_last_scheduled_backup(app: &App) -> Option<LastScheduledBackup> {
+    let raw = cratebase_db::params::get(&*app.db().engine, LAST_SCHEDULED_KEY)
+        .await
+        .ok()??;
+    serde_json::from_str(&raw).ok()
 }
 
 /// One row of `GET /api/backups`.
@@ -207,10 +279,13 @@ async fn write_backup(app: &App, name: &str) -> Result<(), AppError> {
         .map_err(|e| AppError::internal(e.to_string()))?;
     let archive = staging.path().join("archive.zip");
 
-    // Consistent copies first: `VACUUM INTO` on SQLite, an error on
-    // Postgres (which the caller reports rather than writing a useless
-    // archive).
-    let main_copy = staging.path().join(MAIN_DB_ENTRY);
+    // Consistent copies first: `VACUUM INTO` on SQLite, `pg_dump
+    // --format=custom` on Postgres (`Engine::snapshot_to`) — either way
+    // the entry name records which one, so a restore can tell them apart
+    // (see `validate_archive_for_backend`).
+    let backend = app.db().backend;
+    let main_entry_name = main_db_entry(backend);
+    let main_copy = staging.path().join(main_entry_name);
     app.db()
         .engine
         .snapshot_to(&main_copy.to_string_lossy())
@@ -239,7 +314,7 @@ async fn write_backup(app: &App, name: &str) -> Result<(), AppError> {
         let options: zip::write::FileOptions<'_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        add_file(&mut zip, &main_copy, MAIN_DB_ENTRY, options)?;
+        add_file(&mut zip, &main_copy, main_entry_name, options)?;
         if has_logs {
             add_file(
                 &mut zip,
@@ -456,17 +531,21 @@ async fn restore(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Extract the archive next to the data dir, verify it really is one, and
-/// schedule the swap + re-exec. The swap happens *after* this response
-/// has been written, so the client gets its 204.
+/// Extract the archive next to the data dir, verify it really is one
+/// *for this deployment's backend*, and schedule the swap/`pg_restore` +
+/// re-exec. That work happens *after* this response has been written, so
+/// the client gets its 204.
 async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
-    // A restore only makes sense for a SQLite main database: Postgres (and
-    // `sqlite::memory:`, which only exists in tests) has no file for
-    // `swap_data_dir` to replace, and `write_backup` already refuses to
-    // archive a Postgres main database in the first place.
-    let main_db_path = app.config().sqlite_main_path().ok_or_else(|| {
-        AppError::bad_request("Restoring a backup requires a SQLite main database.")
-    })?;
+    let backend = app.db().backend;
+    // SQLite restores by swapping the live database *file*, which needs
+    // to know its real path up front (a Postgres restore has no such
+    // file — `pg_restore` talks to the live database directly).
+    let main_db_path = match backend {
+        Backend::Sqlite => Some(app.config().sqlite_main_path().ok_or_else(|| {
+            AppError::bad_request("Restoring a backup requires a SQLite main database.")
+        })?),
+        Backend::Postgres => None,
+    };
     let data_dir = app.config().data_path().to_path_buf();
     let staging = data_dir.join(RESTORE_STAGING);
     let _ = tokio::fs::remove_dir_all(&staging).await;
@@ -502,29 +581,52 @@ async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
     let extracted = staging.join("extracted");
     let archive_path = archive.clone();
     let target = extracted.clone();
-    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || -> Result<(), ExtractError> {
         let reader = std::fs::File::open(&archive_path)?;
-        let mut zip = zip::ZipArchive::new(reader)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        zip.extract(&target)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        // Reject a corrupt or tampered main database now, before the
-        // response goes out and the app commits to tearing itself down —
-        // `swap_data_dir` checks again, but only after that point.
-        validate_sqlite_file(&target.join(MAIN_DB_ENTRY))
+        let mut zip = zip::ZipArchive::new(reader)?;
+        zip.extract(&target)?;
+        // Reject a corrupt, tampered, or wrong-engine archive now, before
+        // the response goes out and the app commits to tearing itself
+        // down — `swap_data_dir` checks the SQLite case again, but only
+        // after that point.
+        validate_archive_for_backend(&target, backend)
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
-    .map_err(|_| AppError::bad_request("Missing or invalid backup file."))?;
+    .map_err(ExtractError::into_app_error)?;
 
     tokio::spawn(async move {
         // Give the 204 time to reach the client before the process
-        // disappears.
+        // disappears (SQLite) or the database starts getting
+        // `pg_restore`d out from under any request still in flight
+        // (Postgres).
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         app.terminate(true).await;
-        if let Err(e) = swap_data_dir(&data_dir, &extracted, &main_db_path) {
-            tracing::error!(error = %e, "restore failed while swapping the data directory");
-            return;
+        match backend {
+            Backend::Sqlite => {
+                let main_db_path =
+                    main_db_path.expect("Backend::Sqlite always has a resolved sqlite_main_path");
+                if let Err(e) = swap_data_dir(&data_dir, &extracted, &main_db_path) {
+                    tracing::error!(error = %e, "restore failed while swapping the data directory");
+                    return;
+                }
+            }
+            Backend::Postgres => {
+                let pgdump = extracted.join(MAIN_DB_ENTRY_PG);
+                if let Err(e) = app
+                    .db()
+                    .engine
+                    .restore_from(&pgdump.to_string_lossy())
+                    .await
+                {
+                    tracing::error!(error = %e, "restore failed while running pg_restore");
+                    return;
+                }
+                if let Err(e) = swap_side_files_only(&data_dir, &extracted) {
+                    tracing::error!(error = %e, "restore failed while swapping the logs database/storage tree");
+                    return;
+                }
+            }
         }
         restart_process();
     });
@@ -562,6 +664,20 @@ fn swap_data_dir(data_dir: &Path, restored: &Path, main_db_path: &Path) -> std::
     // in an archive are ever swapped; an older archive without a logs
     // database or a local storage tree just skips those entries.
     let mut swaps = vec![(main_entry, main_db_path.to_path_buf())];
+    swaps.extend(side_file_swaps(data_dir, restored));
+
+    let result = apply_swaps(&swaps);
+    // The staged download/extraction is disposable either way — a retry
+    // re-downloads and re-extracts the archive from scratch.
+    let _ = std::fs::remove_dir_all(data_dir.join(RESTORE_STAGING));
+    result
+}
+
+/// The logs-database and local-storage-tree swaps `swap_data_dir` and
+/// [`swap_side_files_only`] share — everything a backup archive can
+/// contain besides the main database itself.
+fn side_file_swaps(data_dir: &Path, restored: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut swaps = Vec::new();
     let logs_entry = restored.join(cratebase_db::db::AUXILIARY_DB);
     if logs_entry.exists() {
         swaps.push((logs_entry, data_dir.join(cratebase_db::db::AUXILIARY_DB)));
@@ -573,10 +689,17 @@ fn swap_data_dir(data_dir: &Path, restored: &Path, main_db_path: &Path) -> std::
             data_dir.join(cratebase_storage::LOCAL_STORAGE_DIR),
         ));
     }
+    swaps
+}
 
+/// As [`swap_data_dir`], but for a Postgres restore: the main database
+/// was already restored in place by `pg_restore` against the live
+/// connection (there is no file for this to swap), so only the logs
+/// database and local storage tree — everything else `write_backup`
+/// captures — are swapped here.
+fn swap_side_files_only(data_dir: &Path, restored: &Path) -> std::io::Result<()> {
+    let swaps = side_file_swaps(data_dir, restored);
     let result = apply_swaps(&swaps);
-    // The staged download/extraction is disposable either way — a retry
-    // re-downloads and re-extracts the archive from scratch.
     let _ = std::fs::remove_dir_all(data_dir.join(RESTORE_STAGING));
     result
 }
@@ -708,6 +831,90 @@ fn validate_sqlite_file(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// As [`validate_sqlite_file`], for a `pg_dump --format=custom` entry.
+fn validate_pgdump_file(path: &Path) -> std::io::Result<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut header = [0u8; PGDUMP_MAGIC.len()];
+    file.read_exact(&mut header)?;
+    if header == PGDUMP_MAGIC {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the archive's main database is not a pg_dump custom-format file",
+        ))
+    }
+}
+
+/// What can go wrong extracting/validating a restore archive
+/// (`stage_and_restart`'s `spawn_blocking`): either it's simply invalid
+/// (corrupt ZIP, tampered/truncated main database, ...), or — the case
+/// worth a specific message — it's a perfectly good archive taken from
+/// the *other* engine.
+#[derive(Debug)]
+enum ExtractError {
+    Invalid,
+    Mismatch(String),
+}
+
+impl ExtractError {
+    fn into_app_error(self) -> AppError {
+        match self {
+            ExtractError::Invalid => AppError::bad_request("Missing or invalid backup file."),
+            ExtractError::Mismatch(message) => AppError::bad_request(message),
+        }
+    }
+}
+
+impl From<std::io::Error> for ExtractError {
+    fn from(_: std::io::Error) -> Self {
+        ExtractError::Invalid
+    }
+}
+
+impl From<zip::result::ZipError> for ExtractError {
+    fn from(_: zip::result::ZipError) -> Self {
+        ExtractError::Invalid
+    }
+}
+
+/// Confirm `extracted` (an already-unzipped archive) actually matches
+/// `backend`: exactly one of [`MAIN_DB_ENTRY`]/[`MAIN_DB_ENTRY_PG`]
+/// should be present (see [`main_db_entry`]), and it should pass its
+/// backend's own header check. An archive from the *other* engine is a
+/// [`ExtractError::Mismatch`] with a message naming both engines, not
+/// the generic "Missing or invalid backup file." every other failure
+/// here gets — restoring a SQLite backup onto Postgres (or vice versa)
+/// isn't corruption, it's an operator pointing a restore at a backup
+/// from a different deployment, and the fix is "restore it onto the
+/// right kind of server", not "try a different file".
+fn validate_archive_for_backend(extracted: &Path, backend: Backend) -> Result<(), ExtractError> {
+    let has_sqlite = extracted.join(MAIN_DB_ENTRY).exists();
+    let has_pgdump = extracted.join(MAIN_DB_ENTRY_PG).exists();
+    match backend {
+        Backend::Sqlite if has_sqlite => {
+            validate_sqlite_file(&extracted.join(MAIN_DB_ENTRY))?;
+            Ok(())
+        }
+        Backend::Sqlite if has_pgdump => Err(ExtractError::Mismatch(
+            "This backup was taken from a Postgres database, but the live database is \
+             SQLite. Restore it onto a Postgres deployment instead."
+                .to_string(),
+        )),
+        Backend::Postgres if has_pgdump => {
+            validate_pgdump_file(&extracted.join(MAIN_DB_ENTRY_PG))?;
+            Ok(())
+        }
+        Backend::Postgres if has_sqlite => Err(ExtractError::Mismatch(
+            "This backup was taken from a SQLite database, but the live database is \
+             Postgres. Restore it onto a SQLite deployment instead."
+                .to_string(),
+        )),
+        _ => Err(ExtractError::Invalid),
+    }
+}
+
 /// Re-exec the current binary with the same arguments. On success this
 /// never returns; the process image is replaced, so the pid, open
 /// listening socket ownership and supervisor state are all unchanged.
@@ -737,7 +944,9 @@ fn restart_process() {
 /// newest `cronMaxKeep` archives.
 pub async fn create_scheduled(app: &App) -> Result<(), AppError> {
     let name = auto_name();
-    write_backup(app, &name).await?;
+    let outcome = write_backup(app, &name).await;
+    record_scheduled_backup_result(app, outcome.as_ref().err()).await;
+    outcome?;
 
     let max_keep = app.settings().backups.cron_max_keep;
     if max_keep <= 0 {
@@ -758,6 +967,56 @@ pub async fn create_scheduled(app: &App) -> Result<(), AppError> {
         }
     }
     Ok(())
+}
+
+/// Record `settings.backups.cron`'s outcome somewhere an operator will
+/// actually see it — before this, a scheduled backup failure was only
+/// ever a `tracing::error!` in `App::sync_backup_cron`, invisible unless
+/// someone was already tailing logs at the right moment. Two places, so
+/// two different audiences can find it:
+///
+/// - [`LAST_SCHEDULED_KEY`] in `_params`, read back by [`storage_info`]
+///   so the dashboard's Backups page can show "last run: ok/failed,
+///   when, why" without anyone having to go looking.
+/// - `_audit_log`, *only* on failure — a healthy backup running on
+///   schedule isn't an audit-worthy event (nobody needs to know "who"
+///   restored what if it happens automatically and works), but a
+///   failure is exactly the kind of thing `_audit_log` exists to
+///   surface for an operator scanning "what needs my attention".
+///   `actor: None` because a cron job has no caller behind it — see
+///   `Collection::default_system_collections`' doc on `_audit_log`'s
+///   `actor` field.
+///
+/// Best-effort like `crate::audit::write` itself: a failure to record
+/// the failure must not additionally break the cron job's own error
+/// propagation (`create_scheduled` still returns the original `Err`).
+async fn record_scheduled_backup_result(app: &App, error: Option<&AppError>) {
+    let status = LastScheduledBackup {
+        at: DateTime::now(),
+        ok: error.is_none(),
+        message: error.map(|e| e.to_string()),
+    };
+    match serde_json::to_string(&status) {
+        Ok(raw) => {
+            if let Err(e) =
+                cratebase_db::params::set(&*app.db().engine, LAST_SCHEDULED_KEY, &raw).await
+            {
+                tracing::warn!(error = %e, "failed to persist scheduled backup status");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to serialize scheduled backup status"),
+    }
+
+    if let Some(err) = error {
+        crate::audit::write(
+            app,
+            None,
+            "backup.scheduled_failed",
+            "settings.backups.cron",
+            json!({ "error": err.to_string() }),
+        )
+        .await;
+    }
 }
 
 /// PocketBase's generated name: `pb_backup_YYYYMMDDHHMMSS.zip`.
@@ -996,6 +1255,132 @@ mod tests {
         let err = swap_data_dir(data_dir.path(), restored.path(), &main_db_path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(std::fs::read(&main_db_path).unwrap(), b"OLD");
+    }
+
+    // ------------------------------------------------- Postgres restore
+
+    use cratebase_db::Backend;
+
+    #[test]
+    fn main_db_entry_picks_the_right_name_per_backend() {
+        assert_eq!(main_db_entry(Backend::Sqlite), MAIN_DB_ENTRY);
+        assert_eq!(main_db_entry(Backend::Postgres), MAIN_DB_ENTRY_PG);
+        assert_ne!(MAIN_DB_ENTRY, MAIN_DB_ENTRY_PG);
+    }
+
+    fn write_pgdump_like_file(path: &Path) {
+        // Real magic header, then arbitrary bytes — enough to pass
+        // `validate_pgdump_file` without needing a real `pg_dump`.
+        let mut bytes = PGDUMP_MAGIC.to_vec();
+        bytes.extend_from_slice(b"fake custom-format body");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sqlite_archive_matches_a_sqlite_backend() {
+        let extracted = tempfile::tempdir().unwrap();
+        make_sqlite_file(&extracted.path().join(MAIN_DB_ENTRY), "ok").await;
+        validate_archive_for_backend(extracted.path(), Backend::Sqlite).unwrap();
+    }
+
+    #[test]
+    fn a_pgdump_archive_matches_a_postgres_backend() {
+        let extracted = tempfile::tempdir().unwrap();
+        write_pgdump_like_file(&extracted.path().join(MAIN_DB_ENTRY_PG));
+        validate_archive_for_backend(extracted.path(), Backend::Postgres).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_postgres_archive_restored_onto_sqlite_is_a_clear_mismatch_not_a_generic_error() {
+        let extracted = tempfile::tempdir().unwrap();
+        write_pgdump_like_file(&extracted.path().join(MAIN_DB_ENTRY_PG));
+        let err = validate_archive_for_backend(extracted.path(), Backend::Sqlite).unwrap_err();
+        match err {
+            ExtractError::Mismatch(msg) => {
+                assert!(msg.contains("Postgres"), "{msg}");
+                assert!(msg.contains("SQLite"), "{msg}");
+            }
+            ExtractError::Invalid => panic!("expected a Mismatch, got the generic Invalid"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sqlite_archive_restored_onto_postgres_is_a_clear_mismatch_not_a_generic_error() {
+        let extracted = tempfile::tempdir().unwrap();
+        make_sqlite_file(&extracted.path().join(MAIN_DB_ENTRY), "ok").await;
+        let err = validate_archive_for_backend(extracted.path(), Backend::Postgres).unwrap_err();
+        match err {
+            ExtractError::Mismatch(msg) => {
+                assert!(msg.contains("Postgres"), "{msg}");
+                assert!(msg.contains("SQLite"), "{msg}");
+            }
+            ExtractError::Invalid => panic!("expected a Mismatch, got the generic Invalid"),
+        }
+    }
+
+    #[test]
+    fn an_archive_with_neither_entry_is_the_generic_invalid_error() {
+        let extracted = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            validate_archive_for_backend(extracted.path(), Backend::Sqlite).unwrap_err(),
+            ExtractError::Invalid
+        ));
+        assert!(matches!(
+            validate_archive_for_backend(extracted.path(), Backend::Postgres).unwrap_err(),
+            ExtractError::Invalid
+        ));
+    }
+
+    #[test]
+    fn a_pgdump_entry_without_the_real_magic_header_is_rejected() {
+        let extracted = tempfile::tempdir().unwrap();
+        std::fs::write(extracted.path().join(MAIN_DB_ENTRY_PG), b"not a pgdump").unwrap();
+        assert!(matches!(
+            validate_archive_for_backend(extracted.path(), Backend::Postgres).unwrap_err(),
+            ExtractError::Invalid
+        ));
+    }
+
+    /// A Postgres restore doesn't swap the main database file (it was
+    /// already restored in place by `pg_restore`) — only the logs
+    /// database and local storage tree, exactly like `swap_data_dir`
+    /// minus the main entry.
+    #[tokio::test]
+    async fn postgres_restore_swaps_only_the_logs_database_and_storage_tree() {
+        let data_dir = tempfile::tempdir().unwrap();
+        make_sqlite_file(
+            &data_dir.path().join(cratebase_db::db::AUXILIARY_DB),
+            "stale-logs",
+        )
+        .await;
+        let storage_dir = data_dir.path().join(cratebase_storage::LOCAL_STORAGE_DIR);
+        std::fs::create_dir_all(&storage_dir).unwrap();
+        std::fs::write(storage_dir.join("old.txt"), b"old").unwrap();
+        // A file that a main-db swap would touch but a side-files-only
+        // swap must leave completely alone.
+        let untouched = data_dir.path().join("cratebase.db");
+        std::fs::write(&untouched, b"UNTOUCHED").unwrap();
+
+        let restored = tempfile::tempdir().unwrap();
+        write_pgdump_like_file(&restored.path().join(MAIN_DB_ENTRY_PG));
+        make_sqlite_file(
+            &restored.path().join(cratebase_db::db::AUXILIARY_DB),
+            "new-logs",
+        )
+        .await;
+        let restored_storage = restored.path().join(cratebase_storage::LOCAL_STORAGE_DIR);
+        std::fs::create_dir_all(&restored_storage).unwrap();
+        std::fs::write(restored_storage.join("new.txt"), b"new").unwrap();
+
+        swap_side_files_only(data_dir.path(), restored.path()).unwrap();
+
+        assert_eq!(
+            read_marker(&data_dir.path().join(cratebase_db::db::AUXILIARY_DB)).await,
+            "new-logs"
+        );
+        assert!(!storage_dir.join("old.txt").exists());
+        assert_eq!(std::fs::read(storage_dir.join("new.txt")).unwrap(), b"new");
+        assert_eq!(std::fs::read(&untouched).unwrap(), b"UNTOUCHED");
     }
 
     /// If a later file in the swap can't be written, every file already

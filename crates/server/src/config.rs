@@ -46,8 +46,11 @@
 //! `AUTH_RATE_LIMIT_ENABLED` (default `true`).
 //!
 //! A few more env vars live outside this file but are just as real:
-//! `DATABASE_MAX_CONNECTIONS` (SQLite reader pool size, `crates/db/src/sqlite.rs`)
-//! and `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_API_KEY` (`crate::embeddings`).
+//! `DATABASE_MAX_CONNECTIONS` (SQLite reader pool size, `crates/db/src/sqlite.rs`),
+//! `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_API_KEY` (`crate::embeddings`), and
+//! `CB_PG_DUMP_PATH` / `CB_PG_RESTORE_PATH` (override the `PATH` search
+//! for `pg_dump`/`pg_restore` when backing up or restoring a Postgres
+//! main database, `crates/db/src/pg_tools.rs`).
 //! [`KNOWN_ENV_VARS`] below is the canonical, exhaustive list across all of
 //! these — it's what keeps `.env.example` from drifting (see
 //! `crates/server/tests/env_example.rs`).
@@ -82,6 +85,8 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     // --- database ------------------------------------------------------
     "DATABASE_MAX_CONNECTIONS", // crates/db/src/sqlite.rs
     "DB_POOL_SIZE",
+    "CB_PG_DUMP_PATH",    // crates/db/src/pg_tools.rs
+    "CB_PG_RESTORE_PATH", // crates/db/src/pg_tools.rs
     // --- auth / sessions -------------------------------------------
     "CB_ENCRYPTION",
     "CB_SECRET",
