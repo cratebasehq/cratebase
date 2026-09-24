@@ -49,11 +49,17 @@ https://github.com/cratebasehq/cratebase/tree/main/examples
 
 ## Recipe: server → collection → rules → auth → data → realtime
 
-1. **Bring up the server**: `cratebase serve` (SQLite + local disk, zero
-   config) or `docker compose up`. First visit to `http://localhost:8090`
-   shows an inline setup form for the superuser account instead of a
-   login screen, or script it with `cratebase superuser create
-   you@example.com yourpassword`.
+1. **Bring up the server**: `cratebase dev` for local work — one command
+   that provisions a superuser (`admin@localhost` with a random,
+   printed-once password), applies `./schema.json` if present, seeds
+   `./pb_seed/` if the database is empty, writes TypeScript types, and
+   serves with verbose logging + hook hot-reload; the startup banner
+   prints everything it did. In production, `cratebase serve` (SQLite +
+   local disk, zero config) or `docker compose up` instead — it starts
+   listening with no auto-provisioning: the first visit to
+   `http://localhost:8090` shows an inline setup form for the superuser
+   account instead of a login screen, or script it with `cratebase
+   superuser create you@example.com yourpassword`.
 2. **Create a collection**: `POST /api/collections` (superuser only).
    See `references/collections-and-sdk.md` for the field-type list and
    schema shape.

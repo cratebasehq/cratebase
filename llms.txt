@@ -16,8 +16,17 @@ source. Everything referenced below is real and current, not aspirational.
   (S3-compatible storage), see [.env.example](./.env.example) for every
   variable.
 - From source: `cargo build --release -p cratebase-server`, then
-  `cratebase serve`. A fresh instance with no superuser yet logs a
-  one-time setup URL carrying an install token
+  `cratebase dev` for local development — one command that creates the
+  data dir, provisions a superuser (`admin@localhost` with a
+  random, printed-once password, or `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD`),
+  applies `./schema.json` additively, seeds `./pb_seed/` if the database
+  is empty, writes `./cratebase-types.d.ts`, then serves exactly like
+  `serve --dev`; see `cratebase dev --help` and
+  `crates/server/src/dev.rs`. Re-running it against the same data dir is
+  safe — an existing superuser and seeded data are left alone.
+- In production, `cratebase serve` instead: it starts listening
+  immediately with no auto-provisioning. A fresh instance with no
+  superuser yet logs a one-time setup URL carrying an install token
   (`http://127.0.0.1:8090/_/login?token=...`); opening it shows an inline
   setup form (`GET /api/setup/status`, `POST /api/setup`) instead of a
   login screen — no CLI required. `POST /api/setup` refuses to run

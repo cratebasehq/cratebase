@@ -62,7 +62,7 @@ git clone https://github.com/cratebasehq/cratebase
 cd cratebase
 bun install && bun run admin:build   # builds the embedded dashboard once
 cargo build --release -p cratebase-server
-./target/release/cratebase serve
+./target/release/cratebase dev       # local dev: superuser + schema + seed + types, one command
 ```
 
 The admin dashboard has to be built once with Bun before the Rust binary

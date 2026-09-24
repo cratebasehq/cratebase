@@ -36,6 +36,7 @@
 //! | `SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, or `None` (case-insensitive) |
 //! | `SESSION_COOKIE_SECURE` | `true` | whether the cookie carries `Secure` |
 //! | `CB_SETUP_TOKEN` | generated at boot | first-run install token `POST /api/setup` requires (see `crate::routes::setup`); set this for a scripted deploy that needs to know it in advance |
+//! | `CB_ADMIN_EMAIL` / `CB_ADMIN_PASSWORD` | unset | `cratebase dev` (see `crate::dev`): when both are set, upsert this superuser on every boot instead of the one-time generated `admin@localhost` |
 //!
 //! These seed [`Settings`] on **first boot only** and are ignored once
 //! settings exist in `_params` (an operator editing them in the dashboard
@@ -127,6 +128,8 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     "CB_DEV",
     "CB_AUTOMIGRATE",
     "CB_TYPEGEN_OUT",
+    "CB_ADMIN_EMAIL",
+    "CB_ADMIN_PASSWORD",
 ];
 
 #[derive(Debug, Clone)]

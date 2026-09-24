@@ -27,6 +27,11 @@ struct Cli {
 enum Command {
     /// Start the HTTP API and the embedded admin dashboard.
     Serve(ServeArgs),
+    /// One-command local dev: create the data dir if missing, provision a
+    /// superuser, apply a schema file additively, seed an empty database,
+    /// write TypeScript types, then serve exactly like `serve --dev`. See
+    /// `crate::dev`'s module doc for what each step does.
+    Dev(DevArgs),
     /// Manage superuser accounts (records in the `_superusers` collection).
     Superuser {
         #[command(subcommand)]
@@ -145,6 +150,38 @@ enum SchemaAction {
 }
 
 #[derive(clap::Args)]
+struct DevArgs {
+    /// `host:port` to listen on.
+    #[arg(long = "http")]
+    http: Option<String>,
+    /// Data directory (default `./pb_data`).
+    #[arg(long = "dir")]
+    dir: Option<String>,
+    /// Schema-as-code JSON file to apply additively. Default: `./schema.json`
+    /// if it exists.
+    #[arg(long = "schema")]
+    schema: Option<String>,
+    /// A seed file or directory (see `cratebase seed --help`). Default:
+    /// `CB_SEED_DIR`/`./pb_seed` if it exists.
+    #[arg(long = "seed")]
+    seed: Option<String>,
+    /// Where to write generated TypeScript types. Default:
+    /// `CB_TYPEGEN_OUT`/`./cratebase-types.d.ts`.
+    #[arg(long = "types")]
+    types: Option<String>,
+    /// Never auto-seed, even if the database is empty and a seed path
+    /// exists.
+    #[arg(long = "no-seed", default_value_t = false)]
+    no_seed: bool,
+    /// Never write or watch TypeScript types.
+    #[arg(long = "no-types", default_value_t = false)]
+    no_types: bool,
+    /// Also drop fields the schema file omits from an existing collection.
+    #[arg(long = "force-schema", default_value_t = false)]
+    force_schema: bool,
+}
+
+#[derive(clap::Args)]
 struct ServeArgs {
     /// `host:port` to listen on.
     #[arg(long = "http")]
@@ -242,10 +279,16 @@ enum PluginAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    init_tracing(matches!(&cli.command, Command::Serve(a) if a.dev == Some(true)));
+    init_tracing(
+        matches!(
+            &cli.command,
+            Command::Serve(a) if a.dev == Some(true)
+        ) || matches!(&cli.command, Command::Dev(_)),
+    );
 
     match cli.command {
         Command::Serve(args) => serve(args).await,
+        Command::Dev(args) => dev_cmd(args).await,
         Command::Superuser { action, dir } | Command::Admin { action, dir } => {
             superuser(dir, action).await
         }
@@ -329,6 +372,136 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let app = App::new(config);
     cratebase_server::plugin_wasm::discover_and_register(&app)?;
     app.serve().await
+}
+
+/// `cratebase dev`: resolve flags/env vars into `dev::DevOptions`
+/// following the conventions documented on `DevArgs`, run
+/// `dev::bootstrap`, print the startup banner, then fall through to the
+/// same `App::listen` path `serve --dev` uses. Never overrides SMTP
+/// settings — it never touches `Settings` at all, only the boot-time
+/// `Config` and the one-time bootstrap steps in `crate::dev`.
+async fn dev_cmd(args: DevArgs) -> anyhow::Result<()> {
+    let mut config = config_for(args.dir);
+    config.dev = true;
+    if let Some(http) = args.http {
+        let (host, port) = http
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("--http expects host:port"))?;
+        if !host.is_empty() {
+            config.host = host.to_string();
+        }
+        config.port = port.parse()?;
+    }
+
+    let schema = args
+        .schema
+        .clone()
+        .or_else(|| {
+            std::path::Path::new("schema.json")
+                .exists()
+                .then(|| "schema.json".to_string())
+        })
+        .map(std::path::PathBuf::from);
+
+    let seed = if args.no_seed {
+        None
+    } else if let Some(explicit) = args.seed.clone() {
+        Some(std::path::PathBuf::from(explicit))
+    } else {
+        let candidate = config.seed_dir.clone();
+        std::path::Path::new(&candidate)
+            .exists()
+            .then(|| std::path::PathBuf::from(candidate))
+    };
+
+    let types = if args.no_types {
+        None
+    } else {
+        let out = args
+            .types
+            .clone()
+            .or_else(|| config.typegen_out.clone())
+            .unwrap_or_else(|| DEFAULT_TYPEGEN_OUT.to_string());
+        Some(std::path::PathBuf::from(out))
+    };
+    config.typegen_out = types.as_ref().map(|p| p.to_string_lossy().into_owned());
+
+    let admin_email = std::env::var("CB_ADMIN_EMAIL")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let admin_password = std::env::var("CB_ADMIN_PASSWORD")
+        .ok()
+        .filter(|v| !v.is_empty());
+
+    let app = App::new(config);
+    cratebase_server::plugin_wasm::discover_and_register(&app)?;
+
+    let opts = cratebase_server::dev::DevOptions {
+        schema,
+        seed,
+        types,
+        force_schema: args.force_schema,
+        admin_email,
+        admin_password,
+    };
+
+    let report = cratebase_server::dev::bootstrap(&app, &opts).await?;
+    print_dev_banner(&app, &report);
+
+    app.listen().await
+}
+
+/// The startup banner `cratebase dev` prints once bootstrap finishes:
+/// where to reach the API and dashboard, the superuser credentials
+/// (only when freshly created or upserted), the schema diff and seed
+/// summary (only when either ran), the types file, the mail inbox, and
+/// the hooks/migrations directories.
+fn print_dev_banner(app: &App, report: &cratebase_server::dev::DevReport) {
+    let config = app.config();
+    let display_host = if config.host.is_empty() || config.host == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        config.host.as_str()
+    };
+    let base = format!("http://{display_host}:{}", config.port);
+
+    println!();
+    println!("  cratebase dev");
+    println!("  ------------------------------------------------------------");
+    println!("  API:            {base}/api/");
+    println!("  Dashboard:      {base}/_/");
+    match (&report.superuser_email, &report.generated_password) {
+        (Some(email), Some(password)) => {
+            println!("  Superuser:      {email} / {password}  (generated; change it)");
+        }
+        (Some(email), None) => println!("  Superuser:      {email}"),
+        (None, _) => {}
+    }
+    if let Some(diff) = &report.schema_diff {
+        println!(
+            "  Schema:         applied ({} collection(s))",
+            diff.collections.len()
+        );
+        for c in &diff.collections {
+            if c.action != "unchanged" {
+                println!("                    {:9} {}", c.action, c.name);
+            }
+        }
+    }
+    if let Some(seed) = &report.seed_report {
+        println!(
+            "  Seed:           {} record(s) from {} file(s)",
+            seed.total(),
+            seed.files.len()
+        );
+    }
+    if let Some(types_path) = &report.types_path {
+        println!("  Types:          {}", types_path.display());
+    }
+    println!("  Mail inbox:     {base}/api/dev/mails");
+    println!("  Hooks dir:      {}", config.hooks_dir);
+    println!("  Migrations dir: {}", config.migrations_dir);
+    println!();
 }
 
 /// `cratebase plugin install|list`. Both act purely on the filesystem —

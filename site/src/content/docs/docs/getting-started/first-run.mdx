@@ -1,9 +1,35 @@
 ---
 title: "First run"
-description: "What happens the first time you start cratebase serve."
+description: "cratebase dev for local development, and what cratebase serve does on its own."
 sidebar:
   order: 2
 ---
+
+## Local development: `cratebase dev`
+
+```sh
+cratebase dev
+```
+
+is the fast path for working on a project locally: it creates the data
+directory (and `pb_hooks/`/`pb_migrations/` next to it) if they don't
+exist, provisions a superuser (a one-time `admin@localhost` with a
+random, printed-once password, unless `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD`
+say otherwise), applies `./schema.json` additively if present, seeds
+`./pb_seed/` if the database is otherwise empty, writes
+`./cratebase-types.d.ts` and keeps it up to date, then starts listening
+with the same verbose logging and hook hot-reload as `serve --dev`. A
+startup banner prints everything it did — the API and dashboard URLs,
+the superuser (and its password, when generated), the schema/seed
+summary, the types file, the mail inbox, and the hooks/migrations
+directories. Re-running it against the same data directory is safe: an
+existing superuser and any already-seeded data are left alone.
+
+See the [CLI reference](/docs/reference/cli/#cratebase-dev) for every
+flag (`--schema`, `--seed`, `--types`, `--no-seed`, `--no-types`,
+`--force-schema`, `--dir`, `--http`).
+
+## In production: `cratebase serve`
 
 ```sh
 cratebase serve
@@ -11,7 +37,12 @@ cratebase serve
 
 starts listening on `:8090` immediately — SQLite database and data
 directory are created on first run, there is nothing to provision ahead
-of time.
+of time. Unlike `dev`, it does not create a superuser, apply a schema
+file or seed data on its own: see the inline setup form and headless
+setup below for how to provision the first superuser, and [Schema as
+code](/docs/extending/schema-as-code/) for applying `schema.json`
+yourself (`cratebase schema push` or `POST /api/schema/apply`) as part of
+a deploy.
 
 ## The inline setup form (no CLI required)
 
