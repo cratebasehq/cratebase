@@ -158,7 +158,10 @@ mod tests {
         let mailbox = DevMailbox::new(2);
         mailbox.capture(&msg("keep-me"));
         let id = mailbox.list()[0].id.clone();
-        assert_eq!(mailbox.get(&id).map(|m| m.subject), Some("keep-me".to_string()));
+        assert_eq!(
+            mailbox.get(&id).map(|m| m.subject),
+            Some("keep-me".to_string())
+        );
 
         // Push it out of the ring.
         mailbox.capture(&msg("b"));
@@ -185,7 +188,10 @@ mod tests {
             captured.text.as_deref(),
             Some("Verify: https://example.com/verify?token=abc")
         );
-        assert_eq!(captured.to, vec![("a@example.com".to_string(), "A".to_string())]);
+        assert_eq!(
+            captured.to,
+            vec![("a@example.com".to_string(), "A".to_string())]
+        );
         assert_eq!(
             captured.from,
             ("from@example.com".to_string(), "From".to_string())

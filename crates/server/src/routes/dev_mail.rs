@@ -238,7 +238,11 @@ mod tests {
 
         let detail_response = router
             .clone()
-            .oneshot(empty_request("GET", &format!("/dev/mails/{id}"), &admin_token))
+            .oneshot(empty_request(
+                "GET",
+                &format!("/dev/mails/{id}"),
+                &admin_token,
+            ))
             .await
             .unwrap();
         assert_eq!(detail_response.status(), StatusCode::OK);
@@ -329,7 +333,11 @@ mod tests {
 
         let view_response = router
             .clone()
-            .oneshot(empty_request("GET", "/dev/mails/whatever00000000000000", &admin_token))
+            .oneshot(empty_request(
+                "GET",
+                "/dev/mails/whatever00000000000000",
+                &admin_token,
+            ))
             .await
             .unwrap();
         assert_eq!(view_response.status(), StatusCode::NOT_FOUND);

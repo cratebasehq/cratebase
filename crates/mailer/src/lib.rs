@@ -101,7 +101,10 @@ impl Mailer {
                     None,
                 )
             } else {
-                (Arc::new(LogBackend::with_mailbox(inbox.clone())), Some(inbox))
+                (
+                    Arc::new(LogBackend::with_mailbox(inbox.clone())),
+                    Some(inbox),
+                )
             };
         Ok(Mailer {
             from: (meta.sender_address.clone(), meta.sender_name.clone()),

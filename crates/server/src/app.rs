@@ -147,7 +147,9 @@ impl App {
         let dev_mailbox = Arc::new(cratebase_mailer::DevMailbox::default());
         let mailer =
             Mailer::from_settings_with_inbox(&settings.smtp, &settings.meta, dev_mailbox.clone())
-                .unwrap_or_else(|_| Mailer::with_backend(Arc::new(cratebase_mailer::LogBackend::new())));
+                .unwrap_or_else(|_| {
+                    Mailer::with_backend(Arc::new(cratebase_mailer::LogBackend::new()))
+                });
 
         App {
             inner: Arc::new(AppInner {
