@@ -46,11 +46,7 @@ async fn requires_superuser_auth() {
     let harness = Harness::new().await;
     let response = harness
         .router()
-        .oneshot(
-            Request::get("/api/typegen")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::get("/api/typegen").body(Body::empty()).unwrap())
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

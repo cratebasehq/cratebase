@@ -546,8 +546,7 @@ async fn typegen(dir: Option<String>, out: Option<String>) -> anyhow::Result<()>
     let app = App::new(config_for(dir));
     app.bootstrap().await?;
     let snapshot = app.db().collections.all();
-    let generated =
-        cratebase_server::typegen::generate(snapshot.all.iter().map(|c| c.as_ref()));
+    let generated = cratebase_server::typegen::generate(snapshot.all.iter().map(|c| c.as_ref()));
     app.terminate(false).await;
 
     match out.as_deref() {

@@ -252,9 +252,12 @@ fn schema_interface(all: &[&Collection]) -> String {
 /// collections (which can't be created or updated) map to `never`.
 fn schema_create_update(all: &[&Collection]) -> String {
     let mut lines = vec![
-        "/** `create()`/`update()` input types per collection — pass alongside `Schema` as".to_string(),
-        " * `createClient<Schema, SchemaCreate, SchemaUpdate>()`'s 2nd/3rd type params for".to_string(),
-        " * typed writes. View collections map to `never` (they can't be created or updated). */".to_string(),
+        "/** `create()`/`update()` input types per collection — pass alongside `Schema` as"
+            .to_string(),
+        " * `createClient<Schema, SchemaCreate, SchemaUpdate>()`'s 2nd/3rd type params for"
+            .to_string(),
+        " * typed writes. View collections map to `never` (they can't be created or updated). */"
+            .to_string(),
         "export interface SchemaCreate {".to_string(),
     ];
     for c in all {
