@@ -1,10 +1,12 @@
 /** Live single record: `id`'s single-record variant of `useRecords`,
  * fetching once with `one()` and then subscribing to that record's own
  * topic (`${collectionName}/id`, via `CollectionService.subscribe(id, …)`)
- * rather than `"*"` — the server only pushes events for this one record. */
+ * rather than `"*"` — the server only pushes events for this one record,
+ * so this hook applies that event directly instead of refetching. */
 
 import { useEffect, useState } from "react";
 import type { CratebaseClient, RecordModel, ViewOptions } from "@cratebase/client";
+import { useResolvedClient } from "./context.js";
 
 export interface UseRecordOptions extends ViewOptions {
   /** Set to `false` to skip fetching/subscribing entirely (e.g. while
@@ -26,8 +28,26 @@ export function useRecord<T extends RecordModel = RecordModel>(
   client: CratebaseClient<any>,
   collectionName: string,
   id: string | null | undefined,
-  options: UseRecordOptions = {},
+  options?: UseRecordOptions,
+): UseRecordResult<T>;
+export function useRecord<T extends RecordModel = RecordModel>(
+  collectionName: string,
+  id: string | null | undefined,
+  options?: UseRecordOptions,
+): UseRecordResult<T>;
+export function useRecord<T extends RecordModel = RecordModel>(
+  arg0: CratebaseClient<any> | string,
+  arg1: string | null | undefined,
+  arg2?: UseRecordOptions | string | null | undefined,
+  arg3?: UseRecordOptions,
 ): UseRecordResult<T> {
+  const explicitClient = typeof arg0 === "string" ? undefined : arg0;
+  const collectionName = (typeof arg0 === "string" ? arg0 : (arg1 as string))!;
+  const id = typeof arg0 === "string" ? arg1 : (arg2 as string | null | undefined);
+  const options: UseRecordOptions =
+    (typeof arg0 === "string" ? (arg2 as UseRecordOptions | undefined) : arg3) ?? {};
+
+  const client = useResolvedClient(explicitClient);
   const { enabled = true, ...viewOptions } = options;
   const viewOptionsKey = JSON.stringify(viewOptions);
 
