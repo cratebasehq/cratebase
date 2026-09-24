@@ -876,7 +876,91 @@ async fn backups_create_list_download_and_delete() {
     assert_eq!(status, 400);
     assert_eq!(body["message"], "Missing or invalid backup file.");
 
+    // A well-formed ZIP whose `data.db` entry isn't actually SQLite is
+    // rejected the same way, before the app ever tears itself down for
+    // the swap — the audit's "restore wipes the data dir" bug is only
+    // reachable once that point is passed, so this proves it never is.
+    let (content_type, upload_body) =
+        binary_multipart("corrupt.zip", &build_backup_archive(b"not a real database"));
+    let uploaded = router()
+        .oneshot(
+            Request::post("/api/backups/upload")
+                .header("authorization", &token)
+                .header("content-type", content_type)
+                .body(Body::from(upload_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), StatusCode::NO_CONTENT);
+
+    let (status, body) = split(
+        router()
+            .oneshot(
+                Request::post("/api/backups/corrupt.zip/restore")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(body["message"], "Missing or invalid backup file.");
+
+    // The app is still fully alive and serving the original database —
+    // nothing was touched, let alone torn down for a restart.
+    let (status, _) = split(
+        router()
+            .oneshot(
+                Request::get("/api/collections")
+                    .header("authorization", &token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert!(dir.path().join("data.db").exists());
+
     app.terminate(false).await;
+}
+
+/// A minimal well-formed ZIP with a single `data.db` entry, so a restore
+/// gets past "is this even a ZIP" — `main_db_contents` decides whether it
+/// then passes `swap_data_dir`'s SQLite header check.
+fn build_backup_archive(main_db_contents: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        zip.start_file("data.db", options).unwrap();
+        std::io::Write::write_all(&mut zip, main_db_contents).unwrap();
+        zip.finish().unwrap();
+    }
+    buf
+}
+
+/// A `multipart/form-data` body uploading `bytes` as `backups::upload`'s
+/// `file` field. Unlike a plain text upload, a ZIP isn't valid UTF-8, so
+/// this builds the body directly instead of formatting a `&str`.
+fn binary_multipart(filename: &str, bytes: &[u8]) -> (String, Vec<u8>) {
+    const BOUNDARY: &str = "----cratebase-backup-test-boundary";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: application/zip\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={BOUNDARY}"), body)
 }
 
 // ------------------------------------------------------------------ errors

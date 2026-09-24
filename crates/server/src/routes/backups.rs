@@ -24,6 +24,21 @@
 //! engines are closed, the directories swapped, and the current binary
 //! `exec`s itself with the same arguments — the process id survives, so
 //! systemd/Docker see no crash. PocketBase restarts for the same reason.
+//!
+//! # What actually gets swapped
+//!
+//! The archive always names the main database `data.db` and the logs
+//! database `auxiliary.db` (`MAIN_DB_ENTRY` / `AUXILIARY_DB`), but the
+//! *live* main database can be named anything `DATABASE_URL` says and
+//! need not even live under the data directory. `swap_data_dir` maps the
+//! archive's fixed names onto the live paths derived from config, rather
+//! than assuming the data directory's own layout — and replaces only
+//! what `write_backup` actually captured (the main db, the logs db, a
+//! local `storage/` tree), leaving `.secret`, `plugins/`, `backups/` and
+//! anything else untouched. Each file is swapped by parking the live
+//! version next to it instead of deleting it outright, so a failure
+//! partway through rolls back instead of leaving a half-restored data
+//! directory.
 
 use std::path::{Path, PathBuf};
 
@@ -46,6 +61,14 @@ use crate::http_error::{ApiError, ApiResult};
 const RESTORE_STAGING: &str = ".cb_restore";
 /// The main database's name inside the archive.
 const MAIN_DB_ENTRY: &str = "data.db";
+/// Suffix a live file/directory gets while it is parked during a restore
+/// swap, so a crash between moving it out and moving the restored one in
+/// can be recovered by hand. Removed on success, renamed back on failure.
+const RESTORE_OLD_SUFFIX: &str = ".cb_restore_old";
+/// SQLite's file header signature ("SQLite format 3\0"). The only other
+/// check an archive gets is that it's a well-formed ZIP, so nothing else
+/// stops one whose `data.db` entry isn't actually a database.
+const SQLITE_HEADER: [u8; 16] = *b"SQLite format 3\0";
 
 pub fn router() -> Router<App> {
     Router::new()
@@ -437,6 +460,13 @@ async fn restore(
 /// schedule the swap + re-exec. The swap happens *after* this response
 /// has been written, so the client gets its 204.
 async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
+    // A restore only makes sense for a SQLite main database: Postgres (and
+    // `sqlite::memory:`, which only exists in tests) has no file for
+    // `swap_data_dir` to replace, and `write_backup` already refuses to
+    // archive a Postgres main database in the first place.
+    let main_db_path = app.config().sqlite_main_path().ok_or_else(|| {
+        AppError::bad_request("Restoring a backup requires a SQLite main database.")
+    })?;
     let data_dir = app.config().data_path().to_path_buf();
     let staging = data_dir.join(RESTORE_STAGING);
     let _ = tokio::fs::remove_dir_all(&staging).await;
@@ -478,23 +508,21 @@ async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         zip.extract(&target)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        Ok(())
+        // Reject a corrupt or tampered main database now, before the
+        // response goes out and the app commits to tearing itself down —
+        // `swap_data_dir` checks again, but only after that point.
+        validate_sqlite_file(&target.join(MAIN_DB_ENTRY))
     })
     .await
     .map_err(|e| AppError::internal(e.to_string()))?
     .map_err(|_| AppError::bad_request("Missing or invalid backup file."))?;
-
-    if !extracted.join(MAIN_DB_ENTRY).exists() {
-        let _ = tokio::fs::remove_dir_all(&staging).await;
-        return Err(AppError::bad_request("Missing or invalid backup file."));
-    }
 
     tokio::spawn(async move {
         // Give the 204 time to reach the client before the process
         // disappears.
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         app.terminate(true).await;
-        if let Err(e) = swap_data_dir(&data_dir, &extracted) {
+        if let Err(e) = swap_data_dir(&data_dir, &extracted, &main_db_path) {
             tracing::error!(error = %e, "restore failed while swapping the data directory");
             return;
         }
@@ -503,30 +531,181 @@ async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Replace the data directory's contents with `restored`, keeping the
-/// `backups/` directory (which holds the archive being restored) and the
-/// staging directory out of it.
-fn swap_data_dir(data_dir: &Path, restored: &Path) -> std::io::Result<()> {
-    let keep = [cratebase_storage::LOCAL_BACKUPS_DIR, RESTORE_STAGING];
-    for entry in std::fs::read_dir(data_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if keep.iter().any(|k| *k == name) {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
-        } else {
-            std::fs::remove_file(entry.path())?;
-        }
+/// Replace exactly the files a backup captures (see `write_backup`) with
+/// the ones extracted from the archive at `restored`, leaving everything
+/// else in `data_dir` alone — most importantly `.secret`
+/// (`config::SECRET_FILE`; regenerating it would invalidate every issued
+/// token) and `plugins/` (installed WASM plugins), neither of which the
+/// archive contains. `backups/` and the restore staging directory were
+/// never part of `restored` either, so they need no special-casing.
+///
+/// `main_db_path` is the *live* main database's real path
+/// (`Config::sqlite_main_path`), not assumed to be `<data_dir>/data.db`:
+/// the archive's main database is always named `data.db`
+/// (`MAIN_DB_ENTRY`), but a deployment can point `DATABASE_URL` at any
+/// filename — `docker-compose.yml` uses `cratebase.db` — and it need not
+/// even live under `data_dir`. Deleting everything but a fixed allowlist
+/// used to delete that file and never replace it, so a restore came back
+/// with an empty database.
+///
+/// The restored main database is validated before anything is touched,
+/// then each live file/directory is replaced one at a time by parking it
+/// next to itself (`<name>.cb_restore_old`) rather than deleting it
+/// outright. If anything fails partway, every change already made is
+/// undone before the error is returned, so a failed restore leaves the
+/// data directory exactly as it was.
+fn swap_data_dir(data_dir: &Path, restored: &Path, main_db_path: &Path) -> std::io::Result<()> {
+    let main_entry = restored.join(MAIN_DB_ENTRY);
+    validate_sqlite_file(&main_entry)?;
+
+    // (archive source, live target) — only the files `write_backup` puts
+    // in an archive are ever swapped; an older archive without a logs
+    // database or a local storage tree just skips those entries.
+    let mut swaps = vec![(main_entry, main_db_path.to_path_buf())];
+    let logs_entry = restored.join(cratebase_db::db::AUXILIARY_DB);
+    if logs_entry.exists() {
+        swaps.push((logs_entry, data_dir.join(cratebase_db::db::AUXILIARY_DB)));
     }
-    for entry in std::fs::read_dir(restored)? {
-        let entry = entry?;
-        std::fs::rename(entry.path(), data_dir.join(entry.file_name()))?;
+    let storage_entry = restored.join(cratebase_storage::LOCAL_STORAGE_DIR);
+    if storage_entry.exists() {
+        swaps.push((
+            storage_entry,
+            data_dir.join(cratebase_storage::LOCAL_STORAGE_DIR),
+        ));
     }
+
+    let result = apply_swaps(&swaps);
+    // The staged download/extraction is disposable either way — a retry
+    // re-downloads and re-extracts the archive from scratch.
     let _ = std::fs::remove_dir_all(data_dir.join(RESTORE_STAGING));
+    result
+}
+
+/// Move every restored file/directory into place, parking what it
+/// replaces first. On the first failure, everything already swapped in is
+/// rolled back, in reverse order, before the error is returned.
+fn apply_swaps(swaps: &[(PathBuf, PathBuf)]) -> std::io::Result<()> {
+    let mut moved_aside = Vec::new();
+    let mut swapped_in = Vec::new();
+    for (source, target) in swaps {
+        if let Err(e) = swap_one(source, target, &mut moved_aside, &mut swapped_in) {
+            for target in swapped_in.iter().rev() {
+                let _ = remove_path(target);
+            }
+            for (aside, original) in moved_aside.iter().rev() {
+                let _ = std::fs::rename(aside, original);
+            }
+            return Err(e);
+        }
+    }
+    for (aside, _) in &moved_aside {
+        let _ = remove_path(aside);
+    }
     Ok(())
+}
+
+/// Park `target` (see [`live_paths`]) if it exists, then move `source`
+/// into its place.
+fn swap_one(
+    source: &Path,
+    target: &Path,
+    moved_aside: &mut Vec<(PathBuf, PathBuf)>,
+    swapped_in: &mut Vec<PathBuf>,
+) -> std::io::Result<()> {
+    for live in live_paths(source, target) {
+        if live.exists() {
+            let aside = aside_path(&live);
+            std::fs::rename(&live, &aside)?;
+            moved_aside.push((aside, live));
+        }
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    move_path(source, target)?;
+    swapped_in.push(target.to_path_buf());
+    Ok(())
+}
+
+/// `target` itself, plus its `-wal`/`-shm` sidecars when `source` (and so
+/// `target`, once swapped) is a database file rather than a directory
+/// (`storage/` has no sidecars) — stale ones left from the live database
+/// must not survive next to a freshly restored file.
+fn live_paths(source: &Path, target: &Path) -> Vec<PathBuf> {
+    if !source.is_file() {
+        return vec![target.to_path_buf()];
+    }
+    let mut wal = target.as_os_str().to_owned();
+    wal.push("-wal");
+    let mut shm = target.as_os_str().to_owned();
+    shm.push("-shm");
+    vec![target.to_path_buf(), PathBuf::from(wal), PathBuf::from(shm)]
+}
+
+fn aside_path(live: &Path) -> PathBuf {
+    let mut name = live.file_name().unwrap_or_default().to_os_string();
+    name.push(RESTORE_OLD_SUFFIX);
+    live.with_file_name(name)
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// `std::fs::rename`, falling back to a copy-then-remove when it fails —
+/// `main_db_path` can point outside `data_dir` entirely, so the two sides
+/// of a swap aren't guaranteed to share a filesystem, and a plain rename
+/// always fails across one.
+fn move_path(source: &Path, target: &Path) -> std::io::Result<()> {
+    if std::fs::rename(source, target).is_ok() {
+        return Ok(());
+    }
+    if source.is_dir() {
+        copy_dir_all(source, target)?;
+        std::fs::remove_dir_all(source)
+    } else {
+        std::fs::copy(source, target)?;
+        std::fs::remove_file(source)
+    }
+}
+
+/// Recursive copy for the [`move_path`] cross-filesystem fallback.
+fn copy_dir_all(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(target)?;
+    for entry in walkdir::WalkDir::new(source) {
+        let entry = entry.map_err(std::io::Error::other)?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .map_err(std::io::Error::other)?;
+        let dest = target.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&dest)?;
+        } else if entry.file_type().is_file() {
+            std::fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// Reject an archive whose main database entry isn't really SQLite.
+fn validate_sqlite_file(path: &Path) -> std::io::Result<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header)?;
+    if header == SQLITE_HEADER {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "the archive's main database is not a SQLite file",
+        ))
+    }
 }
 
 /// Re-exec the current binary with the same arguments. On success this
@@ -677,5 +856,182 @@ mod tests {
         let err = validate_key("../x.zip").unwrap_err();
         assert_eq!(err.error.status(), 400);
         assert!(err.data.unwrap().contains_key("name"));
+    }
+
+    // ----------------------------------------------------- swap_data_dir
+
+    use cratebase_db::engine::{Engine, Executor, Sql};
+    use cratebase_db::sqlite::SqliteEngine;
+
+    /// A real, openable SQLite file at `path` — enough to pass
+    /// `validate_sqlite_file` and to prove a restore actually swapped the
+    /// bytes rather than just moving an opaque blob around.
+    async fn make_sqlite_file(path: &Path, marker: &str) {
+        let engine = SqliteEngine::open(&path.to_string_lossy(), 0).unwrap();
+        engine
+            .execute("CREATE TABLE marker (val TEXT)", &[])
+            .await
+            .unwrap();
+        engine
+            .execute(
+                "INSERT INTO marker (val) VALUES ($1)",
+                &[Sql::Text(marker.to_string())],
+            )
+            .await
+            .unwrap();
+        engine.close().await.unwrap();
+    }
+
+    async fn read_marker(path: &Path) -> String {
+        let engine = SqliteEngine::open(&path.to_string_lossy(), 0).unwrap();
+        let row = engine
+            .query_one("SELECT val FROM marker", &[])
+            .await
+            .unwrap()
+            .expect("a marker row");
+        let value = row.get_str("val").unwrap().to_string();
+        engine.close().await.unwrap();
+        value
+    }
+
+    /// The bug the audit flagged: the archive's main database is always
+    /// named `data.db`, but `DATABASE_URL` (`docker-compose.yml` uses
+    /// `cratebase.db`) can name the live file anything. Restoring must
+    /// write into that real path, not a `data.db` the app never opens.
+    #[tokio::test]
+    async fn restore_brings_back_rows_when_the_main_db_has_a_custom_name() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let main_db_path = data_dir.path().join("cratebase.db");
+        make_sqlite_file(&main_db_path, "stale").await;
+
+        // What `stage_and_restart` hands `swap_data_dir`: the archive
+        // extracted into a staging dir, its main database always named
+        // `data.db` regardless of the live file's real name.
+        let restored = tempfile::tempdir().unwrap();
+        make_sqlite_file(&restored.path().join(MAIN_DB_ENTRY), "restored").await;
+
+        swap_data_dir(data_dir.path(), restored.path(), &main_db_path).unwrap();
+
+        assert_eq!(read_marker(&main_db_path).await, "restored");
+    }
+
+    #[tokio::test]
+    async fn restore_swaps_the_logs_database_and_local_storage_tree_too() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let main_db_path = data_dir.path().join("data.db");
+        make_sqlite_file(&main_db_path, "stale-main").await;
+        make_sqlite_file(
+            &data_dir.path().join(cratebase_db::db::AUXILIARY_DB),
+            "stale-logs",
+        )
+        .await;
+        let storage_dir = data_dir.path().join(cratebase_storage::LOCAL_STORAGE_DIR);
+        std::fs::create_dir_all(&storage_dir).unwrap();
+        std::fs::write(storage_dir.join("old.txt"), b"old").unwrap();
+
+        let restored = tempfile::tempdir().unwrap();
+        make_sqlite_file(&restored.path().join(MAIN_DB_ENTRY), "new-main").await;
+        make_sqlite_file(
+            &restored.path().join(cratebase_db::db::AUXILIARY_DB),
+            "new-logs",
+        )
+        .await;
+        let restored_storage = restored.path().join(cratebase_storage::LOCAL_STORAGE_DIR);
+        std::fs::create_dir_all(&restored_storage).unwrap();
+        std::fs::write(restored_storage.join("new.txt"), b"new").unwrap();
+
+        swap_data_dir(data_dir.path(), restored.path(), &main_db_path).unwrap();
+
+        assert_eq!(read_marker(&main_db_path).await, "new-main");
+        assert_eq!(
+            read_marker(&data_dir.path().join(cratebase_db::db::AUXILIARY_DB)).await,
+            "new-logs"
+        );
+        assert!(!storage_dir.join("old.txt").exists());
+        assert_eq!(std::fs::read(storage_dir.join("new.txt")).unwrap(), b"new");
+    }
+
+    #[tokio::test]
+    async fn restore_preserves_the_secret_file_and_installed_plugins() {
+        let data_dir = tempfile::tempdir().unwrap();
+        std::fs::write(data_dir.path().join(crate::config::SECRET_FILE), "shh").unwrap();
+        let plugins_dir = data_dir.path().join("plugins");
+        std::fs::create_dir_all(&plugins_dir).unwrap();
+        std::fs::write(plugins_dir.join("example.wasm"), b"wasm").unwrap();
+        let backups_dir = data_dir.path().join(cratebase_storage::LOCAL_BACKUPS_DIR);
+        std::fs::create_dir_all(&backups_dir).unwrap();
+        std::fs::write(backups_dir.join("some.zip"), b"zip").unwrap();
+
+        let main_db_path = data_dir.path().join("data.db");
+        make_sqlite_file(&main_db_path, "stale").await;
+        let restored = tempfile::tempdir().unwrap();
+        make_sqlite_file(&restored.path().join(MAIN_DB_ENTRY), "restored").await;
+
+        swap_data_dir(data_dir.path(), restored.path(), &main_db_path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(data_dir.path().join(crate::config::SECRET_FILE)).unwrap(),
+            "shh"
+        );
+        assert_eq!(
+            std::fs::read(plugins_dir.join("example.wasm")).unwrap(),
+            b"wasm"
+        );
+        assert_eq!(std::fs::read(backups_dir.join("some.zip")).unwrap(), b"zip");
+    }
+
+    #[test]
+    fn a_non_sqlite_archive_is_rejected_before_anything_is_touched() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let main_db_path = data_dir.path().join("data.db");
+        std::fs::write(&main_db_path, b"OLD").unwrap();
+
+        let restored = tempfile::tempdir().unwrap();
+        std::fs::write(
+            restored.path().join(MAIN_DB_ENTRY),
+            b"not a sqlite database, just plain text",
+        )
+        .unwrap();
+
+        let err = swap_data_dir(data_dir.path(), restored.path(), &main_db_path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(&main_db_path).unwrap(), b"OLD");
+    }
+
+    /// If a later file in the swap can't be written, every file already
+    /// swapped in by an earlier one must be rolled back too — not just
+    /// left in its new state.
+    #[test]
+    fn a_failed_swap_rolls_back_everything_already_swapped_in() {
+        let live_dir = tempfile::tempdir().unwrap();
+        let blocked_dir = tempfile::tempdir().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+
+        let target0 = live_dir.path().join("live_a.db");
+        std::fs::write(&target0, b"OLD_A").unwrap();
+        let source0 = source_dir.path().join("a.db");
+        std::fs::write(&source0, b"NEW_A").unwrap();
+
+        // `nested` is a plain file, not a directory, so creating it as the
+        // second target's parent is guaranteed to fail — a deterministic
+        // stand-in for "the second file in a multi-file swap can't be
+        // written", without relying on filesystem permissions (which
+        // root, or a container running as root, can simply ignore).
+        std::fs::write(blocked_dir.path().join("nested"), b"blocker").unwrap();
+        let target1 = blocked_dir.path().join("nested").join("live_b.db");
+        let source1 = source_dir.path().join("b.db");
+        std::fs::write(&source1, b"NEW_B").unwrap();
+
+        let swaps = vec![
+            (source0.clone(), target0.clone()),
+            (source1, target1.clone()),
+        ];
+        assert!(apply_swaps(&swaps).is_err());
+
+        // The first file was fully swapped in before the second failed;
+        // rolling back must undo it, not just stop where it broke.
+        assert_eq!(std::fs::read(&target0).unwrap(), b"OLD_A");
+        assert!(!target1.exists());
+        assert!(!aside_path(&target0).exists(), "no leftover park file");
     }
 }
