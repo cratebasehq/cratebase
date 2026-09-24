@@ -49,6 +49,13 @@ structs in `crates/core/src/collection.rs:296-297,515-516`.) Superuser
 only — this is schema management, not record CRUD. Real, runnable
 examples of this shape:
 
+**Footgun: `required: true` on a `number` field rejects `0`.** PocketBase
+treats a field's zero value as "blank" for `required` purposes (`""` for
+text, `[]` for multi-relation, and `0` for number) — Cratebase matches
+this (`crates/db/src/validate.rs`'s `required`/`is_blank`). A counter,
+score, or quantity field that can legitimately be `0` should be left
+non-required if you want `0` to be a valid write.
+
 - `examples/todo/setup.sh:13-18` — a minimal `base` collection with
   standard rules.
 - `examples/kanban/setup.sh:15-30` — `text`/`select`/`number`/`autodate`
