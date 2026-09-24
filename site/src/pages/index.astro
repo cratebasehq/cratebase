@@ -350,6 +350,13 @@ POST /api/mcp {"method":"tools/list"}  // -> list_memories, create_memories, ...
       <div class="migrate-art"><Dolly label="A hand truck carrying two crates: the migration tool" /></div>
       <div>
         <h2>Moving from PocketBase</h2>
+        <p>
+          Cratebase speaks the same wire protocol: the official
+          <code>pocketbase</code> JS/TS client (and PocketBase's other
+          official SDKs) work against it unchanged — verified against the
+          real SDK, 180 of 181 conformance tests pass. Already running
+          PocketBase? Bring your data over in one command:
+        </p>
         <pre class="mono"><code>cratebase migrate-from-pocketbase pb_data --dir cratebase_data</code></pre>
         <pre class="mono report"><code>{`collections created: 2
   + categories
@@ -378,6 +385,22 @@ files copied: 4`}</code></pre>
   <section class="band" id="examples">
     <div class="wrap section">
       <h2>Examples</h2>
+
+      <!-- TODO(showcase): flagship screenshots -->
+      <a class="flagship-card" href="https://github.com/cratebasehq/cratebase/tree/main/examples">
+        <div class="flagship-shot" aria-hidden="true">Team board</div>
+        <div class="flagship-copy">
+          <span class="flagship-tag">Flagship example</span>
+          <h3>Team board</h3>
+          <p>
+            Kanban, chat, and AI search in one shared workspace — built
+            end-to-end with <code class="mono">@cratebase/react</code>.
+          </p>
+          <span class="flagship-link">See the examples on GitHub →</span>
+        </div>
+      </a>
+
+      <h3 class="examples-subhead">More examples</h3>
       <div class="example-grid">
         {examples.map(([name, desc, shot]) => (
           <a class="example-card" href={`https://github.com/cratebasehq/cratebase/tree/main/examples/${name}`}>
@@ -767,6 +790,10 @@ files copied: 4`}</code></pre>
     gap: 2.5rem;
     align-items: start;
   }
+  .migrate-panel p {
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+  }
   .migrate-panel pre {
     background: var(--color-harbor);
     color: #eef1f4;
@@ -806,6 +833,73 @@ files copied: 4`}</code></pre>
   }
   .prod-panel .checklist li {
     margin-bottom: 0.5rem;
+  }
+
+  .flagship-card {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 1.5rem;
+    background: var(--color-white);
+    border: 1px solid var(--color-hairline);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+    text-decoration: none;
+    color: inherit;
+    transition: transform 160ms var(--ease-house);
+  }
+  :root[data-theme="dark"] .flagship-card {
+    background: var(--color-panel);
+  }
+  .flagship-card:hover {
+    transform: translateY(-2px);
+  }
+  .flagship-shot {
+    border-radius: 0.4rem;
+    min-height: 10rem;
+    background: repeating-linear-gradient(
+      135deg,
+      var(--color-fog),
+      var(--color-fog) 10px,
+      var(--color-hairline) 10px,
+      var(--color-hairline) 11px
+    );
+    display: grid;
+    place-items: center;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--color-slate);
+  }
+  .flagship-copy {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  .flagship-tag {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--color-crate);
+    margin-bottom: 0.5rem;
+  }
+  .flagship-copy h3 {
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    margin: 0 0 0.5rem;
+  }
+  .flagship-copy p {
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    margin: 0 0 0.9rem;
+  }
+  .flagship-link {
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .examples-subhead {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+    margin: 0 0 1rem;
   }
 
   .example-grid {
@@ -873,7 +967,8 @@ files copied: 4`}</code></pre>
     .bench-panel,
     .bench-panel.reverse,
     .migrate-panel,
-    .prod-panel {
+    .prod-panel,
+    .flagship-card {
       grid-template-columns: 1fr;
     }
     .hero-grid > *,
