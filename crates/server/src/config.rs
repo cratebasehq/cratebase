@@ -26,7 +26,7 @@
 //! | `LOG_REQUESTS` | `true` | persist request logs (a deliberate divergence, see spec §15.3) |
 //! | `CB_ENCRYPTION` | unset | 32-char key encrypting `_params` values |
 //! | `CORS_ALLOW_ORIGINS` | `*` | comma-separated origins (`--origins`) |
-//! | `CB_SECRET` / `AUTH_SECRET` | generated once into `<data_dir>/.secret` | app-wide token signing secret |
+//! | `CB_SECRET` / `AUTH_SECRET` | generated once into `<data_dir>/.secret` | app-wide token signing secret; empty values are treated as unset, and a value under 32 bytes refuses to boot |
 //! | `SESSION_TRACKING` | `true` | write a `_sessions` row per login for listing/revocation |
 //! | `SESSION_COOKIE` | `false` | also accept/set an httpOnly session cookie alongside the bearer token |
 //! | `SESSION_COOKIE_NAME` | `cb_session` | the cookie's name |
@@ -40,7 +40,8 @@
 //! `CB_APP_NAME`, `CB_APP_URL`, `CB_SENDER_NAME`, `CB_SENDER_ADDRESS`,
 //! `SMTP_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
 //! `SMTP_PASSWORD`, `SMTP_TLS`, `S3_ENABLED`, `S3_BUCKET`, `S3_REGION`,
-//! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`.
+//! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`,
+//! `AUTH_RATE_LIMIT_ENABLED` (default `true`).
 
 use std::path::{Path, PathBuf};
 
@@ -206,9 +207,15 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
         config.origins = split_csv(&env_or("CORS_ALLOW_ORIGINS", "*"));
-        config.secret = std::env::var("CB_SECRET")
-            .or_else(|_| std::env::var("AUTH_SECRET"))
-            .unwrap_or_else(|_| load_or_create_secret(&data_dir));
+        config.secret = resolve_secret(
+            &data_dir,
+            std::env::var("CB_SECRET").ok(),
+            std::env::var("AUTH_SECRET").ok(),
+        )
+        .unwrap_or_else(|msg| {
+            eprintln!("cratebase: refusing to start: {msg}");
+            std::process::exit(1);
+        });
         config.session_tracking = env_bool("SESSION_TRACKING", true);
         config.session_cookie = env_bool("SESSION_COOKIE", false);
         config.session_cookie_name = env_or("SESSION_COOKIE_NAME", &config.session_cookie_name);
@@ -246,6 +253,10 @@ impl Config {
     /// when `_params` holds no settings row yet.
     pub fn seed_settings(&self) -> Settings {
         let mut s = Settings::default();
+        // Documented as on-by-default (.env.example, docs/deploy); the
+        // env var only lets an operator opt out (e.g. already
+        // rate-limiting at a reverse proxy in front of Cratebase).
+        s.rate_limits.enabled = env_bool("AUTH_RATE_LIMIT_ENABLED", s.rate_limits.enabled);
         if let Ok(v) = std::env::var("CB_APP_NAME") {
             s.meta.app_name = v;
         }
@@ -327,6 +338,41 @@ pub fn split_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Signing secrets shorter than this are brute-forceable over HMAC; refuse
+/// to boot rather than run with one.
+const MIN_SECRET_LEN: usize = 32;
+
+/// Resolves the app-wide signing secret from the two env vars that can
+/// carry it, falling back to the generated/persisted one for `data_dir`
+/// when neither is set.
+///
+/// An empty value (e.g. docker-compose's `AUTH_SECRET: ${AUTH_SECRET:-}`
+/// resolving to `""` when the operator never set it) is treated the same
+/// as unset, mirroring `encryption_key`'s `.filter(|v| !v.is_empty())`
+/// above — an empty string must never become the signing key. A
+/// non-empty value shorter than [`MIN_SECRET_LEN`] is rejected outright
+/// rather than silently accepted, since it's very likely a placeholder or
+/// typo, not an intentional weak secret.
+fn resolve_secret(
+    data_dir: &str,
+    cb_secret: Option<String>,
+    auth_secret: Option<String>,
+) -> Result<String, String> {
+    let explicit = cb_secret
+        .filter(|v| !v.is_empty())
+        .or_else(|| auth_secret.filter(|v| !v.is_empty()));
+    match explicit {
+        Some(secret) if secret.len() < MIN_SECRET_LEN => Err(format!(
+            "CB_SECRET/AUTH_SECRET is {} bytes, but must be at least {MIN_SECRET_LEN}; \
+             generate one with e.g. `openssl rand -base64 48`, or unset it to have \
+             cratebase generate and persist one",
+            secret.len()
+        )),
+        Some(secret) => Ok(secret),
+        None => Ok(load_or_create_secret(data_dir)),
+    }
+}
+
 /// Generate a random 64-char app secret on first run and persist it under
 /// the data dir, so tokens keep validating across restarts without every
 /// self-hoster having to set `CB_SECRET` by hand.
@@ -375,6 +421,63 @@ mod tests {
         assert_eq!(
             split_csv("https://a.example , https://b.example,"),
             vec!["https://a.example", "https://b.example"]
+        );
+    }
+
+    #[test]
+    fn empty_secret_env_vars_fall_back_to_generated_secret() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        // docker-compose.yml's `AUTH_SECRET: ${AUTH_SECRET:-}` resolves to
+        // `""` when the operator never set it; that must not become the
+        // signing secret (an empty HMAC key is worse than none).
+        let secret = resolve_secret(&data_dir, Some(String::new()), Some(String::new()))
+            .expect("empty env vars are treated as unset");
+        assert!(!secret.is_empty());
+        assert!(secret.len() >= MIN_SECRET_LEN);
+    }
+
+    #[test]
+    fn short_explicit_secret_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let err = resolve_secret(&data_dir, Some("too-short".into()), None)
+            .expect_err("a 9-byte secret must be rejected");
+        assert!(
+            err.contains("32"),
+            "error should mention the minimum: {err}"
+        );
+    }
+
+    #[test]
+    fn short_auth_secret_fallback_is_also_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let err = resolve_secret(&data_dir, None, Some("also-too-short".into()))
+            .expect_err("AUTH_SECRET is checked the same as CB_SECRET");
+        assert!(err.contains("32"));
+    }
+
+    #[test]
+    fn sufficiently_long_explicit_secret_is_used_verbatim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let secret = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            resolve_secret(&data_dir, Some(secret.into()), None).unwrap(),
+            secret
+        );
+    }
+
+    #[test]
+    fn cb_secret_takes_priority_over_auth_secret() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let cb = "cb-0123456789abcdef0123456789abcdef";
+        let auth = "auth-0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            resolve_secret(&data_dir, Some(cb.into()), Some(auth.into())).unwrap(),
+            cb
         );
     }
 }

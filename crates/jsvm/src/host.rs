@@ -176,7 +176,8 @@ pub struct HttpRequest {
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub body: Option<Vec<u8>>,
-    /// `0` means the host's default.
+    /// `0` means the host's default: 120s, matching PocketBase's own
+    /// `$http.send` default (see `jsvm_host::http_send_timeout`).
     #[serde(default)]
     pub timeout_secs: u64,
 }

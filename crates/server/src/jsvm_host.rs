@@ -107,6 +107,23 @@ pub fn wrap_tx_host(tx: TxApp) -> Arc<dyn HostApi> {
 #[derive(Default)]
 struct JsStoreState(std::sync::RwLock<HashMap<String, Value>>);
 
+/// PocketBase's own `$http.send` defaults its `timeout` option to 120
+/// (seconds) when the caller doesn't set one; match that rather than
+/// inventing our own number, since a script ported from PocketBase
+/// should time out the same way it did there.
+const DEFAULT_HTTP_SEND_TIMEOUT_SECS: u64 = 120;
+
+/// The `reqwest` timeout to apply for a given `HttpRequest.timeout_secs`
+/// (`0` meaning "unspecified"). Always bounded: an unbounded default
+/// would let one hung outbound call block a JS worker indefinitely.
+fn http_send_timeout(requested_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(if requested_secs > 0 {
+        requested_secs
+    } else {
+        DEFAULT_HTTP_SEND_TIMEOUT_SECS
+    })
+}
+
 /// Replace `{:name}` filter placeholders with literal values, exactly like
 /// `cratebase_db::records`'s (private) helper of the same job: `$app.
 /// findRecordsByFilter`'s `params` argument fills a hand-written filter
@@ -379,9 +396,9 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         if let Some(body) = req.body {
             builder = builder.body(body);
         }
-        if req.timeout_secs > 0 {
-            builder = builder.timeout(std::time::Duration::from_secs(req.timeout_secs));
-        }
+        // Always bounded: a hung outbound call must not tie up a JS
+        // worker forever (see `http_send_timeout`'s doc for the default).
+        builder = builder.timeout(http_send_timeout(req.timeout_secs));
         let resp = builder
             .send()
             .await
@@ -962,5 +979,24 @@ mod raw_query_tests {
         let err =
             bind_raw_query_params("SELECT * FROM t WHERE x = {:missing}", &params).unwrap_err();
         assert!(err.to_string().contains("missing"));
+    }
+}
+
+#[cfg(test)]
+mod http_send_tests {
+    use super::http_send_timeout;
+
+    #[test]
+    fn defaults_to_pocketbases_120s_timeout_when_unset() {
+        assert_eq!(
+            http_send_timeout(0),
+            std::time::Duration::from_secs(120),
+            "an unbounded default would let a hung call block a JS worker forever"
+        );
+    }
+
+    #[test]
+    fn keeps_an_explicit_timeout() {
+        assert_eq!(http_send_timeout(5), std::time::Duration::from_secs(5));
     }
 }

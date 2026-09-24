@@ -204,6 +204,7 @@ pub async fn log_requests(State(app): State<App>, req: Request, next: Next) -> R
         .path_and_query()
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| uri.path().to_string());
+    let url = redact_sensitive_query(&url);
     let header_str = |name: header::HeaderName| {
         parts
             .headers
@@ -303,6 +304,54 @@ fn strip_query(data: &Map<String, Value>) -> String {
     url.split('?').next().unwrap_or(url).to_string()
 }
 
+/// Query parameter names whose *values* must never reach `_logs` in the
+/// clear: file/backup access tokens (`?token=`), OAuth callback params
+/// (`code`, `state`, `code_verifier`), and anything credential-shaped.
+/// Matched case-insensitively against the raw (undecoded) key.
+const SENSITIVE_QUERY_PARAMS: &[&str] = &[
+    "token",
+    "code",
+    "state",
+    "code_verifier",
+    "password",
+    "otp",
+    "secret",
+    "access_token",
+    "refresh_token",
+    "client_secret",
+    "api_key",
+    "apikey",
+    "signature",
+];
+
+/// Replaces the value of every [`SENSITIVE_QUERY_PARAMS`] param in `url`
+/// (a path-and-query, as stored on `data.url`) with `***`, so a signed
+/// file/backup URL or an OAuth redirect never lands in `_logs` in the
+/// clear. Everything else — the path, other params — is kept verbatim.
+fn redact_sensitive_query(url: &str) -> String {
+    let Some((path, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    if query.is_empty() {
+        return url.to_string();
+    }
+    let redacted = query
+        .split('&')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, _value))
+                if SENSITIVE_QUERY_PARAMS
+                    .iter()
+                    .any(|s| s.eq_ignore_ascii_case(key)) =>
+            {
+                format!("{key}=***")
+            }
+            _ => pair.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{path}?{redacted}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +371,53 @@ mod tests {
         let mut m = Map::new();
         m.insert("url".into(), json!("/api/collections/posts/records?page=2"));
         assert_eq!(strip_query(&m), "/api/collections/posts/records");
+    }
+
+    #[test]
+    fn redacts_a_file_token_query_param() {
+        assert_eq!(
+            redact_sensitive_query("/api/files/posts/abc/photo.png?token=eyJhbGciOi"),
+            "/api/files/posts/abc/photo.png?token=***"
+        );
+    }
+
+    #[test]
+    fn redacts_oauth_code_and_state_but_keeps_other_params() {
+        assert_eq!(
+            redact_sensitive_query("/api/oauth2-redirect?code=xyz&state=abc&provider=google"),
+            "/api/oauth2-redirect?code=***&state=***&provider=google"
+        );
+    }
+
+    #[test]
+    fn redacts_password_code_verifier_and_otp() {
+        assert_eq!(
+            redact_sensitive_query("/api/x?password=hunter2&code_verifier=v&otp=123456"),
+            "/api/x?password=***&code_verifier=***&otp=***"
+        );
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_on_the_param_name() {
+        assert_eq!(
+            redact_sensitive_query("/api/x?Token=abc&PASSWORD=hunter2"),
+            "/api/x?Token=***&PASSWORD=***"
+        );
+    }
+
+    #[test]
+    fn urls_without_a_query_string_are_untouched() {
+        assert_eq!(
+            redact_sensitive_query("/api/collections/posts/records"),
+            "/api/collections/posts/records"
+        );
+    }
+
+    #[test]
+    fn a_trailing_empty_query_string_is_untouched() {
+        assert_eq!(
+            redact_sensitive_query("/api/collections/posts/records?"),
+            "/api/collections/posts/records?"
+        );
     }
 }

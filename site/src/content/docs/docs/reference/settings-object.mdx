@@ -161,7 +161,8 @@ backends:
 ## `superuserIPs`
 
 A top-level `string[]`, default `[]` (unrestricted) — an IP allow-list
-for every `_superusers` auth endpoint when non-empty.
+for every `_superusers` auth endpoint when non-empty. Entries are either
+an exact IP (`10.0.0.5`) or a CIDR range (`10.0.0.0/8`, `2001:db8::/32`).
 
 See [Reference → REST API → Settings](/docs/reference/rest-api/settings/)
 for the endpoint shape itself, including the `testS3`/`testMail`/

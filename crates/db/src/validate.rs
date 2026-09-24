@@ -51,6 +51,13 @@ const TOO_MANY_FILES: &str = "validation_too_many_files";
 /// no upstream code to match.
 const VECTOR_DIMENSION_MISMATCH: &str = "validation_vector_dimension_mismatch";
 
+/// Hard upper bound on a password field's plaintext, in bytes, enforced
+/// no matter what the field's own `max` allows (including its default of
+/// `0`/unbounded). Argon2 hashes its input directly, so without this an
+/// attacker could turn a single signup/login request into an expensive
+/// hash of an arbitrarily large payload.
+pub const MAX_PASSWORD_BYTES: usize = 256;
+
 /// Metadata about one file the caller is about to store. `crates/db`
 /// never touches storage, so the server layer supplies this after
 /// parsing the multipart body.
@@ -493,6 +500,12 @@ pub fn password(field: &Field, value: &Value) -> Option<FieldError> {
         return Some(err(
             codes::MAX_TEXT,
             format!("Must be no more than {max} character(s)."),
+        ));
+    }
+    if s.len() > MAX_PASSWORD_BYTES {
+        return Some(err(
+            codes::MAX_TEXT,
+            format!("Must be no more than {MAX_PASSWORD_BYTES} character(s)."),
         ));
     }
     if !pattern.is_empty() {
@@ -1129,6 +1142,30 @@ mod tests {
             password(&field, &json!("waaaaaaaaytoolong")).unwrap().code,
             codes::MAX_TEXT
         );
+    }
+
+    /// Argon2 hashes its input directly, so an unbounded `max` (the
+    /// field's own default) must not translate into an unbounded hash
+    /// input: `MAX_PASSWORD_BYTES` is enforced no matter what the field
+    /// is configured to allow.
+    #[test]
+    fn password_is_hard_capped_regardless_of_the_fields_own_max() {
+        let field = f(
+            "password",
+            FieldKind::Password {
+                min: 8,
+                max: 0,
+                pattern: String::new(),
+                cost: 0,
+            },
+        );
+        let too_long = "a".repeat(MAX_PASSWORD_BYTES + 1);
+        assert_eq!(
+            password(&field, &json!(too_long)).unwrap().code,
+            codes::MAX_TEXT
+        );
+        let exactly_at_cap = "a".repeat(MAX_PASSWORD_BYTES);
+        assert!(password(&field, &json!(exactly_at_cap)).is_none());
     }
 
     #[test]
