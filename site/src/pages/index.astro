@@ -158,6 +158,64 @@ cratebase serve</code></pre>
     </div>
   </section>
 
+  <!-- ===================== ZERO TO TYPED BACKEND ======================= -->
+  <section class="wrap section">
+    <div class="steps-intro">
+      <div class="steps-art"><Crate label="A single collection, sitting on the ground" /></div>
+      <div>
+        <h2>From zero to a typed backend</h2>
+        <p>
+          No code-generation step to remember: define the shape once, and
+          everything downstream — types, the client, your React components —
+          stays in sync with it.
+        </p>
+      </div>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Define a collection</h3>
+        <p>
+          From the dashboard, or check a <code class="mono">schema.json</code> into
+          your repo and apply it — a dry run flags anything destructive
+          before it touches data.
+        </p>
+        <pre class="mono"><code>curl -X POST localhost:8090/api/schema/apply?dryRun=1 \
+  -H "Authorization: Bearer $TOKEN" --data @schema.json</code></pre>
+      </li>
+      <li>
+        <h3>Generate types from it</h3>
+        <p>
+          <code class="mono">@cratebase/schema-codegen</code> turns that same
+          schema into one TypeScript interface per collection, plus a
+          single <code class="mono">Schema</code> map for the client.
+        </p>
+        <pre class="mono"><code>npx @cratebase/schema-codegen schema.json -o cratebase-types.d.ts</code></pre>
+      </li>
+      <li>
+        <h3>Get a fully typed client</h3>
+        <p>
+          An unknown collection name is now a compile error, not a 404 you
+          find in production.
+        </p>
+        <pre class="mono"><code>{`import { createClient } from "@cratebase/client";
+import type { Schema } from "./cratebase-types";
+
+const cb = createClient<Schema>("http://localhost:8090");`}</code></pre>
+      </li>
+      <li>
+        <h3>Wire it into React, live</h3>
+        <p>
+          <code class="mono">@cratebase/react</code>'s <code class="mono">useRecords</code> fetches
+          the list once, then keeps it current — a write from any client
+          lands here with no refresh and no polling.
+        </p>
+        <pre class="mono"><code>{`import { useRecords } from "@cratebase/react";
+
+const { records: posts, loading } = useRecords(cb, "posts", { sort: "-created" });`}</code></pre>
+      </li>
+    </ol>
+  </section>
+
   <!-- ============ THREE THINGS IT DOES THAT POCKETBASE DOESN'T ========= -->
   <section class="wrap section">
     <h2>Three things it does that PocketBase doesn't</h2>
@@ -559,6 +617,70 @@ files copied: 4`}</code></pre>
     padding: 1rem;
   }
 
+  .steps-intro {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 1.5rem;
+    align-items: center;
+    margin-bottom: 2rem;
+  }
+  .steps-art {
+    width: 5rem;
+  }
+  .steps-intro h2 {
+    margin: 0 0 0.5rem;
+  }
+  .steps-intro p {
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    max-width: 34rem;
+    margin: 0;
+  }
+  .steps {
+    list-style: none;
+    counter-reset: step;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1.5rem;
+  }
+  .steps li {
+    counter-increment: step;
+    border-top: 2px solid var(--color-hairline);
+    padding-top: 1rem;
+  }
+  .steps li::before {
+    content: counter(step, decimal-leading-zero);
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--color-crate);
+    margin-bottom: 0.6rem;
+  }
+  .steps h3 {
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    margin: 0 0 0.5rem;
+  }
+  .steps p {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.55;
+    margin: 0 0 0.75rem;
+  }
+  .steps pre {
+    background: var(--color-fog);
+    border-radius: 0.4rem;
+    padding: 0.75rem 0.9rem;
+    font-size: 0.75rem;
+    overflow-x: auto;
+    margin: 0;
+  }
+  :root[data-theme="dark"] .steps pre {
+    background: #101f30;
+  }
+
   .vocab {
     list-style: none;
     margin: -0.75rem 0 2rem;
@@ -725,6 +847,19 @@ files copied: 4`}</code></pre>
     .migrate-art {
       justify-self: start;
       max-width: 14rem;
+    }
+    .steps {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 600px) {
+    .steps,
+    .steps-intro {
+      grid-template-columns: 1fr;
+    }
+    .steps-art {
+      width: 3.5rem;
     }
   }
 </style>
