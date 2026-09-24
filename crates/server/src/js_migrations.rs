@@ -246,9 +246,11 @@ mod tests {
         let applied = run_up(&app).await.expect("run_up");
         assert_eq!(applied, vec![MIGRATION_FILE.to_string()]);
         assert!(app.db().collections.get("widgets").is_some());
-        assert!(cratebase_db::migrations::is_applied(app.db(), MIGRATION_FILE)
-            .await
-            .unwrap());
+        assert!(
+            cratebase_db::migrations::is_applied(app.db(), MIGRATION_FILE)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -268,9 +270,11 @@ mod tests {
         let reverted = run_down(&app, 1).await.expect("run_down");
         assert_eq!(reverted, vec![MIGRATION_FILE.to_string()]);
         assert!(app.db().collections.get("widgets").is_none());
-        assert!(!cratebase_db::migrations::is_applied(app.db(), MIGRATION_FILE)
-            .await
-            .unwrap());
+        assert!(
+            !cratebase_db::migrations::is_applied(app.db(), MIGRATION_FILE)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -304,8 +308,10 @@ mod tests {
             .and_then(|v| v.as_i64())
             .unwrap_or(-1);
         assert_eq!(count, 0, "the record save must have rolled back");
-        assert!(!cratebase_db::migrations::is_applied(app.db(), MIGRATION_FILE)
-            .await
-            .unwrap());
+        assert!(
+            !cratebase_db::migrations::is_applied(app.db(), MIGRATION_FILE)
+                .await
+                .unwrap()
+        );
     }
 }

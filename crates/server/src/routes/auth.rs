@@ -1276,8 +1276,7 @@ async fn request_otp(
             })
             .await?;
 
-            let (otp_id, code) =
-                create_otp(&app, &collection, record.id(), &body.email).await?;
+            let (otp_id, code) = create_otp(&app, &collection, record.id(), &body.email).await?;
 
             let minutes = (collection.auth.otp.duration.max(1) + 59) / 60;
             let _ = send_record_mail(
