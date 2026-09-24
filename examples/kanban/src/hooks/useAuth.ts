@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
+import { useAuth as useCratebaseAuth } from "@cratebase/react";
 import { cb } from "../cratebase";
 
 export interface AuthUser {
@@ -11,32 +12,32 @@ function recordToUser(record: { id: string; email?: unknown } | null): AuthUser 
   return { id: record.id, email: typeof record.email === "string" ? record.email : "" };
 }
 
-/** Mirrors the todo example's auth pattern: `signUp` + `signIn.password`
- * for register, `signIn.password` alone for sign in. The SDK's
- * `AuthStore` persists the token/record to localStorage and fires
- * `onChange`, so a reload while signed in skips straight to the board —
- * this hook just subscribes to that. */
+/** Thin adapter over `@cratebase/react`'s `useAuth`, keeping this app's
+ * own small `{ user, register, login, logout }` shape so
+ * `App.tsx`/`AuthScreen.tsx` don't need to change: `@cratebase/react`'s
+ * `AuthState` carries the raw `RecordModel` plus `isValid`/`isSuperuser`/
+ * `isLoading`, none of which this board's UI needs. Mirrors the todo
+ * example's auth pattern: `signUp` + `signIn.password` for register,
+ * `signIn.password` alone for sign in. */
 export function useAuth() {
-  const [user, setUser] = useState<AuthUser | null>(() => recordToUser(cb.auth.record));
-
-  useEffect(() => {
-    return cb.auth.onChange(() => {
-      setUser(recordToUser(cb.auth.record));
-    });
-  }, []);
+  const { user: record, signIn, signOut } = useCratebaseAuth(cb);
+  const user = recordToUser(record);
 
   const register = useCallback(async (email: string, password: string, passwordConfirm: string) => {
     await cb.auth.signUp({ email, password, passwordConfirm });
   }, []);
 
-  const login = useCallback(async (email: string, password: string) => {
-    await cb.auth.signIn.password({ identity: email, password });
-  }, []);
+  const login = useCallback(
+    async (email: string, password: string) => {
+      await signIn.password({ identity: email, password });
+    },
+    [signIn],
+  );
 
   const logout = useCallback(() => {
     cb.realtime.stop();
-    cb.auth.signOut();
-  }, []);
+    void signOut();
+  }, [signOut]);
 
   return { user, register, login, logout };
 }

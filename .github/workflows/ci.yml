@@ -95,6 +95,17 @@ jobs:
       - run: bun run build
         working-directory: web/email
 
+  sdk:
+    name: SDK (sdk/js/{client,react,extras})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install
+      - run: bun run sdk:check
+
   dependency-scan:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest
@@ -123,8 +134,9 @@ jobs:
           bun-version: 1.4.0
       - run: bun install
       # npm-registry advisory database against the committed `bun.lock`
-      # — covers `web/admin`, `web/email`, and `tests/conformance` (see
-      # the root `package.json` workspace list) in one pass.
+      # — covers `web/admin`, `web/email`, `tests/conformance`, and
+      # `sdk/js/{client,react,extras}` (see the root `package.json`
+      # workspace list) in one pass.
       - run: bun audit --audit-level=high
 
   docker:
