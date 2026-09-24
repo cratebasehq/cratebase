@@ -1,11 +1,34 @@
 import { useMemo, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, FileCode2 } from "lucide-react";
 import type { CollectionModel } from "@cratebase/client";
+import { toast } from "sonner";
+import { cb, superuserAuth } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { buildDocEndpoints, type DocEndpoint, type Method } from "@/lib/api-docs";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+/** `GET /api/typegen` requires a superuser bearer token, which a plain
+ * `<a href>` navigation can't attach — same pattern
+ * `settings/backups-page.tsx`'s `downloadBackup` uses: fetch with the
+ * `Authorization` header, then hand the browser a blob URL to save. */
+async function downloadTypes(): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (superuserAuth.token) headers.authorization = `Bearer ${superuserAuth.token}`;
+  const response = await fetch(cb.buildURL("/api/typegen"), { headers });
+  if (!response.ok) {
+    throw new Error(`download failed with status ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "cratebase-types.d.ts";
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 /**
  * The full-page counterpart to the collapsed preview in the schema editor —
@@ -135,13 +158,25 @@ export function ApiDocsTab({ collection }: { collection: CollectionModel }) {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold text-foreground">API reference — {collection.name}</h2>
-        <p className="text-xs text-muted-foreground">
-          Every endpoint this collection exposes, generated from its own fields and rules. Snippets assume{" "}
-          <code className="font-mono">{'const cb = createClient("{origin}")'}</code> from{" "}
-          <code className="font-mono">@cratebase/client</code>.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold text-foreground">API reference — {collection.name}</h2>
+          <p className="text-xs text-muted-foreground">
+            Every endpoint this collection exposes, generated from its own fields and rules. Snippets assume{" "}
+            <code className="font-mono">{'const cb = createClient("{origin}")'}</code> from{" "}
+            <code className="font-mono">@cratebase/client</code>.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-1.5 text-xs"
+          onClick={() => void downloadTypes().catch((error: unknown) => toast.error(`Download failed: ${error instanceof Error ? error.message : String(error)}`))}
+        >
+          <FileCode2 className="size-3.5" />
+          Download TypeScript types
+        </Button>
       </div>
 
       <Tabs value={lang} onValueChange={(v) => setLang(v as Lang)} className="w-fit gap-0">

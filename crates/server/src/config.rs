@@ -119,6 +119,7 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     // --- dev -----------------------------------------------------------
     "CB_DEV",
     "CB_AUTOMIGRATE",
+    "CB_TYPEGEN_OUT",
 ];
 
 #[derive(Debug, Clone)]
@@ -165,6 +166,12 @@ pub struct Config {
     /// a scripted deploy. `None` means `App::bootstrap` generates a
     /// random one instead (see `crate::routes::setup`).
     pub setup_token: Option<String>,
+    /// `CB_TYPEGEN_OUT`: when set and `dev` is true, `cratebase
+    /// typegen`'s output is rewritten to this path every time a
+    /// collection is created, updated or deleted (see
+    /// `crate::routes::collections::apply`). `None` disables the watch;
+    /// `cratebase typegen` still works as a one-shot regardless.
+    pub typegen_out: Option<String>,
 }
 
 /// A cookie's `SameSite` attribute. Parsed case-insensitively from
@@ -233,6 +240,7 @@ impl Config {
             session_cookie_same_site: SameSite::Lax,
             session_cookie_secure: true,
             setup_token: None,
+            typegen_out: None,
         }
     }
 
@@ -311,6 +319,9 @@ impl Config {
         };
         config.session_cookie_secure = env_bool("SESSION_COOKIE_SECURE", true);
         config.setup_token = std::env::var("CB_SETUP_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty());
+        config.typegen_out = std::env::var("CB_TYPEGEN_OUT")
             .ok()
             .filter(|v| !v.is_empty());
         config

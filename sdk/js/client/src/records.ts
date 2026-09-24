@@ -1,7 +1,14 @@
 /** Typed CRUD over one collection: `GET/POST/PATCH/DELETE
  * /api/collections/{name}/records[/{id}]`. Object-options only — no
  * positional `getList(page, perPage, opts)` alias — so there is exactly
- * one calling convention in this codebase. */
+ * one calling convention in this codebase.
+ *
+ * `TCreate`/`TUpdate` default to `Partial<T>` (today's behavior); pass a
+ * generated `<Name>Create`/`<Name>Update` (from `cratebase typegen`) —
+ * or let `CratebaseClient`'s own `SC`/`SU` type params do it for every
+ * collection at once — to get `create()`/`update()` typed to the
+ * collection's actual input shape (required fields respected, system
+ * fields excluded) instead. */
 
 import type { Transport } from "./transport.js";
 import type { ListOptions, ListResult, RecordModel, SubscribeOptions, ViewOptions, WriteOptions } from "./types.js";
@@ -11,7 +18,11 @@ import type { RealtimeClient } from "./realtime.js";
  * `fullList`. */
 const FULL_LIST_PAGE_SIZE = 500;
 
-export class CollectionService<T extends Record<string, unknown> = RecordModel> {
+export class CollectionService<
+  T extends Record<string, unknown> = RecordModel,
+  TCreate extends Record<string, unknown> = Partial<T>,
+  TUpdate extends Record<string, unknown> = Partial<T>,
+> {
   private readonly transport: Transport;
   private readonly authHeader: () => string | undefined;
   private readonly realtime: RealtimeClient;
@@ -77,7 +88,7 @@ export class CollectionService<T extends Record<string, unknown> = RecordModel> 
     );
   }
 
-  async create(data: Partial<T> | FormData, options: WriteOptions = {}): Promise<T & RecordModel> {
+  async create(data: TCreate | FormData, options: WriteOptions = {}): Promise<T & RecordModel> {
     return this.transport.send<T & RecordModel>(
       this.basePath(),
       {
@@ -90,7 +101,7 @@ export class CollectionService<T extends Record<string, unknown> = RecordModel> 
     );
   }
 
-  async update(id: string, data: Partial<T> | FormData, options: WriteOptions = {}): Promise<T & RecordModel> {
+  async update(id: string, data: TUpdate | FormData, options: WriteOptions = {}): Promise<T & RecordModel> {
     return this.transport.send<T & RecordModel>(
       this.basePath(`/${encodeURIComponent(id)}`),
       {

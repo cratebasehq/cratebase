@@ -38,7 +38,11 @@ state, realtime, plus Cratebase-only extras (vector search, LLM chat, MCP
 tool schemas, presence) with no extra package. Cratebase's API is also
 byte-compatible with PocketBase v0.23+, so the official `pocketbase` SDK
 still works unmodified if a project is already on it — don't hand-roll
-`fetch`/`axios` calls either way. The `cratebase` repo's `examples/`
+`fetch`/`axios` calls either way. For a typed client with no hand-written
+interfaces, run `cratebase typegen` (or `GET /api/typegen`, or the
+dashboard's "Download TypeScript types" button) and pass its
+`Schema`/`SchemaCreate`/`SchemaUpdate` exports to `createClient` — see
+`references/collections-and-sdk.md`. The `cratebase` repo's `examples/`
 directory has six real, runnable reference apps (todo list, kanban, chat,
 webhooks, RAG/vector search, realtime cursors):
 https://github.com/cratebasehq/cratebase/tree/main/examples

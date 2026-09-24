@@ -33,6 +33,7 @@ pub mod settings;
 pub mod setup;
 pub mod sql_console;
 pub mod tool_schema;
+pub mod typegen;
 pub mod utils;
 
 use axum::Router;
@@ -68,6 +69,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(sql_console::router())
         .merge(tool_schema::router())
         .merge(schema::router())
+        .merge(typegen::router())
         .merge(api_keys::router())
         .merge(push::router())
         // MCP lives in its own top-level module (like `realtime`), not

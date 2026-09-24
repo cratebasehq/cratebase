@@ -1,0 +1,26 @@
+---
+title: "Typegen"
+description: "GET /api/typegen — download generated TypeScript types for the current schema."
+sidebar:
+  order: 24
+---
+
+See [Generating TypeScript types](/docs/extending/schema-codegen/) for the full field mapping and
+the `cratebase typegen` CLI / `--dev` `CB_TYPEGEN_OUT` watch this endpoint shares its generator
+with.
+
+### `GET /typegen`
+
+Superuser only. Returns the generated `.d.ts` source as `application/typescript`, with a
+`Content-Disposition: attachment; filename="cratebase-types.d.ts"` header so a browser download (or
+the dashboard's own "Download TypeScript types" button, in the collection API docs tab) saves it
+directly rather than rendering it inline.
+
+```sh
+curl -H "Authorization: Bearer <superuser-jwt>" \
+  http://localhost:8090/api/typegen -o cratebase-types.d.ts
+```
+
+Response (`200`): the raw TypeScript source, not JSON — one `<Name>Record`/`<Name>Create`/
+`<Name>Update` per non-system collection plus `Schema`/`SchemaCreate`/`SchemaUpdate`, exactly as
+`cratebase typegen` writes to a file.

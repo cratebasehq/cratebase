@@ -72,6 +72,28 @@ already has a typed method for it — you'll lose `AuthStore` persistence,
 multipart handling, and realtime reconnect logic for free by using it
 properly.
 
+### Generating TypeScript types: `cratebase typegen`
+
+Don't hand-write `interface PostsRecord {...}` — run `cratebase typegen` (writes
+`./cratebase-types.d.ts`; `-o path` for elsewhere, `-o -` for stdout) against the local data
+directory, or `GET /api/typegen` (superuser only) against a running instance, or turn on the
+dashboard's "Download TypeScript types" button in a collection's API docs tab. All three call the
+same generator, so the output never drifts. It writes one `<Name>Record`/`<Name>Create`/
+`<Name>Update` per collection (relations get a typed `expand?`, selects become string literal
+unions) plus `Schema`/`SchemaCreate`/`SchemaUpdate` — pass those straight to `@cratebase/client`'s
+`createClient`:
+
+```typescript
+import { createClient } from "@cratebase/client";
+import type { Schema, SchemaCreate, SchemaUpdate } from "./cratebase-types.js";
+
+const cb = createClient<Schema, SchemaCreate, SchemaUpdate>(BASE_URL);
+const cards = await cb.collection("cards").getFullList(); // typed CardsRecord[]
+```
+
+Running with `--dev` and `CB_TYPEGEN_OUT=./src/cratebase-types.d.ts` set regenerates that file on
+every collection create/update/delete — no manual re-run needed while iterating on a schema.
+
 ### Init and auth state
 
 ```typescript

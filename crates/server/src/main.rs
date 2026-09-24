@@ -80,6 +80,17 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// Write TypeScript types for the local schema to a `.d.ts` file (or
+    /// stdout with `-o -`) — the same generator `GET /api/typegen` and
+    /// the `--dev` `CB_TYPEGEN_OUT` watch use.
+    Typegen {
+        /// Output file, or `-` for stdout. Default: ./cratebase-types.d.ts.
+        #[arg(short = 'o', long = "out")]
+        out: Option<String>,
+        /// Data directory.
+        #[arg(long = "dir")]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -219,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             migrate_from_pocketbase(dir, pb_dir).await
         }
         Command::Plugin { action, dir } => plugin_cmd(dir, action).await,
+        Command::Typegen { out, dir } => typegen(dir, out).await,
     }
 }
 
@@ -551,6 +563,37 @@ async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()>
     }
 
     app.terminate(false).await;
+    Ok(())
+}
+
+/// Default `cratebase typegen` output path when `-o` is omitted.
+const DEFAULT_TYPEGEN_OUT: &str = "./cratebase-types.d.ts";
+
+/// `cratebase typegen`: write every non-system collection's TypeScript
+/// types to a `.d.ts` file (or stdout, with `-o -`). Reuses `schema
+/// pull`'s collection-loading path (`App::bootstrap` +
+/// `app.db().collections.all()`) and calls the same
+/// `cratebase_server::typegen::generate` that `GET /api/typegen` and the
+/// `--dev` `CB_TYPEGEN_OUT` watch use, so all three surfaces can never
+/// disagree about the generated shape.
+async fn typegen(dir: Option<String>, out: Option<String>) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+    let snapshot = app.db().collections.all();
+    let generated = cratebase_server::typegen::generate(snapshot.all.iter().map(|c| c.as_ref()));
+    app.terminate(false).await;
+
+    match out.as_deref() {
+        Some("-") => print!("{generated}"),
+        Some(path) => {
+            std::fs::write(path, &generated)?;
+            println!("wrote types to {path}");
+        }
+        None => {
+            std::fs::write(DEFAULT_TYPEGEN_OUT, &generated)?;
+            println!("wrote types to {DEFAULT_TYPEGEN_OUT}");
+        }
+    }
     Ok(())
 }
 
