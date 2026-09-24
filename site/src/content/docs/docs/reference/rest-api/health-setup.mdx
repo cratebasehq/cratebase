@@ -15,12 +15,33 @@ Whether the instance still needs its first superuser. `200 { "needsSetup": boole
 The dashboard polls this to decide whether to render the inline setup
 form or the normal login screen (see [First run](/docs/getting-started/first-run/)).
 
-### `POST /setup` — unauthenticated
+### `POST /setup` — unauthenticated, requires the install token
 
 Creates the first `_superusers` record. Body: `email`, `password`
-(min length 8), `passwordConfirm`. `200` with the created record on
-success. **Permanently closed once any superuser exists** — a second
-call is `403` even if the first superuser was later deleted through
-other means, since the check is "does at least one exist now," not "did
-setup ever run." `cratebase superuser create` is the headless
-equivalent for scripted deployments; see [CLI](/docs/reference/cli/).
+(min length 8), `passwordConfirm`, and `token` — the one-time install
+token the server printed to its log at boot, alongside a ready-to-open
+dashboard URL (`http://<host>:<port>/_/login?token=...`). The token can
+also be sent as an `X-Setup-Token` header instead of a body field, and a
+scripted deploy that needs to know it in advance can set it explicitly
+with the `CB_SETUP_TOKEN` environment variable rather than reading the
+log. A missing or wrong token is a `403`, compared in constant time so a
+wrong guess can't be narrowed down through response timing.
+
+`200` with an empty body on success (the dashboard signs in afterward
+through the ordinary `auth-with-password` flow, using the same
+credentials). **Permanently closed once any superuser exists** — a
+second call is `403` even if the first superuser was later deleted
+through other means, since the check is "does at least one exist now,"
+not "did setup ever run." (If *every* superuser is deleted without
+restarting the process, `needsSetup` does flip back to `true`, but the
+token generated at boot doesn't retroactively cover that — `POST /setup`
+stays `403` until the next restart prints a new one.)
+
+Check + insert happen inside one write transaction, so concurrent calls
+can't both slip past the "no superuser yet" check and both create an
+owner — on Postgres this includes taking an advisory lock, since an
+empty table gives nothing else to lock against.
+
+`cratebase superuser create` is the headless equivalent for scripted
+deployments and needs no token — it never goes over HTTP; see
+[CLI](/docs/reference/cli/).

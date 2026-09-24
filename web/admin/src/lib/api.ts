@@ -110,17 +110,20 @@ export async function checkSetupStatus(): Promise<{ needsSetup: boolean }> {
 }
 
 /** `POST /api/setup` — unauthenticated, and only succeeds once: the server
- * rejects it with 403 as soon as any superuser exists. Does not sign in —
- * the caller follows up with {@link authWithPassword} using the same
- * credentials, exactly like a normal login. */
+ * rejects it with 403 as soon as any superuser exists, or if `token`
+ * doesn't match the one it printed to its log at boot (see
+ * `FirstRunSetupForm` in `@/routes/login`, which reads it off the URL).
+ * Does not sign in — the caller follows up with {@link authWithPassword}
+ * using the same credentials, exactly like a normal login. */
 export async function createFirstSuperuser(
   email: string,
   password: string,
   passwordConfirm: string,
+  token: string,
 ): Promise<void> {
   await cb.send<void>("/api/setup", {
     method: "POST",
-    body: { email, password, passwordConfirm },
+    body: { email, password, passwordConfirm, token },
   });
 }
 

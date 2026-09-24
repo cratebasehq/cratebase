@@ -90,7 +90,7 @@ await cb.admin.sql("select count(*) from posts", false); // write=false by defau
 await cb.admin.functions();   // hooksDir, files, routes
 await cb.admin.health();
 await cb.admin.setupStatus(); // { needsSetup }
-await cb.admin.setup({ email, password, passwordConfirm });
+await cb.admin.setup({ email, password, passwordConfirm, token }); // token: the install token from the boot log
 ```
 
 Every `admin.*` call needs a superuser session — sign in on

@@ -294,12 +294,22 @@ function AlternateAuthMethods() {
   return null;
 }
 
+/** The `token` query param `App::init_setup_token` prints in the server
+ * log's setup URL (`/_/login?token=...`), or `null` when this page was
+ * opened without one. Read once: the token is only ever handed out at
+ * boot, so it can't change under a page that's already loaded. */
+function setupTokenFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get("token");
+}
+
 /** Rendered instead of the login form when `GET /api/setup/status` says no
  * superuser exists yet. Creates the first superuser, then signs in with the
  * same credentials exactly like a normal login — `POST /api/setup` never
  * mints a token itself. */
 function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => void }) {
   const navigate = useNavigate();
+  const [token] = useState(setupTokenFromUrl);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
@@ -308,9 +318,25 @@ function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => voi
   const [fields, setFields] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
 
+  // No token, no form: `POST /api/setup` will just reject it, and asking
+  // for an email/password first only to fail on submit is a worse dead
+  // end than saying so up front.
+  if (!token) {
+    return (
+      <>
+        <h1 className="text-3xl font-medium tracking-tight">Create your first superuser</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This Cratebase instance has no superuser yet, but this page has no setup token.
+          Open the link the server printed to its log when it started — it looks like{" "}
+          <span className="font-mono text-foreground">/_/login?token=…</span> — to create one.
+        </p>
+      </>
+    );
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pending) return;
+    if (pending || !token) return;
 
     const problems: Record<string, string> = {};
     if (!email.includes("@")) problems["email"] = "That doesn't look like an email address.";
@@ -323,7 +349,7 @@ function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => voi
     setFields({});
     setPending(true);
     try {
-      await createFirstSuperuser(email.trim(), password, passwordConfirm);
+      await createFirstSuperuser(email.trim(), password, passwordConfirm, token);
       try {
         await authWithPassword(email.trim(), password);
         await navigate({ to: "/" });

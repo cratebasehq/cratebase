@@ -88,6 +88,11 @@ pub struct AppInner {
     /// "nothing has ever been revoked" path.
     revoked_sessions: parking_lot::RwLock<std::collections::HashSet<[u8; 32]>>,
     revoked_len: std::sync::atomic::AtomicUsize,
+    /// The first-run install token `POST /api/setup` requires, set by
+    /// `init_setup_token` during `bootstrap` — `None` once a superuser
+    /// already existed at boot, since that endpoint is closed either way
+    /// and there is nothing worth printing. See that method's doc.
+    setup_token: OnceLock<String>,
 }
 
 #[derive(Clone)]
@@ -156,6 +161,7 @@ impl App {
                 js_routes: std::sync::Mutex::new(Vec::new()),
                 revoked_sessions: parking_lot::RwLock::new(std::collections::HashSet::new()),
                 revoked_len: std::sync::atomic::AtomicUsize::new(0),
+                setup_token: OnceLock::new(),
             }),
         }
     }
@@ -383,6 +389,12 @@ impl App {
         // system collections) and loads the collection store.
         db.bootstrap().await.map_err(AppError::from)?;
         let _ = self.inner.db.set(db);
+
+        // Right after `_superusers` exists (just above) and before
+        // anything else in boot could plausibly race it: see
+        // `init_setup_token`'s own doc for what this is and why it can
+        // just read straight off the plain `Db`, no lock needed.
+        self.init_setup_token().await?;
 
         // Settings: whatever is stored wins; a first boot seeds from env.
         let stored = params::get(self.db(), params::SETTINGS_KEY)
@@ -790,32 +802,21 @@ impl App {
     /// superuser instead goes through the ordinary records API
     /// (`routes::records::create_record`), which requires the caller to
     /// state a role explicitly (see `Field::role_field`'s doc comment).
+    ///
+    /// A single statement straight through `self.db()`, not
+    /// `run_in_transaction` — this is the CLI/test path, which has no
+    /// concurrent caller to race. `routes::setup::create_first_superuser`
+    /// needs the same insert to run *inside* its own write scope instead,
+    /// so the actual work is [`insert_superuser_row`], a free function
+    /// taking any [`Executor`] rather than a method on `self`.
     pub async fn create_superuser(&self, email: &str, password: &str) -> Result<String, AppError> {
-        // Argon2id is deliberately expensive; the async wrapper keeps it
-        // on the blocking pool so a login burst cannot stall the runtime.
-        let hash = cratebase_auth::hash_password_async(password)
-            .await
-            .map_err(|e| AppError::internal(e.to_string()))?;
-        let id = cratebase_core::record_id();
-        let now = cratebase_core::DateTime::now().to_pb_string();
-        self.db()
-            .execute(
-                r#"INSERT INTO "_superusers"
-                   ("id", "email", "password", "tokenKey", "emailVisibility", "verified", "role", "created", "updated")
-                   VALUES ($1, $2, $3, $4, 0, 1, $5, $6, $7)"#,
-                &[
-                    Sql::Text(id.clone()),
-                    Sql::from(email),
-                    Sql::Text(hash),
-                    Sql::Text(new_token_key()),
-                    Sql::Text(cratebase_core::SUPERUSER_ROLE_OWNER.to_string()),
-                    Sql::Text(now.clone()),
-                    Sql::Text(now),
-                ],
-            )
-            .await
-            .map_err(AppError::from)?;
-        Ok(id)
+        insert_superuser_row(
+            self.db(),
+            email,
+            password,
+            cratebase_core::SUPERUSER_ROLE_OWNER,
+        )
+        .await
     }
 
     /// Replace a superuser's password. `tokenKey` is rotated too, which is
@@ -903,6 +904,71 @@ impl App {
         cratebase_auth::sign(&claims, &self.token_signing_key(token_key, &config.secret))
             .map_err(|e| AppError::internal(e.to_string()))
     }
+
+    /// The first-run install token `POST /api/setup` compares against, or
+    /// `None` when either no token was ever generated (a superuser already
+    /// existed at boot, see [`App::init_setup_token`]) or setup has
+    /// already succeeded and there is simply nothing left to protect with
+    /// one.
+    pub fn setup_token(&self) -> Option<&str> {
+        self.inner.setup_token.get().map(String::as_str)
+    }
+
+    /// PocketBase prints a one-time installer URL at boot when no
+    /// superuser exists yet, so whoever is watching the log — not
+    /// whoever hits the endpoint first — gets to claim the instance.
+    /// This generates (or, for a scripted deploy, reads `CB_SETUP_TOKEN`
+    /// off [`Config::setup_token`]) that token and logs the URL.
+    ///
+    /// Skipped entirely when a superuser already exists: nothing calls
+    /// `POST /api/setup` successfully in that case either way (it
+    /// re-checks and 403s), so there is no token to protect and printing
+    /// one would just be log noise on every restart of an already-owned
+    /// instance.
+    ///
+    /// The token lives only in memory and is regenerated every boot —
+    /// deliberately simple, matching PocketBase's own installer token.
+    /// One consequence: if the *last* superuser is later deleted without
+    /// restarting the process, `GET /api/setup/status` reports
+    /// `needsSetup: true` again but this token was never created for
+    /// that state, so `POST /api/setup` stays closed until the next
+    /// restart rather than accepting nothing-compares-equal-to-`None`.
+    async fn init_setup_token(&self) -> Result<(), AppError> {
+        let exists = self
+            .db()
+            .query_one(r#"SELECT 1 AS "x" FROM "_superusers" LIMIT 1"#, &[])
+            .await
+            .map_err(AppError::from)?
+            .is_some();
+        if exists {
+            return Ok(());
+        }
+        let token = self
+            .inner
+            .config
+            .setup_token
+            .clone()
+            .unwrap_or_else(new_setup_token);
+        let _ = self.inner.setup_token.set(token.clone());
+        // `0.0.0.0`/empty binds everything, but is not itself a URL
+        // anyone can open — print the loopback address instead, the way
+        // an operator would actually reach a freshly booted local
+        // instance.
+        let host = &self.inner.config.host;
+        let display_host = if host.is_empty() || host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            host.as_str()
+        };
+        tracing::warn!(
+            url = %format!(
+                "http://{display_host}:{}/_/login?token={token}",
+                self.inner.config.port
+            ),
+            "no superuser exists yet — open this URL to create the first admin account"
+        );
+        Ok(())
+    }
 }
 
 /// A fresh 50-character `tokenKey`, PocketBase's
@@ -912,6 +978,55 @@ pub fn new_token_key() -> String {
         50,
         b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
     )
+}
+
+/// A fresh 40-character setup token (`POST /api/setup`, see
+/// `App::init_setup_token`) — shorter than [`new_token_key`]'s 50 since a
+/// person copies this one out of a log line rather than a database.
+fn new_setup_token() -> String {
+    cratebase_core::ids::random_string(
+        40,
+        b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    )
+}
+
+/// Insert a `_superusers` row through `executor` rather than a fixed
+/// `App::db()`, so a caller that needs the write to run inside its own
+/// transaction/lock — `routes::setup::create_first_superuser`, which must
+/// re-check "does a superuser exist" and insert atomically — can pass a
+/// `TxApp` instead. [`App::create_superuser`] is this same insert, called
+/// with the plain `Db`.
+pub(crate) async fn insert_superuser_row(
+    executor: &dyn Executor,
+    email: &str,
+    password: &str,
+    role: &str,
+) -> Result<String, AppError> {
+    // Argon2id is deliberately expensive; the async wrapper keeps it on
+    // the blocking pool so a login burst cannot stall the runtime.
+    let hash = cratebase_auth::hash_password_async(password)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let id = cratebase_core::record_id();
+    let now = cratebase_core::DateTime::now().to_pb_string();
+    executor
+        .execute(
+            r#"INSERT INTO "_superusers"
+               ("id", "email", "password", "tokenKey", "emailVisibility", "verified", "role", "created", "updated")
+               VALUES ($1, $2, $3, $4, 0, 1, $5, $6, $7)"#,
+            &[
+                Sql::Text(id.clone()),
+                Sql::from(email),
+                Sql::Text(hash),
+                Sql::Text(new_token_key()),
+                Sql::Text(role.to_string()),
+                Sql::Text(now.clone()),
+                Sql::Text(now),
+            ],
+        )
+        .await
+        .map_err(AppError::from)?;
+    Ok(id)
 }
 
 /// The open transaction shared by every [`TxApp`] clone in one

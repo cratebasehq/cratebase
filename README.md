@@ -31,11 +31,15 @@ cratebase serve
 ```
 
 starts listening on `:8090` immediately — SQLite and local-disk storage,
-zero configuration. Open `http://localhost:8090` and the dashboard itself
+zero configuration. The log prints a one-time setup URL like
+`http://127.0.0.1:8090/_/login?token=...` — open it and the dashboard
 shows an inline setup form instead of a login screen: fill in an email and
 password there and that's your superuser account, no CLI step required.
-(Prefer to script it instead? `cratebase superuser create you@example.com
-yourpassword` works too, before or after that first visit.)
+The token in that link is what stands between "found this instance" and
+"owns it," so `POST /api/setup` refuses to work without it. (Prefer to
+script it instead? `cratebase superuser create you@example.com
+yourpassword` works too, before or after that first visit, and needs no
+token — it never goes over HTTP.)
 
 From there, create a collection and start reading/writing records over
 HTTP or from `@cratebase/client`, Cratebase's first-party SDK:

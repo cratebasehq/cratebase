@@ -56,23 +56,37 @@ paths:
   /setup:
     post:
       summary: Create the first superuser (`_superusers` record). Permanently closed once any superuser exists.
+      description: >
+        Requires the one-time install token the server logged at boot
+        (also carried by the dashboard's `/_/login?token=...` URL), either
+        as `token` in the body or as the `X-Setup-Token` header — a
+        scripted deploy can set it explicitly with `CB_SETUP_TOKEN`
+        instead of reading the log. Missing or wrong is a 403, same as a
+        superuser already existing.
       security: []
+      parameters:
+        - name: X-Setup-Token
+          in: header
+          required: false
+          schema: { type: string }
+          description: Alternative to the `token` body field.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [email, password, passwordConfirm]
+              required: [email, password, passwordConfirm, token]
               properties:
                 email: { type: string, format: email }
                 password: { type: string, minLength: 8 }
                 passwordConfirm: { type: string }
+                token: { type: string, description: The install token, if not sent as a header. }
       responses:
         "200": { description: Created, content: { application/json: { schema: { type: object } } } }
         "400": { $ref: "#/components/responses/Error" }
         "403":
-          description: A superuser already exists
+          description: A superuser already exists, or the setup token is missing/invalid
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
