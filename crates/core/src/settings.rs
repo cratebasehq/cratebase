@@ -262,7 +262,7 @@ impl Default for RateLimits {
                 },
             ],
             excluded_ips: vec![],
-            enabled: false,
+            enabled: true,
         }
     }
 }
@@ -472,6 +472,31 @@ mod tests {
         assert_eq!(v["batch"]["maxRequests"], 50);
         assert_eq!(v["logs"]["maxDays"], 5);
         assert_eq!(v["superuserIPs"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn rate_limits_are_enabled_by_default_with_sane_rules() {
+        // A fresh install must actually be rate-limited out of the box —
+        // .env.example and the docs already promise this.
+        let rl = RateLimits::default();
+        assert!(rl.enabled, "rate limiting must be on by default");
+
+        let auth = rl
+            .rules
+            .iter()
+            .find(|r| r.label == "*:auth")
+            .expect("an *:auth rule");
+        // Tight: brute-forcing logins should hurt.
+        assert!(auth.max_requests <= 5);
+
+        let api = rl
+            .rules
+            .iter()
+            .find(|r| r.label == "/api/")
+            .expect("a catch-all /api/ rule");
+        // Generous: normal traffic on any other endpoint must not be
+        // throttled by the safety-net default.
+        assert!(api.max_requests >= 100);
     }
 
     #[test]

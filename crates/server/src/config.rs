@@ -40,7 +40,8 @@
 //! `CB_APP_NAME`, `CB_APP_URL`, `CB_SENDER_NAME`, `CB_SENDER_ADDRESS`,
 //! `SMTP_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
 //! `SMTP_PASSWORD`, `SMTP_TLS`, `S3_ENABLED`, `S3_BUCKET`, `S3_REGION`,
-//! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`.
+//! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`,
+//! `AUTH_RATE_LIMIT_ENABLED` (default `true`).
 
 use std::path::{Path, PathBuf};
 
@@ -252,6 +253,10 @@ impl Config {
     /// when `_params` holds no settings row yet.
     pub fn seed_settings(&self) -> Settings {
         let mut s = Settings::default();
+        // Documented as on-by-default (.env.example, docs/deploy); the
+        // env var only lets an operator opt out (e.g. already
+        // rate-limiting at a reverse proxy in front of Cratebase).
+        s.rate_limits.enabled = env_bool("AUTH_RATE_LIMIT_ENABLED", s.rate_limits.enabled);
         if let Ok(v) = std::env::var("CB_APP_NAME") {
             s.meta.app_name = v;
         }
