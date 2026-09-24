@@ -11,3 +11,30 @@ Every collection gets a generic CRUD surface:
 the same response, following PocketBase's own dot-notation for nested
 relations. Errors follow a consistent shape across every endpoint — see
 [Error responses](/docs/reference/error-responses/).
+
+### Footgun: `expand` silently drops fields the viewer can't see
+
+`expand` re-runs the target collection's own `viewRule` for the
+requesting user before including it — matching PocketBase. If that rule
+says no, the expanded field is just **absent** from the response, not an
+error. The built-in `users` collection's default `viewRule` is
+`id = @request.auth.id` (self-service only), so `expand=someUserRelation`
+in an app where users need to see *each other* (teammates, assignees,
+comment authors, presence, ...) will silently omit `expand.<field>` for
+every user except the caller themselves — easy to mistake for a missing
+relation or a bug rather than a rule denying the read.
+
+Fix by relaxing the target collection's `viewRule` to whatever "who can
+see this" actually means for your app, e.g. any signed-in user, or
+members of a shared team:
+
+```json
+{ "viewRule": "@request.auth.id != \"\"" }
+```
+
+or, scoped to a shared team (see `examples/team-board/scripts/gen-schema.ts`
+for a full working example):
+
+```json
+{ "viewRule": "id = @request.auth.id || @collection._team_members.userRef ?= @request.auth.id" }
+```

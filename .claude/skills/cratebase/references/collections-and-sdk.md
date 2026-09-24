@@ -145,6 +145,20 @@ for server-paginated views. Both accept the same `filter`/`sort` options
 as the raw `?filter=`/`?sort=` query params — see
 `references/filter-syntax.md` for what's legal in `filter`.
 
+**Footgun: `expand` silently drops fields the viewer's rules deny.**
+`expand=someRelation` re-checks the *target* collection's own `viewRule`
+per record; if it says no for the current user, that record's expand is
+just missing from the response — no error. The built-in `users`
+collection defaults to `viewRule: "id = @request.auth.id"` (self-service
+only), so `expand`ing a relation to another user (assignee, comment
+author, teammate, ...) comes back empty for everyone but the record
+owner unless you relax `users`' `viewRule`, e.g. to any signed-in user
+(`@request.auth.id != ""`) or to members of a shared team
+(`id = @request.auth.id || @collection._team_members.userRef ?= @request.auth.id`,
+see `examples/team-board/scripts/gen-schema.ts`). This matches
+PocketBase's own expand behavior — not a Cratebase bug, just easy to
+mistake for one.
+
 ### Realtime
 
 ```javascript
