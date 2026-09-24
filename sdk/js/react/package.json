@@ -1,7 +1,7 @@
 {
   "name": "@cratebase/react",
   "version": "0.1.0",
-  "description": "First-party React hooks for @cratebase/client: useAuth, useRecords, useRecord, and useSubscription. Bolts onto an existing CratebaseClient instance rather than replacing it.",
+  "description": "First-party React hooks for @cratebase/client: a CratebaseProvider/useCratebase context, typed useRecords/useRecord/useInfiniteRecords/useMutation/useAuth/usePresence/useSubscription, and a createCratebaseHooks<Schema>() factory for collection-name-to-record-type inference.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -27,7 +27,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.typecheck.json",
+    "test": "bun test"
   },
   "peerDependencies": {
     "@cratebase/client": "^0.1.0",
@@ -35,8 +36,13 @@
   },
   "devDependencies": {
     "@cratebase/client": "^0.1.0",
+    "@happy-dom/global-registrator": "^20.14.5",
+    "@testing-library/react": "^16.3.3",
     "@types/react": "^19.0.0",
-    "react": "^19.0.0",
+    "@types/react-dom": "^19.3.0",
+    "bun-types": "^1.4.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "typescript": "~6.0.2"
   }
 }
