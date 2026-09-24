@@ -1276,24 +1276,8 @@ async fn request_otp(
             })
             .await?;
 
-            let code = cratebase_auth::generate_otp(collection.auth.otp.length.max(0) as usize);
-            let otps = app
-                .db()
-                .collections
-                .get("_otps")
-                .expect("_otps is a default system collection");
-            let mut row = Record::new(otps.clone());
-            row.set("collectionRef", Value::String(collection.id.clone()));
-            row.set("recordRef", Value::String(record.id().to_string()));
-            // A non-blank placeholder so `records::create`'s required-field
-            // check passes; overwritten below with the real (SHA-256, not
-            // Argon2 — see `cratebase_auth::hash_otp`) hash.
-            row.set("password", Value::String(code.clone()));
-            row.set("sentTo", Value::String(body.email.clone()));
-            records::create(app.db(), &app.db().collections, &mut row)
-                .await
-                .map_err(|e| ApiError(e.into()))?;
-            overwrite_otp_hash(&app, &otps, row.id(), &code).await?;
+            let (otp_id, code) =
+                create_otp(&app, &collection, record.id(), &body.email).await?;
 
             let minutes = (collection.auth.otp.duration.max(1) + 59) / 60;
             let _ = send_record_mail(
@@ -1303,14 +1287,14 @@ async fn request_otp(
                 &collection.auth.otp.email_template,
                 &[
                     ("OTP", code.as_str()),
-                    ("OTP_ID", row.id()),
+                    ("OTP_ID", otp_id.as_str()),
                     ("EXPIRES_IN", format!("{minutes} minutes").as_str()),
                 ],
                 &body.email,
                 |h| &h.on_mailer_record_otp_send,
             )
             .await;
-            row.id().to_string()
+            otp_id
         }
         // No account at this address: still hand back a plausible id in
         // the same shape, so the response never leaks whether the
@@ -1318,6 +1302,37 @@ async fn request_otp(
         None => cratebase_core::ids::record_id(),
     };
     Ok(Json(json!({ "otpId": otp_id })))
+}
+
+/// Generate and persist an OTP for `record_id` in `collection`, returning
+/// `(otp_id, code)`. Shared by `POST .../request-otp` above and
+/// `cratebase superuser otp` (`main.rs`), which persists directly — like
+/// `App::create_superuser`, bypassing hooks and mail — so the code it
+/// prints authenticates through the ordinary `auth-with-otp` endpoint the
+/// same way a mailed one would.
+pub async fn create_otp(
+    app: &App,
+    collection: &Arc<Collection>,
+    record_id: &str,
+    sent_to: &str,
+) -> Result<(String, String), AppError> {
+    let code = cratebase_auth::generate_otp(collection.auth.otp.length.max(0) as usize);
+    let otps = app
+        .db()
+        .collections
+        .get("_otps")
+        .expect("_otps is a default system collection");
+    let mut row = Record::new(otps.clone());
+    row.set("collectionRef", Value::String(collection.id.clone()));
+    row.set("recordRef", Value::String(record_id.to_string()));
+    // A non-blank placeholder so `records::create`'s required-field check
+    // passes; overwritten below with the real (SHA-256, not Argon2 — see
+    // `cratebase_auth::hash_otp`) hash.
+    row.set("password", Value::String(code.clone()));
+    row.set("sentTo", Value::String(sent_to.to_string()));
+    records::create(app.db(), &app.db().collections, &mut row).await?;
+    overwrite_otp_hash(app, &otps, row.id(), &code).await?;
+    Ok((row.id().to_string(), code))
 }
 
 /// Overwrites `_otps.password` with [`cratebase_auth::hash_otp`]'s fast
@@ -1329,7 +1344,7 @@ async fn overwrite_otp_hash(
     otps: &Arc<Collection>,
     id: &str,
     code: &str,
-) -> ApiResult<()> {
+) -> Result<(), AppError> {
     let sql = format!(
         "UPDATE {} SET \"password\" = $1 WHERE \"id\" = $2",
         cratebase_db::quote_ident(otps.table_name())
@@ -1344,7 +1359,7 @@ async fn overwrite_otp_hash(
         )
         .await
         .map(|_| ())
-        .map_err(|e| ApiError(AppError::from(e)))
+        .map_err(AppError::from)
 }
 
 #[derive(Debug, Default, Deserialize)]

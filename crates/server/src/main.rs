@@ -163,7 +163,12 @@ enum SuperuserAction {
     Upsert { email: String, password: String },
     /// Delete a superuser.
     Delete { email: String },
-    /// Print a one-time login URL for a superuser.
+    /// Print a one-time OTP code (and its id) for a superuser, for when
+    /// the dashboard is unreachable. Redeem it exactly like a mailed one:
+    /// `POST /api/collections/_superusers/auth-with-otp` with the printed
+    /// `otpId`/`password` — which only succeeds if OTP auth is enabled on
+    /// `_superusers` (`PATCH .../collections/_superusers` with
+    /// `{"otp": {"enabled": true}}`).
     Otp { email: String },
 }
 
@@ -363,14 +368,22 @@ async fn superuser(dir: Option<String>, action: SuperuserAction) -> anyhow::Resu
             format!("deleted superuser {email}")
         }
         SuperuserAction::Otp { email } => {
-            let Some(_) = app.find_superuser_by_email(&email).await? else {
+            let Some(row) = app.find_superuser_by_email(&email).await? else {
                 anyhow::bail!("no superuser with email {email}");
             };
-            let code = cratebase_auth::generate_otp(cratebase_auth::DEFAULT_OTP_LENGTH);
-            // Persist the code in `_otps` through the auth service so
-            // `auth-with-otp` accepts it. Printing it is already useful for
-            // an operator locked out of the dashboard.
-            format!("one-time code for {email}: {code}")
+            let record_id = row.get_str("id").unwrap_or_default().to_string();
+            let superusers = app
+                .db()
+                .collections
+                .get(cratebase_core::SUPERUSERS_COLLECTION)
+                .expect("_superusers is a default system collection");
+            // Same path `POST .../request-otp` uses, so the code this
+            // prints redeems through the ordinary `auth-with-otp` endpoint.
+            let (otp_id, code) =
+                cratebase_server::routes::auth::create_otp(&app, &superusers, &record_id, &email)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            format!("otpId: {otp_id}\ncode: {code}")
         }
     };
 

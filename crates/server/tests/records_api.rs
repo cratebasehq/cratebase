@@ -867,6 +867,67 @@ async fn disabled_password_auth_is_a_403_not_a_400() {
     );
 }
 
+/// `cratebase superuser otp` persists a code through
+/// `routes::auth::create_otp` — the exact function `POST .../request-otp`
+/// calls — rather than only printing one, so the code it prints must
+/// authenticate through the ordinary `auth-with-otp` endpoint.
+#[tokio::test]
+async fn a_cli_generated_superuser_otp_authenticates_via_auth_with_otp() {
+    let harness = Harness::new().await;
+    // OTP auth is disabled by default on every auth collection, including
+    // `_superusers` — same one-time setup an operator locked out of the
+    // dashboard would still need to have done beforehand.
+    let (status, _) = harness
+        .admin(
+            "PATCH",
+            "/api/collections/_superusers",
+            Some(json!({"otp": {"enabled": true}})),
+        )
+        .await;
+    assert_eq!(status, 200);
+
+    let superusers = harness.app.db().collections.get("_superusers").unwrap();
+    let row = harness
+        .app
+        .find_superuser_by_email(SUPERUSER_EMAIL)
+        .await
+        .unwrap()
+        .unwrap();
+    let record_id = row.get_str("id").unwrap().to_string();
+
+    let (otp_id, code) = cratebase_server::routes::auth::create_otp(
+        &harness.app,
+        &superusers,
+        &record_id,
+        SUPERUSER_EMAIL,
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_superusers/auth-with-otp",
+            Some(json!({"otpId": otp_id, "password": code})),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["record"]["email"], SUPERUSER_EMAIL);
+    assert!(body["token"].as_str().is_some_and(|t| !t.is_empty()));
+
+    // Single-use: the same otpId/code cannot authenticate twice.
+    let (status, body) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_superusers/auth-with-otp",
+            Some(json!({"otpId": otp_id, "password": code})),
+            None,
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+}
+
 #[tokio::test]
 async fn a_password_change_invalidates_existing_sessions() {
     let harness = Harness::new().await;
