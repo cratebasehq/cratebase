@@ -46,8 +46,11 @@
 //! `AUTH_RATE_LIMIT_ENABLED` (default `true`).
 //!
 //! A few more env vars live outside this file but are just as real:
-//! `DATABASE_MAX_CONNECTIONS` (SQLite reader pool size, `crates/db/src/sqlite.rs`)
-//! and `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_API_KEY` (`crate::embeddings`).
+//! `DATABASE_MAX_CONNECTIONS` (SQLite reader pool size, `crates/db/src/sqlite.rs`),
+//! `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_API_KEY` (`crate::embeddings`), and
+//! `CB_PG_DUMP_PATH` / `CB_PG_RESTORE_PATH` (override the `PATH` search
+//! for `pg_dump`/`pg_restore` when backing up or restoring a Postgres
+//! main database, `crates/db/src/pg_tools.rs`).
 //! [`KNOWN_ENV_VARS`] below is the canonical, exhaustive list across all of
 //! these — it's what keeps `.env.example` from drifting (see
 //! `crates/server/tests/env_example.rs`).
@@ -82,6 +85,8 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     // --- database ------------------------------------------------------
     "DATABASE_MAX_CONNECTIONS", // crates/db/src/sqlite.rs
     "DB_POOL_SIZE",
+    "CB_PG_DUMP_PATH",    // crates/db/src/pg_tools.rs
+    "CB_PG_RESTORE_PATH", // crates/db/src/pg_tools.rs
     // --- auth / sessions -------------------------------------------
     "CB_ENCRYPTION",
     "CB_SECRET",
@@ -119,6 +124,7 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     // --- dev -----------------------------------------------------------
     "CB_DEV",
     "CB_AUTOMIGRATE",
+    "CB_TYPEGEN_OUT",
 ];
 
 #[derive(Debug, Clone)]
@@ -165,6 +171,12 @@ pub struct Config {
     /// a scripted deploy. `None` means `App::bootstrap` generates a
     /// random one instead (see `crate::routes::setup`).
     pub setup_token: Option<String>,
+    /// `CB_TYPEGEN_OUT`: when set and `dev` is true, `cratebase
+    /// typegen`'s output is rewritten to this path every time a
+    /// collection is created, updated or deleted (see
+    /// `crate::routes::collections::apply`). `None` disables the watch;
+    /// `cratebase typegen` still works as a one-shot regardless.
+    pub typegen_out: Option<String>,
 }
 
 /// A cookie's `SameSite` attribute. Parsed case-insensitively from
@@ -233,6 +245,7 @@ impl Config {
             session_cookie_same_site: SameSite::Lax,
             session_cookie_secure: true,
             setup_token: None,
+            typegen_out: None,
         }
     }
 
@@ -311,6 +324,9 @@ impl Config {
         };
         config.session_cookie_secure = env_bool("SESSION_COOKIE_SECURE", true);
         config.setup_token = std::env::var("CB_SETUP_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty());
+        config.typegen_out = std::env::var("CB_TYPEGEN_OUT")
             .ok()
             .filter(|v| !v.is_empty());
         config

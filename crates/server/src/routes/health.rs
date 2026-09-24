@@ -53,7 +53,17 @@ async fn health(
         let settings = app.settings();
         data.insert(
             "canBackup".into(),
-            json!(app.backups_storage().is_ok() && app.config().sqlite_main_path().is_some()),
+            // SQLite needs a real on-disk main database file
+            // (`sqlite::memory:`, test-only, has none to snapshot);
+            // Postgres backs up via `pg_dump` regardless (a missing
+            // `pg_dump` binary is reported per-request instead, since
+            // that's a deployment detail worth its own specific error
+            // rather than hiding the whole Backups page over it).
+            json!(
+                app.backups_storage().is_ok()
+                    && (app.config().sqlite_main_path().is_some()
+                        || app.db().backend.is_postgres())
+            ),
         );
         data.insert(
             "realIP".into(),

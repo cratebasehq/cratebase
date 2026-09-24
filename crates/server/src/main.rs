@@ -80,6 +80,17 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// Write TypeScript types for the local schema to a `.d.ts` file (or
+    /// stdout with `-o -`) — the same generator `GET /api/typegen` and
+    /// the `--dev` `CB_TYPEGEN_OUT` watch use.
+    Typegen {
+        /// Output file, or `-` for stdout. Default: ./cratebase-types.d.ts.
+        #[arg(short = 'o', long = "out")]
+        out: Option<String>,
+        /// Data directory.
+        #[arg(long = "dir")]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -145,12 +156,14 @@ struct ServeArgs {
     /// (default true).
     #[arg(long = "session-tracking")]
     session_tracking: Option<bool>,
-    /// Verbose logging and hook reloading.
-    #[arg(long = "dev", default_value_t = false)]
-    dev: bool,
-    /// Write a migration file on every collection change.
-    #[arg(long = "automigrate", default_value_t = true, action = clap::ArgAction::Set)]
-    automigrate: bool,
+    /// Verbose logging and hook reloading. Unset falls back to `CB_DEV`
+    /// (default `false`).
+    #[arg(long = "dev", action = clap::ArgAction::SetTrue)]
+    dev: Option<bool>,
+    /// Write a migration file on every collection change. Unset falls
+    /// back to `CB_AUTOMIGRATE` (default `true`).
+    #[arg(long = "automigrate", action = clap::ArgAction::Set)]
+    automigrate: Option<bool>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -163,7 +176,12 @@ enum SuperuserAction {
     Upsert { email: String, password: String },
     /// Delete a superuser.
     Delete { email: String },
-    /// Print a one-time login URL for a superuser.
+    /// Print a one-time OTP code (and its id) for a superuser, for when
+    /// the dashboard is unreachable. Redeem it exactly like a mailed one:
+    /// `POST /api/collections/_superusers/auth-with-otp` with the printed
+    /// `otpId`/`password` — which only succeeds if OTP auth is enabled on
+    /// `_superusers` (`PATCH .../collections/_superusers` with
+    /// `{"otp": {"enabled": true}}`).
     Otp { email: String },
 }
 
@@ -171,7 +189,9 @@ enum SuperuserAction {
 enum MigrateAction {
     /// Apply every unapplied migration.
     Up,
-    /// Revert the last `n` migrations (default 1).
+    /// Revert the last `n` migrations (default 1) from each of the core
+    /// and JS (`pb_migrations`) histories independently — they keep
+    /// separate ledgers, so `n` is not a count across a merged history.
     Down { n: Option<usize> },
     /// Scaffold a new migration file.
     Create { name: String },
@@ -197,7 +217,7 @@ enum PluginAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    init_tracing(matches!(&cli.command, Command::Serve(a) if a.dev));
+    init_tracing(matches!(&cli.command, Command::Serve(a) if a.dev == Some(true)));
 
     match cli.command {
         Command::Serve(args) => serve(args).await,
@@ -210,6 +230,7 @@ async fn main() -> anyhow::Result<()> {
             migrate_from_pocketbase(dir, pb_dir).await
         }
         Command::Plugin { action, dir } => plugin_cmd(dir, action).await,
+        Command::Typegen { out, dir } => typegen(dir, out).await,
     }
 }
 
@@ -267,8 +288,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         config.session_tracking = v;
     }
     config.public_dir = args.public_dir;
-    config.dev = args.dev;
-    config.automigrate = args.automigrate;
+    // `config` was already seeded from `CB_DEV`/`CB_AUTOMIGRATE` by
+    // `config_for` above; only override it when the flag was actually
+    // passed, so an unset flag lets the environment decide instead of
+    // silently reasserting each var's own hard-coded default.
+    if let Some(v) = args.dev {
+        config.dev = v;
+    }
+    if let Some(v) = args.automigrate {
+        config.automigrate = v;
+    }
 
     let app = App::new(config);
     cratebase_server::plugin_wasm::discover_and_register(&app)?;
@@ -363,14 +392,22 @@ async fn superuser(dir: Option<String>, action: SuperuserAction) -> anyhow::Resu
             format!("deleted superuser {email}")
         }
         SuperuserAction::Otp { email } => {
-            let Some(_) = app.find_superuser_by_email(&email).await? else {
+            let Some(row) = app.find_superuser_by_email(&email).await? else {
                 anyhow::bail!("no superuser with email {email}");
             };
-            let code = cratebase_auth::generate_otp(cratebase_auth::DEFAULT_OTP_LENGTH);
-            // Persist the code in `_otps` through the auth service so
-            // `auth-with-otp` accepts it. Printing it is already useful for
-            // an operator locked out of the dashboard.
-            format!("one-time code for {email}: {code}")
+            let record_id = row.get_str("id").unwrap_or_default().to_string();
+            let superusers = app
+                .db()
+                .collections
+                .get(cratebase_core::SUPERUSERS_COLLECTION)
+                .expect("_superusers is a default system collection");
+            // Same path `POST .../request-otp` uses, so the code this
+            // prints redeems through the ordinary `auth-with-otp` endpoint.
+            let (otp_id, code) =
+                cratebase_server::routes::auth::create_otp(&app, &superusers, &record_id, &email)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            format!("otpId: {otp_id}\ncode: {code}")
         }
     };
 
@@ -396,7 +433,8 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
 
     match action {
         MigrateAction::Up => {
-            let applied = runner.up(app.db()).await?;
+            let mut applied = runner.up(app.db()).await?;
+            applied.extend(cratebase_server::js_migrations::run_up(&app).await?);
             if applied.is_empty() {
                 println!("no new migrations to apply");
             } else {
@@ -406,7 +444,14 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             }
         }
         MigrateAction::Down { n } => {
-            for file in runner.down(app.db(), n.unwrap_or(1)).await? {
+            let n = n.unwrap_or(1);
+            // Core and JS migrations keep independent ledgers/histories
+            // (see `js_migrations`'s module doc), so `n` applies to each
+            // separately rather than to some merged, cross-source order.
+            for file in cratebase_server::js_migrations::run_down(&app, n).await? {
+                println!("reverted {file}");
+            }
+            for file in runner.down(app.db(), n).await? {
                 println!("reverted {file}");
             }
         }
@@ -415,13 +460,14 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             println!("created {}", path.display());
         }
         MigrateAction::Collections => {
-            // Snapshot the collection set into a JS migration. The JSON
-            // export exists now (`Collection::to_json`); what is missing
-            // is the JS migration file format the runtime reads.
-            anyhow::bail!("`migrate collections` needs the JS migration runtime (W7)");
+            let path = cratebase_server::js_migrations::write_collections_snapshot(&app)?;
+            println!("created {}", path.display());
         }
         MigrateAction::HistorySync => {
-            let known: Vec<String> = runner.files().map(str::to_string).collect();
+            let mut known: Vec<String> = runner.files().map(str::to_string).collect();
+            known.extend(cratebase_server::js_migrations::known_migration_files(
+                &app,
+            )?);
             let removed = cratebase_db::migrations::history_sync(app.db(), &known).await?;
             println!("pruned {} stale ledger row(s)", removed.len());
             for file in removed {
@@ -517,6 +563,37 @@ async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()>
     }
 
     app.terminate(false).await;
+    Ok(())
+}
+
+/// Default `cratebase typegen` output path when `-o` is omitted.
+const DEFAULT_TYPEGEN_OUT: &str = "./cratebase-types.d.ts";
+
+/// `cratebase typegen`: write every non-system collection's TypeScript
+/// types to a `.d.ts` file (or stdout, with `-o -`). Reuses `schema
+/// pull`'s collection-loading path (`App::bootstrap` +
+/// `app.db().collections.all()`) and calls the same
+/// `cratebase_server::typegen::generate` that `GET /api/typegen` and the
+/// `--dev` `CB_TYPEGEN_OUT` watch use, so all three surfaces can never
+/// disagree about the generated shape.
+async fn typegen(dir: Option<String>, out: Option<String>) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+    let snapshot = app.db().collections.all();
+    let generated = cratebase_server::typegen::generate(snapshot.all.iter().map(|c| c.as_ref()));
+    app.terminate(false).await;
+
+    match out.as_deref() {
+        Some("-") => print!("{generated}"),
+        Some(path) => {
+            std::fs::write(path, &generated)?;
+            println!("wrote types to {path}");
+        }
+        None => {
+            std::fs::write(DEFAULT_TYPEGEN_OUT, &generated)?;
+            println!("wrote types to {DEFAULT_TYPEGEN_OUT}");
+        }
+    }
     Ok(())
 }
 

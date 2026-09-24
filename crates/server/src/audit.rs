@@ -79,7 +79,13 @@ pub fn bind_hooks(app: &App) {
 /// only safe to call *outside* an already-open one — see
 /// [`write_in_tx`] for the batch write path, which is never outside
 /// one.
-async fn write(
+///
+/// `pub(crate)` so a system-initiated action with no caller behind it
+/// (`actor: None`) — `crate::routes::backups::create_scheduled`'s cron
+/// job, most notably — can log itself the same way every request-driven
+/// handler in this module does, without going through the `*Request`
+/// hook machinery those handlers use to get at an [`Auth`].
+pub(crate) async fn write(
     app: &App,
     actor: Option<&str>,
     action: &str,

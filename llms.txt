@@ -80,6 +80,9 @@ source. Everything referenced below is real and current, not aspirational.
   native-style lifecycle hooks (`onRecordCreate`, ...) and mount extra
   root-level HTTP routes via `routerAdd` — see
   [ARCHITECTURE.md](./ARCHITECTURE.md#extending-with-javascript-cratesjsvm).
+- `GET /typegen` (superuser only) — generated TypeScript types for the
+  current schema, the same generator `cratebase typegen` (CLI) and the
+  `--dev` `CB_TYPEGEN_OUT` watch use.
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.
@@ -95,6 +98,14 @@ official `npm install pocketbase` SDK (or any of PocketBase's other
 official SDKs) still works unchanged against it — persisted `authStore`,
 multipart file upload helpers, and realtime subscriptions included. See
 the [pocketbase package](https://www.npmjs.com/package/pocketbase).
+
+Run `cratebase typegen` (or `GET /api/typegen`, or run with `--dev` and
+`CB_TYPEGEN_OUT` set to regenerate on every schema change) to get a
+`.d.ts` with one `<Name>Record`/`<Name>Create`/`<Name>Update` per
+collection plus `Schema`/`SchemaCreate`/`SchemaUpdate` — pass those to
+`createClient<Schema, SchemaCreate, SchemaUpdate>()` for a fully typed
+client with no hand-written types and no separate build step. See
+[docs/extending/schema-codegen.mdx](./site/src/content/docs/docs/extending/schema-codegen.mdx).
 
 ## Source map
 

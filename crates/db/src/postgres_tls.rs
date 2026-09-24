@@ -58,6 +58,22 @@ impl SslMode {
     /// the `rustls::ClientConfig` built by [`client_config`], so
     /// collapsing the three "verify" levels onto `Require` loses
     /// nothing.
+    /// The libpq spelling of this mode, for `PGSSLMODE` when shelling out
+    /// to `pg_dump`/`pg_restore` (`crate::pg_tools`) — unlike
+    /// [`driver_mode`](SslMode::driver_mode), which collapses onto the
+    /// three values `tokio_postgres::Config` understands, libpq's own
+    /// tools take the full six-value vocabulary directly.
+    pub(crate) fn libpq_value(self) -> &'static str {
+        match self {
+            SslMode::Disable => "disable",
+            SslMode::Allow => "allow",
+            SslMode::Prefer => "prefer",
+            SslMode::Require => "require",
+            SslMode::VerifyCa => "verify-ca",
+            SslMode::VerifyFull => "verify-full",
+        }
+    }
+
     pub(crate) fn driver_mode(self) -> tokio_postgres::config::SslMode {
         use tokio_postgres::config::SslMode as Driver;
         match self {
@@ -377,6 +393,24 @@ mod tests {
             SslMode::VerifyFull,
         ] {
             assert!(client_config(mode).unwrap().is_some(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn libpq_value_round_trips_every_variant_for_pg_dump_pg_restore() {
+        // `crate::pg_tools` shells out to `pg_dump`/`pg_restore` and needs
+        // the *original* six-value `sslmode` (not `driver_mode`'s
+        // collapsed three) to set `PGSSLMODE` — libpq's own tools
+        // understand the full vocabulary directly.
+        for (mode, expected) in [
+            (SslMode::Disable, "disable"),
+            (SslMode::Allow, "allow"),
+            (SslMode::Prefer, "prefer"),
+            (SslMode::Require, "require"),
+            (SslMode::VerifyCa, "verify-ca"),
+            (SslMode::VerifyFull, "verify-full"),
+        ] {
+            assert_eq!(mode.libpq_value(), expected, "{mode:?}");
         }
     }
 

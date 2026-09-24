@@ -1,0 +1,254 @@
+---
+title: "React hooks"
+description: "@cratebase/react: a CratebaseProvider/useCratebase context, typed useRecords/useRecord/useMutation/useAuth/usePresence, and createCratebaseHooks<Schema>() for collection-name inference."
+sidebar:
+  order: 9
+---
+
+`@cratebase/react` is a thin, optional layer on top of
+[`@cratebase/client`](/docs/sdk/overview/): it doesn't wrap or replace
+anything, it exposes the client's existing primitives
+(`AuthStore.onChange`, `CollectionService.subscribe`, `presence.track`)
+as idiomatic hooks so a React app doesn't hand-roll the same
+`useEffect`/subscribe/unsubscribe/id-merge pattern on every screen.
+
+```sh
+bun add @cratebase/client @cratebase/react react
+```
+
+## Two ways to use these hooks
+
+**Explicit client** — no provider needed, every hook takes a
+`CratebaseClient` as its first argument:
+
+```tsx
+import { useRecords } from "@cratebase/react";
+import { cb } from "./cratebase";
+
+function PostList() {
+  const { records: posts, loading } = useRecords(cb, "posts", { sort: "-created" });
+  // ...
+}
+```
+
+**`CratebaseProvider`** — wrap your app once, then call the same hooks
+without a client:
+
+```tsx
+import { CratebaseProvider } from "@cratebase/react";
+import { cb } from "./cratebase";
+
+export function App({ children }: { children: React.ReactNode }) {
+  return <CratebaseProvider client={cb}>{children}</CratebaseProvider>;
+}
+```
+
+```tsx
+import { useRecords } from "@cratebase/react";
+
+function PostList() {
+  const { records: posts, loading } = useRecords("posts", { sort: "-created" });
+  // ...
+}
+```
+
+Both styles work in the same app — a hook resolves its client from
+whichever it's given (context is only read as a fallback), so migrating
+between them is never an all-or-nothing change.
+
+:::note[Next.js App Router]
+`CratebaseProvider` (and every hook here) uses React context and
+`useSyncExternalStore`, so the component that renders it — and every
+component that calls a hook from this package — needs a `"use client"`
+boundary. A common pattern is a small `<Providers>` client component
+that wraps `CratebaseProvider` and is itself rendered from a server
+layout.
+:::
+
+## Typed collections: `createCratebaseHooks<Schema>()`
+
+Generate a `Schema` with
+[`@cratebase/schema-codegen`](/docs/extending/schema-codegen/) (the same
+one `createClient<Schema>()` takes — see
+[TypeScript SDK — overview](/docs/sdk/overview/#typed-collections)), and
+pass it to `createCratebaseHooks` once, in a shared module, for
+collection-name-to-record-type inference on every hook:
+
+```ts
+// cratebase.ts
+import { createClient } from "@cratebase/client";
+import { createCratebaseHooks } from "@cratebase/react";
+import type { Schema } from "./cratebase-types";
+
+export const cb = createClient<Schema>("http://localhost:8090");
+export const { useRecords, useRecord, useInfiniteRecords, useMutation, useAuth, useCratebase } =
+  createCratebaseHooks<Schema>();
+```
+
+```tsx
+import { useRecords } from "./cratebase";
+
+function PostList() {
+  // `posts` is typed from `Schema["posts"]` — no manual type argument.
+  const { records: posts } = useRecords("posts", { sort: "-created" });
+}
+```
+
+The hooks `createCratebaseHooks` returns still read their client from
+`CratebaseProvider` context (or accept one explicitly, same as always) —
+this only narrows *types*.
+
+A factory rather than
+[module augmentation](https://www.typescriptlang.org/docs/handbook/declaration-merging.html):
+augmenting a global interface only supports one schema per process,
+which is awkward for tests (a schema fixture would leak across test
+files) and for any app talking to more than one Cratebase client/schema.
+`createCratebaseHooks<Schema>()` keeps the schema an ordinary type
+parameter, at the cost of one extra call site — the same trade
+`zustand`'s and `jotai`'s typed-store factories make.
+
+:::caution[`type`, not `interface`]
+`Schema` must be declared with `type Schema = { ... }`, not `interface
+Schema { ... }`. TypeScript only infers an object type's implicit index
+signature — what lets it satisfy `createCratebaseHooks`'/`createClient`'s
+`Record<string, Record<string, unknown>>` constraint — for a `type`
+alias, never for a named `interface`; the two are otherwise
+interchangeable here.
+:::
+
+## `useRecords` — live list
+
+```tsx
+const { records, loading, error, refresh, page, perPage, totalItems, totalPages } = useRecords(cb, "posts", {
+  filter: "published = true",
+  sort: "-created",
+  expand: "author",
+  page: 1,       // omit page/perPage for a `fullList` fetch instead
+  perPage: 20,
+  realtime: true, // default; refetches on every matching realtime event
+});
+```
+
+Without `page`/`perPage`, fetches every matching record with `fullList`
+(`page`/`perPage`/`totalItems`/`totalPages` still come back, describing
+that single implicit page). With either given, fetches one page with
+`list()` instead.
+
+`realtime` (default `true`) subscribes to the same collection and
+refetches, debounced by 50ms to coalesce a burst of writes, on every
+matching event — not local create/update/delete patching. Patching a
+list client-side has to reimplement the server's own
+filter/sort/pagination semantics to stay correct (an update that makes a
+row stop matching `filter` must remove it, an insert must land at the
+right sorted position, a paginated page must not silently grow past
+`perPage`); refetching keeps `records` exactly what the server would
+return for the same query. Set `realtime: false` for a one-shot fetch
+(`refresh()` still works).
+
+Writes go through `useMutation` (below) or `client.collection("posts")`
+directly — this hook does not wrap writes.
+
+## `useRecord` — live single record
+
+```tsx
+const { record, loading, error, deleted } = useRecord(cb, "posts", postId);
+```
+
+Fetches once with `one()`, then subscribes to that record's own topic
+(so the server only pushes events for this one row) and applies the
+event directly — no refetch needed for a single record. `deleted`
+becomes `true` on that record's own delete event; `record` keeps its
+last known value so you can render a "this was deleted" state instead of
+a blank one.
+
+## `useInfiniteRecords` — load more
+
+```tsx
+const { records, loading, loadingMore, hasMore, loadMore, refresh } = useInfiniteRecords(cb, "posts", {
+  perPage: 20,
+  sort: "-created",
+});
+```
+
+Accumulates pages into one growing `records` array; `loadMore()` fetches
+the next one. Unlike `useRecords`, realtime defaults to `false` —
+refetching from page 1 on every event would silently reset however many
+pages the user has already loaded. Pass `realtime: true` to opt in
+anyway (e.g. an activity feed where "jump back to the top on new
+activity" is the desired behavior); it calls `refresh()` on a matching
+event.
+
+## `useMutation` — create/update/remove with optimistic UI
+
+```tsx
+const { create, update, remove, pending, error } = useMutation(cb, "posts");
+
+await create({ title });
+
+// Optimistic UI: `apply()` runs before the request is sent, `rollback()`
+// only if it throws. Decoupled from any particular list's state — wire
+// it up to whatever you're showing optimistically.
+await create(
+  { title },
+  {
+    optimistic: {
+      apply: () => setLocalPosts((p) => [...p, draft]),
+      rollback: () => setLocalPosts((p) => p.filter((x) => x !== draft)),
+    },
+  },
+);
+```
+
+Paired with `useRecords({ realtime: true })`, the realtime event this
+mutation's own write produces refreshes the list with the server's real
+value shortly after — the same way any other write does.
+
+## `useAuth` — live auth state
+
+```tsx
+const { user, isValid, isSuperuser, isLoading, signIn, signOut } = useAuth(cb);
+
+if (!isValid) return <button onClick={() => signIn.password({ identity, password })}>Sign in</button>;
+return <button onClick={() => signOut()}>Sign out ({user?.email})</button>;
+```
+
+Subscribes to `client.auth` via `useSyncExternalStore`, re-rendering on
+sign-in, sign-out, token refresh, or an out-of-band change (another
+browser tab writing to the same `LocalAuthStore`, or a direct
+`client.auth.signOut()` call from outside React). `signIn`/`signOut` are
+convenience pass-throughs to `client.auth.signIn`/`client.auth.signOut`.
+`isLoading` is `true` only for the very first server-rendered/pre-hydration
+snapshot — every real auth store hydrates synchronously, so it's `false`
+on any real client render.
+
+## `usePresence` — who's online
+
+Wraps [`client.presence.track`](/docs/sdk/overview/#client-shape) (the
+heartbeat + realtime + client-side staleness pattern, no server-side
+presence concept needed):
+
+```tsx
+const { online, loading, error } = usePresence(cb, "presence", { userRef: user.id }, { heartbeatMs: 20_000 });
+```
+
+`online` is the live `Set` of fresh peer row ids, including this
+client's own once its first heartbeat lands.
+
+## `useSubscription` — raw realtime events
+
+```tsx
+useSubscription(cb, "posts", "*", (event) => {
+  if (event.action === "create") toast(`New post: ${event.record.title}`);
+});
+```
+
+A thin, stateless primitive for callers who want raw realtime events
+without `useRecords`'/`useRecord`'s opinion.
+
+## SSR
+
+None of this package's modules touch `window`/`document` at import
+time — only inside effects/callbacks, which never run during SSR. A
+client built with the [SSR per-request pattern](/docs/sdk/ssr-and-cookies/)
+works with every hook here unchanged; just remember the `"use client"`
+boundary noted above.

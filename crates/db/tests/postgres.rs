@@ -173,3 +173,168 @@ async fn postgres_view_query_failures_name_the_missing_column() {
 
     db.close().await.unwrap();
 }
+
+/// Whether `pg_dump`/`pg_restore` are on `PATH` — neither ships with
+/// Cratebase itself (see `crates/db/src/pg_tools.rs`), so a machine
+/// without the PostgreSQL client tools installed must still pass `cargo
+/// test`, same as one without `TEST_POSTGRES_URL` set at all.
+fn pg_client_tools_available() -> bool {
+    std::process::Command::new("pg_dump")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+        && std::process::Command::new("pg_restore")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+}
+
+/// `Engine::snapshot_to`/`restore_from` on Postgres (`crates/server/src/
+/// routes/backups.rs`'s real usage of both, minus the ZIP/HTTP layer):
+/// dump the database with real data in it, mutate it, restore the dump,
+/// and confirm the mutation is gone and the original data is back —
+/// proof `pg_dump --format=custom` / `pg_restore --clean --if-exists
+/// --single-transaction` round-trip real rows, not just that the
+/// commands exit `0`.
+#[tokio::test]
+async fn postgres_snapshot_to_and_restore_from_round_trip_real_rows() {
+    let _guard = ONE_TEST_AT_A_TIME.lock().await;
+    let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
+        eprintln!(
+            "skipping postgres_snapshot_to_and_restore_from_round_trip_real_rows: \
+             TEST_POSTGRES_URL not set"
+        );
+        return;
+    };
+    if !pg_client_tools_available() {
+        eprintln!(
+            "skipping postgres_snapshot_to_and_restore_from_round_trip_real_rows: \
+             pg_dump/pg_restore not found on PATH"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::connect(&url, &dir.path().to_string_lossy())
+        .await
+        .unwrap();
+    assert_eq!(db.backend, Backend::Postgres);
+    db.execute("DROP SCHEMA public CASCADE", &[]).await.unwrap();
+    db.execute("CREATE SCHEMA public", &[]).await.unwrap();
+    db.bootstrap().await.unwrap();
+
+    let mut posts = Collection::new("posts", CollectionType::Base);
+    let pos = posts.fields.len() - 2;
+    posts.fields.insert(
+        pos,
+        Field::new("title", FieldKind::default_for(FieldType::Text)),
+    );
+    db.collections.insert(&*db.engine, &posts).await.unwrap();
+    db.execute(
+        "INSERT INTO \"posts\" (\"id\", \"title\") VALUES ($1, $2)",
+        &[Sql::from("rec1"), Sql::from("before-backup")],
+    )
+    .await
+    .unwrap();
+
+    let dest = dir.path().join("data.pgdump");
+    db.engine
+        .snapshot_to(&dest.to_string_lossy())
+        .await
+        .unwrap();
+    // `pg_dump --format=custom`'s own magic header, so this is really a
+    // custom-format archive and not e.g. an empty file `pg_dump` happened
+    // to exit 0 without writing.
+    let header = std::fs::read(&dest).unwrap();
+    assert_eq!(
+        &header[..5],
+        b"PGDMP",
+        "not a pg_dump custom-format archive"
+    );
+
+    // Mutate after the snapshot so the restore has something concrete to
+    // prove it undid: change one row, add another.
+    db.execute(
+        "UPDATE \"posts\" SET \"title\" = $1 WHERE \"id\" = $2",
+        &[Sql::from("after-backup"), Sql::from("rec1")],
+    )
+    .await
+    .unwrap();
+    db.execute(
+        "INSERT INTO \"posts\" (\"id\", \"title\") VALUES ($1, $2)",
+        &[Sql::from("rec2"), Sql::from("should-not-survive")],
+    )
+    .await
+    .unwrap();
+
+    db.engine
+        .restore_from(&dest.to_string_lossy())
+        .await
+        .unwrap();
+
+    let restored = db
+        .query_one(
+            "SELECT title FROM \"posts\" WHERE \"id\" = $1",
+            &[Sql::from("rec1")],
+        )
+        .await
+        .unwrap()
+        .expect("rec1 survives the restore");
+    assert_eq!(restored.get_str("title").unwrap(), "before-backup");
+    let should_be_gone = db
+        .query_one(
+            "SELECT title FROM \"posts\" WHERE \"id\" = $1",
+            &[Sql::from("rec2")],
+        )
+        .await
+        .unwrap();
+    assert!(
+        should_be_gone.is_none(),
+        "rec2 was inserted after the snapshot and must not survive restoring it"
+    );
+
+    db.close().await.unwrap();
+}
+
+/// A missing `pg_dump` is reported as a specific, actionable error (see
+/// `crate::pg_tools::find_pg_tool`'s doc) — never PostgresEngine's old
+/// blanket `DbError::Unsupported("postgres snapshot")`, which gave an
+/// operator nothing to act on. Forcing `CB_PG_DUMP_PATH` at a path that
+/// doesn't exist exercises exactly the error `find_pg_tool` builds for a
+/// deployment that never installed the client tools, without needing the
+/// ambient environment to actually lack them.
+#[tokio::test]
+async fn snapshot_to_reports_a_specific_error_when_pg_dump_is_missing() {
+    let _guard = ONE_TEST_AT_A_TIME.lock().await;
+    let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
+        eprintln!(
+            "skipping snapshot_to_reports_a_specific_error_when_pg_dump_is_missing: \
+             TEST_POSTGRES_URL not set"
+        );
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::connect(&url, &dir.path().to_string_lossy())
+        .await
+        .unwrap();
+
+    // SAFETY: no other test in this binary reads/writes CB_PG_DUMP_PATH,
+    // and this file's tests are already fully serialized against each
+    // other by `ONE_TEST_AT_A_TIME`.
+    unsafe { std::env::set_var("CB_PG_DUMP_PATH", "/definitely/not/a/real/pg_dump") };
+    let err = db
+        .engine
+        .snapshot_to(&dir.path().join("data.pgdump").to_string_lossy())
+        .await
+        .unwrap_err();
+    unsafe { std::env::remove_var("CB_PG_DUMP_PATH") };
+
+    let message = err.to_string();
+    assert!(message.contains("CB_PG_DUMP_PATH"), "{message}");
+    assert!(
+        !message.to_lowercase().contains("unsupported"),
+        "must not fall back to the old generic message: {message}"
+    );
+
+    db.close().await.unwrap();
+}

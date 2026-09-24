@@ -10,6 +10,22 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **`@cratebase/react` upgrade**: a `CratebaseProvider`/`useCratebase()`
+  context (every hook keeps working with an explicit client too),
+  `createCratebaseHooks<Schema>()` for collection-name-to-record-type
+  inference (mirroring `createClient<Schema>()`), pagination and
+  refetch-on-event realtime on `useRecords`, and three new hooks:
+  `useInfiniteRecords` (load-more pagination), `useMutation`
+  (create/update/remove with pending/error state and optional
+  optimistic apply/rollback), and `usePresence` (wraps
+  `client.presence.track`). `useAuth` now also returns `isLoading` and
+  `signIn`/`signOut`. `sdk/js/{client,react,extras}` joined the root bun
+  workspace and CI (`bun run sdk:check`), with a new bun-test suite for
+  every hook against a mocked client and a `tsc`-checked
+  type-inference regression fixture.
+
 ## 0.2.0 — 2026-09-09
 
 ### Added

@@ -1012,6 +1012,26 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
 
+  /typegen:
+    get:
+      summary: Generate TypeScript types for the current schema (superuser only)
+      description: >
+        The same generator `cratebase typegen` and the `--dev`
+        `CB_TYPEGEN_OUT` watch use: one `<Name>Record` type per
+        non-system collection (plus `<Name>Create`/`<Name>Update` for
+        non-view collections), and `Schema`/`SchemaCreate`/
+        `SchemaUpdate` exports shaped for `@cratebase/client`'s
+        `createClient<Schema>()`. Returned as a downloadable
+        `application/typescript` file, not JSON.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/typescript:
+              schema: { type: string, description: "The generated .d.ts source." }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
   /api-keys:
     post:
       summary: Mint a new API key and return its raw value exactly once (superuser only)

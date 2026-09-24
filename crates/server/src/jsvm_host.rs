@@ -65,6 +65,11 @@ use crate::http_error::ApiError;
 trait HostExec: Clone + Send + Sync + 'static {
     fn app(&self) -> &App;
     fn executor(&self) -> &dyn Executor;
+    /// `true` for a [`TxApp`]: `executor()` is (or may be) an already-open
+    /// transaction, so a collection save/delete must join it through
+    /// `CollectionStore::insert_with`/`update_with`/`delete_with` rather
+    /// than opening its own nested one — see those methods' doc comments.
+    fn is_transactional(&self) -> bool;
 }
 
 impl HostExec for App {
@@ -74,6 +79,9 @@ impl HostExec for App {
     fn executor(&self) -> &dyn Executor {
         self.db()
     }
+    fn is_transactional(&self) -> bool {
+        false
+    }
 }
 
 impl HostExec for TxApp {
@@ -82,6 +90,9 @@ impl HostExec for TxApp {
     }
     fn executor(&self) -> &dyn Executor {
         self
+    }
+    fn is_transactional(&self) -> bool {
+        true
     }
 }
 
@@ -334,11 +345,23 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
     async fn save_collection(&self, collection: Collection) -> Result<Collection, AppError> {
         let app = self.0.app();
         let store = &app.db().collections;
-        let engine = app.db().engine.as_ref();
-        let saved = if store.get_by_id(&collection.id).is_some() {
-            store.update(engine, &collection).await
+        let exists = store.get_by_id(&collection.id).is_some();
+        let saved = if self.0.is_transactional() {
+            // Join the caller's already-open transaction instead of
+            // opening a nested one — see `HostExec::is_transactional`.
+            let ex = self.0.executor();
+            if exists {
+                store.update_with(ex, &collection).await
+            } else {
+                store.insert_with(ex, &collection).await
+            }
         } else {
-            store.insert(engine, &collection).await
+            let engine = app.db().engine.as_ref();
+            if exists {
+                store.update(engine, &collection).await
+            } else {
+                store.insert(engine, &collection).await
+            }
         }
         .map_err(AppError::from)?;
         Ok((*saved).clone())
@@ -346,11 +369,19 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
 
     async fn delete_collection(&self, name_or_id: &str) -> Result<(), AppError> {
         let app = self.0.app();
-        app.db()
-            .collections
-            .delete(app.db().engine.as_ref(), name_or_id)
-            .await
-            .map_err(AppError::from)
+        if self.0.is_transactional() {
+            app.db()
+                .collections
+                .delete_with(self.0.executor(), name_or_id)
+                .await
+                .map_err(AppError::from)
+        } else {
+            app.db()
+                .collections
+                .delete(app.db().engine.as_ref(), name_or_id)
+                .await
+                .map_err(AppError::from)
+        }
     }
 
     async fn run_in_transaction(&self, f: TransactionFn) -> Result<(), AppError> {
@@ -654,22 +685,45 @@ fn has_hook_files(dir: &std::path::Path) -> bool {
     })
 }
 
-/// Starts the JS runtime when `pb_hooks/` exists and has at least one
-/// `*.pb.js` file, and stores it on `app` so hooks bound during startup
-/// (see [`bind_js_hook`](crate::hooks::bind_js_hook)) can resolve it and
-/// [`js_router`] can mount its `routerAdd` routes. A complete no-op —
-/// nothing is spawned, nothing is allocated beyond a directory read —
-/// when `pb_hooks/` is absent or empty, matching PocketBase's own
+/// `true` when `dir` exists and contains at least one `*.js` migration
+/// file (any `.js` file — migrations do not use the `.pb.js` naming
+/// hooks do; see `write_migration_stub` in `main.rs`).
+fn has_migration_files(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_type().is_ok_and(|t| t.is_file())
+            && entry.file_name().to_string_lossy().ends_with(".js")
+    })
+}
+
+/// Starts the JS runtime when `pb_hooks/` has at least one `*.pb.js` file
+/// or `pb_migrations/` has at least one `*.js` migration, and stores it on
+/// `app` so hooks bound during startup (see
+/// [`bind_js_hook`](crate::hooks::bind_js_hook)) can resolve it,
+/// [`js_router`] can mount its `routerAdd` routes, and `crate::js_migrations`
+/// can apply/revert migrations. The runtime must start for migrations
+/// even when there is no hook file at all — `pb_migrations` alone is a
+/// perfectly normal setup — so this checks both directories. A complete
+/// no-op — nothing is spawned, nothing is allocated beyond two directory
+/// reads — when both are absent or empty, matching PocketBase's own
 /// behaviour.
 pub async fn maybe_start(app: &App) -> Result<(), AppError> {
     let hooks_dir = std::path::PathBuf::from(&app.config().hooks_dir);
-    if !has_hook_files(&hooks_dir) {
+    let migrations_dir = std::path::PathBuf::from(&app.config().migrations_dir);
+    if !has_hook_files(&hooks_dir) && !has_migration_files(&migrations_dir) {
         return Ok(());
     }
 
-    let mut cfg = RuntimeConfig::new(hooks_dir.clone(), app.config().migrations_dir.clone());
+    let mut cfg = RuntimeConfig::new(hooks_dir.clone(), migrations_dir);
     cfg.hooks_watch = app.config().dev;
-    cfg.types_file = Some(hooks_dir.join("types.d.ts"));
+    // PocketBase's own convention (`crates/jsvm/src/types.rs`'s module
+    // doc and `types.d.ts` itself): hook and migration files reference
+    // `../pb_data/types.d.ts`, and `pb_data` is a sibling of both
+    // `pb_hooks` and `pb_migrations` (see `config::sibling`), so the file
+    // has to live under the data dir, not under `hooks_dir` as before.
+    cfg.types_file = Some(std::path::PathBuf::from(&app.config().data_dir).join("types.d.ts"));
 
     let runtime = Runtime::start(wrap_host(app.clone()), cfg)
         .await
