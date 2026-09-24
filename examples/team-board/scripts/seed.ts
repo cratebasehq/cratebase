@@ -57,10 +57,42 @@ async function main() {
       for (const [key, value] of Object.entries(fields)) {
         resolved[key] = resolveValue(value, refs);
       }
+      // `cards.embedding` only auto-computes from `searchText` if
+      // `searchText` is present in *this* request's body — Cratebase
+      // computes it before pb_hooks/team-board.pb.js's onRecordCreate
+      // hook would otherwise derive it (see src/hooks/useCards.ts's
+      // createCard for the full explanation) — so seeded cards need it
+      // set directly here too, or they'd be unsearchable.
+      if (collectionName === "cards" && typeof resolved.title === "string" && resolved.searchText === undefined) {
+        resolved.searchText = [resolved.title, resolved.description].filter(Boolean).join("\n\n");
+      }
       let record;
       try {
         record = await cb.collection(collectionName).create(resolved);
       } catch (err) {
+        // `_team_members` rows for a team's owner can already exist by
+        // the time this runs: Cratebase's own reactive hook
+        // (`crates/server/src/teams.rs`, gated on `settings.teams.enabled`)
+        // sometimes auto-inserts the owner row when `_teams` is created —
+        // live-verified inconsistent about exactly when, seemingly tied
+        // to whether that setting was already on at server *boot* rather
+        // than reacting to scripts/setup.sh's runtime `PATCH
+        // /api/settings` (see pb_hooks/team-board.pb.js's own backstop
+        // hook for this). Either way, a unique-constraint conflict here
+        // means the membership this record describes already exists —
+        // not a real failure — so it's logged and skipped rather than
+        // aborting the whole seed run.
+        if (
+          collectionName === "_team_members" &&
+          err instanceof CratebaseError &&
+          err.response.data &&
+          Object.values(err.response.data).some(
+            (fieldError) => (fieldError as { code?: string } | null)?.code === "validation_not_unique",
+          )
+        ) {
+          console.log(`==> _team_members ${JSON.stringify(resolved)} already exists (owner auto-bootstrap) — skipping.`);
+          continue;
+        }
         const detail = err instanceof CratebaseError ? JSON.stringify(err.response) : String(err);
         throw new Error(`seeding ${collectionName} (${JSON.stringify(resolved)}) failed: ${detail}`);
       }

@@ -89,7 +89,15 @@ export function CardDetail({ cardId, onClose }: { cardId: string; onClose: () =>
         className="w-full border-none bg-transparent font-display text-xl font-semibold outline-none"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
-        onBlur={() => title.trim() && title !== card.title && save({ title: title.trim() })}
+        onBlur={() =>
+          title.trim() &&
+          title !== card.title &&
+          // `searchText` included directly for the same reason
+          // src/hooks/useCards.ts's createCard does: apply_embeddings
+          // runs before pb_hooks/team-board.pb.js's onRecordUpdate can
+          // derive it, so it must already be in this request's body.
+          save({ title: title.trim(), searchText: [title.trim(), card.description].filter(Boolean).join("\n\n") })
+        }
       />
       <span className="mt-1 block font-mono text-[11px] text-ink/35 dark:text-paper/35">
         CB-{card.id.slice(0, 4).toUpperCase()}
@@ -149,7 +157,10 @@ export function CardDetail({ cardId, onClose }: { cardId: string; onClose: () =>
           rows={4}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          onBlur={() => description !== (card.description ?? "") && save({ description })}
+          onBlur={() =>
+            description !== (card.description ?? "") &&
+            save({ description, searchText: [card.title, description].filter(Boolean).join("\n\n") })
+          }
           placeholder="Add a description…"
         />
       </div>

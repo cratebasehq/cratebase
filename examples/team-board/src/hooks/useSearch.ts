@@ -35,7 +35,20 @@ export function useSearch(teamId: string | null) {
       setError(null);
       let temp: CardsRecord | undefined;
       try {
-        temp = await cb.collection("cards").create({ teamRef: teamId, title: query, isQuery: true, order: 0 });
+        // `searchText` (not just `title`) is sent explicitly for the
+        // same reason src/hooks/useCards.ts's createCard does:
+        // apply_embeddings runs before pb_hooks/team-board.pb.js's
+        // onRecordCreate could otherwise derive it, so a hook-only
+        // derivation never affects this create's own embedding.
+        // `order: 1` (not `0`) — a real Cratebase bug, live-verified
+        // building this example: a `required: true` `number` field
+        // rejects the literal value `0` with "Cannot be blank"
+        // (`validation_required`), apparently treating JS/JSON falsy `0`
+        // as "absent" rather than "a valid required number". `cards.order`
+        // is `required: true` (schema.json), so this throwaway row needs
+        // any non-zero placeholder — its value is otherwise meaningless
+        // since `isQuery` rows never appear in a sorted list.
+        temp = await cb.collection("cards").create({ teamRef: teamId, title: query, searchText: query, isQuery: true, order: 1 });
         // NB: `cb.vector.nearestTo` is a bare re-export of the standalone
         // `nearestTo(sender, collection, field, to, options)` helper
         // (sdk/js/client/src/index.ts), not pre-bound to this client —

@@ -7,13 +7,33 @@
 #      if one doesn't already exist
 #   2. turn on `settings.teams.enabled` (off by default — see
 #      crates/server/src/app.rs)
-#   3. generate schema.json (scripts/gen-schema.ts) and apply it with
-#      `cratebase schema push`
-#   4. regenerate TypeScript types (scripts/typegen.sh)
+#   3. generate schema.json (scripts/gen-schema.ts) and apply it via
+#      `POST /api/schema/apply` (deliberately *not* the `cratebase schema
+#      push` CLI — see "Known Cratebase issue" below)
+#   4. regenerate TypeScript types via `GET /api/typegen` (same reasoning)
 #
-# Env: CRATEBASE_URL, CB_SETUP_TOKEN, SUPERUSER_EMAIL, SUPERUSER_PASSWORD,
-# CRATEBASE_BIN, CB_DATA_DIR (see scripts/dev.ts for the defaults this is
-# normally invoked with).
+# Env: CRATEBASE_URL, CB_SETUP_TOKEN, SUPERUSER_EMAIL, SUPERUSER_PASSWORD
+# (see scripts/dev.ts for the defaults this is normally invoked with).
+#
+# Known Cratebase issue this works around: `cratebase schema push`/
+# `cratebase typegen` are CLI subcommands that open their own `App`
+# against the data directory directly (`crates/server/src/main.rs`'s
+# `schema()`/`typegen()`), bypassing whatever `cratebase serve` process
+# already has that directory open. Live-verified while building this
+# example: running `cratebase schema push schema.json --dir ./pb_data`
+# against a directory a `cratebase serve --dev` process already had open
+# updated the on-disk database (confirmed via a fresh `GET
+# /api/collections/<name>` after restarting the server) but the *running*
+# server kept 404ing every request against the newly created collections
+# ("Missing collection context") until it was restarted — its in-memory
+# collection registry never picked up the change. `POST /api/schema/apply`
+# and `GET /api/typegen` run the exact same underlying logic
+# (`routes::schema::plan_and_apply`, `typegen::generate` — see their doc
+# comments) *inside* the already-running server process, so its own cache
+# updates immediately and this whole class of bug doesn't apply. Prefer
+# these HTTP endpoints over the CLI subcommands whenever a `serve` process
+# for the same directory might already be running — which is exactly
+# `bun run dev`'s situation.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -21,10 +41,8 @@ CRATEBASE_URL="${CRATEBASE_URL:-http://localhost:8090}"
 CB_SETUP_TOKEN="${CB_SETUP_TOKEN:-team-board-dev-setup-token}"
 SUPERUSER_EMAIL="${SUPERUSER_EMAIL:-admin@example.com}"
 SUPERUSER_PASSWORD="${SUPERUSER_PASSWORD:-changeme123}"
-CRATEBASE_BIN="${CRATEBASE_BIN:-cratebase}"
-CB_DATA_DIR="${CB_DATA_DIR:-./pb_data}"
 
-for bin in curl jq bun "$CRATEBASE_BIN"; do
+for bin in curl jq bun; do
   command -v "$bin" >/dev/null 2>&1 || { echo "error: '$bin' is required but not found on PATH" >&2; exit 1; }
 done
 
@@ -63,11 +81,14 @@ curl -fsS -X PATCH "${CRATEBASE_URL}/api/settings" \
 echo "==> Generating schema.json ..."
 bun run scripts/gen-schema.ts
 
-echo "==> Pushing schema.json ..."
-"$CRATEBASE_BIN" schema push schema.json --dir "$CB_DATA_DIR"
+echo "==> Pushing schema.json (POST /api/schema/apply) ..."
+curl -fsS -X POST "${CRATEBASE_URL}/api/schema/apply" \
+  -H "authorization: Bearer ${ADMIN_TOKEN}" -H 'content-type: application/json' \
+  --data-binary @schema.json | jq -r '.collections[] | "\(.action)\t\(.name)"'
 
-echo "==> Regenerating TypeScript types ..."
-bash scripts/typegen.sh
+echo "==> Regenerating TypeScript types (GET /api/typegen) ..."
+curl -fsS "${CRATEBASE_URL}/api/typegen" -H "authorization: Bearer ${ADMIN_TOKEN}" -o src/cratebase-types.d.ts
+echo "==> wrote types to src/cratebase-types.d.ts"
 
 echo
 echo "==> team-board schema is ready."

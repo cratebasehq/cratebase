@@ -81,7 +81,18 @@ export function useCards(teamId: string | null) {
       if (!teamId) return;
       const columnCards = sortByOrder(cardsRef.current.filter((c) => c.columnRef === columnId));
       const order = orderForIndex(columnCards, columnCards.length);
-      const record = await cb.collection("cards").create({ teamRef: teamId, columnRef: columnId, title, order });
+      // `searchText` (the vector field's auto-embed source, see
+      // schema.json) is included directly in the create body rather than
+      // left for pb_hooks/team-board.pb.js's onRecordCreate to derive:
+      // `apply_embeddings` (crates/server/src/embeddings.rs) runs in
+      // routes::records::create_record *before* any JS hook gets a
+      // chance to mutate the record (crates/server/src/routes/records.rs:554),
+      // so a hook-derived source field is invisible to it and the
+      // embedding silently stays empty — live-verified while building
+      // this example (see README's "Cratebase bugs/friction" section).
+      // The hook still recomputes `searchText` server-side too (belt and
+      // suspenders for any write that doesn't go through this client).
+      const record = await cb.collection("cards").create({ teamRef: teamId, columnRef: columnId, title, searchText: title, order });
       setCards((prev) => (prev.some((c) => c.id === record.id) ? prev : sortByOrder([...prev, record])));
       return record;
     },

@@ -9,6 +9,21 @@
 //      card (not a throwaway search query, see below) has a column —
 //      `columnRef` is optional at the schema level (a `isQuery` row has
 //      none) so this has to be a hook, not `required: true`.
+//
+//      CAVEAT (a real Cratebase limitation, live-verified building this
+//      example — see the repo PR/commit description's "Cratebase bugs/
+//      friction" section): `apply_embeddings` (crates/server/src/
+//      embeddings.rs) runs in `routes::records::create_record`/
+//      `update_record` *before* any JS hook gets to run
+//      (crates/server/src/routes/records.rs:554,679) — so `searchText`
+//      as set *here* is too late to affect that request's own embedding;
+//      it only fixes up the stored value for any write this hook didn't
+//      already cover. `src/hooks/useCards.ts` and `src/components/
+//      CardDetail.tsx` work around this by sending `searchText` directly
+//      in the create/update body from the client, which is what actually
+//      makes the embedding populate. This hook still runs as a defensive
+//      fallback (e.g. a direct dashboard edit that doesn't know about
+//      `searchText` at all).
 //   2. `onRecordAfterCreateSuccess`/`onRecordAfterUpdateSuccess` on
 //      `cards` — when a card gets (re)assigned, writes a `notifications`
 //      row and emails the assignee (lands in the dev mail inbox — see
@@ -46,6 +61,44 @@ onRecordUpdate((e) => {
   e.record.set("searchText", computeSearchText(e.record));
   e.next();
 }, "cards");
+
+// ---------------------------------------------------------------------
+// Team owner bootstrap (works around a real Cratebase timing bug)
+// ---------------------------------------------------------------------
+//
+// Cratebase already has a reactive hook that inserts a team's owner into
+// `_team_members` when `_teams` gets a new row (`crates/server/src/
+// teams.rs`), gated on `settings.teams.enabled`. Live-verified building
+// this example: that gate is only read once, at server *bootstrap*
+// (`crates/server/src/app.rs`'s call to `crate::teams::bind_hooks`) — so
+// turning it on at runtime via `PATCH /api/settings` (which scripts/
+// setup.sh does, since the server is already running by the time setup
+// runs — see scripts/dev.ts) does *not* retroactively bind that hook for
+// the still-running process. A `_teams` row created afterwards, in that
+// same process lifetime, is left ownerless: exactly what happened
+// seeding this example the first time, and what would silently break the
+// in-app "+ New team" flow (`src/hooks/useTeams.ts`'s `createTeam`) for
+// anyone who didn't happen to restart the server after enabling teams.
+// This hook is this app's own, always-bound backstop for that gap —
+// idempotent against the built-in one via the `existing` check below, so
+// it's a harmless no-op on a server where the built-in hook did fire.
+onRecordAfterCreateSuccess((e) => {
+  try {
+    const ownerId = e.record.get("ownerRef");
+    if (!ownerId) return;
+    const existing = $app.findFirstRecordByFilter(
+      "_team_members",
+      "teamRef = {:team} && userRef = {:user}",
+      { team: e.record.id, user: ownerId },
+    );
+    if (existing) return;
+    const teamMembers = $app.findCollectionByNameOrId("_team_members");
+    const membership = new Record(teamMembers, { teamRef: e.record.id, userRef: ownerId, role: "owner" });
+    e.app.save(membership);
+  } catch (err) {
+    $app.logger().error("team-board: failed to bootstrap team owner membership", "team", e.record.id, "error", String(err));
+  }
+}, "_teams");
 
 // ---------------------------------------------------------------------
 // Assignment notifications

@@ -60,6 +60,28 @@ const timestamps = [
 ];
 
 const collections = [
+  // The built-in `users` collection defaults to `id = @request.auth.id`
+  // on both `listRule` and `viewRule` (crates/core/src/collection.rs's
+  // `default_users`) — self-service only, so an ordinary user can't view
+  // *another* user's row at all by default, including indirectly through
+  // a relation `expand` (which silently drops a field it isn't allowed
+  // to view rather than erroring — live-verified building this example:
+  // `_team_members?expand=userRef` only expanded the requesting user's
+  // *own* membership row, leaving every teammate's `expand.userRef`
+  // simply absent, no error). A team app needs teammates' names/emails
+  // visible for assignee pickers, presence, comment authorship, etc., so
+  // this relaxes `users` to the same "any signed-in user" pattern
+  // examples/kanban and examples/todo already use for their own
+  // collections — `POST /api/schema/apply` (via `cratebase schema push`)
+  // can update rules on a *built-in* collection like this one just as
+  // well as on a custom one; `fields` is omitted so its own fields are
+  // left untouched (only an explicit `fields` array is diffed).
+  {
+    name: "users",
+    type: "auth",
+    listRule: '@request.auth.id != ""',
+    viewRule: '@request.auth.id != ""',
+  },
   {
     name: "columns",
     type: "base",
