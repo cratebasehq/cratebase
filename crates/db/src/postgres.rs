@@ -398,6 +398,60 @@ impl Executor for PostgresEngine {
             bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         client.execute(&stmt, &refs).await.map_err(map_err)
     }
+
+    /// Real cancellation, not just a bounded wait — see the trait doc.
+    /// `crates/server/src/routes/sql_console.rs` is this method's only
+    /// caller today, and it needs a stronger guarantee than "bound the
+    /// wait": that module's `is_read_statement` treats anything starting
+    /// with `WITH` as a read purely by syntax ("a CTE... only ever feeds
+    /// a `SELECT`"), which is a guess, not a fact — a data-modifying CTE
+    /// like `WITH x AS (UPDATE _superusers SET role='owner' RETURNING 1)
+    /// SELECT * FROM x` would otherwise run for real through this same
+    /// `query` path. Running it inside `BEGIN READ ONLY` instead makes
+    /// the *server* reject any write the statement attempts, regardless
+    /// of whether `crate::routes::sql_console::references_table`'s own
+    /// coarse, no-parser scan happens to recognize the table it touches.
+    /// Always rolled back afterward: a read-only transaction never has
+    /// anything to commit, but the pooled connection still has to be
+    /// handed back clean.
+    ///
+    /// `SET LOCAL statement_timeout` runs inside that same transaction
+    /// so a runaway statement is actually cancelled *server-side* once
+    /// `timeout` elapses, closing the gap the trait doc used to call out
+    /// for every backend without SQLite's `sqlite3_interrupt`. Failing to
+    /// set it is only logged, not fatal: the read-only transaction above
+    /// is the guard this override exists for, and a lost timeout just
+    /// falls back to the old bounded-wait behavior for this one call.
+    async fn query_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: Duration,
+    ) -> DbResult<Vec<Row>> {
+        let client = self.pool.get().await.map_err(pool_err)?;
+        client
+            .batch_execute("BEGIN READ ONLY")
+            .await
+            .map_err(map_err)?;
+        let timeout_ms = timeout.as_millis().max(1);
+        if let Err(e) = client
+            .batch_execute(&format!("SET LOCAL statement_timeout = {timeout_ms}"))
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "failed to set statement_timeout for an ad-hoc SQL console query"
+            );
+        }
+        let result = client_query(&client, sql, params).await;
+        if let Err(e) = client.batch_execute("ROLLBACK").await {
+            tracing::warn!(
+                error = %e,
+                "failed to close the read-only transaction for an ad-hoc SQL console query"
+            );
+        }
+        result
+    }
 }
 
 #[async_trait]
