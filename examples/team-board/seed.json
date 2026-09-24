@@ -1,0 +1,55 @@
+{
+  "users": [
+    { "$id": "alice", "email": "alice@example.com", "password": "password123", "passwordConfirm": "password123", "name": "Alice Chen" },
+    { "$id": "bob", "email": "bob@example.com", "password": "password123", "passwordConfirm": "password123", "name": "Bob Diaz" },
+    { "$id": "carol", "email": "carol@example.com", "password": "password123", "passwordConfirm": "password123", "name": "Carol Nkemelu" }
+  ],
+  "_teams": [
+    { "$id": "acme", "name": "Acme Inc", "ownerRef": "$alice" },
+    { "$id": "globex", "name": "Globex Corp", "ownerRef": "$carol" }
+  ],
+  "_team_members": [
+    { "teamRef": "$acme", "userRef": "$alice", "role": "owner" },
+    { "teamRef": "$acme", "userRef": "$bob", "role": "member" },
+    { "teamRef": "$globex", "userRef": "$carol", "role": "owner" }
+  ],
+  "columns": [
+    { "$id": "backlog", "teamRef": "$acme", "name": "Backlog", "order": 1000 },
+    { "$id": "in_progress", "teamRef": "$acme", "name": "In Progress", "order": 2000 },
+    { "$id": "review", "teamRef": "$acme", "name": "Review", "order": 3000 },
+    { "$id": "done", "teamRef": "$acme", "name": "Done", "order": 4000 },
+    { "$id": "globex_backlog", "teamRef": "$globex", "name": "Backlog", "order": 1000 }
+  ],
+  "cards": [
+    {
+      "teamRef": "$acme", "columnRef": "$backlog", "title": "Design the onboarding flow",
+      "description": "First-run experience for a brand-new workspace: empty states, the setup checklist, and the invite-teammates screen.",
+      "assigneeRef": "$alice", "labels": ["design"], "order": 1000
+    },
+    {
+      "teamRef": "$acme", "columnRef": "$backlog", "title": "Set up CI for the marketing site",
+      "description": "Lint, typecheck and a preview deploy on every pull request.",
+      "labels": ["chore"], "order": 2000
+    },
+    {
+      "teamRef": "$acme", "columnRef": "$in_progress", "title": "Fix flaky checkout test",
+      "description": "The Stripe webhook test times out roughly one run in twenty in CI; looks like a race between the mock server starting and the first request.",
+      "assigneeRef": "$bob", "labels": ["bug", "urgent"], "order": 1000
+    },
+    {
+      "teamRef": "$acme", "columnRef": "$in_progress", "title": "Add CSV export to the reports page",
+      "description": "Support exporting the current filtered view, not just the full table.",
+      "assigneeRef": "$alice", "labels": ["feature"], "order": 2000
+    },
+    {
+      "teamRef": "$acme", "columnRef": "$review", "title": "Dark mode for the dashboard",
+      "description": "Ready for review — matches the design spec, still needs a pass on chart colors.",
+      "assigneeRef": "$bob", "labels": ["feature", "design"], "order": 1000
+    },
+    {
+      "teamRef": "$acme", "columnRef": "$done", "title": "Migrate auth to the new session model",
+      "description": "Rolled out last week, no incidents since.",
+      "assigneeRef": "$alice", "labels": ["chore"], "order": 1000
+    }
+  ]
+}
