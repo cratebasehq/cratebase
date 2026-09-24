@@ -20,7 +20,8 @@
 
     "baseUrl": ".",
     "paths": {
-      "@cratebase/client": ["../../sdk/js/client/src/index.ts"]
+      "@cratebase/client": ["../../sdk/js/client/src/index.ts"],
+      "@cratebase/react": ["../../sdk/js/react/src/index.ts"]
     }
   },
   "include": ["src"]
