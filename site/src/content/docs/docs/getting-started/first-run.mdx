@@ -90,6 +90,46 @@ via `CB_HOOKS_DIR`) is picked up at startup for
 [JavaScript hooks](/docs/extending/js-hooks/); its absence is a
 complete no-op.
 
+## Seeding data
+
+`cratebase seed <path>` populates collections from a JSON file (or a
+directory of them) through the ordinary record-creation path — the same
+validation, relation checks and password hashing a real
+`POST /api/collections/<name>/records` gets — instead of raw SQL:
+
+```json title="pb_seed/01-users.json"
+{
+  "users": [
+    { "id": "seeduser0000001", "email": "demo@example.com", "password": "supersecret123" }
+  ]
+}
+```
+
+```bash
+cratebase seed pb_seed/
+```
+
+A `path` that's a directory applies every `*.json` file in it in
+file-name order (`01-users.json` before `02-posts.json`), so a later
+file's records can point relations at an id an earlier file seeded — a
+supplied `id` is validated and kept, not discarded. Add `--upsert` to
+make re-running the same seed idempotent (a record whose `id` already
+exists is updated instead of failing on the collision); without it, a
+rerun fails on the first duplicate id, since a seed is normally meant to
+run once against a fresh database. The whole directory's `*.json` files
+are applied inside a single transaction: an invalid record anywhere
+rolls back everything the run had written so far, and the error names
+the exact file, collection and record that failed. A `*.js` file in the
+same directory is written like a migration
+(`migrate((app) => { ... }, (app) => {})`) and its `up` runs once, with
+`$app` available, but is never recorded as "applied" — see
+[JavaScript hooks](/docs/extending/js-hooks/) for the `$app` API.
+
+`cratebase reset [--yes]` wipes the data directory's SQLite database
+files and re-runs every migration, for when local test data needs to
+start over — see the [CLI reference](/docs/reference/cli/) for exactly
+what it deletes and why it refuses a Postgres `DATABASE_URL` outright.
+
 ## What's next
 
 - [Your first collection](/docs/getting-started/first-collection/) —

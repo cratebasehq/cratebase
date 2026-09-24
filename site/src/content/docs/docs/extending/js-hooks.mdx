@@ -7,14 +7,26 @@ Drop a `*.pb.js` file in `pb_hooks/` next to your data directory (or
 point `CB_HOOKS_DIR` at it) and get PocketBase's own hook API:
 `onRecordCreate`/`onRecordUpdate`-style lifecycle hooks and `routerAdd`
 for custom HTTP endpoints, both backed by an embedded QuickJS runtime
-(`crates/jsvm`) — no separate process, no restart-to-reload. `cronAdd`
-lets a hook file define its own cron jobs alongside the dashboard's
-SQL-based [cron jobs](/docs/extending/cron-jobs/). A hook's own
-`$app.save`/`$app.delete` inside a record-write-path hook joins that
-write's own transaction, so a hook that aborts rolls the triggering
-write back too. No `pb_hooks/` directory, or an empty one, is a complete
-no-op. `GET /api/functions` gives a read-only view of what's currently
+(`crates/jsvm`) — no separate process to manage. `cronAdd` lets a hook
+file define its own cron jobs alongside the dashboard's SQL-based [cron
+jobs](/docs/extending/cron-jobs/). A hook's own `$app.save`/`$app.delete`
+inside a record-write-path hook joins that write's own transaction, so a
+hook that aborts rolls the triggering write back too. No `pb_hooks/`
+directory, or an empty one, is a complete no-op outside `--dev` (see
+below). `GET /api/functions` gives a read-only view of what's currently
 registered.
+
+**No restart-to-reload, but only in `--dev`/`CB_DEV=true`.** A dev
+server started with `--dev` always runs the JS runtime, even against an
+empty `pb_hooks/`, and polls the directory once a second: adding,
+editing or deleting a `*.pb.js` file — lifecycle hooks, `routerAdd`
+routes (including path params and middleware-style ordering) and
+`cronAdd` jobs alike — takes effect on the next reload with no restart,
+and a removed `routerAdd`/`cronAdd` registration stops matching/firing
+rather than lingering. Outside `--dev` (a production boot), the runtime
+only starts when `pb_hooks/` or `pb_migrations/` actually has a file, and
+changes to `pb_hooks/*.pb.js` need a restart to take effect, same as any
+other config file.
 
 A minimal `pb_hooks/main.pb.js`:
 

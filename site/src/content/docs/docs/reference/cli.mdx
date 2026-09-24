@@ -1,6 +1,6 @@
 ---
 title: "CLI"
-description: "serve, superuser, migrate, schema, plugin, typegen, migrate-from-pocketbase, and env precedence."
+description: "serve, superuser, migrate, schema, plugin, typegen, seed, reset, migrate-from-pocketbase, and env precedence."
 ---
 
 ```
@@ -25,6 +25,9 @@ cratebase schema push schema.json [--dry-run] [--force]   # apply a schema-as-co
 cratebase plugin install <path>                   # install a local WASM plugin
 cratebase plugin list
 
+cratebase seed <path> [--upsert]                  # populate collections from *.json/*.js seed file(s)
+cratebase reset [--yes]                           # wipe the SQLite database and re-run migrations
+
 cratebase migrate-from-pocketbase <pb_data> --dir <dir>   # one-shot PocketBase import
 cratebase typegen [-o path]                       # write TypeScript types for the local schema
 ```
@@ -33,6 +36,35 @@ See [JavaScript hooks](/docs/extending/js-hooks/#migrations) for what
 `migrate up`/`down`/`create`/`collections`/`history-sync` actually do,
 and [Schema as code](/docs/extending/schema-as-code/) for `schema
 pull`/`push`.
+
+## `seed` / `reset`
+
+`cratebase seed <path> [--upsert]` bootstraps the target database (like
+any other command here) and applies `path` — a JSON seed file, or a
+directory of `*.json`/`*.js` seed files — through the same
+create/validate path the HTTP API uses (never raw SQL), so an auth
+collection's `password` is hashed exactly like a real create and a bad
+record is rejected exactly like a bad request would be. `path` is always
+an explicit argument; `CB_SEED_DIR`/a `pb_seed/` directory next to the
+data directory is only the convention the (forthcoming) `cratebase dev`
+auto-seed uses. See [Seeding data](/docs/getting-started/first-run/#seeding-data)
+for the file format, `--upsert`'s idempotency guarantee and the
+transaction/rollback behavior on an invalid record.
+
+`cratebase reset [--yes]` deletes the SQLite database files under the
+data directory — the main database (and its `-wal`/`-shm` sidecars) and
+the auxiliary logs database — then re-bootstraps (recreating system
+tables and re-running every core migration) and re-applies every JS
+migration in `pb_migrations/`, leaving a schema-only, empty database.
+This is destructive and requires confirmation: without `--yes` it prints
+exactly which files it's about to delete and asks for a typed `yes` on
+stdin; `--yes` skips the prompt for scripted use (a fresh CI database, a
+local reset-and-reseed loop). It refuses outright — before deleting
+anything — when `DATABASE_URL` is a Postgres connection string: dropping
+every user collection and system table in a database this tool did not
+provision and cannot safely recreate is too destructive to automate
+here. Reset a Postgres database by hand (`dropdb`/`createdb` or your
+platform's equivalent) and run `cratebase migrate up` afterward.
 
 Flags generally mirror their environment-variable equivalents (e.g.
 `--dir` vs `CRATEBASE_DATA_DIR`); an explicit flag on the command line

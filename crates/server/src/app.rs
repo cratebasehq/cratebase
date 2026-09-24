@@ -321,6 +321,18 @@ impl App {
             .clone()
     }
 
+    /// Forget every `routerAdd` registration. Called once, by
+    /// [`crate::jsvm_host::JsvmHost::clear_routes`], at the start of a
+    /// hooks reload — see that method's doc for why routes are dropped
+    /// wholesale rather than retracted one at a time like hooks/crons.
+    pub(crate) fn clear_js_routes(&self) {
+        self.inner
+            .js_routes
+            .lock()
+            .expect("js route registry poisoned")
+            .clear();
+    }
+
     pub fn is_bootstrapped(&self) -> bool {
         self.inner
             .bootstrapped
