@@ -17,6 +17,7 @@
 //! |---|---|---|
 //! | `CRATEBASE_DATA_DIR` | `./pb_data` | data directory (`--dir`) |
 //! | `DATABASE_URL` | `sqlite:<data_dir>/data.db` | main database |
+//! | `DB_POOL_SIZE` | `10` | Postgres connection pool size (ignored on SQLite) |
 //! | `HOST` | `0.0.0.0` | bind address (`--http`) |
 //! | `PORT` | `8090` | bind port (`--http`) |
 //! | `CB_HOOKS_DIR` | `<data_dir>/../pb_hooks` | JS hooks directory |
@@ -56,6 +57,8 @@ pub const SECRET_FILE: &str = ".secret";
 pub struct Config {
     pub data_dir: String,
     pub database_url: String,
+    /// Postgres connection pool size (`DB_POOL_SIZE`). Ignored on SQLite.
+    pub db_pool_size: usize,
     pub host: String,
     pub port: u16,
     /// Directory scanned for `*.pb.js` hooks by the JS runtime (W5).
@@ -138,6 +141,7 @@ impl Config {
         let dir = data_dir.as_ref().to_string_lossy().into_owned();
         Config {
             database_url: format!("sqlite:{dir}/data.db"),
+            db_pool_size: cratebase_db::postgres::DEFAULT_POOL_SIZE,
             hooks_dir: sibling(&dir, "pb_hooks"),
             migrations_dir: sibling(&dir, "pb_migrations"),
             data_dir: dir,
@@ -195,6 +199,9 @@ impl Config {
 
         let mut config = Config::for_data_dir(&data_dir);
         config.database_url = env_or("DATABASE_URL", &config.database_url);
+        config.db_pool_size = env_or("DB_POOL_SIZE", &config.db_pool_size.to_string())
+            .parse()
+            .unwrap_or(config.db_pool_size);
         config.host = env_or("HOST", &config.host);
         config.port = env_or("PORT", "8090").parse().unwrap_or(8090);
         config.hooks_dir = env_or("CB_HOOKS_DIR", &config.hooks_dir);
@@ -363,6 +370,7 @@ mod tests {
             c.sqlite_main_path(),
             Some(PathBuf::from("./pb_data/data.db"))
         );
+        assert_eq!(c.db_pool_size, cratebase_db::postgres::DEFAULT_POOL_SIZE);
     }
 
     #[test]
