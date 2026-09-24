@@ -50,7 +50,9 @@ pub mod queue;
 pub mod realtime;
 #[cfg(test)]
 mod records_multi_file_tests;
+pub mod reset;
 pub mod routes;
+pub mod seed;
 pub mod sessions;
 pub mod store;
 pub mod teams;
