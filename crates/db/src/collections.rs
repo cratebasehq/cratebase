@@ -138,6 +138,47 @@ impl CollectionStore {
         tx.commit().await?;
         self.load(engine).await
     }
+
+    /// [`insert`](Self::insert), but against the caller's own executor
+    /// instead of a nested transaction opened here — for a caller already
+    /// inside one (a JS migration's `$app.runInTransaction`, a record
+    /// hook's transactional `$app`, ...). Opening a second, nested `BEGIN`
+    /// on the same connection would either be silently wrong (most
+    /// engines have no real nested transactions) or, worse, deadlock a
+    /// single-writer engine (SQLite) waiting for the very connection the
+    /// outer transaction already holds.
+    pub async fn insert_with(
+        &self,
+        ex: &dyn Executor,
+        collection: &Collection,
+    ) -> DbResult<Arc<Collection>> {
+        let backend = Backend::from_dialect(ex.dialect());
+        insert_in(ex, backend, collection).await?;
+        self.load(ex).await?;
+        self.get_by_id(&collection.id).ok_or(DbError::NotFound)
+    }
+
+    /// [`update`](Self::update) against the caller's own executor. See
+    /// [`insert_with`](Self::insert_with) for why this exists.
+    pub async fn update_with(
+        &self,
+        ex: &dyn Executor,
+        collection: &Collection,
+    ) -> DbResult<Arc<Collection>> {
+        let previous = self.get_by_id(&collection.id).ok_or(DbError::NotFound)?;
+        let backend = Backend::from_dialect(ex.dialect());
+        update_in(ex, backend, &previous, collection).await?;
+        self.load(ex).await?;
+        self.get_by_id(&collection.id).ok_or(DbError::NotFound)
+    }
+
+    /// [`delete`](Self::delete) against the caller's own executor. See
+    /// [`insert_with`](Self::insert_with) for why this exists.
+    pub async fn delete_with(&self, ex: &dyn Executor, name_or_id: &str) -> DbResult<()> {
+        let existing = self.get(name_or_id).ok_or(DbError::NotFound)?;
+        delete_in(ex, &existing).await?;
+        self.load(ex).await
+    }
 }
 
 // The service layer wraps these in its own transaction when it needs to

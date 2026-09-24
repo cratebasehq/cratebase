@@ -480,6 +480,13 @@ impl App {
     pub async fn serve(self) -> anyhow::Result<()> {
         self.bootstrap().await?;
 
+        // After the core (Rust) migrations `bootstrap` already ran, before
+        // the listener accepts a single request — matching PocketBase's
+        // "migrations run automatically on `serve` startup".
+        for file in crate::js_migrations::run_up(&self).await? {
+            tracing::info!(file = %file, "applied JS migration");
+        }
+
         let address = format!("{}:{}", self.config().host, self.config().port);
         let router = crate::router(self.clone());
         let mut event = crate::events::ServeEvent::new(self.clone(), router, address.clone());

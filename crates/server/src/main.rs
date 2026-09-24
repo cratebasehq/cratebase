@@ -176,7 +176,9 @@ enum SuperuserAction {
 enum MigrateAction {
     /// Apply every unapplied migration.
     Up,
-    /// Revert the last `n` migrations (default 1).
+    /// Revert the last `n` migrations (default 1) from each of the core
+    /// and JS (`pb_migrations`) histories independently — they keep
+    /// separate ledgers, so `n` is not a count across a merged history.
     Down { n: Option<usize> },
     /// Scaffold a new migration file.
     Create { name: String },
@@ -409,7 +411,8 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
 
     match action {
         MigrateAction::Up => {
-            let applied = runner.up(app.db()).await?;
+            let mut applied = runner.up(app.db()).await?;
+            applied.extend(cratebase_server::js_migrations::run_up(&app).await?);
             if applied.is_empty() {
                 println!("no new migrations to apply");
             } else {
@@ -419,7 +422,14 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             }
         }
         MigrateAction::Down { n } => {
-            for file in runner.down(app.db(), n.unwrap_or(1)).await? {
+            let n = n.unwrap_or(1);
+            // Core and JS migrations keep independent ledgers/histories
+            // (see `js_migrations`'s module doc), so `n` applies to each
+            // separately rather than to some merged, cross-source order.
+            for file in cratebase_server::js_migrations::run_down(&app, n).await? {
+                println!("reverted {file}");
+            }
+            for file in runner.down(app.db(), n).await? {
                 println!("reverted {file}");
             }
         }
@@ -428,13 +438,12 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             println!("created {}", path.display());
         }
         MigrateAction::Collections => {
-            // Snapshot the collection set into a JS migration. The JSON
-            // export exists now (`Collection::to_json`); what is missing
-            // is the JS migration file format the runtime reads.
-            anyhow::bail!("`migrate collections` needs the JS migration runtime (W7)");
+            let path = cratebase_server::js_migrations::write_collections_snapshot(&app)?;
+            println!("created {}", path.display());
         }
         MigrateAction::HistorySync => {
-            let known: Vec<String> = runner.files().map(str::to_string).collect();
+            let mut known: Vec<String> = runner.files().map(str::to_string).collect();
+            known.extend(cratebase_server::js_migrations::known_migration_files(&app)?);
             let removed = cratebase_db::migrations::history_sync(app.db(), &known).await?;
             println!("pruned {} stale ledger row(s)", removed.len());
             for file in removed {
