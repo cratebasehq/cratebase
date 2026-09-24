@@ -148,9 +148,10 @@ pub async fn run(app: &App, path: &Path, upsert: bool) -> Result<SeedReport, App
     if !js_files.is_empty() {
         let runtime = ensure_runtime(app).await?;
         for file in &js_files {
-            runtime.run_seed_up(file.clone()).await.map_err(|e| {
-                AppError::bad_request(format!("{}: {e}", file.display()))
-            })?;
+            runtime
+                .run_seed_up(file.clone())
+                .await
+                .map_err(|e| AppError::bad_request(format!("{}: {e}", file.display())))?;
             report.files.push(file.clone());
         }
     }
@@ -391,7 +392,10 @@ mod tests {
         )
         .await
         .expect("seeded user exists");
-        assert_ne!(user.get("password").unwrap().as_str().unwrap(), "supersecret123");
+        assert_ne!(
+            user.get("password").unwrap().as_str().unwrap(),
+            "supersecret123"
+        );
         assert!(cratebase_auth::verify_password(
             "supersecret123",
             user.get("password").unwrap().as_str().unwrap()
@@ -404,7 +408,10 @@ mod tests {
         )
         .await
         .expect("seeded post exists");
-        assert_eq!(post.get("author").unwrap().as_str().unwrap(), "seeduser0000001");
+        assert_eq!(
+            post.get("author").unwrap().as_str().unwrap(),
+            "seeduser0000001"
+        );
 
         // Prove login actually works through the real HTTP path, not just
         // that a hash happens to verify in isolation.
@@ -419,8 +426,14 @@ mod tests {
             ))
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "seeded user must be able to log in");
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "seeded user must be able to log in"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert!(json["token"].as_str().is_some_and(|t| !t.is_empty()));
     }
@@ -438,17 +451,26 @@ mod tests {
 
         run(&app, &seed_dir, true).await.expect("first seed run");
         let second = run(&app, &seed_dir, true).await.expect("second seed run");
-        assert_eq!(second.created, 0, "an existing id must be upserted, not re-created");
+        assert_eq!(
+            second.created, 0,
+            "an existing id must be upserted, not re-created"
+        );
         assert_eq!(second.upserted, 1);
 
         let count = app
             .db()
-            .query_scalar(r#"SELECT COUNT(*) FROM "users" WHERE "id" = $1"#, &[cratebase_db::engine::Sql::Text("seeduser0000002".into())])
+            .query_scalar(
+                r#"SELECT COUNT(*) FROM "users" WHERE "id" = $1"#,
+                &[cratebase_db::engine::Sql::Text("seeduser0000002".into())],
+            )
             .await
             .unwrap()
             .and_then(|v| v.as_i64())
             .unwrap_or(-1);
-        assert_eq!(count, 1, "re-running with --upsert must not duplicate the row");
+        assert_eq!(
+            count, 1,
+            "re-running with --upsert must not duplicate the row"
+        );
     }
 
     #[tokio::test]
@@ -530,7 +552,10 @@ mod tests {
         run(&app, &seed_dir, false).await.expect("js seed run");
         let count = app
             .db()
-            .query_scalar(r#"SELECT COUNT(*) FROM "posts" WHERE "title" = 'from js seed'"#, &[])
+            .query_scalar(
+                r#"SELECT COUNT(*) FROM "posts" WHERE "title" = 'from js seed'"#,
+                &[],
+            )
             .await
             .unwrap()
             .and_then(|v| v.as_i64())
@@ -544,7 +569,9 @@ mod tests {
         let seed_dir = tmp.path().join("seed");
         std::fs::create_dir_all(&seed_dir).unwrap();
         write(&seed_dir, "bad.json", r#"{ "no_such_collection": [ {} ] }"#);
-        let err = run(&app, &seed_dir, false).await.expect_err("unknown collection");
+        let err = run(&app, &seed_dir, false)
+            .await
+            .expect_err("unknown collection");
         assert!(err.to_string().contains("bad.json"));
         assert!(err.to_string().contains("no_such_collection"));
     }

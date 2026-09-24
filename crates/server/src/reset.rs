@@ -89,10 +89,7 @@ mod tests {
     fn lists_main_and_auxiliary_db_with_sidecars() {
         let config = Config::for_data_dir("/tmp/cratebase-reset-test-data");
         let paths = sqlite_reset_paths(&config);
-        let names: Vec<String> = paths
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+        let names: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
         assert!(names.iter().any(|n| n.ends_with("data.db")));
         assert!(names.iter().any(|n| n.ends_with("data.db-wal")));
         assert!(names.iter().any(|n| n.ends_with("data.db-shm")));
@@ -106,7 +103,9 @@ mod tests {
         let paths = sqlite_reset_paths(&config);
         // Still lists the auxiliary logs db (real file, real data dir);
         // just no `data.db*` entries since the main database is `:memory:`.
-        assert!(paths.iter().all(|p| !p.display().to_string().contains("data.db")));
+        assert!(paths
+            .iter()
+            .all(|p| !p.display().to_string().contains("data.db")));
     }
 
     /// End-to-end: seed a real file-backed SQLite database with a
@@ -134,7 +133,10 @@ mod tests {
 
         refuse_if_postgres(&config).expect("sqlite config");
         let removed = wipe_sqlite_files(&config).expect("wipe");
-        assert!(!removed.is_empty(), "the just-created db files must have been removed");
+        assert!(
+            !removed.is_empty(),
+            "the just-created db files must have been removed"
+        );
 
         let app = App::new(config);
         app.bootstrap().await.expect("re-bootstrap after wipe");

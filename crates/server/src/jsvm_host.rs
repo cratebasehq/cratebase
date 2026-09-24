@@ -1203,7 +1203,11 @@ mod hot_reload_tests {
             r#"routerAdd("GET", "/hello/{name}", (e) => e.string(200, "v1:" + e.request.pathValue("name")));"#,
         )
         .unwrap();
-        app.jsvm().unwrap().reload().await.expect("reload after add");
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after add");
 
         let resp = router.clone().oneshot(get("/hello/world")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -1214,13 +1218,21 @@ mod hot_reload_tests {
             r#"routerAdd("GET", "/hello/{name}", (e) => e.string(200, "v2:" + e.request.pathValue("name")));"#,
         )
         .unwrap();
-        app.jsvm().unwrap().reload().await.expect("reload after change");
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after change");
         let resp = router.clone().oneshot(get("/hello/world")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_bytes(resp).await, b"v2:world");
 
         std::fs::remove_file(&hook_file).unwrap();
-        app.jsvm().unwrap().reload().await.expect("reload after remove");
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after remove");
         let resp = router.oneshot(get("/hello/world")).await.unwrap();
         assert_eq!(
             resp.status(),
@@ -1267,7 +1279,10 @@ mod hot_reload_tests {
             .into_iter()
             .filter(|j| j.id == "seedHotReloadJob")
             .count();
-        assert_eq!(matches, 1, "reload must not duplicate an unchanged cron job");
+        assert_eq!(
+            matches, 1,
+            "reload must not duplicate an unchanged cron job"
+        );
     }
 
     #[tokio::test]
