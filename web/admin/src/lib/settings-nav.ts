@@ -7,6 +7,7 @@ import {
   Database,
   FolderOpen,
   History,
+  Inbox,
   KeyRound,
   ListTree,
   Mail,
@@ -55,6 +56,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         label: "Mail & storage",
         icon: Mail,
         description: "SMTP for outgoing mail and S3-compatible file storage.",
+      },
+      {
+        to: "/settings/mail-inbox",
+        label: "Mail inbox",
+        icon: Inbox,
+        description:
+          "Every email the zero-config Log backend has \"sent\" — only shown while no real SMTP transport is configured.",
       },
       {
         to: "/settings/network",

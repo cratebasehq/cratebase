@@ -13,7 +13,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
-import { isSettingsItemVisible, useSettings } from "@/hooks/use-settings";
+import { isSettingsItemVisible, useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
 import { SETTINGS_GROUPS } from "@/lib/settings-nav";
 
 interface AppCommandPaletteProps {
@@ -38,7 +38,10 @@ export function AppCommandPalette({ collections, onNewCollection, open, onOpenCh
   const [internalOpen, setInternalOpen] = useState(false);
   const navigate = useNavigate();
   const { data: settings } = useSettings();
-  const settingsTargets = SETTINGS_TARGETS.filter((item) => isSettingsItemVisible(item.to, settings));
+  const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
+  const settingsTargets = SETTINGS_TARGETS.filter((item) =>
+    isSettingsItemVisible(item.to, settings, devMailInboxAvailable),
+  );
 
   const isOpen = open ?? internalOpen;
 
