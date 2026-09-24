@@ -61,13 +61,15 @@ const examples: [string, string, string][] = [
         </a>
         <h1>A backend in one crate.</h1>
         <p class="lede">
-          Collections, auth, files, realtime and an admin dashboard in one Rust
-          binary. Speaks the PocketBase API — the official SDK just works.
-          SQLite today, Postgres when you need it.
+          Collections, auth, files, realtime, and an admin dashboard — one
+          Rust binary, so shipping a backend doesn't mean standing up a
+          database, an auth service, and object storage first. SQLite today,
+          Postgres when you need it, and a PocketBase-compatible API if
+          you're migrating one in.
         </p>
         <div class="hero-actions">
           <a class="btn btn-primary" href="/docs/getting-started/install/">Get started</a>
-          <a class="btn btn-secondary" href="/docs/migrating/compatibility/">Read the migration guide</a>
+          <a class="btn btn-secondary" href="https://codespaces.new/cratebasehq/cratebase">Open in GitHub Codespaces</a>
         </div>
 
         <div class="terminal" role="group" aria-label="Install and first run">
@@ -75,8 +77,8 @@ const examples: [string, string, string][] = [
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           </div>
           <pre><code>$ curl -fsSL https://cratebase.dev/install.sh | sh
-Downloading Cratebase 0.1.0 for aarch64-apple-darwin...
-cratebase 0.1.0 installed to ~/.local/bin/cratebase
+Downloading Cratebase 0.2.0 for aarch64-apple-darwin...
+cratebase 0.2.0 installed to ~/.local/bin/cratebase
 
 $ cratebase serve
 listening on http://127.0.0.1:8090
@@ -89,28 +91,69 @@ api:         http://127.0.0.1:8090/api/
         <HeroUnpack label="A crate being unpacked into a dashboard: collections becoming table rows" />
       </div>
     </div>
-  </section>
 
-  <!-- ===================== TRY IT WITHOUT INSTALLING =================== -->
-  <section class="band">
+    <!-- TODO(showcase): hero video -->
     <div class="wrap">
-      <div class="try-panel">
-        <div class="try-copy">
-          <div class="try-art"><CrateSignal label="A crate broadcasting to listening terminals" /></div>
-          <h2>Try it without installing</h2>
+      <div class="tour">
+        <div class="tour-copy">
+          <span class="announce tour-badge">
+            <span class="announce-dot" aria-hidden="true"></span>
+            Walkthrough video coming soon
+          </span>
           <p>
-            A live public instance isn't running yet — this section is a
-            placeholder for a real, always-on demo (a guestbook backed by
-            realtime + rules + cron, driven by the exact SDK calls shown
-            below) rather than something to fake with a canned response.
+            Until it's ready, here's the same 90 seconds as a transcript:
+            install, create a collection, read and write it from a script.
           </p>
-          <p class="hint">Demo instance coming soon. In the meantime:</p>
         </div>
-        <pre class="try-code"><code>{`import { createClient } from "@cratebase/client";
+        <div
+          class="terminal tour-frame"
+          role="img"
+          aria-label="Terminal transcript: installing Cratebase, starting the server, creating a posts collection, then listing and subscribing to it from a small script"
+        >
+          <div class="terminal-bar">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </div>
+          <pre><code>{`$ curl -fsSL https://cratebase.dev/install.sh | sh && cratebase serve
+dashboard: http://127.0.0.1:8090/_/
+
+# create a "posts" collection from the dashboard, then:
+$ bun add @cratebase/client && cat app.ts
+import { createClient } from "@cratebase/client";
 
 const cb = createClient("http://localhost:8090");
-await cb.collection("guestbook").create({ text });
-cb.collection("guestbook").subscribe("*", (e) => render(e.record));`}</code></pre>
+const posts = await cb.collection("posts").list();
+cb.collection("posts").subscribe("*", (e) => render(e.record));`}</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================= RUN YOUR OWN =========================== -->
+  <section class="band">
+    <div class="wrap">
+      <div class="run-panel">
+        <div class="run-copy">
+          <div class="run-art"><CrateSignal label="A crate broadcasting to listening terminals" /></div>
+          <h2>Run it, not just read about it</h2>
+          <p>
+            There's no public demo instance — a backend with a SQL console,
+            file storage, and a mailer isn't something to leave open on the
+            internet for anyone to poke at. Two ways to run your own instead:
+          </p>
+        </div>
+        <div class="run-options">
+          <div class="run-option">
+            <h3>In the cloud</h3>
+            <p>A full dev container, nothing to install locally.</p>
+            <a class="btn btn-primary" href="https://codespaces.new/cratebasehq/cratebase">Open in GitHub Codespaces</a>
+          </div>
+          <div class="run-option">
+            <h3>On your machine, in 30 seconds</h3>
+            <p>No Docker, no Rust toolchain, no config file to write first.</p>
+            <pre class="mono run-code"><code>curl -fsSL https://cratebase.dev/install.sh | sh
+cratebase serve</code></pre>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -366,7 +409,7 @@ files copied: 4`}</code></pre>
     padding-block: 3rem;
   }
   .section h2,
-  .try-copy h2,
+  .run-copy h2,
   .migrate-panel h2 {
     font-family: var(--font-display);
     font-size: 1.9rem;
@@ -375,46 +418,76 @@ files copied: 4`}</code></pre>
     color: var(--color-harbor);
   }
   :root[data-theme="dark"] .section h2,
-  :root[data-theme="dark"] .try-copy h2,
+  :root[data-theme="dark"] .run-copy h2,
   :root[data-theme="dark"] .migrate-panel h2 {
     color: var(--color-fog);
   }
 
-  .try-panel {
+  .tour {
+    margin-top: 2.5rem;
+    display: grid;
+    grid-template-columns: 0.85fr 1.4fr;
+    gap: 2rem;
+    align-items: center;
+  }
+  .tour-badge {
+    margin-bottom: 0;
+  }
+  .tour-copy p {
+    margin: 0.9rem 0 0;
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    max-width: 26rem;
+  }
+  .tour-frame.terminal {
+    max-width: none;
+  }
+
+  .run-panel {
     background: var(--color-white);
     border: 1px solid var(--color-hairline);
     border-radius: var(--radius);
     padding: 2rem;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 2rem;
+    gap: 2.5rem;
     align-items: center;
   }
-  :root[data-theme="dark"] .try-panel {
+  :root[data-theme="dark"] .run-panel {
     background: var(--color-panel);
   }
-  .try-copy p {
+  .run-copy p {
     color: var(--color-text-secondary);
     line-height: 1.6;
   }
-  .try-copy .hint {
-    font-family: var(--font-mono);
-    font-size: 0.85rem;
-    color: var(--color-ink);
-  }
-  .try-art {
+  .run-art {
     max-width: 11rem;
     margin-bottom: 1rem;
   }
-  .try-code {
+  .run-options {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+  .run-option h3 {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    margin: 0 0 0.35rem;
+  }
+  .run-option p {
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+    margin: 0 0 0.75rem;
+  }
+  .run-code {
     background: var(--color-fog);
     border-radius: var(--radius);
-    padding: 1.25rem;
-    font-size: 0.82rem;
+    padding: 1rem 1.25rem;
+    font-size: 0.85rem;
     overflow-x: auto;
     margin: 0;
   }
-  :root[data-theme="dark"] .try-code {
+  :root[data-theme="dark"] .run-code {
     background: #101f30;
   }
 
@@ -626,14 +699,15 @@ files copied: 4`}</code></pre>
 
   @media (max-width: 900px) {
     .hero-grid,
-    .try-panel,
+    .tour,
+    .run-panel,
     .bench-panel,
     .bench-panel.reverse,
     .migrate-panel {
       grid-template-columns: 1fr;
     }
     .hero-grid > *,
-    .try-panel > *,
+    .run-panel > *,
     .bench-panel > *,
     .migrate-panel > * {
       min-width: 0;
