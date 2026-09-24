@@ -49,16 +49,12 @@ export function useSearch(teamId: string | null) {
         // any non-zero placeholder — its value is otherwise meaningless
         // since `isQuery` rows never appear in a sorted list.
         temp = await cb.collection("cards").create({ teamRef: teamId, title: query, searchText: query, isQuery: true, order: 1 });
-        // NB: `cb.vector.nearestTo` is a bare re-export of the standalone
-        // `nearestTo(sender, collection, field, to, options)` helper
-        // (sdk/js/client/src/index.ts), not pre-bound to this client —
-        // `cb` itself has to be passed as the first argument (it
-        // implements the minimal `Sender` shape via `.send()`), or the
-        // string "cards" silently becomes `sender` and the call breaks
-        // confusingly. Worth documenting since `cb.vector.nearestTo(...)`
-        // reads like every other bound `cb.x.y()` call in this SDK and
-        // isn't.
-        const nearest = await cb.vector.nearestTo<WithRecordModel<CardsRecord>>(cb, "cards", "embedding", temp.embedding as unknown as number[], {
+        // `cb.vector.nearestTo` is now bound to the client like every
+        // other `cb.x.y()` call in the SDK (sdk/js/client/src/cratebase-only.ts's
+        // `createNearestTo`) — no more passing `cb` again as an explicit
+        // first argument. The old unbound call form still works
+        // (deprecated) for anyone who copied the previous workaround.
+        const nearest = await cb.vector.nearestTo<WithRecordModel<CardsRecord>>("cards", "embedding", temp.embedding as unknown as number[], {
           limit: 10,
           filter: `teamRef = "${teamId}" && isQuery = false && id != "${temp.id}"`,
         });

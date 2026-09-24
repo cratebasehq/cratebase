@@ -55,7 +55,6 @@ export type {
   SortSpec,
   OAuth2Provider,
 } from "./types.js";
-export const vector = { nearestTo: cratebaseOnly.nearestTo };
 export type { NearestToOptions } from "./cratebase-only.js";
 export type { ChatMessage, ChatOptions, ChatResult, ToolSchema, EnqueueOptions, EnqueuedJob, PresenceOptions, Presence, Sender } from "./cratebase-only.js";
 
@@ -97,7 +96,12 @@ export class CratebaseClient<
   readonly files: FilesService;
   readonly admin: AdminNamespace;
   readonly auth: AuthNamespace;
-  readonly vector = vector;
+  /** Vector nearest-neighbor search (`?nearestTo=`), bound to this
+   * client: `cb.vector.nearestTo("chunks", "embedding", queryVector, {
+   * limit: 5 })`. The old unbound call form (`cb.vector.nearestTo(cb,
+   * "chunks", ...)`) still works but is deprecated — see
+   * `createNearestTo`'s doc comment in `cratebase-only.ts`. */
+  readonly vector = { nearestTo: cratebaseOnly.createNearestTo(this) };
   private readonly authCollection: string;
   private readonly collections: Map<string, CollectionService<Record<string, unknown>>> = new Map();
   private readonly authNamespaces: Map<string, AuthNamespace> = new Map();

@@ -37,6 +37,53 @@ export async function nearestTo<T extends RecordModel = RecordModel>(
   });
 }
 
+/** A `nearestTo` bound to `sender`, for `CratebaseClient#vector`. Every
+ * other Cratebase-only namespace on the client (`llm`, `mcp`, `queue`,
+ * `presence`) already closes over `this` so `cb.llm.chat(...)` etc. read
+ * like ordinary bound methods; `vector.nearestTo` used to be a bare
+ * re-export of the standalone `nearestTo(sender, collection, field, to,
+ * options)` helper, which meant `cb.vector.nearestTo(...)` looked bound
+ * but silently needed `cb` passed again as its first argument (or the
+ * collection name would end up in the `sender` slot and break
+ * confusingly) — live-verified building examples/team-board. This
+ * returns a function overloaded to accept either the new bound call
+ * `(collection, field, to, options)` or the old unbound call `(sender,
+ * collection, field, to, options)`, so existing code keeps working. */
+export function createNearestTo(sender: Sender) {
+  function bound<T extends RecordModel = RecordModel>(
+    collection: string,
+    field: string,
+    to: number[] | string,
+    options?: NearestToOptions,
+  ): Promise<ListResult<T>>;
+  /**
+   * @deprecated Pass `(collection, field, to, options)` instead —
+   * `vector.nearestTo` is bound to the client now, so an explicit sender
+   * is no longer needed. Kept for backwards compatibility with code
+   * written against the old unbound helper.
+   */
+  function bound<T extends RecordModel = RecordModel>(
+    explicitSender: Sender,
+    collection: string,
+    field: string,
+    to: number[] | string,
+    options?: NearestToOptions,
+  ): Promise<ListResult<T>>;
+  function bound<T extends RecordModel = RecordModel>(
+    a: Sender | string,
+    b: string,
+    c: number[] | string,
+    d?: NearestToOptions | number[] | string,
+    e?: NearestToOptions,
+  ): Promise<ListResult<T>> {
+    if (typeof a === "string") {
+      return nearestTo<T>(sender, a, b, c, d as NearestToOptions | undefined);
+    }
+    return nearestTo<T>(a, b, c as unknown as string, d as number[] | string, e);
+  }
+  return bound;
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
