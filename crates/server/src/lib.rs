@@ -56,7 +56,9 @@ pub mod webhooks;
 pub mod zip_export;
 
 use axum::extract::DefaultBodyLimit;
+use axum::http::{header, HeaderValue};
 use axum::Router;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 pub use app::{App, TxApp};
@@ -139,10 +141,24 @@ pub fn router(app: App) -> Router {
             middleware::request_log::log_requests,
         ));
 
+    // The dashboard is the one place a framed response is a clickjacking
+    // risk worth naming (an embedded login/settings iframe); `/api` and
+    // the plugin routes answer JSON or files, never something meant to
+    // sit inside another page's frame, so they are left off this pair.
+    let dashboard = dashboard::router()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'self'"),
+        ));
+
     Router::new()
         .nest("/api", api)
         .merge(js_routes)
-        .merge(dashboard::router())
+        .merge(dashboard)
         // Deliberately outside the `/api` nest and its rate-limit/
         // logging layers — see `routes::metrics` for why (Prometheus
         // convention: unauthenticated, un-throttled, not a logged API
@@ -156,6 +172,18 @@ pub fn router(app: App) -> Router {
         .layer(middleware::cors::layer(
             &app.config().origins,
             app.config().session_cookie,
+        ))
+        // Every response, API or dashboard: never let a browser sniff a
+        // response body into an active content type, and never leak the
+        // full referrer URL cross-origin. (`files::download` layers its
+        // own sandboxing CSP on top of this for record files.)
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
         ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
