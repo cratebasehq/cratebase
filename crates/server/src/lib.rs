@@ -26,6 +26,7 @@
 pub mod api_keys;
 pub mod app;
 pub mod audit;
+pub mod automigrate;
 pub mod config;
 pub mod cookie;
 pub mod cron;

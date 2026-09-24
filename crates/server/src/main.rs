@@ -145,12 +145,14 @@ struct ServeArgs {
     /// (default true).
     #[arg(long = "session-tracking")]
     session_tracking: Option<bool>,
-    /// Verbose logging and hook reloading.
-    #[arg(long = "dev", default_value_t = false)]
-    dev: bool,
-    /// Write a migration file on every collection change.
-    #[arg(long = "automigrate", default_value_t = true, action = clap::ArgAction::Set)]
-    automigrate: bool,
+    /// Verbose logging and hook reloading. Unset falls back to `CB_DEV`
+    /// (default `false`).
+    #[arg(long = "dev", action = clap::ArgAction::SetTrue)]
+    dev: Option<bool>,
+    /// Write a migration file on every collection change. Unset falls
+    /// back to `CB_AUTOMIGRATE` (default `true`).
+    #[arg(long = "automigrate", action = clap::ArgAction::Set)]
+    automigrate: Option<bool>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -204,7 +206,7 @@ enum PluginAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    init_tracing(matches!(&cli.command, Command::Serve(a) if a.dev));
+    init_tracing(matches!(&cli.command, Command::Serve(a) if a.dev == Some(true)));
 
     match cli.command {
         Command::Serve(args) => serve(args).await,
@@ -274,8 +276,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         config.session_tracking = v;
     }
     config.public_dir = args.public_dir;
-    config.dev = args.dev;
-    config.automigrate = args.automigrate;
+    // `config` was already seeded from `CB_DEV`/`CB_AUTOMIGRATE` by
+    // `config_for` above; only override it when the flag was actually
+    // passed, so an unset flag lets the environment decide instead of
+    // silently reasserting each var's own hard-coded default.
+    if let Some(v) = args.dev {
+        config.dev = v;
+    }
+    if let Some(v) = args.automigrate {
+        config.automigrate = v;
+    }
 
     let app = App::new(config);
     cratebase_server::plugin_wasm::discover_and_register(&app)?;
@@ -443,7 +453,9 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
         }
         MigrateAction::HistorySync => {
             let mut known: Vec<String> = runner.files().map(str::to_string).collect();
-            known.extend(cratebase_server::js_migrations::known_migration_files(&app)?);
+            known.extend(cratebase_server::js_migrations::known_migration_files(
+                &app,
+            )?);
             let removed = cratebase_db::migrations::history_sync(app.db(), &known).await?;
             println!("pruned {} stale ledger row(s)", removed.len());
             for file in removed {

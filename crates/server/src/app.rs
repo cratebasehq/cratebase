@@ -437,6 +437,7 @@ impl App {
         crate::realtime::start_cross_node_listener(self);
         crate::push::bind_hooks(self);
         crate::audit::bind_hooks(self);
+        crate::automigrate::bind_hooks(self);
 
         // Toggle-gated built-in Queue plugin: `settings.queue.enabled`
         // defaults `false`. Registering it only when enabled means an
