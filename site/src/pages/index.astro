@@ -21,20 +21,20 @@ const benchmarkRows = [
 const features: [string, string, string][] = [
   ["Dynamic collections", "Define fields through the API/dashboard; a real SQL table is created and migrated for you.", "POST /api/collections"],
   ["API rules", "list/view/create/update/delete access, enforced in SQL, not application code you have to trust.", "listRule, viewRule, ..."],
-  ["Auth", "Password, refresh, verification, reset, email change, OTP, MFA, OAuth2 (Google/GitHub), impersonation, login alerts.", "POST .../auth-with-password"],
-  ["Realtime", "Subscribe to a collection or a single record over SSE; create/update/delete events as they happen.", "GET /api/realtime"],
+  ["Auth", "Password, sessions, OTP, MFA, OAuth2 (Google, GitHub, or a custom provider), superuser impersonation, new-location login alerts.", "POST .../auth-with-password"],
+  ["Realtime", "Subscribe to a collection or a single record over SSE; create/update/delete events as they happen — cross-node via LISTEN/NOTIFY on Postgres.", "GET /api/realtime"],
   ["Files", "Local disk or any S3-compatible bucket, plus thumbnails and protected-file access tokens.", "?thumb=100x100"],
   ["Batch", "Several record writes in one HTTP round trip and one SQL transaction.", "POST /api/batch"],
-  ["JS hooks", "pb_hooks/*.pb.js — PocketBase-parity lifecycle hooks and routerAdd, on an embedded QuickJS runtime.", "onRecordCreate, routerAdd"],
-  ["SQL cron jobs", "A _cron_jobs record is the whole job: name, schedule, and raw SQL. Reactive, no redeploy.", "_cron_jobs"],
+  ["JS hooks", "pb_hooks/*.pb.js — PocketBase-parity lifecycle hooks, routerAdd for custom endpoints, cronAdd for JS-scheduled jobs, on an embedded QuickJS runtime.", "onRecordCreate, routerAdd"],
+  ["Cron and queue", "A _cron_jobs record is a schedule plus raw SQL, reactive with no redeploy; an opt-in durable job queue adds retry with backoff and stale-job reclaim.", "_cron_jobs, _queue_jobs"],
   ["Webhooks", "Outgoing (_webhooks, signed) and a worked pattern for verifying inbound HMAC-signed webhooks.", "X-Cratebase-Signature"],
   ["Push notifications", "Web Push, FCM, and APNs, via _push_subscriptions.", "_push_subscriptions"],
   ["Schema as code", "Export collections to checked-in JSON; apply with a dry-run plan that flags destructive changes.", "POST /api/schema/apply?dryRun=1"],
   ["API keys", "Dashboard-minted keys as ordinary identities — for agents, CI, and services.", "Settings → API keys"],
   ["Teams", "_teams / _team_members for scoping an app collection to a workspace via rules.", "_team_members"],
-  ["Audit log", "Append-only log of schema changes, settings updates, and superuser account changes.", "_audit_log"],
+  ["Admin dashboard", "A SQL console, logs, an append-only audit log, backups, and a dev mail inbox that catches outgoing mail before a real provider is wired up.", "/_/"],
   ["Metrics", "Prometheus exposition, unauthenticated and outside /api by design.", "GET /metrics"],
-  ["Backups", "Streaming VACUUM INTO snapshots to local disk or S3, from the dashboard.", "Settings → Backups"],
+  ["SQLite or Postgres", "Same API, same filter syntax, same rules either way — including TLS/sslmode and streaming backups.", "DATABASE_URL=postgres://..."],
 ];
 
 const examples: [string, string, string][] = [
@@ -216,9 +216,9 @@ const { records: posts, loading } = useRecords(cb, "posts", { sort: "-created" }
     </ol>
   </section>
 
-  <!-- ============ THREE THINGS IT DOES THAT POCKETBASE DOESN'T ========= -->
+  <!-- ==================== PERFORMANCE, POSTGRES, AI ==================== -->
   <section class="wrap section">
-    <h2>Three things it does that PocketBase doesn't</h2>
+    <h2>Built to scale past the first weekend</h2>
 
     <article class="bench-panel">
       <div class="bench-copy">
