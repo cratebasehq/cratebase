@@ -80,6 +80,31 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// Populate collections from a JSON seed file (or a directory of
+    /// `*.json`/`*.js` seed files) through the ordinary record-creation
+    /// path. See `crate::seed`'s module doc for the file format.
+    Seed {
+        /// A JSON seed file, or a directory of `*.json`/`*.js` seed files.
+        path: String,
+        /// Update a record whose `id` already exists instead of failing,
+        /// making a rerun idempotent.
+        #[arg(long, default_value_t = false)]
+        upsert: bool,
+        /// Data directory.
+        #[arg(long = "dir", global = true)]
+        dir: Option<String>,
+    },
+    /// Wipe the data directory's database and re-run migrations. SQLite
+    /// only — see `crate::reset::refuse_if_postgres`. Requires
+    /// confirmation: an interactive `yes`/`no` prompt, or `--yes`.
+    Reset {
+        /// Skip the interactive confirmation prompt.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+        /// Data directory.
+        #[arg(long = "dir", global = true)]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -219,6 +244,8 @@ async fn main() -> anyhow::Result<()> {
             migrate_from_pocketbase(dir, pb_dir).await
         }
         Command::Plugin { action, dir } => plugin_cmd(dir, action).await,
+        Command::Seed { path, upsert, dir } => seed_cmd(dir, path, upsert).await,
+        Command::Reset { yes, dir } => reset_cmd(dir, yes).await,
     }
 }
 
@@ -333,6 +360,80 @@ async fn plugin_cmd(dir: Option<String>, action: PluginAction) -> anyhow::Result
             Ok(())
         }
     }
+}
+
+/// `cratebase seed <path> [--upsert]`. Bootstraps the target database
+/// (creating it fresh if `--dir` is new) and applies the seed file(s)
+/// through `cratebase_server::seed::run` — see that module's doc for the
+/// file format, the upsert semantics and what's transactional.
+async fn seed_cmd(dir: Option<String>, path: String, upsert: bool) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+
+    let report = cratebase_server::seed::run(&app, std::path::Path::new(&path), upsert)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"));
+
+    app.terminate(false).await;
+    let report = report?;
+    println!(
+        "seeded {} file(s): {} created, {} upserted",
+        report.files.len(),
+        report.created,
+        report.upserted
+    );
+    Ok(())
+}
+
+/// `cratebase reset [--yes]`. SQLite only (see
+/// `cratebase_server::reset::refuse_if_postgres`): wipes the data
+/// directory's database files and re-runs every migration (core and JS),
+/// so the next boot starts from a schema-only, empty database. Requires
+/// confirmation — `--yes`, or an interactive `y`/`N` prompt — since this
+/// permanently deletes data.
+async fn reset_cmd(dir: Option<String>, yes: bool) -> anyhow::Result<()> {
+    let config = config_for(dir);
+    cratebase_server::reset::refuse_if_postgres(&config).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let Some(main_path) = config.sqlite_main_path() else {
+        anyhow::bail!("cratebase reset needs a file-backed SQLite database, not `:memory:`");
+    };
+
+    println!(
+        "This will permanently delete the database at {} (and its logs) under {}.",
+        main_path.display(),
+        config.data_dir
+    );
+    if !yes && !confirm("Type 'yes' to continue: ")? {
+        anyhow::bail!("aborted; pass --yes to skip this prompt");
+    }
+
+    let removed = cratebase_server::reset::wipe_sqlite_files(&config)?;
+    for path in &removed {
+        println!("removed {}", path.display());
+    }
+
+    let app = App::new(config);
+    app.bootstrap().await?;
+    for file in cratebase_server::js_migrations::run_up(&app).await? {
+        println!("applied {file}");
+    }
+    app.terminate(false).await;
+    println!("database reset and migrations re-applied");
+    Ok(())
+}
+
+/// Read a `y`/`yes` confirmation from stdin, printing `prompt` first.
+/// Anything else (including a plain Enter) is a "no".
+fn confirm(prompt: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// Superuser records are ordinary auth records in the system
