@@ -6,6 +6,7 @@
 
 mod backend;
 mod config;
+mod dev_mailbox;
 mod error;
 mod message;
 mod template;
@@ -14,6 +15,7 @@ pub use backend::{
     LogBackend, MailBackend, RecordingBackend, ResendBackend, SmtpBackend, SmtpOptions, SmtpTls,
 };
 pub use config::MailerConfig;
+pub use dev_mailbox::{CapturedMail, DevMailbox, DEFAULT_CAPACITY};
 pub use error::{MailerError, MailerResult};
 pub use message::{format_address, Address, Message};
 pub use template::{escape_html, render_template, DEFAULT_LAYOUT};
@@ -28,15 +30,23 @@ use cratebase_core::settings::{Meta, Smtp};
 pub struct Mailer {
     from: Address,
     backend: Arc<dyn MailBackend>,
+    /// `Some` exactly when `backend` is a [`LogBackend`] — see
+    /// [`Mailer::dev_mailbox`]. Kept here rather than downcast from
+    /// `backend` on demand so callers don't need `MailBackend: Any`.
+    dev_mailbox: Option<Arc<DevMailbox>>,
 }
 
 impl Mailer {
     /// Wraps an arbitrary backend with no default sender; chain
-    /// [`Mailer::with_sender`] to set one.
+    /// [`Mailer::with_sender`] to set one. No dev mailbox — use
+    /// [`Mailer::from_settings`]/[`Mailer::from_settings_with_inbox`] for
+    /// a `Mailer` whose `Log` backend is exposed via
+    /// [`Mailer::dev_mailbox`].
     pub fn with_backend(backend: Arc<dyn MailBackend>) -> Self {
         Mailer {
             from: (String::new(), String::new()),
             backend,
+            dev_mailbox: None,
         }
     }
 
@@ -48,30 +58,59 @@ impl Mailer {
     }
 
     /// Builds from the app settings, PocketBase style: SMTP when
-    /// `smtp.enabled`, otherwise the log backend. `meta.senderAddress` /
-    /// `meta.senderName` become the default sender.
+    /// `smtp.enabled`, otherwise the log backend with its own private,
+    /// short-lived dev mailbox. `meta.senderAddress` / `meta.senderName`
+    /// become the default sender.
+    ///
+    /// Prefer [`Mailer::from_settings_with_inbox`] wherever the mailer
+    /// gets rebuilt more than once (e.g. on every `PATCH /api/settings`)
+    /// and the dev inbox should survive that — this constructor always
+    /// starts a fresh, empty one.
     ///
     /// Must be called from within a tokio runtime when SMTP is enabled:
     /// lettre's connection pool spawns its housekeeping task on build.
     pub fn from_settings(smtp: &Smtp, meta: &Meta) -> MailerResult<Self> {
-        let backend: Arc<dyn MailBackend> = if smtp.enabled {
-            Arc::new(SmtpBackend::new(&SmtpOptions {
-                host: smtp.host.clone(),
-                port: smtp.port,
-                username: smtp.username.clone(),
-                password: smtp.password.clone(),
-                auth_method: smtp.auth_method.clone(),
-                tls: if smtp.tls {
-                    SmtpTls::Implicit
-                } else {
-                    SmtpTls::OpportunisticStartTls
-                },
-                local_name: smtp.local_name.clone(),
-            })?)
-        } else {
-            Arc::new(LogBackend)
-        };
-        Ok(Mailer::with_backend(backend).with_sender(&meta.sender_address, &meta.sender_name))
+        Self::from_settings_with_inbox(smtp, meta, Arc::new(DevMailbox::default()))
+    }
+
+    /// As [`Mailer::from_settings`], but the `Log` backend (when chosen)
+    /// captures into the given `inbox` instead of a fresh one — pass the
+    /// same `Arc` across every rebuild so a dev inbox survives an
+    /// unrelated settings save.
+    pub fn from_settings_with_inbox(
+        smtp: &Smtp,
+        meta: &Meta,
+        inbox: Arc<DevMailbox>,
+    ) -> MailerResult<Self> {
+        let (backend, dev_mailbox): (Arc<dyn MailBackend>, Option<Arc<DevMailbox>>) =
+            if smtp.enabled {
+                (
+                    Arc::new(SmtpBackend::new(&SmtpOptions {
+                        host: smtp.host.clone(),
+                        port: smtp.port,
+                        username: smtp.username.clone(),
+                        password: smtp.password.clone(),
+                        auth_method: smtp.auth_method.clone(),
+                        tls: if smtp.tls {
+                            SmtpTls::Implicit
+                        } else {
+                            SmtpTls::OpportunisticStartTls
+                        },
+                        local_name: smtp.local_name.clone(),
+                    })?),
+                    None,
+                )
+            } else {
+                (
+                    Arc::new(LogBackend::with_mailbox(inbox.clone())),
+                    Some(inbox),
+                )
+            };
+        Ok(Mailer {
+            from: (meta.sender_address.clone(), meta.sender_name.clone()),
+            backend,
+            dev_mailbox,
+        })
     }
 
     /// Builds from the env-derived [`MailerConfig`] (Resend / SMTP / Log).
@@ -80,6 +119,7 @@ impl Mailer {
         from_address: &str,
         from_name: &str,
     ) -> MailerResult<Self> {
+        let mut dev_mailbox = None;
         let backend: Arc<dyn MailBackend> = match config {
             MailerConfig::Resend { api_key } => Arc::new(ResendBackend::new(api_key)),
             MailerConfig::Smtp {
@@ -101,9 +141,17 @@ impl Mailer {
                 },
                 local_name: String::new(),
             })?),
-            MailerConfig::Log => Arc::new(LogBackend),
+            MailerConfig::Log => {
+                let inbox = Arc::new(DevMailbox::default());
+                dev_mailbox = Some(inbox.clone());
+                Arc::new(LogBackend::with_mailbox(inbox))
+            }
         };
-        Ok(Mailer::with_backend(backend).with_sender(from_address, from_name))
+        Ok(Mailer {
+            from: (from_address.to_string(), from_name.to_string()),
+            backend,
+            dev_mailbox,
+        })
     }
 
     /// Alias of [`Mailer::from_config`] kept for existing callers.
@@ -132,6 +180,14 @@ impl Mailer {
     /// The wrapped backend.
     pub fn backend(&self) -> &Arc<dyn MailBackend> {
         &self.backend
+    }
+
+    /// The dev mail inbox this mailer's `Log` backend captures into, or
+    /// `None` when a real transport (SMTP/Resend) is configured. The
+    /// server's `/api/dev/mails` routes 404 whenever this is `None`, so
+    /// real outgoing mail is never exposed there.
+    pub fn dev_mailbox(&self) -> Option<Arc<DevMailbox>> {
+        self.dev_mailbox.clone()
     }
 
     /// Delivers `msg`, substituting the default sender when `msg.from`
@@ -168,6 +224,49 @@ mod tests {
             .send_html("someone@example.com", "Hello", "<p>Hi</p>")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn dev_mailbox_is_only_some_for_the_log_backend() {
+        let log_mailer = Mailer::from_settings(&Smtp::default(), &Meta::default()).unwrap();
+        assert!(log_mailer.dev_mailbox().is_some());
+
+        let smtp = Smtp {
+            enabled: true,
+            host: "smtp.example.com".into(),
+            ..Smtp::default()
+        };
+        let smtp_mailer = Mailer::from_settings(&smtp, &Meta::default()).unwrap();
+        assert!(smtp_mailer.dev_mailbox().is_none());
+
+        let (recording_mailer, _recorder) = Mailer::recording();
+        assert!(recording_mailer.dev_mailbox().is_none());
+    }
+
+    #[tokio::test]
+    async fn from_settings_with_inbox_shares_the_same_mailbox_across_rebuilds() {
+        let inbox = Arc::new(DevMailbox::default());
+        let first =
+            Mailer::from_settings_with_inbox(&Smtp::default(), &Meta::default(), inbox.clone())
+                .unwrap();
+        first
+            .send_html("a@example.com", "First", "<p>1</p>")
+            .await
+            .unwrap();
+        assert_eq!(inbox.len(), 1);
+
+        // Simulates `App::apply_settings` rebuilding the `Mailer` for an
+        // unrelated settings change: the same `inbox` is passed again, so
+        // the earlier capture is still there.
+        let second =
+            Mailer::from_settings_with_inbox(&Smtp::default(), &Meta::default(), inbox.clone())
+                .unwrap();
+        assert_eq!(second.dev_mailbox().unwrap().len(), 1);
+        second
+            .send_html("b@example.com", "Second", "<p>2</p>")
+            .await
+            .unwrap();
+        assert_eq!(inbox.len(), 2);
     }
 
     #[tokio::test]

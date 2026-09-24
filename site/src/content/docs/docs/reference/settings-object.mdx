@@ -37,6 +37,15 @@ value rather than blanking it.
 | `tls` | `false` | |
 | `localName` | `""` | HELO/EHLO hostname. |
 
+`smtp.enabled: false` — the default, and every fresh local install —
+doesn't mean mail goes nowhere: the `Log` backend keeps the last 100
+emails it "sends" in memory, browsable superuser-only at
+`GET /api/dev/mails` and in the dashboard's **Mail inbox** page (next to
+**Mail & storage**), including the raw HTML and any verification /
+password-reset / OTP token link. It stops the moment `smtp.enabled` is
+`true` — `/api/dev/mails` then 404s outright — so real outgoing mail is
+never captured there.
+
 ## `s3` (file storage)
 
 | Key | Default |

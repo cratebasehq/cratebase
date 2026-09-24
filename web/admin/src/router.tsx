@@ -10,6 +10,7 @@ import { settingsIndexRoute } from "@/routes/settings-index";
 import { settingsLogsRoute } from "@/routes/settings-logs";
 import { settingsApplicationRoute } from "@/routes/settings-application";
 import { settingsMailRoute } from "@/routes/settings-mail";
+import { settingsMailInboxRoute } from "@/routes/settings-mail-inbox";
 import { settingsSuperusersRoute } from "@/routes/settings-superusers";
 import { settingsSessionsRoute } from "@/routes/settings-sessions";
 import { settingsBackupsRoute } from "@/routes/settings-backups";
@@ -34,6 +35,7 @@ const routeTree = rootRoute.addChildren([
       settingsIndexRoute,
       settingsApplicationRoute,
       settingsMailRoute,
+      settingsMailInboxRoute,
       settingsSuperusersRoute,
       settingsSessionsRoute,
       settingsLogsRoute,

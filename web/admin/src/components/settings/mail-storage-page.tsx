@@ -1,14 +1,16 @@
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Send, TestTube } from "lucide-react";
+import { ArrowRight, Inbox, Send, TestTube } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { cb, describeFailure } from "@/lib/api";
-import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { useDevMailInboxAvailable, useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   NumberSetting,
   SecretSetting,
@@ -54,6 +56,7 @@ function validate(draft: Draft): string[] {
 
 export function MailStoragePage() {
   const { data: settings, isPending } = useSettings();
+  const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
   const save = useSettingsMutation();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [seedKey, setSeedKey] = useState<ServerSettings | undefined>(undefined);
@@ -120,6 +123,19 @@ export function MailStoragePage() {
         title="SMTP"
         description="Where verification, password-reset and OTP emails are sent from. Off means the server only logs them."
       >
+        {devMailInboxAvailable ? (
+          <Alert>
+            <Inbox />
+            <AlertTitle>SMTP is off — mail is going to the dev inbox</AlertTitle>
+            <AlertDescription>
+              Every email sent while SMTP is disabled lands in memory instead, including verification /
+              password-reset / OTP links.{" "}
+              <Link to="/settings/mail-inbox" className="inline-flex items-center gap-1">
+                Open Mail inbox <ArrowRight className="size-3.5" />
+              </Link>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         <SettingRow label="Enabled" htmlFor="smtp-enabled">
           <ToggleSetting
             id="smtp-enabled"

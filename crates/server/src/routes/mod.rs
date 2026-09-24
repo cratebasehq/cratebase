@@ -16,6 +16,7 @@ pub mod batch;
 pub mod collections;
 pub mod common;
 pub mod crons;
+pub mod dev_mail;
 pub mod file_manager;
 pub mod files;
 pub mod functions;
@@ -48,6 +49,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(backups::router())
         .merge(crons::router())
         .merge(functions::router())
+        .merge(dev_mail::router())
         // `/api/collections/...` is shared by three groups: the schema
         // API, the record API nested under it, and the auth endpoints.
         // They are separate modules but one route table, built once at

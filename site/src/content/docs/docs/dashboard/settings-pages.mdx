@@ -4,9 +4,18 @@ description: "Application, Mail, Network, Superusers, Backups, Logs, Cron jobs, 
 ---
 
 The Settings area covers instance-wide configuration: **Application**
-(general settings), **Mail**, **Network** (rate limits with a
+(general settings), **Mail & storage**, **Network** (rate limits with a
 collection-name autocomplete, trusted proxy, superuser IP allow-list),
 **Superusers**, **API keys**, **Backups**, **Logs**, **Audit log**,
 **Cron jobs**, **Webhooks**, **Push**, **LLM**, **MCP**, an in-dashboard
 **SQL console**, a **File manager**, **Functions** (a read-only view of
 registered `pb_hooks` routes), and **Analytics**.
+
+**Mail inbox** sits right next to **Mail & storage**, but only shows up
+in the sidebar while no real transport is configured (`smtp.enabled:
+false`, the default). It lists every email the zero-config `Log` backend
+has "sent" — newest first — and a detail pane renders the HTML body in a
+sandboxed iframe (no scripts, links open in a new tab) alongside a plain
+text view, so a verification link, password-reset link, or OTP code is
+one click away with no mail server to set up. **Mail & storage** links
+over to it whenever it's available.

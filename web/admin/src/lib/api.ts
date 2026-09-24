@@ -102,6 +102,15 @@ export async function checkBackupCapability(): Promise<boolean> {
   return res.data?.canBackup === true;
 }
 
+/** `GET /api/health`, authenticated — whether the mailer is currently
+ * running the zero-config `Log` backend (no SMTP configured), which is
+ * exactly when `/api/dev/mails` answers instead of 404ing. Drives the
+ * "Mail inbox" settings page's visibility and Mail & storage's hint. */
+export async function checkDevMailInboxAvailable(): Promise<boolean> {
+  const res = await cb.send<{ data?: { devMailInbox?: boolean } }>("/api/health");
+  return res.data?.devMailInbox === true;
+}
+
 /** `GET /api/setup/status` — unauthenticated. Tells the login screen
  * whether to render the ordinary login form or the first-run "create your
  * first superuser" form. */

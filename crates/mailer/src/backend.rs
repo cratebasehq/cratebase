@@ -2,7 +2,7 @@
 //! `Arc<dyn MailBackend>`; the server picks SMTP or Log from settings,
 //! Resend from env config, and tests use [`RecordingBackend`].
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use lettre::message::header::{ContentType, HeaderName, HeaderValue};
@@ -13,6 +13,7 @@ use lettre::transport::smtp::extension::ClientId;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use serde_json::json;
 
+use crate::dev_mailbox::DevMailbox;
 use crate::error::{MailerError, MailerResult};
 use crate::message::{format_address, Address, Message};
 
@@ -26,8 +27,42 @@ pub trait MailBackend: Send + Sync {
 /// Writes every message to the `tracing` log instead of delivering it.
 /// The zero-config default, so verification / password-reset flows are
 /// exercisable before an operator configures SMTP.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LogBackend;
+///
+/// Also keeps every message it "sends" in a [`DevMailbox`] — the source
+/// of the server's `/api/dev/mails` dev inbox. A fresh, private mailbox
+/// by default ([`LogBackend::new`]/[`Default`]); [`LogBackend::with_mailbox`]
+/// shares one across rebuilds (see `App::apply_settings`) so the inbox
+/// survives an unrelated settings save.
+#[derive(Debug, Clone)]
+pub struct LogBackend {
+    mailbox: Arc<DevMailbox>,
+}
+
+impl Default for LogBackend {
+    fn default() -> Self {
+        LogBackend {
+            mailbox: Arc::new(DevMailbox::default()),
+        }
+    }
+}
+
+impl LogBackend {
+    /// A backend with its own new, empty mailbox.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A backend that captures into the given mailbox, e.g. one an `App`
+    /// keeps around so it outlives any single `LogBackend` instance.
+    pub fn with_mailbox(mailbox: Arc<DevMailbox>) -> Self {
+        LogBackend { mailbox }
+    }
+
+    /// The mailbox this backend captures into.
+    pub fn mailbox(&self) -> &Arc<DevMailbox> {
+        &self.mailbox
+    }
+}
 
 #[async_trait]
 impl MailBackend for LogBackend {
@@ -40,6 +75,7 @@ impl MailBackend for LogBackend {
             "mailer: SMTP disabled — logging instead of sending; enable settings.smtp to deliver for real"
         );
         tracing::debug!(html = %msg.html, text = ?msg.text, "mailer: logged email body");
+        self.mailbox.capture(msg);
         Ok(())
     }
 }
@@ -86,7 +122,11 @@ impl RecordingBackend {
 #[async_trait]
 impl MailBackend for RecordingBackend {
     async fn send(&self, msg: &Message) -> MailerResult<()> {
-        LogBackend.send(msg).await?;
+        // A throwaway `LogBackend` purely for its tracing side effect —
+        // `RecordingBackend` has its own `sent` list below, so the
+        // `LogBackend`'s own dev mailbox (dropped right after) is never
+        // read by anyone.
+        LogBackend::new().send(msg).await?;
         if let Ok(mut v) = self.sent.lock() {
             v.push(msg.clone());
         }

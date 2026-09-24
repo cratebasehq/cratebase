@@ -70,6 +70,14 @@ async fn health(
                 &settings.trusted_proxy
             )),
         );
+        // Lets the dashboard show its "Mail inbox" settings page only
+        // when there's actually something to look at: the mailer's `Log`
+        // backend, and thus `/api/dev/mails`, only runs when no real
+        // transport (SMTP/Resend) is configured.
+        data.insert(
+            "devMailInbox".into(),
+            json!(app.mailer().dev_mailbox().is_some()),
+        );
     }
     (
         StatusCode::OK,
@@ -95,6 +103,61 @@ mod tests {
         let app = App::new(Config::memory(dir.path()));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
+    }
+
+    async fn superuser_token(app: &App) -> String {
+        let id = app
+            .create_superuser("admin@example.com", "password12345")
+            .await
+            .expect("create superuser");
+        app.mint_token("_superusers", &id, cratebase_auth::TokenType::Auth, 3600)
+            .await
+            .expect("mint token")
+    }
+
+    /// The dashboard's "Mail inbox" settings page reads this to decide
+    /// whether to show itself at all — it must track whether
+    /// `/api/dev/mails` will actually answer.
+    #[tokio::test]
+    async fn superuser_sees_dev_mail_inbox_flag_reflecting_the_mailer_backend() {
+        let (app, _dir) = test_app().await;
+        let token = superuser_token(&app).await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/health")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["devMailInbox"], serde_json::json!(true));
+
+        let mut settings = (*app.settings()).clone();
+        settings.smtp = cratebase_core::settings::Smtp {
+            enabled: true,
+            host: "smtp.example.com".into(),
+            ..Default::default()
+        };
+        app.set_settings(settings).await.expect("save settings");
+
+        let response = router
+            .oneshot(
+                Request::get("/health")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["devMailInbox"], serde_json::json!(false));
     }
 
     #[tokio::test]
