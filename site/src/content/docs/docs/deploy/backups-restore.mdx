@@ -1,13 +1,67 @@
 ---
 title: "Backups & restore"
-description: "VACUUM INTO snapshots, streaming upload to S3, dashboard upload/restore."
+description: "VACUUM INTO/pg_dump snapshots, streaming upload to S3, dashboard upload/restore."
 ---
 
-Backups are a `VACUUM INTO` SQLite snapshot streamed straight into a ZIP
-and then into storage (local or S3) without ever buffering the whole
-archive in memory — verified on a 1.6 GB database peaking at ~330 MB
-RSS. The dashboard's **Backups** page can trigger, list, download, and
-restore a backup. One conformance test against the real PocketBase SDK
-suite is skipped specifically because it restarts the server mid-run to
-exercise restore, which would kill the test harness itself — see
+A backup is a consistent snapshot of the main database — `VACUUM INTO`
+on SQLite, `pg_dump --format=custom` on Postgres — streamed straight
+into a ZIP and then into storage (local or S3) without ever buffering
+the whole archive in memory — verified on a 1.6 GB SQLite database
+peaking at ~330 MB RSS. The dashboard's **Backups** page can trigger,
+list, download, and restore a backup on either backend. One conformance
+test against the real PocketBase SDK suite is skipped specifically
+because it restarts the server mid-run to exercise restore, which would
+kill the test harness itself — see
 [`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md).
+
+## Postgres requirements
+
+Postgres backup/restore shells out to the real `pg_dump`/`pg_restore`
+binaries — Cratebase itself has no Postgres dump/restore logic built
+in. That means:
+
+- **The PostgreSQL client tools must be installed and on `PATH`** (or
+  pointed at explicitly via `CB_PG_DUMP_PATH`/`CB_PG_RESTORE_PATH` — see
+  `.env.example`). The official Docker image already includes them
+  (`postgresql-client` in the runtime stage) — about 13 MB downloaded,
+  ~68 MB unpacked (mostly `perl`, a dependency of its wrapper scripts,
+  not of `pg_dump`/`pg_restore` themselves).
+- **Their major version should be `>=` the Postgres server's.** `pg_dump`
+  can read an older server, but restoring a newer server's dump with an
+  older `pg_restore` is unsupported by Postgres itself and can fail in
+  confusing ways. If more than one Postgres version's client tools are
+  installed, use `CB_PG_DUMP_PATH`/`CB_PG_RESTORE_PATH` to pin the right
+  one.
+- **Connection details never touch the process's command line.** Host,
+  port, user, password, and `sslmode` all travel as environment
+  variables (`PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGSSLMODE`) to the
+  child process, so a password never leaks into `ps`/`/proc/<pid>/cmdline`
+  on a shared machine.
+- **A missing `pg_dump`/`pg_restore` fails clearly.** Both a manual
+  backup and `settings.backups.cron` report a specific, actionable error
+  naming the missing binary and the override env var, rather than a
+  generic "unsupported" message.
+- **Restoring restarts the process, same as SQLite** — even though
+  `pg_restore` runs against the live connection rather than swapping a
+  file, every schema/settings cache loaded at boot still needs to be
+  rebuilt from what the restore just wrote, and re-exec is the same
+  mechanism SQLite already needs for its own reasons.
+- **A backup only restores onto the same engine it was taken from.**
+  Restoring a SQLite archive (`data.db`) onto a Postgres deployment, or
+  a Postgres archive (`data.pgdump`) onto SQLite, is rejected with a
+  clear `400` rather than attempted.
+
+## Scheduled backups
+
+`settings.backups.cron` runs `create_scheduled` on a schedule and keeps
+only the newest `cronMaxKeep` archives. A failure there used to be only
+a `tracing::error!` line — invisible unless someone was already tailing
+logs. It's now also recorded:
+
+- as an `_audit_log` row (`backup.scheduled_failed`) with the error
+  message, so it shows up alongside every other consequential
+  superuser-visible event; and
+- as the last-scheduled-backup status returned by
+  `GET /api/backups/storage-info` (time, ok/error, message), which the
+  dashboard's Backups page renders as a badge next to the storage
+  location.

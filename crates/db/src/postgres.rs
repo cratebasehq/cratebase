@@ -31,6 +31,7 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::engine::{Engine, Executor, Row, Sql, Transaction, TransactionImpl};
 use crate::error::{DbError, DbResult};
+use crate::pg_tools::{self, PgConnParams};
 use crate::postgres_tls;
 
 /// Default pool size when the caller has no better idea.
@@ -51,6 +52,12 @@ pub struct PostgresEngine {
     /// negotiate TLS the same way the pool does, not silently fall back
     /// to a plaintext `NoTls` connection just because it dials directly.
     tls: Option<rustls::ClientConfig>,
+    /// The original six-value `sslmode` `connect` parsed (see
+    /// `postgres_tls::extract_sslmode`), kept alongside `config`/`tls`
+    /// (which only preserve the *collapsed* three-value driver mode) so
+    /// `conn_params` can hand `pg_dump`/`pg_restore` the exact value the
+    /// operator configured via `PGSSLMODE`.
+    ssl_mode: postgres_tls::SslMode,
     /// Set by `close()` so the `subscribe_realtime` reconnect loop —
     /// which holds its own dedicated connection invisible to
     /// `pool.close()` — actually stops instead of reconnecting forever
@@ -99,6 +106,7 @@ impl PostgresEngine {
             pool,
             config,
             tls,
+            ssl_mode,
             listen_cancelled: Arc::new(AtomicBool::new(false)),
             listen_cancel: Arc::new(tokio::sync::Notify::new()),
         })
@@ -106,6 +114,56 @@ impl PostgresEngine {
 
     pub fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// Extract enough of `self.config` to shell out to `pg_dump`/
+    /// `pg_restore` (`crate::pg_tools`). Errors only when the connection
+    /// somehow has neither a host nor a password made of valid UTF-8 —
+    /// both would already have made `connect` fail against a real
+    /// server, so this is effectively unreachable outside of a
+    /// hand-built `Config`.
+    fn conn_params(&self) -> DbResult<PgConnParams> {
+        let host = self
+            .config
+            .get_hosts()
+            .first()
+            .map(|h| match h {
+                tokio_postgres::config::Host::Tcp(host) => host.clone(),
+                #[cfg(unix)]
+                tokio_postgres::config::Host::Unix(path) => path.to_string_lossy().into_owned(),
+            })
+            .ok_or_else(|| {
+                DbError::Other(
+                    "postgres connection has no host to pass to pg_dump/pg_restore".into(),
+                )
+            })?;
+        let port = self.config.get_ports().first().copied().unwrap_or(5432);
+        let user = self
+            .config
+            .get_user()
+            .ok_or_else(|| DbError::Other("postgres connection has no user".into()))?
+            .to_string();
+        let password = self
+            .config
+            .get_password()
+            .map(|bytes| {
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|_| DbError::Other("postgres password is not valid UTF-8".into()))
+            })
+            .transpose()?;
+        let dbname = self
+            .config
+            .get_dbname()
+            .ok_or_else(|| DbError::Other("postgres connection has no database name".into()))?
+            .to_string();
+        Ok(PgConnParams {
+            host,
+            port,
+            user,
+            password,
+            dbname,
+            sslmode: self.ssl_mode,
+        })
     }
 }
 
@@ -539,8 +597,23 @@ impl Engine for PostgresEngine {
         self.execute("ANALYZE", &[]).await.map(|_| ())
     }
 
-    async fn snapshot_to(&self, _dest_path: &str) -> DbResult<()> {
-        Err(DbError::Unsupported("postgres snapshot".into()))
+    async fn snapshot_to(&self, dest_path: &str) -> DbResult<()> {
+        let params = self.conn_params()?;
+        let pg_dump = pg_tools::find_pg_tool("pg_dump", pg_tools::CB_PG_DUMP_PATH)?;
+        let invocation =
+            pg_tools::build_pg_dump_invocation(pg_dump, &params, std::path::Path::new(dest_path));
+        pg_tools::run_tool(invocation).await
+    }
+
+    async fn restore_from(&self, source_path: &str) -> DbResult<()> {
+        let params = self.conn_params()?;
+        let pg_restore = pg_tools::find_pg_tool("pg_restore", pg_tools::CB_PG_RESTORE_PATH)?;
+        let invocation = pg_tools::build_pg_restore_invocation(
+            pg_restore,
+            &params,
+            std::path::Path::new(source_path),
+        );
+        pg_tools::run_tool(invocation).await
     }
 
     async fn close(&self) -> DbResult<()> {

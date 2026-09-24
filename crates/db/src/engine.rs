@@ -245,9 +245,22 @@ pub trait Engine: Executor {
     async fn optimize(&self) -> DbResult<()>;
 
     /// Produce a consistent snapshot of the database at `dest_path`
-    /// (SQLite: `VACUUM INTO`; Postgres: not supported, returns an
-    /// error the backup service reports).
+    /// (SQLite: `VACUUM INTO`; Postgres: shells out to `pg_dump
+    /// --format=custom`, see `crate::pg_tools`).
     async fn snapshot_to(&self, dest_path: &str) -> DbResult<()>;
+
+    /// Restore this engine's live data from a [`snapshot_to`](Engine::snapshot_to)
+    /// archive at `source_path`. SQLite doesn't implement this: a
+    /// restore there works entirely by swapping the database *file* on
+    /// disk while the process is down (see
+    /// `crates/server/src/routes/backups.rs`), which needs no help from
+    /// the engine itself. Postgres, whose data isn't a file a restore
+    /// can swap out from under a running server, overrides this instead
+    /// — `pg_restore --clean --if-exists --single-transaction` against
+    /// the live database (`crate::pg_tools`).
+    async fn restore_from(&self, _source_path: &str) -> DbResult<()> {
+        Err(DbError::Unsupported("engine restore".into()))
+    }
 
     /// Close every connection. Called before a backup restore swaps the
     /// data directory.

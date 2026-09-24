@@ -30,6 +30,7 @@ pub mod expand;
 pub mod logs;
 pub mod migrations;
 pub mod params;
+mod pg_tools;
 pub mod postgres;
 mod postgres_tls;
 pub mod query;

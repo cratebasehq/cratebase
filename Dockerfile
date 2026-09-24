@@ -64,7 +64,16 @@ RUN find crates -name '*.rs' -exec touch {} + \
 
 # ---- runtime --------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+# postgresql-client gives `pg_dump`/`pg_restore` for Postgres backup/restore
+# (crates/db/src/pg_tools.rs; see docs/deploy/backups-restore) — pulled in
+# so a Postgres deployment doesn't need to install them separately. Cost on
+# debian:bookworm-slim: ~13 MB of archives downloaded, ~68 MB of additional
+# disk space once unpacked (`apt-get install --no-install-recommends
+# postgresql-client`'s own accounting) — most of that is `perl`, a hard
+# dependency of postgresql-client-common's wrapper scripts, not of
+# pg_dump/pg_restore themselves. Judged worth it: the alternative is every
+# Postgres-backed deployment installing it by hand before backups work.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates postgresql-client && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 cratebase
 WORKDIR /app
 COPY --from=builder /app/target/release/cratebase /usr/local/bin/cratebase
