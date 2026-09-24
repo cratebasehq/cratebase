@@ -461,6 +461,7 @@ impl App {
         crate::realtime::start_cross_node_listener(self);
         crate::push::bind_hooks(self);
         crate::audit::bind_hooks(self);
+        crate::automigrate::bind_hooks(self);
 
         // Toggle-gated built-in Queue plugin: `settings.queue.enabled`
         // defaults `false`. Registering it only when enabled means an
@@ -503,6 +504,13 @@ impl App {
     /// their routes) and listen.
     pub async fn serve(self) -> anyhow::Result<()> {
         self.bootstrap().await?;
+
+        // After the core (Rust) migrations `bootstrap` already ran, before
+        // the listener accepts a single request — matching PocketBase's
+        // "migrations run automatically on `serve` startup".
+        for file in crate::js_migrations::run_up(&self).await? {
+            tracing::info!(file = %file, "applied JS migration");
+        }
 
         let address = format!("{}:{}", self.config().host, self.config().port);
         let router = crate::router(self.clone());

@@ -26,6 +26,7 @@
 pub mod api_keys;
 pub mod app;
 pub mod audit;
+pub mod automigrate;
 pub mod config;
 pub mod cookie;
 pub mod cron;
@@ -36,6 +37,7 @@ pub mod events;
 pub mod extract;
 pub mod hooks;
 pub mod http_error;
+pub mod js_migrations;
 pub mod jsvm_host;
 pub mod llm;
 pub mod mcp;

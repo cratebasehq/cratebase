@@ -1,15 +1,42 @@
 ---
 title: "CLI"
-description: "serve, superuser create, migrate-from-pocketbase, and env precedence."
+description: "serve, superuser, migrate, schema, plugin, migrate-from-pocketbase, and env precedence."
 ---
 
 ```
 cratebase serve                                   # start the server
+cratebase serve --dev --automigrate=false         # verbose logging + hook reloading; don't write migration files
+
 cratebase superuser create <email> <password>     # headless first-superuser (or any additional one)
+cratebase superuser update <email> <password>
+cratebase superuser upsert <email> <password>     # create or update, whichever applies
+cratebase superuser delete <email>
+cratebase superuser otp <email>                   # print a one-time OTP code/id, for a locked-out dashboard
+
+cratebase migrate up                              # apply every pending migration (core + pb_migrations/*.js)
+cratebase migrate down [n]                        # revert the last n (default 1) from each history
+cratebase migrate create <name>                   # scaffold a pb_migrations/<timestamp>_<name>.js stub
+cratebase migrate collections                     # snapshot every current collection into a migration
+cratebase migrate history-sync                     # drop ledger rows whose migration file no longer exists
+
+cratebase schema pull --out schema.json           # snapshot the live schema to a JSON file
+cratebase schema push schema.json [--dry-run] [--force]   # apply a schema-as-code file's diff
+
+cratebase plugin install <path>                   # install a local WASM plugin
+cratebase plugin list
+
 cratebase migrate-from-pocketbase <pb_data> --dir <dir>   # one-shot PocketBase import
 ```
+
+See [JavaScript hooks](/docs/extending/js-hooks/#migrations) for what
+`migrate up`/`down`/`create`/`collections`/`history-sync` actually do,
+and [Schema as code](/docs/extending/schema-as-code/) for `schema
+pull`/`push`.
 
 Flags generally mirror their environment-variable equivalents (e.g.
 `--dir` vs `CRATEBASE_DATA_DIR`); an explicit flag on the command line
 wins over the environment variable when both are set for the same
-option.
+option — except `serve --dev`/`--automigrate`, which fall back to
+`CB_DEV`/`CB_AUTOMIGRATE` (rather than each flag's own hard-coded
+default) whenever the flag itself is left off the command line, so
+setting only the env var still works.

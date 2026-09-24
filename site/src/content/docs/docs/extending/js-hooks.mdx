@@ -1,6 +1,6 @@
 ---
 title: "JavaScript hooks"
-description: "pb_hooks/*.pb.js: lifecycle hooks, routerAdd, and cronAdd on an embedded QuickJS runtime."
+description: "pb_hooks/*.pb.js: lifecycle hooks, routerAdd, and cronAdd on an embedded QuickJS runtime. Plus pb_migrations/*.js migrations on the same runtime."
 ---
 
 Drop a `*.pb.js` file in `pb_hooks/` next to your data directory (or
@@ -45,3 +45,54 @@ to the same event run in one priority-ordered chain rather than JS
 always going first or last. A hook that throws aborts the chain (and,
 on a write-path hook, rolls back the transaction it's part of) and
 propagates as the request's error response.
+
+## Migrations
+
+Drop a `*.js` file in `pb_migrations/` (or point `CB_MIGRATIONS_DIR` at
+it) for the same `migrate((app) => { ... }, (app) => { ... })` API
+PocketBase uses:
+
+```js
+/// <reference path="../pb_data/types.d.ts" />
+migrate((app) => {
+  const collection = new Collection({
+    name: "widgets",
+    type: "base",
+    fields: [{ name: "title", type: "text" }],
+  });
+  app.save(collection);
+}, (app) => {
+  const collection = app.findCollectionByNameOrId("widgets");
+  app.delete(collection);
+});
+```
+
+Pending migrations run automatically on `serve` startup (right after the
+built-in schema migrations, before the server starts accepting requests)
+and from `cratebase migrate up`/`migrate down [n]` — the JS runtime
+starts for this even if `pb_hooks/` has no file at all. Each migration's
+`up`/`down` runs in its own transaction (`$app.runInTransaction`
+implicitly wraps it), so a migration that throws rolls back and is never
+recorded as applied. Applied migrations are tracked in the same
+`_migrations` table the built-in migrations use, distinguished by their
+`.js` filename.
+
+- `cratebase migrate create <name>` scaffolds a
+  `pb_migrations/<timestamp>_<name>.js` stub.
+- `cratebase migrate collections` writes a migration that snapshots every
+  current (non-system) collection — handy for seeding a fresh environment
+  with your exact schema instead of hand-writing it.
+- `cratebase migrate history-sync` drops ledger rows whose file no longer
+  exists in `pb_migrations/`.
+
+### Automigrate
+
+With `--automigrate`/`CB_AUTOMIGRATE` on (the default), every collection
+created, updated or deleted through the dashboard/API writes a
+`pb_migrations/<timestamp>_<created|updated|deleted>_<name>.js` file for
+you and records it as already applied — so a schema change made by
+clicking around the dashboard is still reproducible from `pb_migrations/`
+alone. A file is only actually written once `pb_migrations/` already
+exists (create the directory once to opt in) or `--dev`/`CB_DEV` is set,
+so a plain production install never grows a surprise top-level directory
+the first time someone edits a collection.
