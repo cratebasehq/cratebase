@@ -320,6 +320,30 @@ POST /api/mcp {"method":"tools/list"}  // -> list_memories, create_memories, ...
     </div>
   </section>
 
+  <!-- ===================== BUILT FOR PRODUCTION ========================= -->
+  <section class="wrap section">
+    <div class="prod-panel">
+      <div class="prod-art"><CrateLocked label="A crate with a padlock: security defaults" /></div>
+      <div>
+        <h2>Production defaults, not opt-ins</h2>
+        <p>
+          None of this needs a pre-launch checklist — it's already the
+          default the day you run <code>cratebase serve</code>:
+        </p>
+        <ul class="checklist">
+          <li>Rate limiting is on out of the box — auth, create, and batch endpoints each get their own limit before you've configured anything.</li>
+          <li>A fresh instance can't be claimed by whoever finds the port first: the one-time setup URL's token is what turns "found this instance" into "owns it."</li>
+          <li>File serving is sandboxed to the configured storage root — no request path can walk outside it.</li>
+          <li>Standard security headers ship on every response.</li>
+          <li>Streaming backups, to local disk or S3, with a documented restore path — from the dashboard or the API.</li>
+          <li>Prometheus metrics at <code>/metrics</code> and a health check endpoint, both outside <code>/api</code> by design.</li>
+          <li>One binary or a Docker image — the admin dashboard is embedded at compile time, so deploying is copying one file.</li>
+        </ul>
+        <a href="/docs/deploy/security-hardening/">Security hardening →</a>
+      </div>
+    </div>
+  </section>
+
   <!-- ======================= MOVING FROM POCKETBASE ==================== -->
   <section class="wrap section">
     <div class="migrate-panel">
@@ -761,6 +785,29 @@ files copied: 4`}</code></pre>
     line-height: 1.6;
   }
 
+  .prod-art {
+    max-width: 12rem;
+    margin-top: 0.25rem;
+    justify-self: center;
+  }
+  .prod-panel {
+    display: grid;
+    grid-template-columns: 0.55fr 1.45fr;
+    gap: 2.5rem;
+    align-items: start;
+  }
+  .prod-panel > div > p {
+    color: var(--color-text-secondary);
+    line-height: 1.6;
+    margin: 0 0 1rem;
+  }
+  .prod-panel .checklist {
+    margin: 0 0 1.25rem;
+  }
+  .prod-panel .checklist li {
+    margin-bottom: 0.5rem;
+  }
+
   .example-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
@@ -825,13 +872,15 @@ files copied: 4`}</code></pre>
     .run-panel,
     .bench-panel,
     .bench-panel.reverse,
-    .migrate-panel {
+    .migrate-panel,
+    .prod-panel {
       grid-template-columns: 1fr;
     }
     .hero-grid > *,
     .run-panel > *,
     .bench-panel > *,
-    .migrate-panel > * {
+    .migrate-panel > *,
+    .prod-panel > * {
       min-width: 0;
     }
     .bench-panel.reverse .bench-copy {
@@ -843,6 +892,10 @@ files copied: 4`}</code></pre>
     .hero-art {
       max-height: 16rem;
       overflow: hidden;
+    }
+    .prod-art {
+      justify-self: start;
+      max-width: 10rem;
     }
     .migrate-art {
       justify-self: start;
