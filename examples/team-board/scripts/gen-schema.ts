@@ -26,7 +26,12 @@
 import { collectionId } from "./lib/ids.js";
 
 const TEAMS_ID = collectionId("base", "_teams");
-const USERS_ID = collectionId("auth", "users");
+// Unlike every other collection here, the built-in `users` collection
+// does *not* get the derived id: `Collection::default_users()`
+// (`crates/core/src/collection.rs`) overrides it with PocketBase's own
+// historical fixed literal, `USERS_COLLECTION_ID` (`crates/core/src/lib.rs`).
+// `collectionId("auth", "users")` would silently compute the wrong id.
+const USERS_ID = "_pb_users_auth_";
 const COLUMNS_ID = collectionId("base", "columns");
 const CARDS_ID = collectionId("base", "cards");
 
