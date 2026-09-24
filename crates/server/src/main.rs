@@ -279,10 +279,12 @@ enum PluginAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    init_tracing(matches!(
-        &cli.command,
-        Command::Serve(a) if a.dev == Some(true)
-    ) || matches!(&cli.command, Command::Dev(_)));
+    init_tracing(
+        matches!(
+            &cli.command,
+            Command::Serve(a) if a.dev == Some(true)
+        ) || matches!(&cli.command, Command::Dev(_)),
+    );
 
     match cli.command {
         Command::Serve(args) => serve(args).await,
@@ -476,7 +478,10 @@ fn print_dev_banner(app: &App, report: &cratebase_server::dev::DevReport) {
         (None, _) => {}
     }
     if let Some(diff) = &report.schema_diff {
-        println!("  Schema:         applied ({} collection(s))", diff.collections.len());
+        println!(
+            "  Schema:         applied ({} collection(s))",
+            diff.collections.len()
+        );
         for c in &diff.collections {
             if c.action != "unchanged" {
                 println!("                    {:9} {}", c.action, c.name);

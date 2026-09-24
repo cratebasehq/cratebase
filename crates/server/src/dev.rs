@@ -179,9 +179,10 @@ async fn apply_schema(app: &App, opts: &DevOptions) -> anyhow::Result<Option<Sch
     let doc: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|e| anyhow::anyhow!("{} is not valid JSON: {e}", path.display()))?;
     let info = RequestInfo::default();
-    let diff = crate::routes::schema::plan_and_apply(app, &doc, false, opts.force_schema, &info, None)
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e.error))?;
+    let diff =
+        crate::routes::schema::plan_and_apply(app, &doc, false, opts.force_schema, &info, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e.error))?;
     Ok(Some(diff))
 }
 
