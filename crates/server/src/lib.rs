@@ -129,19 +129,19 @@ pub fn router(app: App) -> Router {
     // blunt. A rule/cookie with no matching path/tag/session is simply a
     // no-op, so this changes nothing for an install with neither
     // configured.
-    let js_routes = jsvm_host::js_router(&app)
-        .layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            middleware::rate_limit::rate_limit,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            middleware::csrf::csrf,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            app.clone(),
-            middleware::request_log::log_requests,
-        ));
+    //
+    // Unlike `/api`/the dashboard/`/metrics` below, this is *not*
+    // `.merge`d into the tree: `jsvm_host::js_router` builds a snapshot of
+    // `app.js_routes()` as it stands right now, and a hook file can add,
+    // change or remove a `routerAdd` route at any time in `--dev` (see
+    // `jsvm_host::maybe_start`'s doc). Baking that snapshot into the
+    // router at boot would need a restart for any of that to take effect
+    // — exactly the bug this is fixing — so it is mounted as the
+    // top-level fallback instead, which rebuilds it fresh on every
+    // request that reaches it (see `jsvm_host::js_fallback_router`'s doc
+    // for why that's cheap and correct, including why built-in routes
+    // still always win over a same-path JS one).
+    let js_fallback = jsvm_host::js_fallback_router(&app);
 
     // The dashboard is the one place a framed response is a clickjacking
     // risk worth naming (an embedded login/settings iframe); `/api` and
@@ -159,14 +159,18 @@ pub fn router(app: App) -> Router {
 
     Router::new()
         .nest("/api", api)
-        .merge(js_routes)
         .merge(dashboard)
         // Deliberately outside the `/api` nest and its rate-limit/
         // logging layers — see `routes::metrics` for why (Prometheus
         // convention: unauthenticated, un-throttled, not a logged API
         // call).
         .merge(routes::metrics::router())
-        .fallback(http_error::not_found_fallback)
+        // Reached only when nothing above matched the request's path at
+        // all — see `js_fallback`'s doc for why the dynamic `routerAdd`
+        // dispatch belongs here instead of `.merge`d in, and for how it
+        // still answers exactly like `http_error::not_found_fallback`
+        // when no JS route matches either.
+        .fallback_service(js_fallback)
         // PocketBase answers a wrong method on a real path with 404, not
         // 405 (verified against v0.40.2), so both fallbacks are the same.
         .method_not_allowed_fallback(http_error::not_found_fallback)

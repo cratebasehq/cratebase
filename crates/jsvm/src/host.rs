@@ -290,6 +290,15 @@ pub trait HostApi: Send + Sync + 'static {
     fn register_cron(&self, id: &str, expr: &str, handler: CronHandlerId);
     fn remove_cron(&self, id: &str);
 
+    /// Forget every `routerAdd` registration reported so far. Called once
+    /// (worker 0 only) at the start of a hooks reload, right before the
+    /// hook files are evaluated again, so the host's route table always
+    /// reflects exactly what the *current* files register — a route a
+    /// changed file no longer adds is dropped instead of lingering.
+    /// Default no-op: a host with no route table (a test double, a WASM
+    /// plugin host) has nothing to forget.
+    fn clear_routes(&self) {}
+
     /// Register a JavaScript hook. The server binds a Rust handler on the
     /// matching `Hook<E>` that snapshots the event, calls
     /// [`crate::Runtime::call_hook`] and applies the outcome (see
