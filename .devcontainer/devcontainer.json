@@ -1,0 +1,22 @@
+{
+  "name": "Cratebase",
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {}
+  },
+  "forwardPorts": [8090, 5175],
+  "portsAttributes": {
+    "8090": {
+      "label": "Cratebase dashboard/API",
+      "onAutoForward": "notify"
+    },
+    "5175": {
+      "label": "team-board (Vite)",
+      "onAutoForward": "openPreview"
+    }
+  },
+  "onCreateCommand": "curl -fsSL https://bun.sh/install | bash",
+  "updateContentCommand": "export PATH=\"$HOME/.bun/bin:$PATH\" && CARGO_BUILD_JOBS=3 cargo build -p cratebase-server && bun install --cwd examples/team-board",
+  "postAttachCommand": "bash -lc 'export PATH=\"$HOME/.bun/bin:$PATH\" && cd examples/team-board && bun run dev'",
+  "remoteUser": "vscode"
+}

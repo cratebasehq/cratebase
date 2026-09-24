@@ -5,6 +5,8 @@
 **A fast, self-hostable backend — dynamic collections, auth, file storage,
 and realtime — in one Rust binary.**
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/cratebasehq/cratebase)
+
 </div>
 
 ```bash
