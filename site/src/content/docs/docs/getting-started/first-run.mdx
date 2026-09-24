@@ -15,27 +15,47 @@ of time.
 
 ## The inline setup form (no CLI required)
 
-Open `http://localhost:8090` in a browser. `GET /api/setup/status`
-reports `{"needsSetup": true}` until a superuser exists, and the
-dashboard renders an inline superuser-creation form instead of a bare
-login screen. Fill it in — email + password — and `POST /api/setup`
-creates your first `_superusers` record and logs you straight into the
-dashboard. This is a one-time, self-closing endpoint: once a superuser
-exists, `POST /api/setup` is permanently rejected, from either the form
-or a direct API call.
+`cratebase serve`'s startup log prints a one-time install token and a
+ready-to-open dashboard URL, something like:
+
+```
+no superuser exists yet — open this URL to create the first admin account
+url=http://127.0.0.1:8090/_/login?token=Ab12Cd34...
+```
+
+Open that URL. `GET /api/setup/status` reports `{"needsSetup": true}`
+until a superuser exists, and the dashboard renders an inline
+superuser-creation form instead of a bare login screen. Fill it in —
+email + password — and `POST /api/setup` creates your first
+`_superusers` record and logs you straight into the dashboard.
+
+The token in that link matters: without it (or with the wrong one),
+`POST /api/setup` is a flat `403` — a freshly deployed public instance
+isn't up for grabs by whoever finds the port first, only by whoever can
+read the boot log (or was handed `CB_SETUP_TOKEN` for a scripted
+deploy). Opening `/_/login` with no `token` in the URL at all shows a
+message pointing back at the log instead of a form nobody can submit.
+
+This is also a one-time, self-closing endpoint regardless of the token:
+once a superuser exists, `POST /api/setup` is permanently rejected, from
+either the form or a direct API call.
 
 ## Headless / scripted setup
 
 Prefer not to click through a form (CI, a Docker entrypoint, a
-first-boot script)? Create the superuser directly:
+first-boot script)? Create the superuser directly — no token needed,
+since this never goes over HTTP:
 
 ```sh
 cratebase superuser create you@example.com yourpassword
 ```
 
-Both paths are equivalent and race-safe: `setup.rs` re-checks "does a
-superuser exist" at write time, so whichever one runs first closes the
-other out — you never end up with two conflicting first-superuser flows.
+Both paths are race-safe: the dashboard's `POST /api/setup` re-checks
+"does a superuser exist" and inserts inside one write transaction (an
+advisory lock on Postgres, since SQLite's single writer already
+serializes it), so however many setup requests arrive at once, exactly
+one succeeds and the rest see the same `403` a second, later `superuser
+create` would.
 
 ## Data directory layout
 

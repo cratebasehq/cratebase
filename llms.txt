@@ -16,10 +16,15 @@ source. Everything referenced below is real and current, not aspirational.
   (S3-compatible storage), see [.env.example](./.env.example) for every
   variable.
 - From source: `cargo build --release -p cratebase-server`, then
-  `cratebase serve`. A fresh instance with no superuser yet shows an
-  inline setup form at `http://localhost:8090` (`GET /api/setup/status`,
-  `POST /api/setup`) — no CLI required. `cratebase superuser create
-  you@example.com yourpassword` still works for scripted setup. Full
+  `cratebase serve`. A fresh instance with no superuser yet logs a
+  one-time setup URL carrying an install token
+  (`http://127.0.0.1:8090/_/login?token=...`); opening it shows an inline
+  setup form (`GET /api/setup/status`, `POST /api/setup`) instead of a
+  login screen — no CLI required. `POST /api/setup` refuses to run
+  without that token (or `CB_SETUP_TOKEN`, set explicitly for a scripted
+  deploy), so whoever reads the log claims the instance, not whoever
+  finds the port first. `cratebase superuser create you@example.com
+  yourpassword` still works for scripted setup and needs no token. Full
   dashboard requires `bun run admin:build` first
   (see [ARCHITECTURE.md](./ARCHITECTURE.md#the-admin-dashboard-is-not-a-separate-deployment)).
 

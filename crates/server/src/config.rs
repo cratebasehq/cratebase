@@ -33,6 +33,7 @@
 //! | `SESSION_COOKIE_DOMAIN` | unset (host-only) | the cookie's `Domain` attribute |
 //! | `SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, or `None` (case-insensitive) |
 //! | `SESSION_COOKIE_SECURE` | `true` | whether the cookie carries `Secure` |
+//! | `CB_SETUP_TOKEN` | generated at boot | first-run install token `POST /api/setup` requires (see `crate::routes::setup`); set this for a scripted deploy that needs to know it in advance |
 //!
 //! These seed [`Settings`] on **first boot only** and are ignored once
 //! settings exist in `_params` (an operator editing them in the dashboard
@@ -90,6 +91,10 @@ pub struct Config {
     pub session_cookie_domain: String,
     pub session_cookie_same_site: SameSite,
     pub session_cookie_secure: bool,
+    /// `CB_SETUP_TOKEN`: the first-run install token, set explicitly for
+    /// a scripted deploy. `None` means `App::bootstrap` generates a
+    /// random one instead (see `crate::routes::setup`).
+    pub setup_token: Option<String>,
 }
 
 /// A cookie's `SameSite` attribute. Parsed case-insensitively from
@@ -156,6 +161,7 @@ impl Config {
             session_cookie_domain: String::new(),
             session_cookie_same_site: SameSite::Lax,
             session_cookie_secure: true,
+            setup_token: None,
         }
     }
 
@@ -224,6 +230,9 @@ impl Config {
             Err(_) => SameSite::Lax,
         };
         config.session_cookie_secure = env_bool("SESSION_COOKIE_SECURE", true);
+        config.setup_token = std::env::var("CB_SETUP_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty());
         config
     }
 

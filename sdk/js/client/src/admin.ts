@@ -281,7 +281,10 @@ export class AdminNamespace {
     return this.transport.send("/api/setup/status", {}, this.authHeader);
   }
 
-  setup(payload: { email: string; password: string; passwordConfirm: string }): Promise<void> {
+  /** `token` is the one-time install token the server logs at boot (also
+   * carried by its `/_/login?token=...` dashboard URL) or `CB_SETUP_TOKEN`
+   * for a scripted deploy — `POST /api/setup` is a 403 without it. */
+  setup(payload: { email: string; password: string; passwordConfirm: string; token: string }): Promise<void> {
     return this.transport.send("/api/setup", { method: "POST", body: payload }, this.authHeader);
   }
 }
