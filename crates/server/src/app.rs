@@ -516,7 +516,18 @@ impl App {
     /// their routes) and listen.
     pub async fn serve(self) -> anyhow::Result<()> {
         self.bootstrap().await?;
+        self.listen().await
+    }
 
+    /// Everything `serve` does *after* `bootstrap`: run JS migrations,
+    /// assemble the router, fire `on_serve` and listen until shutdown.
+    /// Split out so a caller that needs to do its own setup between
+    /// `bootstrap` and listening — `cratebase dev` runs
+    /// `crate::dev::bootstrap` (which calls `bootstrap` itself) first —
+    /// can reuse this instead of duplicating it. Assumes `bootstrap` has
+    /// already run; calling it again would panic (`bootstrap` refuses a
+    /// second call).
+    pub async fn listen(self) -> anyhow::Result<()> {
         // After the core (Rust) migrations `bootstrap` already ran, before
         // the listener accepts a single request — matching PocketBase's
         // "migrations run automatically on `serve` startup".
