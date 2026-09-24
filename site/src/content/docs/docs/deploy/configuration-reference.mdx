@@ -3,22 +3,117 @@ title: "Configuration reference"
 description: "Every environment variable, grouped by area."
 ---
 
-Every configuration variable — server, database, storage, auth, mail,
-rate limits, and the hooks directory — is documented with its default in
+Every variable below is also documented, with the same defaults, in
 [`.env.example`](https://github.com/cratebasehq/cratebase/blob/main/.env.example)
-at the repository root. Common ones: `DATABASE_URL` (defaults to a local
-SQLite file; `postgres://...` switches backends with no code change),
-`CRATEBASE_DATA_DIR`, `PORT`, `AUTH_SECRET`, `AUTH_RATE_LIMIT_ENABLED`,
-and `CB_HOOKS_DIR`.
+at the repository root — copy it to `.env` and adjust. The two are kept
+in sync mechanically: `crates/server/src/config.rs`'s `KNOWN_ENV_VARS`
+list is the canonical set of variables Cratebase actually reads, and a
+test fails the build if `.env.example` documents anything outside it.
 
-Cookie sessions are off by default and controlled by six more:
-`SESSION_COOKIE` (default `false`) turns on the httpOnly session
-cookie alongside the bearer token; `SESSION_COOKIE_NAME` (default
-`cb_session`), `SESSION_COOKIE_DOMAIN` (default unset, host-only),
-`SESSION_COOKIE_SAMESITE` (default `Lax`; `Lax`, `Strict`, or `None`),
-and `SESSION_COOKIE_SECURE` (default `true`) shape the cookie itself;
-`SESSION_TRACKING` (default `true`) writes a `_sessions` row per login
-for [listing/revocation](/docs/reference/rest-api/auth/). Turning on
-`SESSION_COOKIE` also enables `allow_credentials` on CORS, so
-`CORS_ALLOW_ORIGINS` must be an explicit origin list — the server
-refuses to boot with the default `*` and cookies both enabled.
+Two groups below behave differently from the rest, and it matters which
+group a variable is in:
+
+- **Read on every boot** (server, database, auth & sessions, AI /
+  embeddings, dev) always win over whatever is in the database, because
+  they decide how the database is reached and secured in the first
+  place.
+- **First-boot settings seed** (mail, file storage) only apply while
+  `_params` has no settings row yet — i.e. the very first time Cratebase
+  starts against a given database. After that, these env vars are
+  ignored on every subsequent boot; change them from the dashboard's
+  Settings page or `PATCH /api/settings` instead, so an operator's
+  change there can't be silently overridden by a stale `.env`.
+
+## Server
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | Bind address (`--http`). |
+| `PORT` | `8090` | Bind port (`--http`). |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated list of allowed origins, or `*` for any. |
+| `LOG_REQUESTS` | `true` | Persist every `/api/*` request to the dashboard's Logs page. On SQLite the log lives in a separate `<db>.logs.db` file so it never contends with user traffic. |
+| `CB_HOOKS_DIR` | `<data_dir>/../pb_hooks` | Directory scanned for `*.pb.js` JS hooks. |
+| `CB_MIGRATIONS_DIR` | `<data_dir>/../pb_migrations` | Directory holding `*.js` migrations written by automigrate. |
+
+## Database
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite:<data_dir>/data.db` | Main database. `postgres://...` switches backends with no code change. |
+| `CRATEBASE_DATA_DIR` | `./pb_data` | Data directory (`--dir`). |
+| `DATABASE_MAX_CONNECTIONS` | one per CPU core, clamped to `4..16` | SQLite reader pool size. No effect on Postgres. |
+| `DB_POOL_SIZE` | `10` | Postgres connection pool size. No effect on SQLite, which uses `DATABASE_MAX_CONNECTIONS` instead. |
+
+## Auth & sessions
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUTH_SECRET` (alias `CB_SECRET`) | generated once into `<data_dir>/.secret` | App-wide token signing secret. Set this explicitly in production (e.g. multi-instance deployments where every instance must share the same secret). |
+| `CB_ENCRYPTION` | unset (no encryption) | Key that encrypts `_params` values (stored SMTP/S3 credentials, etc.) at rest with AES-256-GCM. Must be **exactly 32 characters** — any other length is ignored, with a warning, and values are stored in plaintext instead of failing the boot. |
+| `AUTH_RATE_LIMIT_ENABLED` | `true` | Per-IP rate limit on the login endpoints (auth-with-password) — blunts credential-stuffing/brute-force attempts. Turn off only if you're already rate-limiting at a reverse proxy in front of Cratebase. |
+| `SESSION_TRACKING` | `true` | Whether logins write a `_sessions` row for later [listing/revocation](/docs/reference/rest-api/auth/). Stateless auth verification never depends on this. |
+| `SESSION_COOKIE` | `false` | Also accept/set an httpOnly session cookie alongside the bearer token. Turning this on also enables CORS `allow_credentials`, so `CORS_ALLOW_ORIGINS` must then be an explicit origin list — the server refuses to boot with the default `*` and cookies both enabled. |
+| `SESSION_COOKIE_NAME` | `cb_session` | The cookie's name. |
+| `SESSION_COOKIE_DOMAIN` | unset (host-only) | The cookie's `Domain` attribute. |
+| `SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, or `None` (case-insensitive). |
+| `SESSION_COOKIE_SECURE` | `true` | Whether the cookie carries `Secure`. |
+
+## AI / embeddings
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EMBEDDINGS_BASE_URL` | unset | Base URL of an OpenAI-compatible `POST {baseUrl}/embeddings` provider, used for `vector` fields with an `embedding` config. Unset (default): a deterministic, network-free fake embedder is used, so vector fields and nearest-neighbor search still work end to end without a provider. Works unmodified against OpenAI itself or a local Ollama instance (`http://localhost:11434/v1`). |
+| `EMBEDDINGS_API_KEY` | unset | Bearer token sent to the embeddings provider above, if it needs one. |
+
+## Dev
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CB_DEV` | `false` | Dev mode (`--dev`). |
+| `CB_AUTOMIGRATE` | `true` | Write migration files on schema change. |
+
+## Mail (first-boot settings seed)
+
+Unset (default): every send is logged instead of delivered — every
+email-dependent flow (verification, password reset, email change) still
+works end to end for local dev/testing without any provider set up.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CB_APP_NAME` | `Acme` | `settings.meta.appName`. |
+| `CB_APP_URL` | `http://localhost:8090` | `settings.meta.appURL`. |
+| `CB_SENDER_NAME` | `Support` | `settings.meta.senderName`. |
+| `CB_SENDER_ADDRESS` | `support@example.com` | `settings.meta.senderAddress`. |
+| `SMTP_ENABLED` | `true` once `SMTP_HOST` is set | `settings.smtp.enabled`. |
+| `SMTP_HOST` | `smtp.example.com` | `settings.smtp.host`. Setting this is what turns SMTP on (see `SMTP_ENABLED`). |
+| `SMTP_PORT` | `587` | `settings.smtp.port`. |
+| `SMTP_USERNAME` | unset | `settings.smtp.username`. |
+| `SMTP_PASSWORD` | unset | `settings.smtp.password`. |
+| `SMTP_TLS` | `false` | STARTTLS (`587`/`25`, most providers) unless `true`, which is implicit TLS (port `465`). |
+
+## File storage: S3 (first-boot settings seed)
+
+Local disk (`<data_dir>/storage`) is the default; nothing below is
+required. Works with AWS S3 and any S3-compatible service — RustFS/MinIO
+for self-hosted dev or prod, Cloudflare R2, Backblaze B2, etc. — just
+point `S3_ENDPOINT` at it. See [S3 storage](/docs/deploy/s3-storage/) for
+a walkthrough.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `S3_ENABLED` | `true` once `S3_BUCKET` is set | `settings.s3.enabled`. |
+| `S3_BUCKET` | unset | `settings.s3.bucket`. Setting this is what turns S3 on (see `S3_ENABLED`). |
+| `S3_REGION` | unset | `settings.s3.region`. |
+| `S3_ENDPOINT` | unset | `settings.s3.endpoint`. |
+| `S3_ACCESS_KEY` | unset | `settings.s3.accessKey`. |
+| `S3_SECRET` | unset | `settings.s3.secret`. |
+| `S3_FORCE_PATH_STYLE` | `false` | `settings.s3.forcePathStyle` — needed by most self-hosted S3-compatible services (RustFS, MinIO). |
+
+## OAuth2
+
+OAuth2 (Google, GitHub, or a hand-configured custom provider) is
+configured per auth collection, not through env vars: enable it and add
+a provider's client id/secret from the dashboard's collection editor
+("Authentication" > "OAuth2"), or via `_collections`' `options.oauth2`
+through the API. `google`/`github` only need a client id and secret;
+their endpoints are built in.
