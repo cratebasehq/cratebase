@@ -87,6 +87,7 @@ pub const KNOWN_ENV_VARS: &[&str] = &[
     "CB_SECRET",
     "AUTH_SECRET",
     "AUTH_RATE_LIMIT_ENABLED",
+    "CB_SETUP_TOKEN",
     "SESSION_TRACKING",
     "SESSION_COOKIE",
     "SESSION_COOKIE_NAME",
