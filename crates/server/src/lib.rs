@@ -52,6 +52,7 @@ pub mod routes;
 pub mod sessions;
 pub mod store;
 pub mod teams;
+pub mod typegen;
 pub mod webhooks;
 pub mod zip_export;
 
