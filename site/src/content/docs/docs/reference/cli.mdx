@@ -1,9 +1,12 @@
 ---
 title: "CLI"
-description: "serve, superuser, migrate, schema, plugin, typegen, seed, reset, migrate-from-pocketbase, and env precedence."
+description: "dev, serve, superuser, migrate, schema, plugin, typegen, seed, reset, migrate-from-pocketbase, and env precedence."
 ---
 
 ```
+cratebase dev                                     # one command: bootstrap + serve --dev for local development
+cratebase dev --schema schema.json --seed pb_seed --types cratebase-types.d.ts
+
 cratebase serve                                   # start the server
 cratebase serve --dev --automigrate=false         # verbose logging + hook reloading; don't write migration files
 
@@ -37,6 +40,48 @@ See [JavaScript hooks](/docs/extending/js-hooks/#migrations) for what
 and [Schema as code](/docs/extending/schema-as-code/) for `schema
 pull`/`push`.
 
+## `cratebase dev`
+
+```
+cratebase dev [--http addr] [--dir path] [--schema schema.json] [--seed path]
+              [--types path] [--no-seed] [--no-types] [--force-schema]
+```
+
+The one-command way to work on a project locally — everything below runs
+once, in order, before the server starts listening exactly like `serve
+--dev` would:
+
+1. Creates the data directory and its `pb_hooks/`/`pb_migrations/`
+   siblings if they don't exist yet.
+2. **Superuser**: `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD` set → upserts that
+   account on every run; otherwise, if no superuser exists yet, creates
+   `admin@localhost` with a random password printed once in the startup
+   banner; if a superuser already exists and neither env var is set, does
+   nothing.
+3. **Schema**: `--schema <file>`, or `./schema.json` if present, is
+   applied additively through the same diff `cratebase schema push` and
+   `POST /api/schema/apply` use — new collections and fields are
+   created, changed fields are retyped, and a field a rerun omits is only
+   *reported* (`pendingRemoval: true`) unless `--force-schema` is passed.
+4. **Seed**: if no non-system collection holds any record yet, and a
+   seed path resolves (`--seed`, `CB_SEED_DIR`, or `./pb_seed` if it
+   exists), runs it with `--upsert` semantics — see
+   [Seeding data](/docs/getting-started/first-run/#seeding-data).
+   `--no-seed` skips this step outright, and a database that already has
+   data in any collection is left alone even without the flag.
+5. **Types**: writes TypeScript types to `--types`, `CB_TYPEGEN_OUT`, or
+   `./cratebase-types.d.ts`, then keeps them rewritten on every
+   subsequent collection change via the same `--dev` + `CB_TYPEGEN_OUT`
+   watch `serve --dev` uses. `--no-types` disables both the initial write
+   and the watch.
+
+It never overrides SMTP or any other setting stored in `_params` — those
+are still configured the usual way (env vars on first boot, or `PATCH
+/api/settings` afterward). The startup banner prints the API and
+dashboard URLs, the superuser (with its password, only when freshly
+generated or upserted), the schema/seed summary, the types file path, the
+mail inbox URL, and the hooks/migrations directories.
+
 ## `seed` / `reset`
 
 `cratebase seed <path> [--upsert]` bootstraps the target database (like
@@ -46,8 +91,8 @@ create/validate path the HTTP API uses (never raw SQL), so an auth
 collection's `password` is hashed exactly like a real create and a bad
 record is rejected exactly like a bad request would be. `path` is always
 an explicit argument; `CB_SEED_DIR`/a `pb_seed/` directory next to the
-data directory is only the convention the (forthcoming) `cratebase dev`
-auto-seed uses. See [Seeding data](/docs/getting-started/first-run/#seeding-data)
+data directory is only the convention `cratebase dev`'s auto-seed (above)
+uses. See [Seeding data](/docs/getting-started/first-run/#seeding-data)
 for the file format, `--upsert`'s idempotency guarantee and the
 transaction/rollback behavior on an invalid record.
 
