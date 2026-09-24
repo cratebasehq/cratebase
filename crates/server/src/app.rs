@@ -374,9 +374,10 @@ impl App {
                 .map_err(|e| AppError::internal(format!("cannot create data dir: {e}")))?;
         }
 
-        let db = Db::connect(&config.database_url, &config.data_dir)
-            .await
-            .map_err(AppError::from)?;
+        let db =
+            Db::connect_with_pool_size(&config.database_url, &config.data_dir, config.db_pool_size)
+                .await
+                .map_err(AppError::from)?;
         // Creates `_collections`/`_params`/`_migrations`/`_logs`, runs the
         // core migrations (which seed `_superusers`, `users` and the other
         // system collections) and loads the collection store.

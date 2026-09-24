@@ -31,6 +31,7 @@ pub mod logs;
 pub mod migrations;
 pub mod params;
 pub mod postgres;
+mod postgres_tls;
 pub mod query;
 pub mod records;
 pub mod rules;
