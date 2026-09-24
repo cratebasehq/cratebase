@@ -47,6 +47,12 @@ pub struct AppInner {
     settings: ArcSwap<Settings>,
     storage: ArcSwap<Storage>,
     mailer: ArcSwap<Mailer>,
+    /// The dev-mail inbox `mailer`'s `Log` backend (when in use) captures
+    /// into — held here, separate from `mailer` itself, so it survives a
+    /// `PATCH /api/settings` that rebuilds the `Mailer` for an unrelated
+    /// reason. See `cratebase_mailer::Mailer::dev_mailbox` and
+    /// `routes::dev_mail`.
+    dev_mailbox: Arc<cratebase_mailer::DevMailbox>,
     logger: OnceLock<LogWriter>,
     /// `Arc` so the background window sweeper can hold a weak reference
     /// and stop itself when the app goes away.
@@ -138,8 +144,10 @@ impl App {
             Storage::local(std::env::temp_dir().join("cratebase-storage"))
                 .expect("a writable temp directory")
         });
-        let mailer = Mailer::from_settings(&settings.smtp, &settings.meta)
-            .unwrap_or_else(|_| Mailer::with_backend(Arc::new(cratebase_mailer::LogBackend)));
+        let dev_mailbox = Arc::new(cratebase_mailer::DevMailbox::default());
+        let mailer =
+            Mailer::from_settings_with_inbox(&settings.smtp, &settings.meta, dev_mailbox.clone())
+                .unwrap_or_else(|_| Mailer::with_backend(Arc::new(cratebase_mailer::LogBackend::new())));
 
         App {
             inner: Arc::new(AppInner {
@@ -148,6 +156,7 @@ impl App {
                 settings: ArcSwap::from_pointee(settings),
                 storage: ArcSwap::from_pointee(storage),
                 mailer: ArcSwap::from_pointee(mailer),
+                dev_mailbox,
                 logger: OnceLock::new(),
                 rate_limiter: Arc::new(RateLimiter::new()),
                 cron: CronService::new(),
@@ -559,8 +568,12 @@ impl App {
     pub fn apply_settings(&self, settings: Arc<Settings>) -> Result<(), AppError> {
         let storage = Storage::from_settings(&settings.s3, self.config().data_path())
             .map_err(|e| AppError::bad_request(format!("invalid S3 settings: {e}")))?;
-        let mailer = Mailer::from_settings(&settings.smtp, &settings.meta)
-            .map_err(|e| AppError::bad_request(format!("invalid SMTP settings: {e}")))?;
+        let mailer = Mailer::from_settings_with_inbox(
+            &settings.smtp,
+            &settings.meta,
+            self.inner.dev_mailbox.clone(),
+        )
+        .map_err(|e| AppError::bad_request(format!("invalid SMTP settings: {e}")))?;
         self.inner.rate_limiter.configure(&settings.rate_limits);
         self.inner.storage.store(Arc::new(storage));
         self.inner.mailer.store(Arc::new(mailer));
