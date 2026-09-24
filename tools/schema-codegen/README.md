@@ -1,5 +1,16 @@
 # @cratebase/schema-codegen
 
+> **Superseded by the built-in `cratebase typegen`.** Cratebase's own server binary now ships this
+> generator natively (Rust, no Node/Bun toolchain required), with a richer mapping — `select`
+> fields become string literal unions, `relation` fields get a typed `expand?` field, and
+> `<Name>Create`/`<Name>Update` input types are generated alongside each `<Name>Record` — plus a
+> zero-setup `GET /api/typegen` endpoint and a `--dev` watch that regenerates the file on every
+> schema change. Run `cratebase typegen -o src/cratebase-types.d.ts` (see
+> [the CLI reference](../../site/src/content/docs) or `cratebase typegen --help`) instead of this
+> package for any new project. This package still works and is not going away, for projects
+> already depending on it or that need it as a pure-JS build step with no Cratebase binary on
+> hand.
+
 Build-time CLI that turns a [Cratebase](https://github.com/cratebasehq/cratebase) schema-as-code
 JSON document into a single `.d.ts` file with one TypeScript `interface` per non-system
 collection. It has no dependency on the server or admin dashboard — run it from a project's own

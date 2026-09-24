@@ -1,15 +1,34 @@
 ---
 title: "CLI"
-description: "serve, superuser create, migrate-from-pocketbase, and env precedence."
+description: "serve, superuser create, migrate-from-pocketbase, typegen, and env precedence."
 ---
 
 ```
 cratebase serve                                   # start the server
 cratebase superuser create <email> <password>     # headless first-superuser (or any additional one)
 cratebase migrate-from-pocketbase <pb_data> --dir <dir>   # one-shot PocketBase import
+cratebase typegen [-o path]                       # write TypeScript types for the local schema
 ```
 
 Flags generally mirror their environment-variable equivalents (e.g.
 `--dir` vs `CRATEBASE_DATA_DIR`); an explicit flag on the command line
 wins over the environment variable when both are set for the same
 option.
+
+## `cratebase typegen`
+
+Writes a `.d.ts` file with the local data directory's schema, using the same generator as
+`GET /api/typegen` and the `--dev` `CB_TYPEGEN_OUT` watch — see
+[Generating TypeScript types](/docs/extending/schema-codegen/) for the full field mapping and the
+`Schema`/`SchemaCreate`/`SchemaUpdate` shape.
+
+```
+cratebase typegen                    # writes ./cratebase-types.d.ts
+cratebase typegen -o types.d.ts      # writes to a named file
+cratebase typegen -o -               # writes to stdout
+cratebase typegen --dir ./pb_data    # read a different data directory
+```
+
+- `-o, --out <path>` — output path, or `-` for stdout. Default: `./cratebase-types.d.ts`.
+- `--dir <path>` — data directory (same default and `CRATEBASE_DATA_DIR` precedence as every other
+  subcommand).
