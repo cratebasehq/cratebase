@@ -27,9 +27,9 @@ fn writes_to_the_default_file_when_no_out_flag_is_given() {
 
     let generated_path = dir.path().join("cratebase-types.d.ts");
     let generated = std::fs::read_to_string(&generated_path).expect("read generated types");
-    assert!(generated.contains("export interface UsersRecord {"));
-    assert!(generated.contains("export interface Schema {"));
-    assert!(generated.contains("export interface SchemaCreate {"));
+    assert!(generated.contains("export type UsersRecord = {"));
+    assert!(generated.contains("export type Schema = {"));
+    assert!(generated.contains("export type SchemaCreate = {"));
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn dash_out_writes_to_stdout_instead_of_a_file() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("export interface UsersRecord {"));
+    assert!(stdout.contains("export type UsersRecord = {"));
     assert!(!dir.path().join("cratebase-types.d.ts").exists());
 }
 
@@ -68,5 +68,5 @@ fn dash_o_writes_to_a_named_file() {
         String::from_utf8_lossy(&output.stderr)
     );
     let generated = std::fs::read_to_string(&out_path).expect("read generated types");
-    assert!(generated.contains("export interface UsersRecord {"));
+    assert!(generated.contains("export type UsersRecord = {"));
 }

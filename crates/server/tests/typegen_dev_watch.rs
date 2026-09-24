@@ -78,8 +78,8 @@ async fn rewrites_the_typegen_file_on_collection_create_when_dev_and_out_are_set
     harness.create_posts_collection().await;
 
     let generated = std::fs::read_to_string(&out_path).expect("typegen watch file written");
-    assert!(generated.contains("export interface PostsRecord {"));
-    assert!(generated.contains("export interface Schema {"));
+    assert!(generated.contains("export type PostsRecord = {"));
+    assert!(generated.contains("export type Schema = {"));
 }
 
 #[tokio::test]

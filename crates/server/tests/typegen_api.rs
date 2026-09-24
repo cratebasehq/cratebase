@@ -87,7 +87,7 @@ async fn returns_generated_types_as_a_downloadable_typescript_file() {
 
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(body.contains("export interface UsersRecord {"));
-    assert!(body.contains("export interface Schema {"));
-    assert!(body.contains("export interface SchemaCreate {"));
+    assert!(body.contains("export type UsersRecord = {"));
+    assert!(body.contains("export type Schema = {"));
+    assert!(body.contains("export type SchemaCreate = {"));
 }
