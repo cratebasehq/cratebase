@@ -144,7 +144,7 @@ export interface FakeAuth {
   isValid: boolean;
   isSuperuser: boolean;
   onChange(cb: (token: string, record: RecordModel | null) => void): () => void;
-  signIn: { password: (opts: any) => Promise<any> };
+  signIn: { password: (opts: any) => Promise<any>; magicLink: (opts: any) => Promise<any> };
   signOut(): Promise<void>;
   /** Test-only: signs a record in and notifies listeners. */
   _signInAs(record: RecordModel, token?: string): void;
@@ -176,6 +176,17 @@ export function createFakeAuth(): FakeAuth {
       async password(opts: any) {
         record = { id: "user_1", collectionId: "users", collectionName: "users", email: opts.identity };
         token = "tok_1";
+        for (const l of listeners) l(token, record);
+        return { token, record };
+      },
+      // Test-only convention: the literal token "bad-token" rejects, like
+      // a reused/expired magic link would against the real server.
+      async magicLink(opts: any) {
+        if (opts.token === "bad-token") {
+          throw new Error("Invalid or expired magic link.");
+        }
+        record = { id: "user_1", collectionId: "users", collectionName: "users", email: "ml@example.com" };
+        token = "tok_ml";
         for (const l of listeners) l(token, record);
         return { token, record };
       },

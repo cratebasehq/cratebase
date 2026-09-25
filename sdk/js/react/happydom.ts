@@ -4,4 +4,9 @@
 // environment with no DOM at all.
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
-GlobalRegistrator.register();
+// `url` gives every test a real (non-`about:blank`, non-`null`-origin)
+// starting location, so `window.history.pushState`/`window.location.*`
+// work the way they do in a real browser — needed by
+// `useMagicLinkCallback.test.tsx`, and harmless for every other test,
+// which never touches location/history.
+GlobalRegistrator.register({ url: "http://localhost/" });

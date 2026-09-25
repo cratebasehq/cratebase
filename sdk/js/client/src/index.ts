@@ -57,6 +57,8 @@ export type {
 } from "./types.js";
 export type { NearestToOptions } from "./cratebase-only.js";
 export type { ChatMessage, ChatOptions, ChatResult, ToolSchema, EnqueueOptions, EnqueuedJob, PresenceOptions, Presence, Sender } from "./cratebase-only.js";
+export type { MailRecipient, MailAddress, SendMailOptions, SendMailResult, PreviewMailOptions, PreviewMailResult } from "./cratebase-only.js";
+export { getMagicLinkTokenFromUrl } from "./cratebase-only.js";
 
 export interface CreateClientOptions {
   authStore?: AuthStore;
@@ -176,6 +178,13 @@ export class CratebaseClient<
   readonly queue = {
     enqueue: (queue: string, payload: unknown, options: cratebaseOnly.EnqueueOptions = {}) =>
       cratebaseOnly.enqueue(this, queue, payload, options),
+  };
+
+  /** `POST /api/mails/send`/`/preview` — superuser or API key only (sign
+   * in via `client.auth.as("_superusers")` or attach an API key header). */
+  readonly mails = {
+    send: (options: cratebaseOnly.SendMailOptions) => cratebaseOnly.sendMail(this, options),
+    preview: (options: cratebaseOnly.PreviewMailOptions) => cratebaseOnly.previewMail(this, options),
   };
 
   readonly presence = {
