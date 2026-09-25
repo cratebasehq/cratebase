@@ -1170,7 +1170,12 @@ mod hot_reload_tests {
         }
     }
 
-    fn json_request(method: &str, uri: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+    fn json_request(
+        method: &str,
+        uri: &str,
+        token: &str,
+        body: serde_json::Value,
+    ) -> Request<Body> {
         let mut req = Request::builder()
             .method(method)
             .uri(uri)
@@ -1480,8 +1485,14 @@ mod hot_reload_tests {
         let token = superuser_token(&app).await;
 
         for (name, fields) in [
-            ("widgets", serde_json::json!([{"name": "name", "type": "text"}])),
-            ("markers", serde_json::json!([{"name": "note", "type": "text"}])),
+            (
+                "widgets",
+                serde_json::json!([{"name": "name", "type": "text"}]),
+            ),
+            (
+                "markers",
+                serde_json::json!([{"name": "note", "type": "text"}]),
+            ),
         ] {
             let resp = router
                 .clone()
@@ -1686,11 +1697,14 @@ mod hot_reload_tests {
         // No manual `reload()` here — only the `--dev` watcher, which
         // polls once a second, gets this first version live.
         let saw_v1 = poll_until(std::time::Duration::from_secs(5), || {
-            let reject_message = reject_message.clone();
-            async move { reject_message().await.as_deref() == Some("watcher v1") }
+            let check = reject_message;
+            async move { check().await.as_deref() == Some("watcher v1") }
         })
         .await;
-        assert!(saw_v1, "the --dev watcher never picked up the first hook file write");
+        assert!(
+            saw_v1,
+            "the --dev watcher never picked up the first hook file write"
+        );
 
         // Same mtime as the file already has, new content — the same
         // shape of edit a developer makes tweaking a string in place.
@@ -1716,8 +1730,8 @@ mod hot_reload_tests {
         );
 
         let saw_v2 = poll_until(std::time::Duration::from_secs(5), || {
-            let reject_message = reject_message.clone();
-            async move { reject_message().await.as_deref() == Some("watcher v2") }
+            let check = reject_message;
+            async move { check().await.as_deref() == Some("watcher v2") }
         })
         .await;
         assert!(

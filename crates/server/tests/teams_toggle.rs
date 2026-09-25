@@ -253,7 +253,11 @@ async fn teams_enabled_toggle_via_patch_settings_takes_effect_without_a_restart(
     // Enable it the way an operator actually would: a live PATCH, no
     // restart, no direct `App::set_settings` call, no manual rebind.
     let (status, patched) = harness
-        .admin("PATCH", "/api/settings", Some(json!({"teams": {"enabled": true}})))
+        .admin(
+            "PATCH",
+            "/api/settings",
+            Some(json!({"teams": {"enabled": true}})),
+        )
         .await;
     assert_eq!(status, 200, "{patched}");
     assert!(harness.app.settings().teams.enabled);

@@ -132,8 +132,8 @@ async fn a_collection_created_by_a_separate_process_is_visible_without_restartin
 }
 
 #[tokio::test]
-async fn a_collection_deleted_by_a_separate_process_stops_being_served_without_restarting_this_one(
-) {
+async fn a_collection_deleted_by_a_separate_process_stops_being_served_without_restarting_this_one()
+{
     let dir = tempfile::tempdir().expect("temp dir");
 
     let app_a = App::new(test_config(dir.path()));

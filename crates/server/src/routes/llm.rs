@@ -276,7 +276,17 @@ async fn persist_exchange(
     let saved = app
         .run_scoped(true, {
             let collection = collection.clone();
-            move |tx| write_record(tx, collection, record, None, Write::Create, Vec::new(), input)
+            move |tx| {
+                write_record(
+                    tx,
+                    collection,
+                    record,
+                    None,
+                    Write::Create,
+                    Vec::new(),
+                    input,
+                )
+            }
         })
         .await
         .map_err(ApiError)?;
