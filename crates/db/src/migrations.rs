@@ -690,17 +690,17 @@ async fn add_bans_down(db: &Db) -> DbResult<()> {
 
 pub const ADD_EMAIL_PLATFORM: &str = "13_add_email_platform.rs";
 
-/// `_emailTemplates`/`_mailLog` follow the same story as every migration
-/// above: added to `default_system_collections()` after `INIT_SYSTEM`
-/// shipped, so an existing database needs this follow-up migration to
-/// retroactively get both tables. A fresh database already has them from
-/// `INIT_SYSTEM`, so those two inserts are no-ops there — but the seed
-/// step below always runs (once, per the migration ledger), on a fresh
-/// database and an upgraded one alike, since seeding rows is not
-/// something `default_system_collections()`/`INIT_SYSTEM` do for *any*
-/// collection.
+/// `_emailTemplates`/`_mailLog`/`_magicLinks` follow the same story as
+/// every migration above: added to `default_system_collections()` after
+/// `INIT_SYSTEM` shipped, so an existing database needs this follow-up
+/// migration to retroactively get all three tables. A fresh database
+/// already has them from `INIT_SYSTEM`, so those inserts are no-ops there
+/// — but the seed step below always runs (once, per the migration
+/// ledger), on a fresh database and an upgraded one alike, since seeding
+/// rows is not something `default_system_collections()`/`INIT_SYSTEM` do
+/// for *any* collection.
 async fn add_email_platform_up(db: &Db) -> DbResult<()> {
-    for name in ["_emailTemplates", "_mailLog"] {
+    for name in ["_emailTemplates", "_mailLog", "_magicLinks"] {
         if db.collections.get_by_name(name).is_none() {
             let collection = Collection::default_system_collections()
                 .into_iter()
@@ -714,7 +714,7 @@ async fn add_email_platform_up(db: &Db) -> DbResult<()> {
 }
 
 async fn add_email_platform_down(db: &Db) -> DbResult<()> {
-    for name in ["_mailLog", "_emailTemplates"] {
+    for name in ["_magicLinks", "_mailLog", "_emailTemplates"] {
         if db.collections.get_by_name(name).is_some() {
             db.collections.delete(&*db.engine, name).await?;
         }
@@ -887,6 +887,7 @@ mod tests {
         assert!(db.collections.get("_audit_log").is_some());
         assert!(db.collections.get("_emailTemplates").is_some());
         assert!(db.collections.get("_mailLog").is_some());
+        assert!(db.collections.get("_magicLinks").is_some());
         assert!(db.collections.get("_superusers").unwrap().system);
         for t in [
             "_superusers",
@@ -907,6 +908,7 @@ mod tests {
             "_audit_log",
             "_emailTemplates",
             "_mailLog",
+            "_magicLinks",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }

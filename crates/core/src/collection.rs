@@ -759,6 +759,41 @@ impl Collection {
                 .into(),
         ];
 
+        // Token store for `authOptions.magicLink` (`crate::routes::auth`'s
+        // `request-magic-link`/`auth-with-magic-link` in the server
+        // crate), same shape and trust tier as `_otps` immediately above
+        // — the only difference is a hashed opaque `tokenHash` (looked up
+        // by exact match, like `_sessions.tokenHash`) in place of a
+        // hashed short code looked up by `otpId`, since a magic link's
+        // token travels in a URL rather than being typed back in
+        // alongside a separate id.
+        let mut magic_links = Collection::new("_magicLinks", CollectionType::Base);
+        magic_links.system = true;
+        magic_links.list_rule = owner_rule.clone();
+        magic_links.view_rule = owner_rule.clone();
+        let mut ml_token_hash = text("tokenHash");
+        ml_token_hash.hidden = true;
+        let mut ml_sent_to = text("sentTo");
+        ml_sent_to.required = false;
+        ml_sent_to.hidden = true;
+        let mut ml_redirect_url = text("redirectUrl");
+        ml_redirect_url.required = false;
+        let pos = magic_links.fields.len() - 2;
+        magic_links.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                ml_token_hash,
+                ml_sent_to,
+                ml_redirect_url,
+            ],
+        );
+        magic_links.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_magicLinks_tokenHash` ON `_magicLinks` (tokenHash)".into(),
+            "CREATE INDEX `idx_magicLinks_collectionRef_recordRef` ON `_magicLinks` (collectionRef, recordRef)".into(),
+        ];
+
         let mut origins = Collection::new("_authOrigins", CollectionType::Base);
         origins.system = true;
         origins.list_rule = owner_rule.clone();
@@ -1322,6 +1357,7 @@ impl Collection {
             external,
             mfas,
             otps,
+            magic_links,
             origins,
             sessions,
             bans,
@@ -1484,6 +1520,7 @@ mod tests {
                 crate::ids::collection_id("base", "_externalAuths").as_str(),
                 "pbc_2279338944",
                 "pbc_1638494021",
+                crate::ids::collection_id("base", "_magicLinks").as_str(),
                 crate::ids::collection_id("base", "_authOrigins").as_str(),
                 crate::ids::collection_id("base", "_sessions").as_str(),
                 crate::ids::collection_id("base", "_bans").as_str(),
