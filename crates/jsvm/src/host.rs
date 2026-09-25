@@ -248,6 +248,25 @@ pub trait HostApi: Send + Sync + 'static {
         params: Map<String, Value>,
     ) -> Result<Vec<Map<String, Value>>, AppError>;
 
+    /// The write-capable counterpart of [`raw_query`](HostApi::raw_query):
+    /// runs any statement — `CREATE EXTENSION`, `INSERT`/`UPDATE`/`DELETE`,
+    /// arbitrary DDL — and returns the number of rows it reports affected
+    /// (`0` for a statement that doesn't report one, e.g.
+    /// `CREATE EXTENSION`). Exposed as `$app.db().exec(sql, params?)`.
+    ///
+    /// This is deliberately *not* restricted to migrations at the trait
+    /// level: the whole jsvm runtime is already the same operator-trusted
+    /// tier as `$app.save`/`$app.delete` and a `_cron_jobs` row's `sql`
+    /// (both already run arbitrary writes with no rule enforcement in
+    /// between — see `crates/server/src/cron_jobs.rs`'s trust-boundary
+    /// doc), so a write-capable `db().exec` adds no new *capability*, only
+    /// a way to reach SQL those two can't express (extensions, bespoke
+    /// indexes, ...) — which is exactly the point of being able to
+    /// version something like `CREATE EXTENSION postgis` from a
+    /// `pb_migrations/*.js` file. `{:name}` placeholders in `sql` bind to
+    /// real driver-level parameters from `params`, same as `raw_query`.
+    async fn db_exec(&self, sql: &str, params: Map<String, Value>) -> Result<u64, AppError>;
+
     /// Create (`record.is_new()`) or update a record, returning the
     /// persisted state.
     async fn save_record(&self, record: Record) -> Result<Record, AppError>;

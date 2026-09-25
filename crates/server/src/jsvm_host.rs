@@ -324,6 +324,15 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
             .collect())
     }
 
+    async fn db_exec(&self, sql: &str, params: Map<String, Value>) -> Result<u64, AppError> {
+        let (bound_sql, bound_params) = bind_raw_query_params(sql, &params)?;
+        self.0
+            .executor()
+            .execute(&bound_sql, &bound_params)
+            .await
+            .map_err(AppError::from)
+    }
+
     async fn save_record(&self, mut record: Record) -> Result<Record, AppError> {
         let store = &self.0.app().db().collections;
         if record.is_new() {
@@ -1087,6 +1096,72 @@ mod raw_query_tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(json["error"].as_str().unwrap().contains("SELECT"));
+    }
+
+    /// `$app.db().exec` is write-capable where `rawQuery` refuses: a
+    /// migration versioning `CREATE EXTENSION postgis` (SQLite here
+    /// stands in for any DDL `rawQuery` would reject) and a plain write
+    /// both go through, with `{:name}` still binding as a real parameter
+    /// rather than being inlined into the SQL text.
+    #[tokio::test]
+    async fn db_exec_runs_writes_raw_query_would_reject() {
+        let hook = r#"
+            routerAdd("GET", "/db-exec-test", (e) => {
+                try {
+                    $app.db().exec("CREATE TABLE IF NOT EXISTS db_exec_test (id TEXT)");
+                    const affected = $app.db().exec(
+                        "INSERT INTO db_exec_test (id) VALUES ({:id})",
+                        { id: "row-1" }
+                    );
+                    const rows = $app.rawQuery("SELECT id FROM db_exec_test");
+                    e.json(200, { affected, rows });
+                } catch (err) {
+                    e.json(500, { error: String(err.message || err) });
+                }
+            });
+        "#;
+        let (app, _dir) = test_app_with_hook(hook).await;
+        let router = crate::router(app);
+        let response = router.oneshot(get("/db-exec-test")).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status, StatusCode::OK, "body: {json:?}");
+        assert_eq!(json["affected"], 1);
+        let rows = json["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "row-1");
+    }
+
+    /// An injection attempt through a `db().exec` parameter stays a bound
+    /// literal, never SQL — the same guarantee `bind_raw_query_params`
+    /// already gives `rawQuery`.
+    #[tokio::test]
+    async fn db_exec_binds_params_not_string_interpolation() {
+        let hook = r#"
+            routerAdd("GET", "/db-exec-injection", (e) => {
+                $app.db().exec("CREATE TABLE IF NOT EXISTS db_exec_inj (id TEXT)");
+                $app.db().exec(
+                    "INSERT INTO db_exec_inj (id) VALUES ({:id})",
+                    { id: "x'); DROP TABLE db_exec_inj; --" }
+                );
+                const rows = $app.rawQuery("SELECT id FROM db_exec_inj");
+                e.json(200, { rows });
+            });
+        "#;
+        let (app, _dir) = test_app_with_hook(hook).await;
+        let router = crate::router(app);
+        let response = router.oneshot(get("/db-exec-injection")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rows = json["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "x'); DROP TABLE db_exec_inj; --");
     }
 
     #[test]
