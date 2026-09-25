@@ -1,0 +1,113 @@
+---
+title: "Recipes: magic link & OTP login"
+description: "Minimal React examples for passwordless sign-in."
+sidebar:
+  order: 6
+---
+
+Both flows below need their collection's own toggle enabled first —
+`authOptions.magicLink.enabled` / `authOptions.otp.enabled`, `false` by
+default (see [Magic link](/docs/concepts/authentication/magic-link/) and
+[OTP](/docs/concepts/authentication/otp/)).
+
+## Magic link
+
+A sign-in form that emails a link, plus a callback page that completes
+the sign-in when the recipient clicks it.
+
+```tsx
+// SignInPage.tsx
+import { useState } from "react";
+import { useCratebase } from "@cratebase/react";
+
+export function SignInPage() {
+  const cb = useCratebase();
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await cb.auth.magicLink.request({
+      email,
+      redirectUrl: `${window.location.origin}/auth/callback`,
+    });
+    setSent(true); // always show this — the server never reveals whether the address exists
+  }
+
+  if (sent) return <p>Check your email for a sign-in link.</p>;
+  return (
+    <form onSubmit={handleSubmit}>
+      <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+      <button type="submit">Email me a sign-in link</button>
+    </form>
+  );
+}
+```
+
+```tsx
+// AuthCallbackPage.tsx — mounted at /auth/callback
+import { useMagicLinkCallback } from "@cratebase/react";
+import { useCratebase } from "@cratebase/react";
+
+export function AuthCallbackPage() {
+  const cb = useCratebase();
+  const { status, error } = useMagicLinkCallback(cb);
+
+  if (status === "pending" || status === "idle") return <p>Signing you in…</p>;
+  if (status === "error") return <p>That link is invalid or has expired: {String(error)}</p>;
+  if (status === "success") return <p>Signed in! Redirecting…</p>;
+  return <p>No sign-in link found in the URL.</p>;
+}
+```
+
+`useMagicLinkCallback` reads the `?token=` query param (matching the
+default `authOptions.magicLink.urlTemplate`), calls
+`cb.auth.signIn.magicLink({ token })`, and strips the param from the URL
+on success. Without React, the same three lines are:
+
+```ts
+import { getMagicLinkTokenFromUrl } from "@cratebase/client";
+
+const token = getMagicLinkTokenFromUrl();
+if (token) await cb.auth.signIn.magicLink({ token });
+```
+
+## OTP
+
+```tsx
+import { useState } from "react";
+import { useCratebase } from "@cratebase/react";
+
+export function OtpSignIn() {
+  const cb = useCratebase();
+  const [email, setEmail] = useState("");
+  const [otpId, setOtpId] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+
+  async function requestCode(e: React.FormEvent) {
+    e.preventDefault();
+    const { otpId } = await cb.auth.otp.request({ email });
+    setOtpId(otpId);
+  }
+
+  async function confirmCode(e: React.FormEvent) {
+    e.preventDefault();
+    await cb.auth.signIn.otp({ otpId: otpId!, code });
+  }
+
+  if (!otpId) {
+    return (
+      <form onSubmit={requestCode}>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        <button type="submit">Email me a code</button>
+      </form>
+    );
+  }
+  return (
+    <form onSubmit={confirmCode}>
+      <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="8-digit code" required />
+      <button type="submit">Sign in</button>
+    </form>
+  );
+}
+```

@@ -24,6 +24,8 @@ for the token model these endpoints share.
 | `POST .../confirm-email-change` | none | Consume it (acting record comes from the token) |
 | `POST .../request-otp` | none | Email a one-time login code |
 | `POST .../auth-with-otp` | none | Complete OTP login |
+| `POST .../request-magic-link` | none | Email a single-use sign-in link |
+| `POST .../auth-with-magic-link` | none | Complete magic-link login |
 | `POST .../impersonate/{id}` | bearer (superuser) | Mint a non-refreshable token for another record |
 | `POST .../auth-signout` | bearer | Revoke the session backing the current token |
 | `GET .../sessions` | bearer | List the caller's own sessions (or another record's, as superuser) |
@@ -52,11 +54,24 @@ shape on this page.
 
 ### `request-*` endpoints always answer `204`
 
-`request-verification`, `request-password-reset`, and `request-otp` all
-answer `204` (or, for OTP, `200 { "otpId" }`) **regardless of whether the
-address exists** — this is deliberate account-enumeration resistance,
-not a bug to work around. See [Email flows](/docs/concepts/authentication/email-flows/)
-and [OTP](/docs/concepts/authentication/otp/).
+`request-verification`, `request-password-reset`, `request-otp`, and
+`request-magic-link` all answer `204` (or, for OTP, `200 { "otpId" }`;
+for magic-link, `200 {}`) **regardless of whether the address exists** —
+this is deliberate account-enumeration resistance, not a bug to work
+around. See [Email flows](/docs/concepts/authentication/email-flows/),
+[OTP](/docs/concepts/authentication/otp/), and
+[Magic link](/docs/concepts/authentication/magic-link/).
+
+### `request-magic-link` / `auth-with-magic-link`
+
+Requires `authOptions.magicLink.enabled` (default `false`) — disabled
+answers `403`. `POST .../request-magic-link` body:
+`{ "email": "...", "redirectUrl": "..." }` (`redirectUrl` optional,
+honoured only when same-origin as `settings.meta.appURL`). `POST
+.../auth-with-magic-link` body: `{ "token": "...", "mfaId": "..." }` →
+the normal `200 { "token", "record" }`, or `400` for a missing, reused,
+or expired token. See [Magic link](/docs/concepts/authentication/magic-link/)
+and [Email → Recipes](/docs/email/recipes/) for the full flow.
 
 ### `confirm-email-change`
 

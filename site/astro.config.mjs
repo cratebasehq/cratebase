@@ -101,6 +101,10 @@ export default defineConfig({
           items: [{ autogenerate: { directory: "docs/ai" } }],
         },
         {
+          label: "Email",
+          items: [{ autogenerate: { directory: "docs/email" } }],
+        },
+        {
           label: "Dashboard",
           items: [{ autogenerate: { directory: "docs/dashboard" } }],
         },

@@ -20,6 +20,13 @@ export type { CratebaseProviderProps } from "./context.js";
 export { useAuth } from "./useAuth.js";
 export type { AuthState } from "./useAuth.js";
 
+export { useMagicLinkCallback } from "./useMagicLinkCallback.js";
+export type {
+  UseMagicLinkCallbackOptions,
+  UseMagicLinkCallbackResult,
+  UseMagicLinkCallbackStatus,
+} from "./useMagicLinkCallback.js";
+
 export { useRecords } from "./useRecords.js";
 export type { UseRecordsOptions, UseRecordsResult } from "./useRecords.js";
 

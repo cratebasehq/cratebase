@@ -3,13 +3,14 @@ title: "System collections"
 description: "Names, fixed ids, and rules for every built-in collection."
 ---
 
-`_superusers`, `_mfas`, `_otps`, `_externalAuths`, `_authOrigins`,
-`_teams`, `_team_members`, `_cron_jobs`, `_webhooks`, `_audit_log`,
-`_push_subscriptions`, `_sessions`, `_bans`, and the default `users`
+`_superusers`, `_mfas`, `_otps`, `_magicLinks`, `_externalAuths`,
+`_authOrigins`, `_teams`, `_team_members`, `_cron_jobs`, `_webhooks`,
+`_audit_log`, `_push_subscriptions`, `_sessions`, `_bans`,
+`_emailTemplates`, `_mailLog`, `_emailTriggers`, and the default `users`
 auth collection all ship with fixed, deterministic ids shared with
 PocketBase's own equivalents where one exists — see
-[Collections](/docs/concepts/collections/) for the id-derivation
-formula that makes this consistent.
+[Collections](/docs/concepts/collections/) for the id-derivation formula
+that makes this consistent.
 
 `_sessions` is a live-session table: one row per issued token, written
 by the login/refresh/impersonation handlers rather than through any
@@ -30,3 +31,28 @@ target's signing key and revokes every one of its `_sessions` rows, so
 a ban takes effect on live sessions immediately, not just on the next
 login attempt. See [REST API → Auth](/docs/reference/rest-api/auth/)'s
 `ban/{id}` entry.
+
+`_magicLinks` is the token store for [magic-link login](/docs/concepts/authentication/magic-link/)
+— same shape and rules as `_otps` (owner-readable, otherwise
+superuser-only): `id`, `collectionRef`, `recordRef`, `tokenHash`
+(hidden, SHA-256 of the emailed token — looked up by exact match, like
+`_sessions.tokenHash`), `sentTo`, `redirectUrl`.
+
+`_emailTemplates` is the editable template store [Email → Templates](/docs/email/templates/)
+covers: `key` (e.g. `auth.verification`, `welcome`), `name`, `subject`,
+`html`, `text`, `locale`, `layout`, `description`, `sendRule` (nullable —
+gates non-superuser access to `POST /api/mails/send`, see
+[Email → Templates → sendRule](/docs/email/templates/#sendrule-who-else-can-send-this)),
+`design`/`editor` (dashboard-only, opaque to the server), unique on
+`(key, locale)`. Superuser-only end to end.
+
+`_mailLog` records every `POST /api/mails/send`/`$mails.send`/trigger
+attempt — see [Email → Mail log](/docs/email/mail-log/): `to` (JSON
+array of `{address, name}`), `subject`, `template`, `status`
+(`queued`/`sent`/`failed`), `error`, `messageId`. Superuser-read-only,
+append-only like `_audit_log`, pruned by `settings.logs.mailLogMaxDays`.
+
+`_emailTriggers` is the no-code trigger store [Email → Triggers](/docs/email/triggers/)
+covers: `collection`, `event` (`create`/`update`/`delete`), `template`,
+`toField`, `condition`, `enabled`, `dataMap`. Superuser-only end to end,
+same trust tier as `_webhooks`.

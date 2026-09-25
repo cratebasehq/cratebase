@@ -1,0 +1,46 @@
+---
+title: "Email overview"
+description: "SMTP/Resend transport, editable templates, a transactional send API, and magic-link login."
+sidebar:
+  order: 1
+---
+
+Cratebase's email platform is six pieces on top of the same
+[mailer](/docs/project/architecture/) every auth flow already uses:
+
+1. **Transport** — SMTP or [Resend](https://resend.com), configured via
+   `settings.smtp` (see [Settings object](/docs/reference/settings-object/)),
+   with a zero-config `Log` backend fallback that captures mail in-memory
+   (the dashboard's **Mail inbox**, `GET /api/dev/mails`) instead of
+   sending it — see [SMTP/Resend setup](/docs/email/smtp-and-resend/).
+2. **Templates** — an editable `_emailTemplates` store using `{{var}}`
+   syntax (dotted paths, HTML-escaped, `{{{raw}}}` for unescaped), a
+   shared branded base layout, locale fallback, and a dashboard editor
+   (HTML or visual) with a live preview and test send — see
+   [Templates](/docs/email/templates/).
+3. **`sendRule`** — an optional filter-expression gate on a template that
+   lets a *frontend* call `POST /api/mails/send`/`cb.mails.send(...)`
+   directly, with no backend of its own, for exactly the templates an
+   admin opts in — see [Templates → sendRule](/docs/email/templates/#sendrule-who-else-can-send-this).
+4. **Sending** — `POST /api/mails/send`/`/preview`, `$mails.send(...)` in
+   JS hooks, and `cb.mails.send(...)`/`cb.mails.preview(...)` in the
+   TypeScript SDK, all going through the same pipeline and logging to
+   `_mailLog` — see [Sending](/docs/email/sending/) and
+   [Mail log](/docs/email/mail-log/).
+5. **Triggers** — `_emailTriggers`: send a template automatically when a
+   record is created, updated, or deleted, entirely from the dashboard —
+   no Rust code, no redeploy. See [Triggers](/docs/email/triggers/).
+6. **Magic-link login** — a passwordless flow parallel to
+   [OTP](/docs/concepts/authentication/otp/), covered in
+   [Authentication → Magic link](/docs/concepts/authentication/magic-link/)
+   and [Recipes](/docs/email/recipes/).
+
+None of this changes the five built-in auth emails (verification,
+password reset, email change, OTP, new-location login alert): they keep
+using their existing per-collection `authOptions.*Template` fields and
+`{PLACEHOLDER}` syntax unchanged. What's new is an *additional*,
+lower-priority layer — an admin who never touches
+`authOptions.verificationTemplate` still gets an editable copy of that
+email at `_emailTemplates` key `auth.verification`, in the new `{{var}}`
+syntax, with no behavior change until they actually edit it. See
+[Templates → Resolution order](/docs/email/templates/#resolution-order).

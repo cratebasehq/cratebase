@@ -10,4 +10,6 @@ backed by the `_otps` system collection — codes are SHA-256 hashed, not
 Argon2id, since a code is single-use and discarded within minutes.
 `POST .../auth-with-otp` completes the login with the code. This is the
 same second-factor mechanism [MFA](/docs/concepts/authentication/mfa/)
-can require as its second step.
+can require as its second step. The email itself is customizable via
+`authOptions.otp.emailTemplate` or the `_emailTemplates` row
+`auth.otp` — see [Email → Templates](/docs/email/templates/#resolution-order).

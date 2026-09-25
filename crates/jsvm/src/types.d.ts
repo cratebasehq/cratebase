@@ -273,8 +273,10 @@ declare function onRecordAuthRequest(handler: HookHandler<RecordRequestEvent>, .
 declare function onRecordAuthWithPasswordRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordAuthWithOAuth2Request(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordAuthWithOTPRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
+declare function onRecordAuthWithMagicLinkRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordAuthRefreshRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordRequestOTPRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
+declare function onRecordRequestMagicLinkRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordRequestPasswordResetRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordConfirmPasswordResetRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
 declare function onRecordRequestVerificationRequest(handler: HookHandler<RecordRequestEvent>, ...tags: string[]): string;
@@ -287,6 +289,7 @@ declare function onMailerRecordVerificationSend(handler: HookHandler<MailerEvent
 declare function onMailerRecordPasswordResetSend(handler: HookHandler<MailerEvent>, ...tags: string[]): string;
 declare function onMailerRecordEmailChangeSend(handler: HookHandler<MailerEvent>, ...tags: string[]): string;
 declare function onMailerRecordOTPSend(handler: HookHandler<MailerEvent>, ...tags: string[]): string;
+declare function onMailerRecordMagicLinkSend(handler: HookHandler<MailerEvent>, ...tags: string[]): string;
 declare function onMailerRecordAuthAlertSend(handler: HookHandler<MailerEvent>, ...tags: string[]): string;
 
 declare function onRealtimeConnectRequest(handler: HookHandler<RequestEvent>): string;
@@ -445,11 +448,46 @@ declare const $tokens: {
   recordFileToken(app: typeof $app, record: Record): string;
 };
 
+interface MailRecipient {
+  address: string;
+  name?: string;
+}
+
+type MailAddress = string | MailRecipient | Array<string | MailRecipient>;
+
+interface MailsSendOptions {
+  to: MailAddress;
+  cc?: MailAddress;
+  bcc?: MailAddress;
+  /** An `_emailTemplates` key, e.g. `"welcome"` or `"auth.verification"`. */
+  template?: string;
+  locale?: string;
+  /** `{{var}}` values for the template. */
+  data?: Record<string, unknown>;
+  subject?: string;
+  html?: string;
+  text?: string;
+  from?: string | MailRecipient;
+  replyTo?: string;
+}
+
+interface MailsSendResult {
+  /** The `_mailLog` row id. */
+  id: string;
+  status: "queued" | "sent" | "failed";
+  error?: string;
+}
+
 declare const $mails: {
   sendRecordVerification(app: typeof $app, record: Record): void;
   sendRecordPasswordReset(app: typeof $app, record: Record): void;
   sendRecordChangeEmail(app: typeof $app, record: Record): void;
   sendRecordOTP(app: typeof $app, record: Record): void;
+  /** The full template-resolution/logging/queue pipeline — same one
+   * `POST /api/mails/send` uses. Unlike `$app.newMailClient().send`,
+   * which only ever sends a bare subject/html with no template, log
+   * row, or queue delivery. */
+  send(options: MailsSendOptions): MailsSendResult;
 };
 
 declare const $filesystem: {

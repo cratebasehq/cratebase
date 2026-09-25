@@ -38,6 +38,9 @@ pub const JOB_AUTO_BACKUP: &str = "__pbAutoBackup__";
 /// Hourly `_sessions` sweep (`crate::sessions::sweep_expired`). Cratebase-only
 /// — the four ids above are PocketBase's, verbatim.
 pub const JOB_SESSION_SWEEP: &str = "__cbSessionSweep__";
+/// `_mailLog` retention (`settings.logs.mailLogMaxDays`), same cadence as
+/// [`JOB_LOGS_CLEANUP`]. Cratebase-only.
+pub const JOB_MAIL_LOG_CLEANUP: &str = "__cbMailLogCleanup__";
 
 #[derive(Clone)]
 struct Job {

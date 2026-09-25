@@ -571,6 +571,71 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
 
+  /collections/{idOrName}/request-magic-link:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Email a single-use magic-link sign-in URL
+      security: []
+      description: >
+        Requires authOptions.magicLink.enabled (403 otherwise). Always
+        returns 200, even for an unknown address. redirectUrl is only
+        honoured when same-origin as settings.meta.appURL; otherwise the
+        collection's authOptions.magicLink.urlTemplate is used.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+                redirectUrl: { type: string }
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/auth-with-magic-link:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Complete a magic-link login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                mfaId: { type: string, description: "A pending MFA session id from a previous 401 {mfaId} response" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  record: { $ref: "#/components/schemas/Record" }
+        "400": { description: "Missing, reused, or expired token" }
+        "403": { $ref: "#/components/responses/Error" }
+        "401":
+          description: 'A pending MFA challenge: `{"mfaId": "..."}` with no status/message/data envelope'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+
   /collections/{idOrName}/impersonate/{id}:
     parameters:
       - name: idOrName
@@ -1108,6 +1173,73 @@ paths:
                         platform: { type: string, example: web }
                         ok: { type: boolean }
                         error: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /mails/send:
+    post:
+      summary: Send a transactional email (superuser/API key, or any caller a template's sendRule allows)
+      description: >
+        A superuser or API key may send anything: `template` (resolved
+        through the `_emailTemplates` collection) or raw `subject` plus
+        `html`/`text`, with any `from`/`cc`/`bcc`/`replyTo` override.
+        `to`/`cc`/`bcc` together may not exceed 50 recipients for them.
+
+
+        Any other caller — including an anonymous one — may call this
+        too, but only `to` + `template` (+ `data`/`locale`; every other
+        field above is refused as a `403`), capped at 5 recipients, and
+        only when that template's `_emailTemplates.sendRule` is set
+        (non-`null`) and evaluates `true` for every `to` address against
+        `@request.auth.*`/`@request.body.{to,data,locale}` — the same
+        filter-rule language a collection API rule uses. A denial is a
+        `403` that never reveals whether the template exists, has no
+        `sendRule`, or the rule itself rejected the caller. See
+        the email docs' Templates page for the full model.
+
+
+        If `settings.queue.enabled`, delivery is enqueued (status
+        `queued`) instead of attempted inline. Always logs to
+        `_mailLog`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MailSendRequest" }
+      responses:
+        "200":
+          description: OK — check `status`/`error`, not just the HTTP status, for the delivery outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, description: "The _mailLog row id" }
+                  status: { type: string, enum: [queued, sent, failed] }
+                  error: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error", description: "Raw content/overrides from a non-superuser, or sendRule denied it" }
+
+  /mails/preview:
+    post:
+      summary: Render a template (or raw content) without sending or logging it (superuser or API key only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MailSendRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subject: { type: string }
+                  html: { type: string }
+                  text: { type: string, nullable: true }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -1913,6 +2045,47 @@ components:
         collectionId: { type: string }
         collectionName: { type: string }
       additionalProperties: true
+    MailRecipient:
+      description: A bare email address, or `{address, name}`
+      oneOf:
+        - type: string
+          format: email
+        - type: object
+          required: [address]
+          properties:
+            address: { type: string, format: email }
+            name: { type: string }
+    MailSendRequest:
+      type: object
+      description: >
+        Either `template` or `subject` plus `html`/`text` must be given.
+        `/mails/preview` ignores `to`/`cc`/`bcc`/`from`/`replyTo` if
+        present.
+      properties:
+        to:
+          description: A recipient, or an array of them
+          oneOf:
+            - $ref: "#/components/schemas/MailRecipient"
+            - type: array
+              items: { $ref: "#/components/schemas/MailRecipient" }
+        cc:
+          oneOf:
+            - $ref: "#/components/schemas/MailRecipient"
+            - type: array
+              items: { $ref: "#/components/schemas/MailRecipient" }
+        bcc:
+          oneOf:
+            - $ref: "#/components/schemas/MailRecipient"
+            - type: array
+              items: { $ref: "#/components/schemas/MailRecipient" }
+        template: { type: string, description: "An _emailTemplates key, e.g. \"welcome\" or \"auth.verification\"" }
+        locale: { type: string }
+        data: { type: object, additionalProperties: true, description: "{{var}} values for the template" }
+        subject: { type: string }
+        html: { type: string }
+        text: { type: string }
+        from: { $ref: "#/components/schemas/MailRecipient" }
+        replyTo: { type: string, format: email }
     FieldSchema:
       type: object
       required: [id, name, type]

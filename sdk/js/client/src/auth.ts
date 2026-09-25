@@ -28,6 +28,11 @@ export interface SignInOtpOptions {
   mfaId?: string;
 }
 
+export interface SignInMagicLinkOptions {
+  token: string;
+  mfaId?: string;
+}
+
 export interface SignInCodeOptions {
   provider: string;
   code: string;
@@ -50,6 +55,7 @@ export interface AuthMethodsList {
   oauth2: { enabled: boolean; providers: Array<{ name: string; displayName: string; state: string; authURL: string; codeVerifier: string; codeChallenge: string; codeChallengeMethod: string }> };
   mfa: { enabled: boolean; duration: number };
   otp: { enabled: boolean; duration: number };
+  magicLink: { enabled: boolean; duration: number };
 }
 
 export interface SessionRow {
@@ -174,6 +180,14 @@ export class AuthNamespace {
       );
       return this.applyAuthResult(result);
     },
+    magicLink: async (options: SignInMagicLinkOptions): Promise<AuthResult> => {
+      const result = await this.transport.send<AuthResult>(
+        this.basePath("auth-with-magic-link"),
+        { method: "POST", body: { token: options.token, mfaId: options.mfaId } },
+        this.authHeader,
+      );
+      return this.applyAuthResult(result);
+    },
     code: async (options: SignInCodeOptions): Promise<AuthResult & { meta: Record<string, unknown> }> => {
       const result = await this.transport.send<AuthResult & { meta: Record<string, unknown> }>(
         this.basePath("auth-with-oauth2"),
@@ -254,6 +268,21 @@ export class AuthNamespace {
   readonly otp = {
     request: async (options: { email: string }): Promise<{ otpId: string }> => {
       return this.transport.send(this.basePath("request-otp"), { method: "POST", body: options }, this.authHeader);
+    },
+  };
+
+  readonly magicLink = {
+    /** Always resolves, even for an unknown `email` — the server never
+     * reveals whether an account exists (see `request-magic-link`'s own
+     * doc). `redirectUrl` is only honoured when it's same-origin as the
+     * server's configured `appURL`; anything else falls back to
+     * `authOptions.magicLink.urlTemplate`. */
+    request: async (options: { email: string; redirectUrl?: string }): Promise<void> => {
+      await this.transport.send(
+        this.basePath("request-magic-link"),
+        { method: "POST", body: { email: options.email, redirectURL: options.redirectUrl } },
+        this.authHeader,
+      );
     },
   };
 

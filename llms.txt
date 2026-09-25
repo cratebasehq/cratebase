@@ -76,6 +76,8 @@ source. Everything referenced below is real and current, not aspirational.
   - `POST /collections/{c}/request-password-reset`, `POST /collections/{c}/confirm-password-reset`
   - `POST /collections/{c}/request-email-change`, `POST /collections/{c}/confirm-email-change`
   - `POST /collections/{c}/request-otp`, `POST /collections/{c}/auth-with-otp`
+  - `POST /collections/{c}/request-magic-link`, `POST /collections/{c}/auth-with-magic-link`
+    — passwordless login via an emailed single-use link; requires `authOptions.magicLink.enabled`
   - `POST /collections/{c}/impersonate/{id}` (superuser only), `POST /collections/{c}/stop-impersonating` (cookie mode only)
   - `POST /collections/{c}/auth-signout` — server-side session revocation (not just clearing the local auth store)
   - `GET /collections/{c}/sessions?recordId=`, `DELETE /collections/{c}/sessions/{id}`,
@@ -92,6 +94,33 @@ source. Everything referenced below is real and current, not aspirational.
 - `GET /typegen` (superuser only) — generated TypeScript types for the
   current schema, the same generator `cratebase typegen` (CLI) and the
   `--dev` `CB_TYPEGEN_OUT` watch use.
+- `POST /mails/send` — send a transactional email by `template` key
+  (resolved through the editable `_emailTemplates` collection, `{{var}}`
+  syntax) or raw `subject`/`html`/`text`. Superuser/API key may send
+  anything; any other caller (including anonymous) may only send `to` +
+  `template` (+ `data`/`locale`, capped at 5 recipients), and only when
+  that template's `_emailTemplates.sendRule` (a filter-rule expression,
+  same language as a collection API rule; `null` default = superuser
+  only, `""` = anyone) evaluates `true` for every recipient — this is
+  what lets a frontend call it directly with no backend of its own. A
+  denial is `403`. `POST /mails/preview` (superuser/API key only) renders
+  without sending or logging. Every send logs to `_mailLog`. Same
+  pipeline as JS hooks' `$mails.send(...)`, which is never subject to
+  `sendRule`. The five built-in auth emails (verification, password
+  reset, email change, OTP, new-location login alert) plus the
+  magic-link email are still resolved through each collection's own
+  `authOptions.*Template` field first, falling back to an
+  `_emailTemplates` row (`auth.verification`, ...) only when that field
+  hasn't been customized — see `_emailTemplates`'s own doc.
+- `_emailTriggers` (superuser-only system collection) — send an
+  `_emailTemplates` template automatically when a record is created,
+  updated, or deleted, entirely from the dashboard/Records API: `collection`,
+  `event`, `template`, `toField` (a record path or a literal address),
+  `condition` (optional filter expression evaluated against the record's
+  own fields), `enabled`, `dataMap` (optional, merged onto the default
+  `{ record }` template data). Fires from an after-success hook — never
+  fails the triggering request; a bad `toField` logs a `_mailLog`
+  failure instead.
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.

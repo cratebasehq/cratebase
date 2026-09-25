@@ -57,6 +57,8 @@ export type {
 } from "./types.js";
 export type { NearestToOptions } from "./cratebase-only.js";
 export type { ChatMessage, ChatOptions, ChatResult, ToolSchema, EnqueueOptions, EnqueuedJob, PresenceOptions, Presence, Sender } from "./cratebase-only.js";
+export type { MailRecipient, MailAddress, SendMailOptions, SendMailResult, PreviewMailOptions, PreviewMailResult } from "./cratebase-only.js";
+export { getMagicLinkTokenFromUrl } from "./cratebase-only.js";
 
 export interface CreateClientOptions {
   authStore?: AuthStore;
@@ -176,6 +178,15 @@ export class CratebaseClient<
   readonly queue = {
     enqueue: (queue: string, payload: unknown, options: cratebaseOnly.EnqueueOptions = {}) =>
       cratebaseOnly.enqueue(this, queue, payload, options),
+  };
+
+  /** `send` works for any caller a template's `sendRule` allows (see
+   * `sendMail`'s own doc comment) — including a signed-in `users` record,
+   * or no session at all. `preview` stays superuser/API-key only (sign in
+   * via `client.auth.as("_superusers")` or attach an API key header). */
+  readonly mails = {
+    send: (options: cratebaseOnly.SendMailOptions) => cratebaseOnly.sendMail(this, options),
+    preview: (options: cratebaseOnly.PreviewMailOptions) => cratebaseOnly.previewMail(this, options),
   };
 
   readonly presence = {

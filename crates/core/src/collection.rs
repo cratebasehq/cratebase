@@ -228,6 +228,50 @@ fn confirm_email_change_template_default() -> EmailTemplate {
         body: "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>".into(),
     }
 }
+fn magic_link_url_template_default() -> String {
+    "{APP_URL}/auth/magic-link?token={TOKEN}".into()
+}
+fn magic_link_duration_default() -> i64 {
+    900
+}
+fn magic_link_template_default() -> EmailTemplate {
+    EmailTemplate {
+        subject: "Sign in to {APP_NAME}".into(),
+        body: "<p>Hello,</p>\n<p>Click on the button below to sign in to {APP_NAME}.</p>\n<p>\n  <a class=\"btn\" href=\"{MAGIC_LINK}\" target=\"_blank\" rel=\"noopener\">Sign in</a>\n</p>\n<p><i>If you didn't ask to sign in, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>".into(),
+    }
+}
+
+/// `authOptions.magicLink` — a passwordless login flow parallel to
+/// [`Otp`], but mailing a single-use link instead of a user-typed code.
+/// Disabled by default, same as `Mfa`/`Otp`; see
+/// `crate::routes::auth`'s `request-magic-link`/`auth-with-magic-link` in
+/// the server crate (`_magicLinks` is the token store — same shape as
+/// `_otps`, just holding a `tokenHash` instead of a hashed short code).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MagicLink {
+    pub enabled: bool,
+    #[serde(default = "magic_link_duration_default")]
+    pub duration: i64,
+    /// The link built when the request body doesn't supply an allow-listed
+    /// `redirectUrl`. `{APP_URL}` and `{TOKEN}` are substituted the same
+    /// way every other auth template placeholder is.
+    #[serde(default = "magic_link_url_template_default")]
+    pub url_template: String,
+    #[serde(default = "magic_link_template_default")]
+    pub email_template: EmailTemplate,
+}
+
+impl Default for MagicLink {
+    fn default() -> Self {
+        MagicLink {
+            enabled: false,
+            duration: magic_link_duration_default(),
+            url_template: magic_link_url_template_default(),
+            email_template: magic_link_template_default(),
+        }
+    }
+}
 
 /// Everything specific to `type: "auth"` collections, flattened onto the
 /// collection JSON. Defaults are PocketBase's (captured from a freshly
@@ -260,6 +304,7 @@ pub struct AuthOptions {
     pub reset_password_template: EmailTemplate,
     #[serde(default = "confirm_email_change_template_default")]
     pub confirm_email_change_template: EmailTemplate,
+    pub magic_link: MagicLink,
 }
 
 impl Default for AuthOptions {
@@ -280,6 +325,7 @@ impl Default for AuthOptions {
             verification_template: verification_template_default(),
             reset_password_template: reset_password_template_default(),
             confirm_email_change_template: confirm_email_change_template_default(),
+            magic_link: MagicLink::default(),
         }
     }
 }
@@ -711,6 +757,41 @@ impl Collection {
         otps.indexes = vec![
             "CREATE INDEX `idx_otps_collectionRef_recordRef` ON `_otps` (collectionRef, recordRef)"
                 .into(),
+        ];
+
+        // Token store for `authOptions.magicLink` (`crate::routes::auth`'s
+        // `request-magic-link`/`auth-with-magic-link` in the server
+        // crate), same shape and trust tier as `_otps` immediately above
+        // — the only difference is a hashed opaque `tokenHash` (looked up
+        // by exact match, like `_sessions.tokenHash`) in place of a
+        // hashed short code looked up by `otpId`, since a magic link's
+        // token travels in a URL rather than being typed back in
+        // alongside a separate id.
+        let mut magic_links = Collection::new("_magicLinks", CollectionType::Base);
+        magic_links.system = true;
+        magic_links.list_rule = owner_rule.clone();
+        magic_links.view_rule = owner_rule.clone();
+        let mut ml_token_hash = text("tokenHash");
+        ml_token_hash.hidden = true;
+        let mut ml_sent_to = text("sentTo");
+        ml_sent_to.required = false;
+        ml_sent_to.hidden = true;
+        let mut ml_redirect_url = text("redirectUrl");
+        ml_redirect_url.required = false;
+        let pos = magic_links.fields.len() - 2;
+        magic_links.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                ml_token_hash,
+                ml_sent_to,
+                ml_redirect_url,
+            ],
+        );
+        magic_links.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_magicLinks_tokenHash` ON `_magicLinks` (tokenHash)".into(),
+            "CREATE INDEX `idx_magicLinks_collectionRef_recordRef` ON `_magicLinks` (collectionRef, recordRef)".into(),
         ];
 
         let mut origins = Collection::new("_authOrigins", CollectionType::Base);
@@ -1186,10 +1267,197 @@ impl Collection {
             "CREATE INDEX `idx_audit_log_created` ON `_audit_log` (created)".into(),
         ];
 
+        // The editable template store `crate::routes::mails` (server
+        // crate) resolves against: `key` (e.g. `auth.verification`,
+        // `welcome`) plus an optional `locale`, unique together so one
+        // key can have a row per locale. Superuser-only end to end, same
+        // tier as `_cron_jobs`/`_webhooks` — a template's `html` is
+        // rendered and mailed verbatim, no different in trust terms from
+        // a cron job's `sql` or a webhook's `url`. `html` is an `Editor`
+        // field (not `Text`) purely so the dashboard's future template
+        // editor gets a rich-text widget for free; the server never
+        // interprets it as anything but a `{{var}}` template string. See
+        // `crates/mailer/src/template.rs`'s `TemplateDoc`.
+        let mut email_templates = Collection::new("_emailTemplates", CollectionType::Base);
+        email_templates.system = true;
+        let mut et_html = Field::new(
+            "html",
+            FieldKind::Editor {
+                max_size: 0,
+                convert_urls: false,
+            },
+        );
+        et_html.required = false;
+        let mut et_text = text("text");
+        et_text.required = false;
+        let mut et_locale = text("locale");
+        et_locale.required = false;
+        let mut et_layout = Field::new("layout", FieldKind::Bool {});
+        et_layout.required = false;
+        let mut et_description = text("description");
+        et_description.required = false;
+        let pos = email_templates.fields.len() - 2;
+        email_templates.fields.splice(
+            pos..pos,
+            [
+                text("key"),
+                text("name"),
+                text("subject"),
+                et_html,
+                et_text,
+                et_locale,
+                et_layout,
+                et_description,
+            ],
+        );
+        // `sendRule` gates non-superuser access to `POST /api/mails/send`
+        // for this template (see `crate::mail_templates`/`crate::mails`
+        // in the server crate): `null` (the column's own SQL default —
+        // see `column_default`) means superuser/API-key only, `""` means
+        // any caller may send it, and anything else is a filter-rule
+        // expression evaluated per recipient. It is a `Json`-kind field
+        // rather than `Text` purely so the column keeps `NULL` and `""`
+        // distinct — a plain `Text` field normalizes both to `''`
+        // (see `crates/db/src/schema.rs`'s `column_default` doc), which
+        // would make "superuser only" and "anyone" indistinguishable.
+        // `crate::routes::records` (server crate) special-cases writing
+        // an empty-string `sendRule` for this one collection so the
+        // dangerous "anyone" value round-trips correctly through the
+        // generic records API — see that module's comment.
+        let mut et_send_rule = Field::new("sendRule", FieldKind::Json { max_size: 0 });
+        et_send_rule.required = false;
+        // Opaque visual-editor document (`@react-email/editor`'s JSON,
+        // dashboard-only) the server never reads — it always sends from
+        // the `html`/`text` columns, which the editor writes back to on
+        // save. `null` for a template authored/edited as raw HTML.
+        let mut et_design = Field::new("design", FieldKind::Json { max_size: 0 });
+        et_design.required = false;
+        // Which editor the dashboard opens this template in; the server
+        // never reads this either (see `et_design` above) — it only
+        // steers the dashboard's own UI.
+        let mut et_editor = Field::new(
+            "editor",
+            FieldKind::Select {
+                values: vec!["visual".into(), "html".into()],
+                max_select: 1,
+            },
+        );
+        et_editor.required = false;
+        let pos = email_templates.fields.len() - 2;
+        email_templates
+            .fields
+            .splice(pos..pos, [et_send_rule, et_design, et_editor]);
+        email_templates.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_emailTemplates_key_locale` ON `_emailTemplates` (key, locale)".into(),
+        ];
+
+        // Send log for `POST /api/mails/send`/JS `$mails.send` — append-
+        // only and superuser-read-only, same reasoning as `_audit_log`
+        // immediately above (list/view stay `None`; create/update/delete
+        // stay `None` too since the only writer is `crate::routes::mails`
+        // itself, not a rule-driven client path). `to` is a JSON array of
+        // `{address, name}` recipients rather than a single text column,
+        // since one send can fan out to several. `retention` cleanup is
+        // `settings.logs.mailLogMaxDays`, mirroring `_logs`.
+        let mut mail_log = Collection::new("_mailLog", CollectionType::Base);
+        mail_log.system = true;
+        let mut ml_to = Field::new("to", FieldKind::Json { max_size: 0 });
+        ml_to.system = true;
+        let mut ml_subject = text("subject");
+        ml_subject.required = false;
+        let mut ml_template = text("template");
+        ml_template.required = false;
+        let mut ml_status = text("status");
+        ml_status.system = true;
+        let mut ml_error = text("error");
+        ml_error.required = false;
+        let mut ml_message_id = text("messageId");
+        ml_message_id.required = false;
+        let pos = mail_log.fields.len() - 2;
+        mail_log.fields.splice(
+            pos..pos,
+            [
+                ml_to,
+                ml_subject,
+                ml_template,
+                ml_status,
+                ml_error,
+                ml_message_id,
+            ],
+        );
+        mail_log.indexes = vec![
+            "CREATE INDEX `idx_mailLog_created` ON `_mailLog` (created)".into(),
+            "CREATE INDEX `idx_mailLog_status` ON `_mailLog` (status)".into(),
+        ];
+
+        // No-code email triggers (`crate::email_triggers` in the server
+        // crate): fire `template` through the ordinary send pipeline
+        // whenever `event` happens on `collection`, entirely from the
+        // dashboard/Records API — the same "no Rust code, no redeploy"
+        // shape as `_webhooks`, and superuser-only end to end for the
+        // same reason (an admin-configured integration point, not
+        // something a non-superuser record should read or edit).
+        let mut email_triggers = Collection::new("_emailTriggers", CollectionType::Base);
+        email_triggers.system = true;
+        let mut et2_collection = text("collection");
+        et2_collection.required = true;
+        let mut et2_event = Field::new(
+            "event",
+            FieldKind::Select {
+                values: vec!["create".into(), "update".into(), "delete".into()],
+                max_select: 1,
+            },
+        );
+        et2_event.required = true;
+        let mut et2_template = text("template");
+        et2_template.required = true;
+        let mut et2_to_field = text("toField");
+        et2_to_field.required = true;
+        // Same expression language as `sendRule`/every other API rule,
+        // evaluated with `crates/filter`'s in-process `evaluate()`
+        // against the written record's own fields (bare identifiers —
+        // `status = "paid"` — not a `@request.*`/`@record.*` macro,
+        // which this condition has no need of). `null` here means
+        // "always fire" (there is no "who may configure this" tension
+        // the way `sendRule`'s `null` guards, so it stays a plain
+        // optional `Text` field rather than `sendRule`'s `Json` one).
+        let mut et2_condition = text("condition");
+        et2_condition.required = false;
+        // Not `required`: a required `bool`'s zero value (`false`) reads
+        // as blank (see `cratebase_db::validate::is_blank`/`required`'s
+        // own doc comment — the same "0 counts as blank" footgun as a
+        // required number), which would make a trigger impossible to
+        // *disable* through the ordinary update API. Leaving it optional
+        // also makes "not yet set" default to `false` (disabled) — the
+        // safer reading for a freshly created trigger.
+        let et2_enabled = Field::new("enabled", FieldKind::Bool {});
+        // Extra literal values merged onto the default `{ record }`
+        // template data — see `crate::email_triggers`'s module doc for
+        // the exact merge order.
+        let mut et2_data_map = Field::new("dataMap", FieldKind::Json { max_size: 0 });
+        et2_data_map.required = false;
+        let pos = email_triggers.fields.len() - 2;
+        email_triggers.fields.splice(
+            pos..pos,
+            [
+                et2_collection,
+                et2_event,
+                et2_template,
+                et2_to_field,
+                et2_condition,
+                et2_enabled,
+                et2_data_map,
+            ],
+        );
+        email_triggers.indexes = vec![
+            "CREATE INDEX `idx_emailTriggers_collection` ON `_emailTriggers` (collection)".into(),
+        ];
+
         vec![
             external,
             mfas,
             otps,
+            magic_links,
             origins,
             sessions,
             bans,
@@ -1201,6 +1469,9 @@ impl Collection {
             api_keys,
             push_subscriptions,
             audit_log,
+            email_templates,
+            mail_log,
+            email_triggers,
         ]
     }
 }
@@ -1350,6 +1621,7 @@ mod tests {
                 crate::ids::collection_id("base", "_externalAuths").as_str(),
                 "pbc_2279338944",
                 "pbc_1638494021",
+                crate::ids::collection_id("base", "_magicLinks").as_str(),
                 crate::ids::collection_id("base", "_authOrigins").as_str(),
                 crate::ids::collection_id("base", "_sessions").as_str(),
                 crate::ids::collection_id("base", "_bans").as_str(),
@@ -1361,6 +1633,9 @@ mod tests {
                 crate::ids::collection_id("base", "_api_keys").as_str(),
                 crate::ids::collection_id("base", "_push_subscriptions").as_str(),
                 crate::ids::collection_id("base", "_audit_log").as_str(),
+                crate::ids::collection_id("base", "_emailTemplates").as_str(),
+                crate::ids::collection_id("base", "_mailLog").as_str(),
+                crate::ids::collection_id("base", "_emailTriggers").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

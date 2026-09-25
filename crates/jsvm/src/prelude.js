@@ -755,6 +755,11 @@
     sendRecordPasswordReset: mailFor("passwordReset"),
     sendRecordChangeEmail: mailFor("emailChange"),
     sendRecordOTP: mailFor("otp"),
+    // The full template-resolution/logging/queue pipeline (same one
+    // `POST /api/mails/send` uses) — unlike `$app.newMailClient().send`,
+    // which only ever sends a bare subject/html with no template, log
+    // row or queue delivery.
+    send: (message) => hostCall("mailsSend", message || {}),
   };
 
   function bytesOf(value) {

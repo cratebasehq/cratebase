@@ -405,6 +405,10 @@ pub(crate) fn dispatch(
             send_record_mail(state, &host, &rec, &a.str(1))?;
             Ok(Value::Null)
         }
+        "mailsSend" => {
+            let input = a.map(0);
+            state.block_on(host.mails_send(input))
+        }
         other => Err(AppError::internal(format!("unknown native op {other}"))),
     }
 }

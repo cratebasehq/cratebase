@@ -23,6 +23,13 @@ value rather than blanking it.
 | `senderAddress` | `"support@example.com"` |
 | `hideControls` | `false` |
 | `accentColor` | `"#1055c9"` |
+| `logoUrl` | `""` |
+| `brandColor` | `""` |
+
+`logoUrl`/`brandColor` style the shared email base layout — see
+[Email → Templates](/docs/email/templates/): a non-empty `logoUrl` is
+shown at the top of every layout-wrapped email, and `brandColor`
+replaces the layout's default `#16161a` button/accent color.
 
 ## `smtp`
 
@@ -75,9 +82,9 @@ jobs — see [Crons](/docs/reference/rest-api/crons/).
 
 | Key | Default |
 | --- | --- |
-| `enabled` | `false` |
+| `enabled` | `true` |
 | `excludedIPs` | `[]` |
-| `rules` | four built-in rules, see below |
+| `rules` | six built-in rules, see below |
 
 Each rule is `{ label, audience, duration, maxRequests }` — `label` is a
 path prefix (`/api/`), an exact path, or a `<collection-or-*>:<tag>` pair
@@ -85,12 +92,20 @@ path prefix (`/api/`), an exact path, or a `<collection-or-*>:<tag>` pair
 `@guest`, or `@auth`; `duration` is the window in seconds. The shipped
 defaults:
 
-| `label` | `duration` | `maxRequests` |
-| --- | --- | --- |
-| `*:auth` | 3s | 2 |
-| `*:create` | 5s | 20 |
-| `/api/batch` | 1s | 3 |
-| `/api/` | 10s | 300 |
+| `label` | `audience` | `duration` | `maxRequests` |
+| --- | --- | --- | --- |
+| `*:auth` | `""` | 3s | 2 |
+| `*:create` | `""` | 5s | 20 |
+| `/api/batch` | `""` | 1s | 3 |
+| `mails:send` | `""` | 60s | 20 |
+| `mails:send:user` | `@auth` | 60s | 10 |
+| `/api/` | `""` | 10s | 300 |
+
+`mails:send:user` only ever applies to a non-superuser/non-API-key caller
+sending through a template's [`sendRule`](/docs/email/templates/#sendrule-who-else-can-send-this)
+— it's checked *before* the general `mails:send` rule for that caller
+(more specific wins), so it's the effective ceiling for that caller
+shape even though `mails:send` is technically an exact-tag match too.
 
 More specific labels win over less specific ones for the same request —
 see [Rate limiting](/docs/deploy/rate-limiting/) for the matching order
@@ -125,6 +140,11 @@ correctly behind a proxy.
 | `logIP` | `true` |
 | `logAuthId` | `false` |
 | `maxDataSize` | `0` (unlimited) |
+| `mailLogMaxDays` | `30` |
+
+`mailLogMaxDays` prunes `_mailLog` rows (see
+[Email → Mail log](/docs/email/mail-log/)) on the same `0 */6 * * *`
+cadence as `maxDays` prunes `_logs`; `<= 0` disables cleanup.
 
 ## `llm`
 
