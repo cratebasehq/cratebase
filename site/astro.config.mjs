@@ -97,6 +97,10 @@ export default defineConfig({
           items: [{ autogenerate: { directory: "docs/extending" } }],
         },
         {
+          label: "Database",
+          items: [{ autogenerate: { directory: "docs/database" } }],
+        },
+        {
           label: "AI",
           items: [{ autogenerate: { directory: "docs/ai" } }],
         },

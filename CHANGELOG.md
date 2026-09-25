@@ -10,6 +10,39 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Postgres extension management**: `GET/POST/DELETE /api/db/extensions[/{name}]`
+  (superuser only, Postgres only — 404s on SQLite), plus a
+  `Settings → Database extensions` dashboard page. `CREATE EXTENSION IF
+  NOT EXISTS` with an optional schema; `DELETE` refuses `CASCADE` unless
+  `?cascade=true` is passed. Every install/drop is audited. `$app.db().exec(sql,
+  params?)` — a new write-capable escape hatch alongside the existing
+  read-only `$app.rawQuery` — lets a `pb_migrations/*.js` file version
+  `CREATE EXTENSION postgis` the same way it versions schema changes.
+- **Custom SQL RPC**: the `_rpc` system collection (`name`, `sql` with
+  `:name`-style named placeholders, a `params` json-schema-lite array,
+  a `rule`, `readOnly`/`timeoutMs`/`maxRows`) plus `POST /api/rpc/{name}`.
+  Named parameters bind as real driver parameters, never
+  string-interpolated; `rule` is evaluated against
+  `@request.auth`/`@request.body` before the statement runs; `readOnly`
+  (default `true`) is enforced by the database itself, reusing the same
+  `BEGIN READ ONLY`/`PRAGMA query_only` machinery the SQL console uses to
+  reject a write disguised as a read; a definition's `sql` is validated
+  — single statement, only declared parameters, parses against the real
+  driver — at save time, not on first call. New dashboard "RPC
+  functions" page (CodeMirror SQL editor, params/rule editors, a Run test
+  panel) and SDK method `cb.rpc<T>(name, params)`.
+- **PostGIS-accelerated geo queries**: `sort=geoDistance(lon, lat, x, y)`
+  (and `-geoDistance(...)`) for a nearest/farthest-first order, matching
+  the existing `geoDistance(...) < r` radius filter's semantics exactly.
+  On Postgres, once `postgis` is installed, both the radius filter and
+  the nearest sort automatically compile against a GiST-indexed
+  geography expression (`ST_DWithin`/KNN `<->`) instead of the portable
+  haversine calculation — same syntax, an index-backed plan. The GiST
+  index is created idempotently per `geoPoint` field as part of ordinary
+  collection schema sync.
+
 ## 0.3.0 — 2026-09-25
 
 Security-hardening and developer-experience release, the result of a

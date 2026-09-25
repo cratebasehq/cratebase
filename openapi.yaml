@@ -19,8 +19,11 @@ info:
     `_push_subscriptions` holds registered push targets that
     `POST /push/send` delivers to; `_cron_jobs` and `_api_keys` are listed
     read-only by `GET /crons` and created by `POST /api-keys`
-    respectively, but otherwise managed the same way. None of these get
-    their own path in this document beyond what is listed above.
+    respectively, but otherwise managed the same way; `_rpc` (custom SQL
+    RPC definitions) is managed the same way too, but additionally gets
+    its own call surface, `POST /rpc/{name}`, documented below. None of
+    these get their own *management* path in this document beyond what
+    is listed above.
 servers:
   - url: /api
 security:
@@ -1876,6 +1879,152 @@ paths:
                   # TYPE cratebase_http_errors_total counter
                   cratebase_http_errors_total 1
 
+  /db/extensions:
+    get:
+      summary: List Postgres extensions (superuser only, Postgres only)
+      description: >
+        Every extension `pg_available_extensions` knows about, joined
+        against `pg_extension`/`pg_namespace` for install state. 404s on
+        SQLite.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string, example: postgis }
+                        defaultVersion: { type: string, nullable: true }
+                        installedVersion: { type: string, nullable: true }
+                        installed: { type: boolean }
+                        schema: { type: string, nullable: true }
+                        comment: { type: string, nullable: true }
+        "404":
+          description: Not on Postgres
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } }
+
+  /db/extensions/{name}:
+    post:
+      summary: Install a Postgres extension (superuser only, Postgres only)
+      description: >
+        `CREATE EXTENSION IF NOT EXISTS "{name}"`, optionally into a
+        given schema. `name`/`schema` are validated as plain identifiers
+        before ever reaching SQL. Audited in `_audit_log`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, example: postgis }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schema: { type: string, example: public }
+      responses:
+        "200":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  installed: { type: boolean }
+        "400":
+          description: Invalid name/schema, or the database rejected the statement
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } }
+    delete:
+      summary: Drop a Postgres extension (superuser only, Postgres only)
+      description: >
+        `DROP EXTENSION "{name}"`. Refused by Postgres itself when
+        something depends on the extension unless `?cascade=true` is
+        passed. Audited in `_audit_log`.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: cascade
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Dropped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string }
+                  installed: { type: boolean }
+        "400":
+          description: >
+            Invalid name, extension not installed, or refused because of
+            a dependent object (retry with `?cascade=true`)
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } }
+
+  /rpc/{name}:
+    post:
+      summary: Call a custom SQL RPC definition
+      description: >
+        Runs the named `_rpc` definition's `sql` with `params` bound as
+        named, typed parameters — never string-interpolated. The
+        definition's own `rule` (evaluated against `@request.auth`/
+        `@request.body`) decides who may call it: `rule: null` is
+        superuser only, `rule: ""` is anyone, anything else is a normal
+        filter expression. See the Database → Custom SQL RPC guide for
+        the full security model.
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, example: nearest_stores }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              example: { lon: -122.42, lat: 37.77, radiusKm: 5 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        "400":
+          description: >
+            Missing/invalid parameter, a write attempted under
+            `readOnly: true`, or the statement timed out
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } }
+        "403":
+          description: The definition's `rule` denied this caller
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } }
+        "404":
+          description: No `_rpc` definition with this name
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/ErrorBody" } }
 
 components:
   securitySchemes:

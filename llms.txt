@@ -92,6 +92,25 @@ source. Everything referenced below is real and current, not aspirational.
 - `GET /typegen` (superuser only) — generated TypeScript types for the
   current schema, the same generator `cratebase typegen` (CLI) and the
   `--dev` `CB_TYPEGEN_OUT` watch use.
+- `GET/POST/DELETE /db/extensions[/{name}]` (superuser only, Postgres
+  only; 404 on SQLite) — list/enable/disable Postgres extensions
+  (postgis, pgvector, pg_trgm, ...); `DELETE ?cascade=true` to take
+  dependents with it. `$app.db().exec(sql)` (write-capable, unlike the
+  read-only `$app.rawQuery`) lets a `pb_migrations/*.js` file version
+  `CREATE EXTENSION IF NOT EXISTS postgis` too.
+- `POST /rpc/{name}` — call a named `_rpc` definition (superuser-managed
+  via `_rpc` records: `sql` with `:name` placeholders, a `params` schema,
+  a `rule` gating who may call it, `readOnly`/`timeoutMs`/`maxRows`).
+  Named parameters bind as real driver parameters, never
+  string-interpolated; `readOnly: true` (the default) runs inside a
+  read-only transaction the same way the SQL console's read/write gate
+  does. Returns `{ items: [...] }`.
+- Geo: `filter=geoDistance(loc.lon, loc.lat, x, y) < r` (kilometers) and
+  `sort=geoDistance(...)` (nearest first; `-geoDistance(...)` farthest
+  first) work on both backends; on Postgres with `postgis` installed,
+  both automatically compile against a GiST-indexed geography expression
+  (`ST_DWithin`/KNN `<->`) instead of the portable haversine fallback —
+  same syntax, faster plan.
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.

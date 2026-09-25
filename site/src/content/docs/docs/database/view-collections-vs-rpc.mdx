@@ -1,0 +1,52 @@
+---
+title: "View collections vs. custom SQL RPC"
+description: "Two ways to reach for real SQL — when a view collection is the right one, and when it's an RPC."
+---
+
+Cratebase already has one way to back an endpoint with arbitrary SQL — a **view collection**
+(`type: "view"`, backed by a `viewQuery`). [Custom SQL RPC](/docs/database/custom-sql-rpc/) is a
+second one. They overlap, but they're built for different shapes of problem.
+
+## View collection
+
+A view collection is a **read-only pseudo-collection**: its rows come from a `SELECT`, but from
+there it behaves like any other collection — `GET /api/collections/{name}/records` with the usual
+`filter`/`sort`/`expand`/pagination, the same `listRule`/`viewRule` model, real record ids if the
+query selects one.
+
+Reach for a view collection when:
+
+- The result is naturally **a list of things** a client will page through, filter, and sort further
+  — a `posts_with_author_name` view that joins in the author's display name, say.
+- You want the **generic Records API** (SDK's `cb.collection(name).getList(...)`, realtime
+  subscriptions if the underlying tables support them, dashboard browsing) rather than a bespoke
+  endpoint.
+- The query has **no parameters** beyond the ordinary `filter`/`sort`/pagination a client already
+  controls.
+
+## Custom SQL RPC
+
+An RPC is a **named function call**: fixed SQL, typed parameters, one JSON response (`{ items }`).
+No pagination, no `filter`/`sort` from the caller, no realtime.
+
+Reach for an RPC when:
+
+- The query needs **parameters that shape the query itself**, not just filter its output — a radius
+  in `nearest_stores`, a search term in a `pg_trgm` fuzzy search, a date range for a report.
+- The result isn't record-shaped at all — an aggregate (`GROUP BY`), a single computed row, a
+  ranked/scored list (`similarity(...)`, `ST_Distance(...)`) where the score itself is part of what
+  the client needs back.
+- You want **per-call authorization** distinct from a collection's own rules — an RPC's `rule` is
+  evaluated against the call's own parameters, not a target record.
+- The query uses SQL a view's `viewQuery` can't cleanly express as a stable row shape — window
+  functions, `WITH RECURSIVE`, a PostGIS/pg_trgm function whose output isn't "select some columns".
+
+## Both are real SQL, both are superuser-authored
+
+Neither is more or less "safe" than the other in principle — a view's `viewQuery` and an RPC's `sql`
+are both written by a superuser and both run with the same database privileges. The difference is
+the **calling contract**: a view collection speaks the Records API's language (rules, filters,
+pagination) end to end; an RPC speaks its own (typed parameters, one rule, one response shape). If
+you're not sure which one a query needs, ask whether a client would ever want to add its own
+`filter=`/`sort=` on top of it — if yes, it's a view; if the query's own parameters are the whole
+interface, it's an RPC.
