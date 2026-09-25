@@ -127,6 +127,86 @@ fn posts(name: &str) -> Value {
 
 // ------------------------------------------------------------- collections
 
+/// `--automigrate` (on by default, but only writes once `pb_migrations/`
+/// exists or `--dev` is set — see `crate::automigrate`'s module doc):
+/// creating a collection through the HTTP API writes a `pb_migrations/
+/// *.js` file whose `up()`, applied to a *different*, fresh database,
+/// recreates the exact same collection.
+///
+/// Builds its own app/dir rather than the shared `Harness` — `Config::
+/// memory`'s `hooks_dir`/`migrations_dir` are *siblings* of the data dir,
+/// so `Harness`'s bare `tempfile::tempdir()` would put `pb_migrations` at
+/// that tempdir's *parent* (`/tmp`, shared by the whole test binary); a
+/// `pb_data` subdirectory keeps this test's `pb_migrations` under its own
+/// unique tempdir instead (same reasoning as `jsvm_host`'s own
+/// `test_app_with_hook` test helper).
+#[tokio::test]
+async fn automigrate_writes_a_migration_that_recreates_the_collection_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = Config::memory(dir.path().join("pb_data"));
+    // Opt in, the same way an operator who wants automigrate on a
+    // production data dir would: create the directory once.
+    std::fs::create_dir_all(&cfg.migrations_dir).unwrap();
+    let app = App::new(cfg);
+    app.bootstrap().await.unwrap();
+    let id = app
+        .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
+        .await
+        .unwrap();
+    let token = app
+        .mint_token("_superusers", &id, cratebase_auth::TokenType::Auth, 3600)
+        .await
+        .unwrap();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/collections")
+        .header("authorization", &token)
+        .header("content-type", "application/json")
+        .body(Body::from(posts("automigrated").to_string()))
+        .unwrap();
+    let response = cratebase_server::router(app.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let migrations_dir = app.config().migrations_dir.clone();
+    let mut written: Vec<String> = std::fs::read_dir(&migrations_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("created_automigrated"))
+        .collect();
+    assert_eq!(written.len(), 1, "{written:?}");
+    let file_name = written.remove(0);
+
+    // Recorded as already applied in this database — the change it
+    // describes already happened here.
+    assert!(cratebase_db::migrations::is_applied(app.db(), &file_name)
+        .await
+        .unwrap());
+
+    // Copying it alone onto a brand new database and running `migrate up`
+    // (`js_migrations::run_up`, exactly what `cratebase migrate up` and
+    // `serve` boot call) recreates the collection there too.
+    let dir2 = tempfile::tempdir().unwrap();
+    let cfg2 = Config::memory(dir2.path().join("pb_data"));
+    std::fs::create_dir_all(&cfg2.migrations_dir).unwrap();
+    std::fs::copy(
+        std::path::Path::new(&migrations_dir).join(&file_name),
+        std::path::Path::new(&cfg2.migrations_dir).join(&file_name),
+    )
+    .unwrap();
+    let app2 = App::new(cfg2);
+    app2.bootstrap().await.unwrap();
+    let applied = cratebase_server::js_migrations::run_up(&app2)
+        .await
+        .unwrap();
+    assert_eq!(applied, vec![file_name]);
+    assert!(app2.db().collections.get("automigrated").is_some());
+}
+
 #[tokio::test]
 async fn collections_crud_and_the_paginated_envelope() {
     let harness = Harness::new().await;
@@ -865,6 +945,67 @@ async fn disabled_password_auth_is_a_403_not_a_400() {
         body["message"],
         "The collection is not configured to allow password authentication."
     );
+}
+
+/// `cratebase superuser otp` persists a code through
+/// `routes::auth::create_otp` — the exact function `POST .../request-otp`
+/// calls — rather than only printing one, so the code it prints must
+/// authenticate through the ordinary `auth-with-otp` endpoint.
+#[tokio::test]
+async fn a_cli_generated_superuser_otp_authenticates_via_auth_with_otp() {
+    let harness = Harness::new().await;
+    // OTP auth is disabled by default on every auth collection, including
+    // `_superusers` — same one-time setup an operator locked out of the
+    // dashboard would still need to have done beforehand.
+    let (status, _) = harness
+        .admin(
+            "PATCH",
+            "/api/collections/_superusers",
+            Some(json!({"otp": {"enabled": true}})),
+        )
+        .await;
+    assert_eq!(status, 200);
+
+    let superusers = harness.app.db().collections.get("_superusers").unwrap();
+    let row = harness
+        .app
+        .find_superuser_by_email(SUPERUSER_EMAIL)
+        .await
+        .unwrap()
+        .unwrap();
+    let record_id = row.get_str("id").unwrap().to_string();
+
+    let (otp_id, code) = cratebase_server::routes::auth::create_otp(
+        &harness.app,
+        &superusers,
+        &record_id,
+        SUPERUSER_EMAIL,
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_superusers/auth-with-otp",
+            Some(json!({"otpId": otp_id, "password": code})),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["record"]["email"], SUPERUSER_EMAIL);
+    assert!(body["token"].as_str().is_some_and(|t| !t.is_empty()));
+
+    // Single-use: the same otpId/code cannot authenticate twice.
+    let (status, body) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_superusers/auth-with-otp",
+            Some(json!({"otpId": otp_id, "password": code})),
+            None,
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
 }
 
 #[tokio::test]

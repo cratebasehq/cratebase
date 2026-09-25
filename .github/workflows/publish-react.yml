@@ -45,6 +45,13 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # sdk/js/client is now a workspace sibling resolved straight from
+      # its own source (see sdk/js's root workspace wiring) — its dist/
+      # isn't produced by `bun install`, so this package's own typecheck/
+      # build (which resolves `@cratebase/client` as a real package, not
+      # source) needs it built first.
+      - run: bun run --cwd ../client build
+
       - run: bun run build
 
       # The package version must match the tag, or a publish could

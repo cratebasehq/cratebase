@@ -16,6 +16,7 @@ pub mod batch;
 pub mod collections;
 pub mod common;
 pub mod crons;
+pub mod dev_mail;
 pub mod file_manager;
 pub mod files;
 pub mod functions;
@@ -32,6 +33,7 @@ pub mod settings;
 pub mod setup;
 pub mod sql_console;
 pub mod tool_schema;
+pub mod typegen;
 pub mod utils;
 
 use axum::Router;
@@ -48,6 +50,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(backups::router())
         .merge(crons::router())
         .merge(functions::router())
+        .merge(dev_mail::router())
         // `/api/collections/...` is shared by three groups: the schema
         // API, the record API nested under it, and the auth endpoints.
         // They are separate modules but one route table, built once at
@@ -66,6 +69,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(sql_console::router())
         .merge(tool_schema::router())
         .merge(schema::router())
+        .merge(typegen::router())
         .merge(api_keys::router())
         .merge(push::router())
         // MCP lives in its own top-level module (like `realtime`), not

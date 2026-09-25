@@ -1,9 +1,35 @@
 ---
 title: "First run"
-description: "What happens the first time you start cratebase serve."
+description: "cratebase dev for local development, and what cratebase serve does on its own."
 sidebar:
   order: 2
 ---
+
+## Local development: `cratebase dev`
+
+```sh
+cratebase dev
+```
+
+is the fast path for working on a project locally: it creates the data
+directory (and `pb_hooks/`/`pb_migrations/` next to it) if they don't
+exist, provisions a superuser (a one-time `admin@localhost` with a
+random, printed-once password, unless `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD`
+say otherwise), applies `./schema.json` additively if present, seeds
+`./pb_seed/` if the database is otherwise empty, writes
+`./cratebase-types.d.ts` and keeps it up to date, then starts listening
+with the same verbose logging and hook hot-reload as `serve --dev`. A
+startup banner prints everything it did — the API and dashboard URLs,
+the superuser (and its password, when generated), the schema/seed
+summary, the types file, the mail inbox, and the hooks/migrations
+directories. Re-running it against the same data directory is safe: an
+existing superuser and any already-seeded data are left alone.
+
+See the [CLI reference](/docs/reference/cli/#cratebase-dev) for every
+flag (`--schema`, `--seed`, `--types`, `--no-seed`, `--no-types`,
+`--force-schema`, `--dir`, `--http`).
+
+## In production: `cratebase serve`
 
 ```sh
 cratebase serve
@@ -11,31 +37,72 @@ cratebase serve
 
 starts listening on `:8090` immediately — SQLite database and data
 directory are created on first run, there is nothing to provision ahead
-of time.
+of time. Unlike `dev`, it does not create a superuser, apply a schema
+file or seed data on its own: see the inline setup form and headless
+setup below for how to provision the first superuser, and [Schema as
+code](/docs/extending/schema-as-code/) for applying `schema.json`
+yourself (`cratebase schema push` or `POST /api/schema/apply`) as part of
+a deploy.
 
 ## The inline setup form (no CLI required)
 
-Open `http://localhost:8090` in a browser. `GET /api/setup/status`
-reports `{"needsSetup": true}` until a superuser exists, and the
-dashboard renders an inline superuser-creation form instead of a bare
-login screen. Fill it in — email + password — and `POST /api/setup`
-creates your first `_superusers` record and logs you straight into the
-dashboard. This is a one-time, self-closing endpoint: once a superuser
-exists, `POST /api/setup` is permanently rejected, from either the form
-or a direct API call.
+`cratebase serve`'s startup log prints a one-time install token and a
+ready-to-open dashboard URL, something like:
+
+```
+no superuser exists yet — open this URL to create the first admin account
+url=http://127.0.0.1:8090/_/login?token=Ab12Cd34...
+```
+
+Open that URL. `GET /api/setup/status` reports `{"needsSetup": true}`
+until a superuser exists, and the dashboard renders an inline
+superuser-creation form instead of a bare login screen. Fill it in —
+email + password — and `POST /api/setup` creates your first
+`_superusers` record and logs you straight into the dashboard.
+
+The token in that link matters: without it (or with the wrong one),
+`POST /api/setup` is a flat `403` — a freshly deployed public instance
+isn't up for grabs by whoever finds the port first, only by whoever can
+read the boot log (or was handed `CB_SETUP_TOKEN` for a scripted
+deploy). Opening `/_/login` with no `token` in the URL at all shows a
+message pointing back at the log instead of a form nobody can submit.
+
+This is also a one-time, self-closing endpoint regardless of the token:
+once a superuser exists, `POST /api/setup` is permanently rejected, from
+either the form or a direct API call.
 
 ## Headless / scripted setup
 
 Prefer not to click through a form (CI, a Docker entrypoint, a
-first-boot script)? Create the superuser directly:
+first-boot script)? Create the superuser directly — no token needed,
+since this never goes over HTTP:
 
 ```sh
 cratebase superuser create you@example.com yourpassword
 ```
 
-Both paths are equivalent and race-safe: `setup.rs` re-checks "does a
-superuser exist" at write time, so whichever one runs first closes the
-other out — you never end up with two conflicting first-superuser flows.
+Both paths are race-safe: the dashboard's `POST /api/setup` re-checks
+"does a superuser exist" and inserts inside one write transaction (an
+advisory lock on Postgres, since SQLite's single writer already
+serializes it), so however many setup requests arrive at once, exactly
+one succeeds and the rest see the same `403` a second, later `superuser
+create` would.
+
+## Verification, password-reset and OTP mail
+
+No SMTP server to configure before you can try any of this: a fresh
+instance's `smtp.enabled` defaults to `false`, which routes mail through
+a zero-config `Log` backend instead of failing or silently dropping it.
+Every email it "sends" — a signup verification link, a password-reset
+link, a one-time login code — lands in an in-memory dev inbox you can
+browse superuser-only at `GET /api/dev/mails`, or in the dashboard under
+**Settings → Mail inbox** (next to **Mail & storage**, which only appears
+while `Log` is actually in use). Click through the rendered HTML — links
+open in a new tab — or read the plain-text alternative; either way the
+token is right there, no real mailbox required. Turn on real SMTP later
+(`smtp.enabled: true` or `SMTP_HOST`/`SMTP_ENABLED`, etc. — see the
+[configuration reference](/docs/deploy/configuration-reference/)) and
+the dev inbox — and its routes — disappear.
 
 ## Data directory layout
 
@@ -53,6 +120,46 @@ A `pb_hooks/` directory placed next to the data directory (or pointed at
 via `CB_HOOKS_DIR`) is picked up at startup for
 [JavaScript hooks](/docs/extending/js-hooks/); its absence is a
 complete no-op.
+
+## Seeding data
+
+`cratebase seed <path>` populates collections from a JSON file (or a
+directory of them) through the ordinary record-creation path — the same
+validation, relation checks and password hashing a real
+`POST /api/collections/<name>/records` gets — instead of raw SQL:
+
+```json title="pb_seed/01-users.json"
+{
+  "users": [
+    { "id": "seeduser0000001", "email": "demo@example.com", "password": "supersecret123" }
+  ]
+}
+```
+
+```bash
+cratebase seed pb_seed/
+```
+
+A `path` that's a directory applies every `*.json` file in it in
+file-name order (`01-users.json` before `02-posts.json`), so a later
+file's records can point relations at an id an earlier file seeded — a
+supplied `id` is validated and kept, not discarded. Add `--upsert` to
+make re-running the same seed idempotent (a record whose `id` already
+exists is updated instead of failing on the collision); without it, a
+rerun fails on the first duplicate id, since a seed is normally meant to
+run once against a fresh database. The whole directory's `*.json` files
+are applied inside a single transaction: an invalid record anywhere
+rolls back everything the run had written so far, and the error names
+the exact file, collection and record that failed. A `*.js` file in the
+same directory is written like a migration
+(`migrate((app) => { ... }, (app) => {})`) and its `up` runs once, with
+`$app` available, but is never recorded as "applied" — see
+[JavaScript hooks](/docs/extending/js-hooks/) for the `$app` API.
+
+`cratebase reset [--yes]` wipes the data directory's SQLite database
+files and re-runs every migration, for when local test data needs to
+start over — see the [CLI reference](/docs/reference/cli/) for exactly
+what it deletes and why it refuses a Postgres `DATABASE_URL` outright.
 
 ## What's next
 

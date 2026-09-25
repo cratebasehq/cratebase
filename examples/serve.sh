@@ -1,23 +1,18 @@
 #!/usr/bin/env bash
 # Serves every examples/* app correctly in one shot.
 #
-# Why this exists: each example's index.html imports the local SDK via
-# `../../sdk/js/dist/index.js` (see its import map). That path only
-# resolves if the static server's root is the *repo root*, not the
-# example's own directory — `cd examples/todo && python3 -m http.server`
-# 404s on the SDK import, which silently breaks the page (no JS runs, no
-# error is visible in the UI: forms fall back to native GET submits and
-# reload with your form data in the query string, and any "loading…"
-# badge never updates).
+# Todo/realtime-chat/realtime-cursors are static HTML/JS apps that load
+# the published `pocketbase` SDK straight from esm.sh via an import map
+# (see each index.html's `<script type="importmap">`) — there is no
+# local SDK build to produce first, so this just needs a static file
+# server. It's rooted at the repo root (not each example's own
+# directory) only so the same one process can serve all three examples
+# at once; none of them actually reach outside their own folder for
+# anything else.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 PORT="${PORT:-4173}"
-
-if [ ! -f sdk/js/dist/index.js ]; then
-  echo "==> sdk/js/dist/index.js missing, building the SDK once..."
-  (cd sdk/js && npm install && npm run build)
-fi
 
 echo "==> Serving examples on http://localhost:${PORT}"
 echo "    Todo (register/login/CRUD/realtime): http://localhost:${PORT}/examples/todo/"

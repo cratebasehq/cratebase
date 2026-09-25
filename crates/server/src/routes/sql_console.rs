@@ -22,6 +22,21 @@
 //! there is nothing to execute-and-discard about a read), everything
 //! else goes through `execute`.
 //!
+//! "A CTE feeding a `SELECT`" is a syntactic guess, not a fact:
+//! `WITH x AS (UPDATE "_superusers" SET "role" = 'owner' RETURNING 1)
+//! SELECT * FROM x` starts with `WITH` and ends in a `SELECT` just like a
+//! real read does, but the `UPDATE` inside it is a genuine write.
+//! [`is_read_statement`] can't tell the difference without a real SQL
+//! parser, so this endpoint doesn't rely on it being right: on Postgres,
+//! [`cratebase_db::postgres::PostgresEngine::query_interruptible`] runs
+//! every statement this endpoint classifies as a read inside `BEGIN READ
+//! ONLY`, so the *database* rejects the `UPDATE` regardless of what got
+//! past the classification above. SQLite already got this for free —
+//! its read pool runs under `PRAGMA query_only` (see
+//! `crates/db/src/sqlite.rs`) — which is exactly why the gap was
+//! Postgres-only. The system-table guards just below apply to the same
+//! widened set of statements for the same reason (see their own comment).
+//!
 //! # Why the real driver error, not a redacted one
 //!
 //! [`crate::http_error::ApiError`]'s usual `From<DbError>` impl
@@ -50,7 +65,7 @@
 //! narrowing to "the common case is capped at the source" is worth
 //! doing even though the general case still isn't.
 //!
-//! # Real cancellation on SQLite, bounded wait elsewhere
+//! # Real cancellation for reads, bounded wait for writes
 //!
 //! [`QUERY_TIMEOUT`] used to only bound how long *this request* waits —
 //! a caller that hit it got a clear error instead of a hung HTTP
@@ -59,14 +74,19 @@
 //! `crates/db/src/sqlite.rs`'s module doc), and racing a `timeout`
 //! against a `spawn_blocking` future abandons the *future*, not the OS
 //! thread. `Executor::query_interruptible`/`execute_interruptible` (see
-//! `crates/db/src/engine.rs`) close that gap on SQLite: a companion
-//! task calls `rusqlite::Connection::get_interrupt_handle().interrupt()`
-//! on the exact connection running the statement once [`QUERY_TIMEOUT`]
-//! elapses, so a pathological statement (an unindexed cross join, a
-//! runaway recursive CTE) is actually stopped, not just abandoned by
-//! this handler. Postgres has no equivalent wired up at this layer, so
-//! there the same call falls back to the old bounded-wait-only
-//! behavior — see that trait method's own doc for why.
+//! `crates/db/src/engine.rs`) close that gap for the read path on both
+//! engines: on SQLite a companion task calls
+//! `rusqlite::Connection::get_interrupt_handle().interrupt()` on the
+//! exact connection running the statement once [`QUERY_TIMEOUT`]
+//! elapses; on Postgres the same statement runs inside the `BEGIN READ
+//! ONLY` transaction described above, with `SET LOCAL statement_timeout`
+//! set to the same [`QUERY_TIMEOUT`], so the *server* cancels it. Either
+//! way a pathological statement (an unindexed cross join, a runaway
+//! recursive CTE) is actually stopped, not just abandoned by this
+//! handler. The write path (`execute_interruptible`) has no such
+//! primitive wired up on Postgres, so a write still only gets the old
+//! bounded-wait behavior there — see that trait method's own doc for
+//! why.
 
 use axum::routing::post;
 use axum::{Json, Router};
@@ -112,19 +132,42 @@ enum SqlResponse {
     },
 }
 
+/// `sql`'s leading keyword, trimmed and uppercased — shared by
+/// [`is_read_statement`], [`cappable_select`] and the system-table guard
+/// in [`run_sql`], all of which only care about the very first word.
+fn statement_head(sql: &str) -> String {
+    sql.trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
 /// Whether `sql` is a read: trimmed and case-insensitive, it starts with
 /// `SELECT` or `WITH` (a CTE, which only ever feeds a `SELECT` in both
 /// SQLite and Postgres). Anything else — `INSERT`, `UPDATE`, `DELETE`,
 /// `CREATE`, `PRAGMA`, `VACUUM`, ... — is a write for the purposes of
 /// both the read-only gate and the query/execute dispatch below.
+///
+/// This is a syntactic guess, not a guarantee — see the module doc's
+/// "The read/write gate" section for why a `WITH` chain that starts and
+/// ends like a read can still contain a write, and how the dispatch
+/// below stops trusting that guess for anything that actually matters.
 pub(crate) fn is_read_statement(sql: &str) -> bool {
-    let trimmed = sql.trim_start();
-    let head: String = trimmed
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
+    let head = statement_head(sql);
     head == "SELECT" || head == "WITH"
+}
+
+/// Whether the system-table guards below have to run for `sql`: anything
+/// that isn't a bare `SELECT` might write, `WITH` chains included — see
+/// the module doc for why a `WITH` chain can't be trusted the way
+/// [`is_read_statement`] trusts it elsewhere in this handler. A false
+/// positive here just means a read-only `WITH` against `_superusers` has
+/// to go through `write: true` (or be rewritten as a plain `SELECT`,
+/// which is unaffected); a false negative would be the same bypass this
+/// guard exists to close.
+fn may_write(sql: &str) -> bool {
+    statement_head(sql) != "SELECT"
 }
 
 /// Wrap a bare `SELECT` in an outer `LIMIT` so the driver itself never
@@ -136,12 +179,7 @@ pub(crate) fn is_read_statement(sql: &str) -> bool {
 /// conservative failure mode, not a wrong-result one).
 fn cappable_select(sql: &str, cap: usize) -> Option<String> {
     let trimmed = sql.trim();
-    let head: String = trimmed
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    if head != "SELECT" {
+    if statement_head(trimmed) != "SELECT" {
         return None;
     }
     let body = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
@@ -187,14 +225,27 @@ async fn run_sql(
     // `_audit_log` has to stay append-only end to end (see
     // `crate::audit`'s module doc on why a rule string cannot express
     // that) — there is no legitimate reason for even a superuser to
-    // bulk-edit or erase it, raw SQL included, so any non-read
-    // statement mentioning it is refused outright, owner or not.
-    // `_superusers` writes need the same owner-only gate raw SQL would
-    // otherwise let a merely-`admin` superuser route around (see
+    // bulk-edit or erase it, raw SQL included, so any statement that
+    // isn't a bare `SELECT` and mentions it is refused outright, owner or
+    // not. `_superusers` writes need the same owner-only gate raw SQL
+    // would otherwise let a merely-`admin` superuser route around (see
     // `routes::records`'s `_superusers` guard doc) — `write: true`
     // running `UPDATE "_superusers" SET "role" = 'owner' ...` is exactly
     // the self-promotion path that guard exists to close.
-    if !is_read {
+    //
+    // `may_write` — not `!is_read` — gates all three checks below: a
+    // `WITH` chain is classified as a read for the gate above and the
+    // dispatch below, but a data-modifying CTE (`WITH x AS (UPDATE
+    // "_superusers" ... RETURNING 1) SELECT * FROM x`) starts and ends
+    // exactly like a real read does, so it must not skip these checks
+    // just because `is_read_statement` called it one (see the module
+    // doc). Postgres's `BEGIN READ ONLY` (see
+    // `PostgresEngine::query_interruptible`) is the guard that actually
+    // stops the write from reaching disk; this is defense in depth so
+    // the rejection is the clear message below instead of whatever raw
+    // "cannot execute UPDATE in a read-only transaction" error the
+    // driver happens to produce.
+    if may_write(&req.sql) {
         if references_table(&req.sql, crate::audit::COLLECTION) {
             return Err(ApiError::bad_request(
                 "_audit_log cannot be modified through raw SQL.",
@@ -313,5 +364,22 @@ mod tests {
         assert!(is_read_statement("WITH x AS (SELECT 1) SELECT * FROM x"));
         assert!(!is_read_statement("DELETE FROM posts"));
         assert!(!is_read_statement("insert into posts values (1)"));
+    }
+
+    /// The system-table guards have to run for a `WITH` chain too — see
+    /// the module doc and `may_write`'s own doc for why `is_read`'s
+    /// classification can't be trusted for this — but a bare `SELECT`
+    /// (which cannot write, full stop) must not require `write: true`
+    /// just to read `_superusers` or `_cron_jobs`.
+    #[test]
+    fn may_write_covers_with_chains_but_not_a_bare_select() {
+        assert!(!may_write("select * from _superusers"));
+        assert!(!may_write("  SELECT 1"));
+        assert!(may_write("WITH x AS (SELECT 1) SELECT * FROM x"));
+        assert!(may_write(
+            "WITH x AS (UPDATE _superusers SET role = 'owner' RETURNING 1) SELECT * FROM x"
+        ));
+        assert!(may_write("UPDATE _superusers SET role = 'owner'"));
+        assert!(may_write("DELETE FROM posts"));
     }
 }

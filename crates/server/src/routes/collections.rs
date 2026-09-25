@@ -688,6 +688,8 @@ pub(crate) async fn apply(
         .await
         .map_err(|e| ApiError(e.into()))?;
 
+    refresh_typegen_watch(app);
+
     match change {
         Change::Delete => Ok(Arc::new(Collection::default())),
         _ => app
@@ -695,6 +697,30 @@ pub(crate) async fn apply(
             .collections
             .get_by_id(&id)
             .ok_or_else(|| ApiError::internal("the saved collection vanished")),
+    }
+}
+
+/// `--dev` + `CB_TYPEGEN_OUT`: rewrite the generated TypeScript types to
+/// that path after every collection create/update/delete (also reached
+/// through `POST /api/schema/apply` and `cratebase schema push`, which
+/// both call [`apply`] too — see `routes::schema::plan_and_apply`).
+/// Best-effort: a write failure only logs a warning, since this is a dev
+/// convenience layered on top of an already-successful schema change,
+/// not part of that change's own correctness. `cratebase typegen` still
+/// works as a one-shot regardless of this watch.
+fn refresh_typegen_watch(app: &App) {
+    let Some(out) = app
+        .config()
+        .typegen_out
+        .as_deref()
+        .filter(|_| app.config().dev)
+    else {
+        return;
+    };
+    let snapshot = app.db().collections.all();
+    let generated = crate::typegen::generate(snapshot.all.iter().map(|c| c.as_ref()));
+    if let Err(error) = std::fs::write(out, generated) {
+        tracing::warn!(%error, path = out, "failed to refresh CB_TYPEGEN_OUT");
     }
 }
 

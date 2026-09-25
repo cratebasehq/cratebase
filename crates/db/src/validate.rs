@@ -51,6 +51,13 @@ const TOO_MANY_FILES: &str = "validation_too_many_files";
 /// no upstream code to match.
 const VECTOR_DIMENSION_MISMATCH: &str = "validation_vector_dimension_mismatch";
 
+/// Hard upper bound on a password field's plaintext, in bytes, enforced
+/// no matter what the field's own `max` allows (including its default of
+/// `0`/unbounded). Argon2 hashes its input directly, so without this an
+/// attacker could turn a single signup/login request into an expensive
+/// hash of an arbitrarily large payload.
+pub const MAX_PASSWORD_BYTES: usize = 256;
+
 /// Metadata about one file the caller is about to store. `crates/db`
 /// never touches storage, so the server layer supplies this after
 /// parsing the multipart body.
@@ -83,9 +90,22 @@ pub fn is_blank(value: &Value) -> bool {
 }
 
 /// `Cannot be blank.` when a required field holds its zero value.
+///
+/// Matches PocketBase (`core/field_number.go`'s `Required` validator,
+/// which runs `validation.Required` against the raw Go value): a
+/// required `number` field's zero value is `0`, so `0` is treated as
+/// blank exactly like `""` for text or `[]` for a multi-relation. This
+/// trips people up in practice (a literal `0` is a meaningful value for
+/// counters, scores, etc.), so the `number` case gets a more specific
+/// message than the generic "Cannot be blank." to explain why.
 pub fn required(field: &Field, value: &Value) -> Option<FieldError> {
     if field.required && is_blank(value) {
-        return Some(err(codes::REQUIRED, "Cannot be blank."));
+        let message = if field.field_type() == FieldType::Number {
+            "Cannot be blank (0 counts as blank for required number fields)."
+        } else {
+            "Cannot be blank."
+        };
+        return Some(err(codes::REQUIRED, message));
     }
     None
 }
@@ -493,6 +513,12 @@ pub fn password(field: &Field, value: &Value) -> Option<FieldError> {
         return Some(err(
             codes::MAX_TEXT,
             format!("Must be no more than {max} character(s)."),
+        ));
+    }
+    if s.len() > MAX_PASSWORD_BYTES {
+        return Some(err(
+            codes::MAX_TEXT,
+            format!("Must be no more than {MAX_PASSWORD_BYTES} character(s)."),
         ));
     }
     if !pattern.is_empty() {
@@ -942,6 +968,32 @@ mod tests {
     }
 
     #[test]
+    fn required_number_zero_is_blank_with_explanatory_message() {
+        // Matches PocketBase: a required number field's zero value (0) is
+        // blank, same as `""` for text. This is intentional (see PB's
+        // `core/field_number.go`), but the message should explain it since
+        // it surprises people writing counters/scores that can be 0.
+        let mut field = f(
+            "score",
+            FieldKind::Number {
+                min: None,
+                max: None,
+                only_int: false,
+            },
+        );
+        field.required = true;
+        let err = required(&field, &json!(0)).expect("0 is blank for a required number field");
+        assert_eq!(err.code, codes::REQUIRED);
+        assert!(
+            err.message.contains("0 counts as blank"),
+            "message should explain why 0 is rejected: {}",
+            err.message
+        );
+        assert!(required(&field, &json!(1)).is_none());
+        assert!(required(&field, &json!(-1)).is_none());
+    }
+
+    #[test]
     fn number_bool_json_geo() {
         let field = f(
             "views",
@@ -1129,6 +1181,30 @@ mod tests {
             password(&field, &json!("waaaaaaaaytoolong")).unwrap().code,
             codes::MAX_TEXT
         );
+    }
+
+    /// Argon2 hashes its input directly, so an unbounded `max` (the
+    /// field's own default) must not translate into an unbounded hash
+    /// input: `MAX_PASSWORD_BYTES` is enforced no matter what the field
+    /// is configured to allow.
+    #[test]
+    fn password_is_hard_capped_regardless_of_the_fields_own_max() {
+        let field = f(
+            "password",
+            FieldKind::Password {
+                min: 8,
+                max: 0,
+                pattern: String::new(),
+                cost: 0,
+            },
+        );
+        let too_long = "a".repeat(MAX_PASSWORD_BYTES + 1);
+        assert_eq!(
+            password(&field, &json!(too_long)).unwrap().code,
+            codes::MAX_TEXT
+        );
+        let exactly_at_cap = "a".repeat(MAX_PASSWORD_BYTES);
+        assert!(password(&field, &json!(exactly_at_cap)).is_none());
     }
 
     #[test]

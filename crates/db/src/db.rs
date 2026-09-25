@@ -54,7 +54,23 @@ impl Db {
     /// `data_dir`. A `sqlite::memory:` main database gets an in-memory
     /// logs database too (a separate engine instance), so tests never
     /// touch the disk.
+    ///
+    /// Uses [`crate::postgres::DEFAULT_POOL_SIZE`] for the Postgres pool;
+    /// see [`Db::connect_with_pool_size`] for a caller that wants control
+    /// over that (`crates/server/src/config.rs`'s `DB_POOL_SIZE`).
     pub async fn connect(database_url: &str, data_dir: &str) -> DbResult<Db> {
+        Db::connect_with_pool_size(database_url, data_dir, crate::postgres::DEFAULT_POOL_SIZE).await
+    }
+
+    /// As [`Db::connect`], with an explicit Postgres pool size. Ignored
+    /// on SQLite, which sizes its own reader pool independently
+    /// (`sqlite::default_readers`) — there is no equivalent knob to
+    /// thread through there.
+    pub async fn connect_with_pool_size(
+        database_url: &str,
+        data_dir: &str,
+        pg_pool_size: usize,
+    ) -> DbResult<Db> {
         let backend = Backend::from_url(database_url)?;
         let (engine, logs): (Arc<dyn Engine>, Arc<dyn Engine>) = match backend {
             Backend::Sqlite => {
@@ -70,9 +86,7 @@ impl Db {
                 }
             }
             Backend::Postgres => {
-                let main =
-                    PostgresEngine::connect(database_url, crate::postgres::DEFAULT_POOL_SIZE)
-                        .await?;
+                let main = PostgresEngine::connect(database_url, pg_pool_size).await?;
                 let logs = open_logs(data_dir).await?;
                 (Arc::new(main), Arc::new(logs))
             }

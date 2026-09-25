@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { SETTINGS_GROUPS } from "@/lib/settings-nav";
-import { isSettingsItemVisible, useSettings } from "@/hooks/use-settings";
+import { isSettingsItemVisible, useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -19,10 +19,13 @@ import {
  */
 export function SettingsNav({ pathname }: { pathname: string }) {
   const { data: settings } = useSettings();
+  const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
   return (
     <>
       {SETTINGS_GROUPS.map((group) => {
-        const items = group.items.filter((item) => isSettingsItemVisible(item.to, settings));
+        const items = group.items.filter((item) =>
+          isSettingsItemVisible(item.to, settings, devMailInboxAvailable),
+        );
         if (items.length === 0) return null;
         return (
           <SidebarGroup key={group.label}>

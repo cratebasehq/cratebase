@@ -65,6 +65,11 @@ use crate::http_error::ApiError;
 trait HostExec: Clone + Send + Sync + 'static {
     fn app(&self) -> &App;
     fn executor(&self) -> &dyn Executor;
+    /// `true` for a [`TxApp`]: `executor()` is (or may be) an already-open
+    /// transaction, so a collection save/delete must join it through
+    /// `CollectionStore::insert_with`/`update_with`/`delete_with` rather
+    /// than opening its own nested one — see those methods' doc comments.
+    fn is_transactional(&self) -> bool;
 }
 
 impl HostExec for App {
@@ -74,6 +79,9 @@ impl HostExec for App {
     fn executor(&self) -> &dyn Executor {
         self.db()
     }
+    fn is_transactional(&self) -> bool {
+        false
+    }
 }
 
 impl HostExec for TxApp {
@@ -82,6 +90,9 @@ impl HostExec for TxApp {
     }
     fn executor(&self) -> &dyn Executor {
         self
+    }
+    fn is_transactional(&self) -> bool {
+        true
     }
 }
 
@@ -106,6 +117,23 @@ pub fn wrap_tx_host(tx: TxApp) -> Arc<dyn HostApi> {
 /// costs nothing when no `pb_hooks` file ever touches it.
 #[derive(Default)]
 struct JsStoreState(std::sync::RwLock<HashMap<String, Value>>);
+
+/// PocketBase's own `$http.send` defaults its `timeout` option to 120
+/// (seconds) when the caller doesn't set one; match that rather than
+/// inventing our own number, since a script ported from PocketBase
+/// should time out the same way it did there.
+const DEFAULT_HTTP_SEND_TIMEOUT_SECS: u64 = 120;
+
+/// The `reqwest` timeout to apply for a given `HttpRequest.timeout_secs`
+/// (`0` meaning "unspecified"). Always bounded: an unbounded default
+/// would let one hung outbound call block a JS worker indefinitely.
+fn http_send_timeout(requested_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(if requested_secs > 0 {
+        requested_secs
+    } else {
+        DEFAULT_HTTP_SEND_TIMEOUT_SECS
+    })
+}
 
 /// Replace `{:name}` filter placeholders with literal values, exactly like
 /// `cratebase_db::records`'s (private) helper of the same job: `$app.
@@ -317,11 +345,23 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
     async fn save_collection(&self, collection: Collection) -> Result<Collection, AppError> {
         let app = self.0.app();
         let store = &app.db().collections;
-        let engine = app.db().engine.as_ref();
-        let saved = if store.get_by_id(&collection.id).is_some() {
-            store.update(engine, &collection).await
+        let exists = store.get_by_id(&collection.id).is_some();
+        let saved = if self.0.is_transactional() {
+            // Join the caller's already-open transaction instead of
+            // opening a nested one — see `HostExec::is_transactional`.
+            let ex = self.0.executor();
+            if exists {
+                store.update_with(ex, &collection).await
+            } else {
+                store.insert_with(ex, &collection).await
+            }
         } else {
-            store.insert(engine, &collection).await
+            let engine = app.db().engine.as_ref();
+            if exists {
+                store.update(engine, &collection).await
+            } else {
+                store.insert(engine, &collection).await
+            }
         }
         .map_err(AppError::from)?;
         Ok((*saved).clone())
@@ -329,11 +369,19 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
 
     async fn delete_collection(&self, name_or_id: &str) -> Result<(), AppError> {
         let app = self.0.app();
-        app.db()
-            .collections
-            .delete(app.db().engine.as_ref(), name_or_id)
-            .await
-            .map_err(AppError::from)
+        if self.0.is_transactional() {
+            app.db()
+                .collections
+                .delete_with(self.0.executor(), name_or_id)
+                .await
+                .map_err(AppError::from)
+        } else {
+            app.db()
+                .collections
+                .delete(app.db().engine.as_ref(), name_or_id)
+                .await
+                .map_err(AppError::from)
+        }
     }
 
     async fn run_in_transaction(&self, f: TransactionFn) -> Result<(), AppError> {
@@ -379,9 +427,9 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         if let Some(body) = req.body {
             builder = builder.body(body);
         }
-        if req.timeout_secs > 0 {
-            builder = builder.timeout(std::time::Duration::from_secs(req.timeout_secs));
-        }
+        // Always bounded: a hung outbound call must not tie up a JS
+        // worker forever (see `http_send_timeout`'s doc for the default).
+        builder = builder.timeout(http_send_timeout(req.timeout_secs));
         let resp = builder
             .send()
             .await
@@ -587,6 +635,10 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         self.0.app().hooks().unbind_all_by_id(id);
     }
 
+    fn clear_routes(&self) {
+        self.0.app().clear_js_routes();
+    }
+
     async fn create_record_token(
         &self,
         record: &Record,
@@ -637,22 +689,53 @@ fn has_hook_files(dir: &std::path::Path) -> bool {
     })
 }
 
-/// Starts the JS runtime when `pb_hooks/` exists and has at least one
-/// `*.pb.js` file, and stores it on `app` so hooks bound during startup
-/// (see [`bind_js_hook`](crate::hooks::bind_js_hook)) can resolve it and
-/// [`js_router`] can mount its `routerAdd` routes. A complete no-op —
-/// nothing is spawned, nothing is allocated beyond a directory read —
-/// when `pb_hooks/` is absent or empty, matching PocketBase's own
-/// behaviour.
+/// `true` when `dir` exists and contains at least one `*.js` migration
+/// file (any `.js` file — migrations do not use the `.pb.js` naming
+/// hooks do; see `write_migration_stub` in `main.rs`).
+fn has_migration_files(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_type().is_ok_and(|t| t.is_file())
+            && entry.file_name().to_string_lossy().ends_with(".js")
+    })
+}
+
+/// Starts the JS runtime when `pb_hooks/` has at least one `*.pb.js` file,
+/// `pb_migrations/` has at least one `*.js` migration, or the server is
+/// running `--dev`, and stores it on `app` so hooks bound during startup
+/// (see [`bind_js_hook`](crate::hooks::bind_js_hook)) can resolve it,
+/// [`js_router`] can mount its `routerAdd` routes, and `crate::js_migrations`
+/// can apply/revert migrations. The runtime must start for migrations
+/// even when there is no hook file at all — `pb_migrations` alone is a
+/// perfectly normal setup — so this checks both directories.
+///
+/// `--dev` always starts it, even with both directories empty: hot
+/// reload (the watcher `cfg.hooks_watch` arms below) only ever reloads a
+/// *running* pool, so the very first `pb_hooks/*.pb.js` a developer adds
+/// needs the runtime already up to be picked up without a restart.
+/// Starting an otherwise-idle pool is cheap (a handful of worker threads
+/// that evaluate zero files and then sit on the job queue), which is what
+/// makes this an acceptable default for `--dev` specifically — it stays
+/// opt-in for a production boot, where every idle thread is unwanted
+/// cost, via the exact same "must contain something" check as before.
 pub async fn maybe_start(app: &App) -> Result<(), AppError> {
     let hooks_dir = std::path::PathBuf::from(&app.config().hooks_dir);
-    if !has_hook_files(&hooks_dir) {
+    let migrations_dir = std::path::PathBuf::from(&app.config().migrations_dir);
+    let dev = app.config().dev;
+    if !dev && !has_hook_files(&hooks_dir) && !has_migration_files(&migrations_dir) {
         return Ok(());
     }
 
-    let mut cfg = RuntimeConfig::new(hooks_dir.clone(), app.config().migrations_dir.clone());
-    cfg.hooks_watch = app.config().dev;
-    cfg.types_file = Some(hooks_dir.join("types.d.ts"));
+    let mut cfg = RuntimeConfig::new(hooks_dir.clone(), migrations_dir);
+    cfg.hooks_watch = dev;
+    // PocketBase's own convention (`crates/jsvm/src/types.rs`'s module
+    // doc and `types.d.ts` itself): hook and migration files reference
+    // `../pb_data/types.d.ts`, and `pb_data` is a sibling of both
+    // `pb_hooks` and `pb_migrations` (see `config::sibling`), so the file
+    // has to live under the data dir, not under `hooks_dir` as before.
+    cfg.types_file = Some(std::path::PathBuf::from(&app.config().data_dir).join("types.d.ts"));
 
     let runtime = Runtime::start(wrap_host(app.clone()), cfg)
         .await
@@ -734,6 +817,64 @@ pub fn js_router(app: &App) -> Router<App> {
         router = router.route(&pattern, method_router);
     }
     router
+}
+
+/// The dynamic dispatcher `crate::router` mounts as the top-level
+/// fallback, so a `routerAdd`/reload cycle takes effect on the very next
+/// request with no restart and no rebuilt/cached router to invalidate.
+///
+/// Earlier, `js_router`'s output was merged straight into the assembled
+/// `Router` once, at boot — exactly like every built-in route — which
+/// baked the route *table*, not just the routes, into the server for the
+/// rest of the process's life: a `pb_hooks` file added, changed or
+/// deleted after that could reload the JS *runtime* (the watcher already
+/// did that), but the axum router still dispatched by the stale table,
+/// so the new/changed/removed route never took effect until a restart.
+/// Building [`js_router`] fresh from `app.js_routes()` — itself just a
+/// `Mutex<Vec<JsRoute>>` snapshot, kept in sync by [`App::clear_js_routes`]
+/// and `register_route` — on every fallback invocation instead means
+/// there is no separate table to go stale: whatever the runtime most
+/// recently reloaded *is* what the next request sees.
+///
+/// This only runs at all once nothing built in — `/api`, the dashboard,
+/// `/metrics` — has already matched the request by path (that's what
+/// makes it the router's `fallback`), so those routes keep winning over a
+/// same-path `routerAdd` exactly as before; a JS route is a pure
+/// addition, never able to shadow one.
+pub fn js_fallback_router(app: &App) -> Router {
+    Router::new()
+        .fallback(dispatch_js_route)
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            crate::middleware::rate_limit::rate_limit,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            crate::middleware::csrf::csrf,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            app.clone(),
+            crate::middleware::request_log::log_requests,
+        ))
+        .with_state(app.clone())
+}
+
+/// Build the current `routerAdd` table into a router, self-contained with
+/// PocketBase's own "no matching route or method is a 404, not a 405"
+/// answer (matching `crate::router`'s handling of the built-in routes),
+/// and dispatch straight to it. Whatever it returns — a real handler's
+/// response, or its own not-found fallback — is exactly the response
+/// [`js_fallback_router`] should send, so there is no result left to
+/// interpret afterwards.
+async fn dispatch_js_route(
+    State(app): State<App>,
+    req: axum::extract::Request,
+) -> Result<Response, std::convert::Infallible> {
+    let router = js_router(&app)
+        .fallback(crate::http_error::not_found_fallback)
+        .method_not_allowed_fallback(crate::http_error::not_found_fallback)
+        .with_state(app);
+    tower::ServiceExt::oneshot(router, req).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -962,5 +1103,206 @@ mod raw_query_tests {
         let err =
             bind_raw_query_params("SELECT * FROM t WHERE x = {:missing}", &params).unwrap_err();
         assert!(err.to_string().contains("missing"));
+    }
+}
+
+#[cfg(test)]
+mod http_send_tests {
+    use super::http_send_timeout;
+
+    #[test]
+    fn defaults_to_pocketbases_120s_timeout_when_unset() {
+        assert_eq!(
+            http_send_timeout(0),
+            std::time::Duration::from_secs(120),
+            "an unbounded default would let a hung call block a JS worker forever"
+        );
+    }
+
+    #[test]
+    fn keeps_an_explicit_timeout() {
+        assert_eq!(http_send_timeout(5), std::time::Duration::from_secs(5));
+    }
+}
+
+/// The actual ask behind this module's `js_fallback_router`/`maybe_start`
+/// changes: a `--dev` app picks up a brand-new `routerAdd`/`cronAdd`
+/// registration with no restart, because (1) the runtime is already
+/// running even with an empty `pb_hooks/` and (2) the router dispatches
+/// JS routes by looking up the *current* table on every request instead
+/// of one baked in at boot.
+#[cfg(test)]
+mod hot_reload_tests {
+    use std::net::SocketAddr;
+
+    use axum::body::Body;
+    use axum::extract::ConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use crate::app::App;
+    use crate::config::Config;
+
+    fn get(uri: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+        req
+    }
+
+    async fn body_bytes(resp: axum::response::Response) -> Vec<u8> {
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    /// A `--dev` app booted against an *empty* `pb_hooks/` directory. Hot
+    /// reload only ever reloads an already-running pool (`Runtime::reload`
+    /// re-evaluates files on the existing workers), so this is only
+    /// possible at all when `maybe_start` starts the runtime for `--dev`
+    /// unconditionally — see that function's doc.
+    async fn dev_app_with_empty_hooks() -> (App, tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = Config::memory(dir.path().join("pb_data"));
+        cfg.dev = true;
+        std::fs::create_dir_all(&cfg.hooks_dir).expect("create hooks dir");
+        let hooks_dir = std::path::PathBuf::from(&cfg.hooks_dir);
+        let app = App::new(cfg);
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir, hooks_dir)
+    }
+
+    #[tokio::test]
+    async fn dev_starts_the_runtime_even_with_no_hook_files() {
+        let (app, _dir, _hooks) = dev_app_with_empty_hooks().await;
+        assert!(
+            app.jsvm().is_some(),
+            "--dev must start the runtime even with an empty pb_hooks/, so the first \
+             hook file added later can be picked up without a restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn routeradd_added_changed_and_removed_takes_effect_after_reload_with_no_restart() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        // Built once, like the real server does — proving the *router*,
+        // not just the runtime, needs no restart.
+        let router = crate::router(app.clone());
+        let hook_file = hooks_dir.join("main.pb.js");
+
+        let resp = router.clone().oneshot(get("/hello")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "no routerAdd yet");
+
+        std::fs::write(
+            &hook_file,
+            r#"routerAdd("GET", "/hello/{name}", (e) => e.string(200, "v1:" + e.request.pathValue("name")));"#,
+        )
+        .unwrap();
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after add");
+
+        let resp = router.clone().oneshot(get("/hello/world")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_bytes(resp).await, b"v1:world");
+
+        std::fs::write(
+            &hook_file,
+            r#"routerAdd("GET", "/hello/{name}", (e) => e.string(200, "v2:" + e.request.pathValue("name")));"#,
+        )
+        .unwrap();
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after change");
+        let resp = router.clone().oneshot(get("/hello/world")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_bytes(resp).await, b"v2:world");
+
+        std::fs::remove_file(&hook_file).unwrap();
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after remove");
+        let resp = router.oneshot(get("/hello/world")).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "a routerAdd removed by the reloaded files must stop matching"
+        );
+    }
+
+    #[tokio::test]
+    async fn built_in_and_dashboard_routes_still_win_over_a_same_path_js_route() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"routerAdd("GET", "/api/health", (e) => e.string(200, "js-hijack"));"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        // The built-in `/api/health` must still answer, never the JS
+        // route registered at the same path.
+        let resp = router.oneshot(get("/api/health")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_bytes(resp).await;
+        assert_ne!(&body[..], b"js-hijack");
+    }
+
+    #[tokio::test]
+    async fn reload_does_not_duplicate_cron_jobs() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"cronAdd("seedHotReloadJob", "0 0 * * *", () => {});"#,
+        )
+        .unwrap();
+        let rt = app.jsvm().unwrap();
+        rt.reload().await.expect("reload 1");
+        rt.reload().await.expect("reload 2");
+        rt.reload().await.expect("reload 3");
+
+        let matches = app
+            .cron()
+            .list()
+            .into_iter()
+            .filter(|j| j.id == "seedHotReloadJob")
+            .count();
+        assert_eq!(
+            matches, 1,
+            "reload must not duplicate an unchanged cron job"
+        );
+    }
+
+    #[tokio::test]
+    async fn reload_drops_a_cron_job_the_reloaded_files_no_longer_register() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let hook_file = hooks_dir.join("main.pb.js");
+        std::fs::write(
+            &hook_file,
+            r#"cronAdd("goneAfterReload", "0 0 * * *", () => {});"#,
+        )
+        .unwrap();
+        let rt = app.jsvm().unwrap();
+        rt.reload().await.expect("reload with the job present");
+        assert!(app.cron().has("goneAfterReload"));
+
+        std::fs::write(&hook_file, "// no more cronAdd here\n").unwrap();
+        rt.reload().await.expect("reload without the job");
+        assert!(
+            !app.cron().has("goneAfterReload"),
+            "a cron job a reloaded file no longer registers must be removed"
+        );
     }
 }

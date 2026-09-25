@@ -24,11 +24,15 @@ use chrono::{NaiveDate, NaiveDateTime, Utc};
 use cratebase_core::DateTime;
 use cratebase_filter::Dialect;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
+use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
 use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, ToSql, Type};
-use tokio_postgres::{AsyncMessage, NoTls};
+use tokio_postgres::{AsyncMessage, NoTls, Socket};
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::engine::{Engine, Executor, Row, Sql, Transaction, TransactionImpl};
 use crate::error::{DbError, DbResult};
+use crate::pg_tools::{self, PgConnParams};
+use crate::postgres_tls;
 
 /// Default pool size when the caller has no better idea.
 pub const DEFAULT_POOL_SIZE: usize = 10;
@@ -42,6 +46,18 @@ pub struct PostgresEngine {
     /// and reconnecting on loss (below) needs a config to reconnect
     /// *with*.
     config: tokio_postgres::Config,
+    /// The TLS config derived from `sslmode` (see `crate::postgres_tls`),
+    /// or `None` for `sslmode=disable`. Kept alongside `config` for the
+    /// same reason: `subscribe_realtime`'s dedicated connection has to
+    /// negotiate TLS the same way the pool does, not silently fall back
+    /// to a plaintext `NoTls` connection just because it dials directly.
+    tls: Option<rustls::ClientConfig>,
+    /// The original six-value `sslmode` `connect` parsed (see
+    /// `postgres_tls::extract_sslmode`), kept alongside `config`/`tls`
+    /// (which only preserve the *collapsed* three-value driver mode) so
+    /// `conn_params` can hand `pg_dump`/`pg_restore` the exact value the
+    /// operator configured via `PGSSLMODE`.
+    ssl_mode: postgres_tls::SslMode,
     /// Set by `close()` so the `subscribe_realtime` reconnect loop —
     /// which holds its own dedicated connection invisible to
     /// `pool.close()` — actually stops instead of reconnecting forever
@@ -58,15 +74,29 @@ impl PostgresEngine {
     /// Connect to `url` (`postgres://user:pass@host/db?...`) with a pool
     /// of at most `max_size` connections. One connection is opened
     /// eagerly so a bad URL fails here rather than on first use.
+    ///
+    /// `sslmode` (see `crate::postgres_tls`) picks how the connection is
+    /// secured: `disable` talks plaintext exactly as before this option
+    /// existed; every other value negotiates TLS, which is what lets
+    /// this reach a managed Postgres provider that requires it (Neon,
+    /// Supabase, RDS) instead of failing outright.
     pub async fn connect(url: &str, max_size: usize) -> DbResult<Self> {
-        let config = tokio_postgres::Config::from_str(url)?;
-        let manager = Manager::from_config(
-            config.clone(),
-            NoTls,
-            ManagerConfig {
-                recycling_method: RecyclingMethod::Fast,
-            },
-        );
+        let (sanitized, ssl_mode) = postgres_tls::extract_sslmode(url);
+        let mut config = tokio_postgres::Config::from_str(&sanitized)?;
+        config.ssl_mode(ssl_mode.driver_mode());
+        let tls = postgres_tls::client_config(ssl_mode)?;
+
+        let manager_config = ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        };
+        let manager = match &tls {
+            None => Manager::from_config(config.clone(), NoTls, manager_config),
+            Some(tls) => Manager::from_config(
+                config.clone(),
+                MakeRustlsConnect::new(tls.clone()),
+                manager_config,
+            ),
+        };
         let pool = Pool::builder(manager)
             .max_size(max_size.max(1))
             .build()
@@ -75,6 +105,8 @@ impl PostgresEngine {
         Ok(PostgresEngine {
             pool,
             config,
+            tls,
+            ssl_mode,
             listen_cancelled: Arc::new(AtomicBool::new(false)),
             listen_cancel: Arc::new(tokio::sync::Notify::new()),
         })
@@ -82,6 +114,56 @@ impl PostgresEngine {
 
     pub fn pool(&self) -> &Pool {
         &self.pool
+    }
+
+    /// Extract enough of `self.config` to shell out to `pg_dump`/
+    /// `pg_restore` (`crate::pg_tools`). Errors only when the connection
+    /// somehow has neither a host nor a password made of valid UTF-8 —
+    /// both would already have made `connect` fail against a real
+    /// server, so this is effectively unreachable outside of a
+    /// hand-built `Config`.
+    fn conn_params(&self) -> DbResult<PgConnParams> {
+        let host = self
+            .config
+            .get_hosts()
+            .first()
+            .map(|h| match h {
+                tokio_postgres::config::Host::Tcp(host) => host.clone(),
+                #[cfg(unix)]
+                tokio_postgres::config::Host::Unix(path) => path.to_string_lossy().into_owned(),
+            })
+            .ok_or_else(|| {
+                DbError::Other(
+                    "postgres connection has no host to pass to pg_dump/pg_restore".into(),
+                )
+            })?;
+        let port = self.config.get_ports().first().copied().unwrap_or(5432);
+        let user = self
+            .config
+            .get_user()
+            .ok_or_else(|| DbError::Other("postgres connection has no user".into()))?
+            .to_string();
+        let password = self
+            .config
+            .get_password()
+            .map(|bytes| {
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|_| DbError::Other("postgres password is not valid UTF-8".into()))
+            })
+            .transpose()?;
+        let dbname = self
+            .config
+            .get_dbname()
+            .ok_or_else(|| DbError::Other("postgres connection has no database name".into()))?
+            .to_string();
+        Ok(PgConnParams {
+            host,
+            port,
+            user,
+            password,
+            dbname,
+            sslmode: self.ssl_mode,
+        })
     }
 }
 
@@ -398,6 +480,60 @@ impl Executor for PostgresEngine {
             bound.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
         client.execute(&stmt, &refs).await.map_err(map_err)
     }
+
+    /// Real cancellation, not just a bounded wait — see the trait doc.
+    /// `crates/server/src/routes/sql_console.rs` is this method's only
+    /// caller today, and it needs a stronger guarantee than "bound the
+    /// wait": that module's `is_read_statement` treats anything starting
+    /// with `WITH` as a read purely by syntax ("a CTE... only ever feeds
+    /// a `SELECT`"), which is a guess, not a fact — a data-modifying CTE
+    /// like `WITH x AS (UPDATE _superusers SET role='owner' RETURNING 1)
+    /// SELECT * FROM x` would otherwise run for real through this same
+    /// `query` path. Running it inside `BEGIN READ ONLY` instead makes
+    /// the *server* reject any write the statement attempts, regardless
+    /// of whether `crate::routes::sql_console::references_table`'s own
+    /// coarse, no-parser scan happens to recognize the table it touches.
+    /// Always rolled back afterward: a read-only transaction never has
+    /// anything to commit, but the pooled connection still has to be
+    /// handed back clean.
+    ///
+    /// `SET LOCAL statement_timeout` runs inside that same transaction
+    /// so a runaway statement is actually cancelled *server-side* once
+    /// `timeout` elapses, closing the gap the trait doc used to call out
+    /// for every backend without SQLite's `sqlite3_interrupt`. Failing to
+    /// set it is only logged, not fatal: the read-only transaction above
+    /// is the guard this override exists for, and a lost timeout just
+    /// falls back to the old bounded-wait behavior for this one call.
+    async fn query_interruptible(
+        &self,
+        sql: &str,
+        params: &[Sql],
+        timeout: Duration,
+    ) -> DbResult<Vec<Row>> {
+        let client = self.pool.get().await.map_err(pool_err)?;
+        client
+            .batch_execute("BEGIN READ ONLY")
+            .await
+            .map_err(map_err)?;
+        let timeout_ms = timeout.as_millis().max(1);
+        if let Err(e) = client
+            .batch_execute(&format!("SET LOCAL statement_timeout = {timeout_ms}"))
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "failed to set statement_timeout for an ad-hoc SQL console query"
+            );
+        }
+        let result = client_query(&client, sql, params).await;
+        if let Err(e) = client.batch_execute("ROLLBACK").await {
+            tracing::warn!(
+                error = %e,
+                "failed to close the read-only transaction for an ad-hoc SQL console query"
+            );
+        }
+        result
+    }
 }
 
 #[async_trait]
@@ -461,8 +597,23 @@ impl Engine for PostgresEngine {
         self.execute("ANALYZE", &[]).await.map(|_| ())
     }
 
-    async fn snapshot_to(&self, _dest_path: &str) -> DbResult<()> {
-        Err(DbError::Unsupported("postgres snapshot".into()))
+    async fn snapshot_to(&self, dest_path: &str) -> DbResult<()> {
+        let params = self.conn_params()?;
+        let pg_dump = pg_tools::find_pg_tool("pg_dump", pg_tools::CB_PG_DUMP_PATH)?;
+        let invocation =
+            pg_tools::build_pg_dump_invocation(pg_dump, &params, std::path::Path::new(dest_path));
+        pg_tools::run_tool(invocation).await
+    }
+
+    async fn restore_from(&self, source_path: &str) -> DbResult<()> {
+        let params = self.conn_params()?;
+        let pg_restore = pg_tools::find_pg_tool("pg_restore", pg_tools::CB_PG_RESTORE_PATH)?;
+        let invocation = pg_tools::build_pg_restore_invocation(
+            pg_restore,
+            &params,
+            std::path::Path::new(source_path),
+        );
+        pg_tools::run_tool(invocation).await
     }
 
     async fn close(&self) -> DbResult<()> {
@@ -498,6 +649,37 @@ impl Engine for PostgresEngine {
     }
 
     fn subscribe_realtime(&self, on_notify: Arc<dyn Fn(String) + Send + Sync>) {
+        // Dial with the same TLS settings the pool uses (see the `tls`
+        // field's doc) rather than a hard-coded `NoTls`: this dedicated
+        // connection has to satisfy `sslmode` just as much as any pooled
+        // one does, or a `require`-and-up deployment would have every
+        // *pooled* connection encrypted while this one alone connected
+        // in the clear (and would fail outright once the server refuses
+        // a plaintext connection).
+        match &self.tls {
+            None => self.spawn_listen_loop(NoTls, on_notify),
+            Some(tls) => self.spawn_listen_loop(MakeRustlsConnect::new(tls.clone()), on_notify),
+        }
+    }
+}
+
+impl PostgresEngine {
+    /// The body of [`Engine::subscribe_realtime`], generic over the TLS
+    /// connector so it can be driven with either `NoTls` or
+    /// [`MakeRustlsConnect`] without a shared runtime type for the two
+    /// (`Manager::from_config` sidesteps the same problem by boxing
+    /// internally; `tokio_postgres::Config::connect` doesn't, so this
+    /// function is generic instead). The trait bounds are copied from
+    /// `deadpool_postgres::Manager::from_config`'s own, which is exactly
+    /// what a `MakeTlsConnect` needs to be usable across an internal
+    /// reconnect loop like this one.
+    fn spawn_listen_loop<T>(&self, connector: T, on_notify: Arc<dyn Fn(String) + Send + Sync>)
+    where
+        T: MakeTlsConnect<Socket> + Clone + Sync + Send + 'static,
+        T::Stream: Sync + Send,
+        T::TlsConnect: Sync + Send,
+        <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    {
         let config = self.config.clone();
         let cancelled = self.listen_cancelled.clone();
         let cancel = self.listen_cancel.clone();
@@ -507,7 +689,7 @@ impl Engine for PostgresEngine {
                     tracing::debug!("realtime LISTEN loop stopping: engine closed");
                     return;
                 }
-                let (client, mut connection) = match config.connect(NoTls).await {
+                let (client, mut connection) = match config.connect(connector.clone()).await {
                     Ok(pair) => pair,
                     Err(e) => {
                         tracing::warn!(error = %e, "realtime LISTEN connect failed; retrying");

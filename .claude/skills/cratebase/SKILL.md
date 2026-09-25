@@ -38,18 +38,28 @@ state, realtime, plus Cratebase-only extras (vector search, LLM chat, MCP
 tool schemas, presence) with no extra package. Cratebase's API is also
 byte-compatible with PocketBase v0.23+, so the official `pocketbase` SDK
 still works unmodified if a project is already on it — don't hand-roll
-`fetch`/`axios` calls either way. The `cratebase` repo's `examples/`
+`fetch`/`axios` calls either way. For a typed client with no hand-written
+interfaces, run `cratebase typegen` (or `GET /api/typegen`, or the
+dashboard's "Download TypeScript types" button) and pass its
+`Schema`/`SchemaCreate`/`SchemaUpdate` exports to `createClient` — see
+`references/collections-and-sdk.md`. The `cratebase` repo's `examples/`
 directory has six real, runnable reference apps (todo list, kanban, chat,
 webhooks, RAG/vector search, realtime cursors):
 https://github.com/cratebasehq/cratebase/tree/main/examples
 
 ## Recipe: server → collection → rules → auth → data → realtime
 
-1. **Bring up the server**: `cratebase serve` (SQLite + local disk, zero
-   config) or `docker compose up`. First visit to `http://localhost:8090`
-   shows an inline setup form for the superuser account instead of a
-   login screen, or script it with `cratebase superuser create
-   you@example.com yourpassword`.
+1. **Bring up the server**: `cratebase dev` for local work — one command
+   that provisions a superuser (`admin@localhost` with a random,
+   printed-once password), applies `./schema.json` if present, seeds
+   `./pb_seed/` if the database is empty, writes TypeScript types, and
+   serves with verbose logging + hook hot-reload; the startup banner
+   prints everything it did. In production, `cratebase serve` (SQLite +
+   local disk, zero config) or `docker compose up` instead — it starts
+   listening with no auto-provisioning: the first visit to
+   `http://localhost:8090` shows an inline setup form for the superuser
+   account instead of a login screen, or script it with `cratebase
+   superuser create you@example.com yourpassword`.
 2. **Create a collection**: `POST /api/collections` (superuser only).
    See `references/collections-and-sdk.md` for the field-type list and
    schema shape.

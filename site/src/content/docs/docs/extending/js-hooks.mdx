@@ -1,20 +1,32 @@
 ---
 title: "JavaScript hooks"
-description: "pb_hooks/*.pb.js: lifecycle hooks, routerAdd, and cronAdd on an embedded QuickJS runtime."
+description: "pb_hooks/*.pb.js: lifecycle hooks, routerAdd, and cronAdd on an embedded QuickJS runtime. Plus pb_migrations/*.js migrations on the same runtime."
 ---
 
 Drop a `*.pb.js` file in `pb_hooks/` next to your data directory (or
 point `CB_HOOKS_DIR` at it) and get PocketBase's own hook API:
 `onRecordCreate`/`onRecordUpdate`-style lifecycle hooks and `routerAdd`
 for custom HTTP endpoints, both backed by an embedded QuickJS runtime
-(`crates/jsvm`) — no separate process, no restart-to-reload. `cronAdd`
-lets a hook file define its own cron jobs alongside the dashboard's
-SQL-based [cron jobs](/docs/extending/cron-jobs/). A hook's own
-`$app.save`/`$app.delete` inside a record-write-path hook joins that
-write's own transaction, so a hook that aborts rolls the triggering
-write back too. No `pb_hooks/` directory, or an empty one, is a complete
-no-op. `GET /api/functions` gives a read-only view of what's currently
+(`crates/jsvm`) — no separate process to manage. `cronAdd` lets a hook
+file define its own cron jobs alongside the dashboard's SQL-based [cron
+jobs](/docs/extending/cron-jobs/). A hook's own `$app.save`/`$app.delete`
+inside a record-write-path hook joins that write's own transaction, so a
+hook that aborts rolls the triggering write back too. No `pb_hooks/`
+directory, or an empty one, is a complete no-op outside `--dev` (see
+below). `GET /api/functions` gives a read-only view of what's currently
 registered.
+
+**No restart-to-reload, but only in `--dev`/`CB_DEV=true`.** A dev
+server started with `--dev` always runs the JS runtime, even against an
+empty `pb_hooks/`, and polls the directory once a second: adding,
+editing or deleting a `*.pb.js` file — lifecycle hooks, `routerAdd`
+routes (including path params and middleware-style ordering) and
+`cronAdd` jobs alike — takes effect on the next reload with no restart,
+and a removed `routerAdd`/`cronAdd` registration stops matching/firing
+rather than lingering. Outside `--dev` (a production boot), the runtime
+only starts when `pb_hooks/` or `pb_migrations/` actually has a file, and
+changes to `pb_hooks/*.pb.js` need a restart to take effect, same as any
+other config file.
 
 A minimal `pb_hooks/main.pb.js`:
 
@@ -45,3 +57,54 @@ to the same event run in one priority-ordered chain rather than JS
 always going first or last. A hook that throws aborts the chain (and,
 on a write-path hook, rolls back the transaction it's part of) and
 propagates as the request's error response.
+
+## Migrations
+
+Drop a `*.js` file in `pb_migrations/` (or point `CB_MIGRATIONS_DIR` at
+it) for the same `migrate((app) => { ... }, (app) => { ... })` API
+PocketBase uses:
+
+```js
+/// <reference path="../pb_data/types.d.ts" />
+migrate((app) => {
+  const collection = new Collection({
+    name: "widgets",
+    type: "base",
+    fields: [{ name: "title", type: "text" }],
+  });
+  app.save(collection);
+}, (app) => {
+  const collection = app.findCollectionByNameOrId("widgets");
+  app.delete(collection);
+});
+```
+
+Pending migrations run automatically on `serve` startup (right after the
+built-in schema migrations, before the server starts accepting requests)
+and from `cratebase migrate up`/`migrate down [n]` — the JS runtime
+starts for this even if `pb_hooks/` has no file at all. Each migration's
+`up`/`down` runs in its own transaction (`$app.runInTransaction`
+implicitly wraps it), so a migration that throws rolls back and is never
+recorded as applied. Applied migrations are tracked in the same
+`_migrations` table the built-in migrations use, distinguished by their
+`.js` filename.
+
+- `cratebase migrate create <name>` scaffolds a
+  `pb_migrations/<timestamp>_<name>.js` stub.
+- `cratebase migrate collections` writes a migration that snapshots every
+  current (non-system) collection — handy for seeding a fresh environment
+  with your exact schema instead of hand-writing it.
+- `cratebase migrate history-sync` drops ledger rows whose file no longer
+  exists in `pb_migrations/`.
+
+### Automigrate
+
+With `--automigrate`/`CB_AUTOMIGRATE` on (the default), every collection
+created, updated or deleted through the dashboard/API writes a
+`pb_migrations/<timestamp>_<created|updated|deleted>_<name>.js` file for
+you and records it as already applied — so a schema change made by
+clicking around the dashboard is still reproducible from `pb_migrations/`
+alone. A file is only actually written once `pb_migrations/` already
+exists (create the directory once to opt in) or `--dev`/`CB_DEV` is set,
+so a plain production install never grows a surprise top-level directory
+the first time someone edits a collection.

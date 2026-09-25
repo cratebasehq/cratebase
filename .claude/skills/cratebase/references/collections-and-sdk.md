@@ -49,6 +49,13 @@ structs in `crates/core/src/collection.rs:296-297,515-516`.) Superuser
 only — this is schema management, not record CRUD. Real, runnable
 examples of this shape:
 
+**Footgun: `required: true` on a `number` field rejects `0`.** PocketBase
+treats a field's zero value as "blank" for `required` purposes (`""` for
+text, `[]` for multi-relation, and `0` for number) — Cratebase matches
+this (`crates/db/src/validate.rs`'s `required`/`is_blank`). A counter,
+score, or quantity field that can legitimately be `0` should be left
+non-required if you want `0` to be a valid write.
+
 - `examples/todo/setup.sh:13-18` — a minimal `base` collection with
   standard rules.
 - `examples/kanban/setup.sh:15-30` — `text`/`select`/`number`/`autodate`
@@ -71,6 +78,28 @@ don't hand-roll `fetch`/`axios` calls against `/api/...` when the SDK
 already has a typed method for it — you'll lose `AuthStore` persistence,
 multipart handling, and realtime reconnect logic for free by using it
 properly.
+
+### Generating TypeScript types: `cratebase typegen`
+
+Don't hand-write `interface PostsRecord {...}` — run `cratebase typegen` (writes
+`./cratebase-types.d.ts`; `-o path` for elsewhere, `-o -` for stdout) against the local data
+directory, or `GET /api/typegen` (superuser only) against a running instance, or turn on the
+dashboard's "Download TypeScript types" button in a collection's API docs tab. All three call the
+same generator, so the output never drifts. It writes one `<Name>Record`/`<Name>Create`/
+`<Name>Update` per collection (relations get a typed `expand?`, selects become string literal
+unions) plus `Schema`/`SchemaCreate`/`SchemaUpdate` — pass those straight to `@cratebase/client`'s
+`createClient`:
+
+```typescript
+import { createClient } from "@cratebase/client";
+import type { Schema, SchemaCreate, SchemaUpdate } from "./cratebase-types.js";
+
+const cb = createClient<Schema, SchemaCreate, SchemaUpdate>(BASE_URL);
+const cards = await cb.collection("cards").getFullList(); // typed CardsRecord[]
+```
+
+Running with `--dev` and `CB_TYPEGEN_OUT=./src/cratebase-types.d.ts` set regenerates that file on
+every collection create/update/delete — no manual re-run needed while iterating on a schema.
 
 ### Init and auth state
 
@@ -115,6 +144,20 @@ client-side (small collections, e.g. cards on a board); use `getList`
 for server-paginated views. Both accept the same `filter`/`sort` options
 as the raw `?filter=`/`?sort=` query params — see
 `references/filter-syntax.md` for what's legal in `filter`.
+
+**Footgun: `expand` silently drops fields the viewer's rules deny.**
+`expand=someRelation` re-checks the *target* collection's own `viewRule`
+per record; if it says no for the current user, that record's expand is
+just missing from the response — no error. The built-in `users`
+collection defaults to `viewRule: "id = @request.auth.id"` (self-service
+only), so `expand`ing a relation to another user (assignee, comment
+author, teammate, ...) comes back empty for everyone but the record
+owner unless you relax `users`' `viewRule`, e.g. to any signed-in user
+(`@request.auth.id != ""`) or to members of a shared team
+(`id = @request.auth.id || @collection._team_members.userRef ?= @request.auth.id`,
+see `examples/team-board/scripts/gen-schema.ts`). This matches
+PocketBase's own expand behavior — not a Cratebase bug, just easy to
+mistake for one.
 
 ### Realtime
 

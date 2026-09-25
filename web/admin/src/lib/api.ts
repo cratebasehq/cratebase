@@ -102,6 +102,15 @@ export async function checkBackupCapability(): Promise<boolean> {
   return res.data?.canBackup === true;
 }
 
+/** `GET /api/health`, authenticated — whether the mailer is currently
+ * running the zero-config `Log` backend (no SMTP configured), which is
+ * exactly when `/api/dev/mails` answers instead of 404ing. Drives the
+ * "Mail inbox" settings page's visibility and Mail & storage's hint. */
+export async function checkDevMailInboxAvailable(): Promise<boolean> {
+  const res = await cb.send<{ data?: { devMailInbox?: boolean } }>("/api/health");
+  return res.data?.devMailInbox === true;
+}
+
 /** `GET /api/setup/status` — unauthenticated. Tells the login screen
  * whether to render the ordinary login form or the first-run "create your
  * first superuser" form. */
@@ -110,17 +119,20 @@ export async function checkSetupStatus(): Promise<{ needsSetup: boolean }> {
 }
 
 /** `POST /api/setup` — unauthenticated, and only succeeds once: the server
- * rejects it with 403 as soon as any superuser exists. Does not sign in —
- * the caller follows up with {@link authWithPassword} using the same
- * credentials, exactly like a normal login. */
+ * rejects it with 403 as soon as any superuser exists, or if `token`
+ * doesn't match the one it printed to its log at boot (see
+ * `FirstRunSetupForm` in `@/routes/login`, which reads it off the URL).
+ * Does not sign in — the caller follows up with {@link authWithPassword}
+ * using the same credentials, exactly like a normal login. */
 export async function createFirstSuperuser(
   email: string,
   password: string,
   passwordConfirm: string,
+  token: string,
 ): Promise<void> {
   await cb.send<void>("/api/setup", {
     method: "POST",
-    body: { email, password, passwordConfirm },
+    body: { email, password, passwordConfirm, token },
   });
 }
 

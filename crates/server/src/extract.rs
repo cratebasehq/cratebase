@@ -303,11 +303,28 @@ pub(crate) fn check_superuser_ip_allowlist(parts: &Parts, app: &App) -> Result<(
             .map(|ci| ci.0);
         let ip =
             crate::middleware::client_ip::client_ip(&parts.headers, peer, &settings.trusted_proxy);
-        if !settings.superuser_ips.contains(&ip) {
+        if !ip_allowed(&ip, &settings.superuser_ips) {
             return Err(ApiError(AppError::forbidden("")));
         }
     }
     Ok(())
+}
+
+/// Whether `ip` is covered by `allowlist`, whose entries are either an
+/// exact IP (`"203.0.113.7"`) or a CIDR range (`"10.0.0.0/8"`,
+/// `"2001:db8::/32"`), matching either family. An `ip` that fails to
+/// parse (e.g. the client IP could not be determined) is never allowed,
+/// regardless of the allowlist's contents.
+fn ip_allowed(ip: &str, allowlist: &[String]) -> bool {
+    let Ok(ip) = ip.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    allowlist.iter().any(|entry| {
+        if let Ok(net) = entry.parse::<ipnet::IpNet>() {
+            return net.contains(&ip);
+        }
+        entry.parse::<std::net::IpAddr>() == Ok(ip)
+    })
 }
 
 /// Rejects anyone but an authenticated `_superusers` record whose `role`
@@ -540,6 +557,34 @@ mod tests {
         assert_eq!(q["filter"], "title=\"a b\"");
         assert_eq!(q["page"], "2");
         assert!(query_map("").is_empty());
+    }
+
+    #[test]
+    fn ip_allowlist_matches_exact_ips() {
+        let allow = vec!["203.0.113.7".to_string()];
+        assert!(ip_allowed("203.0.113.7", &allow));
+        assert!(!ip_allowed("203.0.113.8", &allow));
+    }
+
+    #[test]
+    fn ip_allowlist_matches_an_ipv4_cidr_range() {
+        let allow = vec!["10.0.0.0/8".to_string()];
+        assert!(ip_allowed("10.1.2.3", &allow));
+        assert!(!ip_allowed("11.0.0.1", &allow));
+    }
+
+    #[test]
+    fn ip_allowlist_matches_an_ipv6_cidr_range() {
+        let allow = vec!["2001:db8::/32".to_string()];
+        assert!(ip_allowed("2001:db8::1", &allow));
+        assert!(!ip_allowed("2001:db9::1", &allow));
+    }
+
+    #[test]
+    fn ip_allowlist_rejects_an_unparsable_client_ip() {
+        let allow = vec!["10.0.0.0/8".to_string()];
+        assert!(!ip_allowed("", &allow));
+        assert!(!ip_allowed("not-an-ip", &allow));
     }
 
     #[test]

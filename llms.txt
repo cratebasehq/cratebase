@@ -16,10 +16,24 @@ source. Everything referenced below is real and current, not aspirational.
   (S3-compatible storage), see [.env.example](./.env.example) for every
   variable.
 - From source: `cargo build --release -p cratebase-server`, then
-  `cratebase serve`. A fresh instance with no superuser yet shows an
-  inline setup form at `http://localhost:8090` (`GET /api/setup/status`,
-  `POST /api/setup`) — no CLI required. `cratebase superuser create
-  you@example.com yourpassword` still works for scripted setup. Full
+  `cratebase dev` for local development — one command that creates the
+  data dir, provisions a superuser (`admin@localhost` with a
+  random, printed-once password, or `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD`),
+  applies `./schema.json` additively, seeds `./pb_seed/` if the database
+  is empty, writes `./cratebase-types.d.ts`, then serves exactly like
+  `serve --dev`; see `cratebase dev --help` and
+  `crates/server/src/dev.rs`. Re-running it against the same data dir is
+  safe — an existing superuser and seeded data are left alone.
+- In production, `cratebase serve` instead: it starts listening
+  immediately with no auto-provisioning. A fresh instance with no
+  superuser yet logs a one-time setup URL carrying an install token
+  (`http://127.0.0.1:8090/_/login?token=...`); opening it shows an inline
+  setup form (`GET /api/setup/status`, `POST /api/setup`) instead of a
+  login screen — no CLI required. `POST /api/setup` refuses to run
+  without that token (or `CB_SETUP_TOKEN`, set explicitly for a scripted
+  deploy), so whoever reads the log claims the instance, not whoever
+  finds the port first. `cratebase superuser create you@example.com
+  yourpassword` still works for scripted setup and needs no token. Full
   dashboard requires `bun run admin:build` first
   (see [ARCHITECTURE.md](./ARCHITECTURE.md#the-admin-dashboard-is-not-a-separate-deployment)).
 
@@ -75,6 +89,9 @@ source. Everything referenced below is real and current, not aspirational.
   native-style lifecycle hooks (`onRecordCreate`, ...) and mount extra
   root-level HTTP routes via `routerAdd` — see
   [ARCHITECTURE.md](./ARCHITECTURE.md#extending-with-javascript-cratesjsvm).
+- `GET /typegen` (superuser only) — generated TypeScript types for the
+  current schema, the same generator `cratebase typegen` (CLI) and the
+  `--dev` `CB_TYPEGEN_OUT` watch use.
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.
@@ -90,6 +107,14 @@ official `npm install pocketbase` SDK (or any of PocketBase's other
 official SDKs) still works unchanged against it — persisted `authStore`,
 multipart file upload helpers, and realtime subscriptions included. See
 the [pocketbase package](https://www.npmjs.com/package/pocketbase).
+
+Run `cratebase typegen` (or `GET /api/typegen`, or run with `--dev` and
+`CB_TYPEGEN_OUT` set to regenerate on every schema change) to get a
+`.d.ts` with one `<Name>Record`/`<Name>Create`/`<Name>Update` per
+collection plus `Schema`/`SchemaCreate`/`SchemaUpdate` — pass those to
+`createClient<Schema, SchemaCreate, SchemaUpdate>()` for a fully typed
+client with no hand-written types and no separate build step. See
+[docs/extending/schema-codegen.mdx](./site/src/content/docs/docs/extending/schema-codegen.mdx).
 
 ## Source map
 

@@ -5,6 +5,8 @@
 **A fast, self-hostable backend — dynamic collections, auth, file storage,
 and realtime — in one Rust binary.**
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/cratebasehq/cratebase)
+
 </div>
 
 ```bash
@@ -27,15 +29,30 @@ app, or a coding agent that just needs a backend.
 ## What you get in the next 30 seconds
 
 ```bash
-cratebase serve
+cratebase dev
 ```
 
-starts listening on `:8090` immediately — SQLite and local-disk storage,
-zero configuration. Open `http://localhost:8090` and the dashboard itself
+is one command for local development: it creates the data directory,
+provisions a superuser (`admin@localhost` with a random, printed-once
+password — no setup form to click through), applies a `schema.json` if
+you have one, seeds `pb_seed/` if the database is empty, writes
+TypeScript types for your schema, and starts listening on `:8090` with
+verbose logging and hook hot-reload — then prints a startup banner with
+everything it did: the API and dashboard URLs, the superuser, the types
+file, the mail inbox. Re-run it any time; an existing superuser and any
+already-seeded data are left alone.
+
+In production, run `cratebase serve` instead — it starts listening
+immediately with zero configuration (SQLite and local-disk storage) but
+leaves provisioning to you: the log prints a one-time setup URL like
+`http://127.0.0.1:8090/_/login?token=...` — open it and the dashboard
 shows an inline setup form instead of a login screen: fill in an email and
 password there and that's your superuser account, no CLI step required.
-(Prefer to script it instead? `cratebase superuser create you@example.com
-yourpassword` works too, before or after that first visit.)
+The token in that link is what stands between "found this instance" and
+"owns it," so `POST /api/setup` refuses to work without it. (Prefer to
+script it instead? `cratebase superuser create you@example.com
+yourpassword` works too, before or after that first visit, and needs no
+token — it never goes over HTTP.)
 
 From there, create a collection and start reading/writing records over
 HTTP or from `@cratebase/client`, Cratebase's first-party SDK:

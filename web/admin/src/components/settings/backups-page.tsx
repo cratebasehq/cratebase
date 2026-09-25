@@ -14,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -27,6 +28,15 @@ type BackupInfo = {
   key: string;
   size: number;
   modified: string;
+};
+
+/** The outcome of the most recent `settings.backups.cron` run, from
+ * `GET /api/backups/storage-info` — absent until the cron job has fired
+ * at least once. */
+type LastScheduledBackup = {
+  at: string;
+  ok: boolean;
+  message?: string;
 };
 
 /** The server writes PocketBase's datetime form (a space, not a `T`),
@@ -68,8 +78,9 @@ async function downloadBackup(name: string): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
-/** Triggers, lists, downloads, and deletes SQLite backups — see
- * `crate::routes::backups`'s doc comment for why this is SQLite-only. */
+/** Triggers, lists, downloads, and deletes backups — SQLite via `VACUUM
+ * INTO`, Postgres via `pg_dump`/`pg_restore` (see
+ * `crate::routes::backups`'s doc comment). */
 export function BackupsPage() {
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
@@ -84,13 +95,14 @@ export function BackupsPage() {
   const { data: storageInfo } = useQuery({
     queryKey: ["backups", "storage-info"],
     queryFn: () =>
-      cb.send<{ driver: "local" | "s3"; location: string }>("/api/backups/storage-info", {
-        method: "GET",
-      }),
+      cb.send<{ driver: "local" | "s3"; location: string; lastScheduled?: LastScheduledBackup }>(
+        "/api/backups/storage-info",
+        { method: "GET" },
+      ),
     staleTime: 5 * 60 * 1000,
   });
-  // Postgres-backed servers have nothing under `sqlite_main_path` to
-  // snapshot — the create/upload/restore actions would just 403.
+  // False when backup storage itself isn't usable (e.g. a misconfigured
+  // S3 target) — SQLite and Postgres both back up fine otherwise.
   const { data: canBackup } = useQuery({
     queryKey: ["backups", "capability"],
     queryFn: checkBackupCapability,
@@ -198,10 +210,11 @@ export function BackupsPage() {
             <EmptyMedia variant="icon">
               <Archive />
             </EmptyMedia>
-            <EmptyTitle>Backups are SQLite-only</EmptyTitle>
+            <EmptyTitle>Backups aren't available</EmptyTitle>
             <EmptyDescription>
-              On Postgres, snapshot with <code className="font-mono">pg_dump</code>; uploaded files are still under{" "}
-              <code className="font-mono">storage/</code>.
+              Backup storage isn't configured correctly — check the S3 settings under{" "}
+              <code className="font-mono">settings.backups.s3</code>, or the server logs for why the local
+              backups directory couldn't be used.
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -235,6 +248,19 @@ export function BackupsPage() {
             {storageInfo.driver === "s3" ? `S3 (${storageInfo.location})` : `local disk (${storageInfo.location})`}
           </span>
           .
+        </p>
+      ) : null}
+
+      {storageInfo?.lastScheduled ? (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <span>Last scheduled backup:</span>
+          <Badge variant={storageInfo.lastScheduled.ok ? "secondary" : "destructive"}>
+            {storageInfo.lastScheduled.ok ? "Succeeded" : "Failed"}
+          </Badge>
+          <span>{parseServerDate(storageInfo.lastScheduled.at).toLocaleString()}</span>
+          {!storageInfo.lastScheduled.ok && storageInfo.lastScheduled.message ? (
+            <span className="text-destructive">{storageInfo.lastScheduled.message}</span>
+          ) : null}
         </p>
       ) : null}
 

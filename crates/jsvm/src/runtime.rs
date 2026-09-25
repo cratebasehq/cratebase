@@ -80,6 +80,12 @@ pub struct RuntimeConfig {
     pub workers: usize,
     /// Poll `hooks_dir` for changes and reload the hooks (`--dev`).
     pub hooks_watch: bool,
+    /// How often the watcher (when `hooks_watch` is set) checks
+    /// `hooks_dir` for changes. Default one second; tests shrink this so
+    /// a hot-reload assertion doesn't need to wait a full second (or, for
+    /// a deterministic assertion, they can skip the watcher entirely and
+    /// call [`Runtime::reload`] directly).
+    pub hooks_watch_interval: Duration,
     /// Maximum wall-clock time a single JavaScript invocation may run
     /// before it is interrupted. Default 30s.
     pub timeout: Duration,
@@ -95,6 +101,7 @@ impl Default for RuntimeConfig {
             types_file: None,
             workers: 0,
             hooks_watch: false,
+            hooks_watch_interval: Duration::from_secs(1),
             timeout: Duration::from_secs(30),
             memory_limit: None,
         }
@@ -513,6 +520,16 @@ impl Runtime {
         .await
     }
 
+    /// Evaluate `file`'s `migrate((app) => { ... })` "up" function once,
+    /// with the exact same `$app`-in-a-transaction semantics as a real
+    /// migration's `up` (`prelude.js`'s `runMigration`) but with no
+    /// ledger involved — used by `cratebase seed` for a `*.js` seed file,
+    /// which wants to run once, transactionally, and never be recorded as
+    /// "applied". `file` need not live under [`RuntimeConfig::migrations_dir`].
+    pub async fn run_seed_up(&self, file: PathBuf) -> Result<(), AppError> {
+        self.run_migration(file, MigrationDirection::Up).await
+    }
+
     /// Re-evaluate the hook files on every worker (used in `--dev`).
     /// Returns once every worker has reloaded; the first error, if any,
     /// is returned but the other workers still reload.
@@ -608,13 +625,14 @@ fn spawn_watcher(inner: Weak<Inner>, runtime: Runtime) {
     // The watcher must not keep the runtime alive, so drop the strong
     // reference and use the weak one for the reload trigger.
     let dir = runtime.inner.cfg.hooks_dir.clone();
+    let interval = runtime.inner.cfg.hooks_watch_interval;
     drop(runtime);
     std::thread::Builder::new()
         .name("jsvm-hooks-watch".into())
         .spawn(move || {
             let mut last = snapshot(&dir);
             loop {
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(interval);
                 let Some(inner) = inner.upgrade() else { break };
                 let now = snapshot(&dir);
                 if now != last {

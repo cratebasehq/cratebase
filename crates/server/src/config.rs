@@ -17,22 +17,26 @@
 //! |---|---|---|
 //! | `CRATEBASE_DATA_DIR` | `./pb_data` | data directory (`--dir`) |
 //! | `DATABASE_URL` | `sqlite:<data_dir>/data.db` | main database |
+//! | `DB_POOL_SIZE` | `10` | Postgres connection pool size (ignored on SQLite) |
 //! | `HOST` | `0.0.0.0` | bind address (`--http`) |
 //! | `PORT` | `8090` | bind port (`--http`) |
 //! | `CB_HOOKS_DIR` | `<data_dir>/../pb_hooks` | JS hooks directory |
 //! | `CB_MIGRATIONS_DIR` | `<data_dir>/../pb_migrations` | JS migrations |
+//! | `CB_SEED_DIR` | `<data_dir>/../pb_seed` | seed data directory for `cratebase seed`/`cratebase dev` (see `crate::seed`) |
 //! | `CB_DEV` | `false` | dev mode (`--dev`) |
 //! | `CB_AUTOMIGRATE` | `true` | write migration files on schema change |
 //! | `LOG_REQUESTS` | `true` | persist request logs (a deliberate divergence, see spec §15.3) |
 //! | `CB_ENCRYPTION` | unset | 32-char key encrypting `_params` values |
 //! | `CORS_ALLOW_ORIGINS` | `*` | comma-separated origins (`--origins`) |
-//! | `CB_SECRET` / `AUTH_SECRET` | generated once into `<data_dir>/.secret` | app-wide token signing secret |
+//! | `CB_SECRET` / `AUTH_SECRET` | generated once into `<data_dir>/.secret` | app-wide token signing secret; empty values are treated as unset, and a value under 32 bytes refuses to boot |
 //! | `SESSION_TRACKING` | `true` | write a `_sessions` row per login for listing/revocation |
 //! | `SESSION_COOKIE` | `false` | also accept/set an httpOnly session cookie alongside the bearer token |
 //! | `SESSION_COOKIE_NAME` | `cb_session` | the cookie's name |
 //! | `SESSION_COOKIE_DOMAIN` | unset (host-only) | the cookie's `Domain` attribute |
 //! | `SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, or `None` (case-insensitive) |
 //! | `SESSION_COOKIE_SECURE` | `true` | whether the cookie carries `Secure` |
+//! | `CB_SETUP_TOKEN` | generated at boot | first-run install token `POST /api/setup` requires (see `crate::routes::setup`); set this for a scripted deploy that needs to know it in advance |
+//! | `CB_ADMIN_EMAIL` / `CB_ADMIN_PASSWORD` | unset | `cratebase dev` (see `crate::dev`): when both are set, upsert this superuser on every boot instead of the one-time generated `admin@localhost` |
 //!
 //! These seed [`Settings`] on **first boot only** and are ignored once
 //! settings exist in `_params` (an operator editing them in the dashboard
@@ -40,7 +44,18 @@
 //! `CB_APP_NAME`, `CB_APP_URL`, `CB_SENDER_NAME`, `CB_SENDER_ADDRESS`,
 //! `SMTP_ENABLED`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`,
 //! `SMTP_PASSWORD`, `SMTP_TLS`, `S3_ENABLED`, `S3_BUCKET`, `S3_REGION`,
-//! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`.
+//! `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET`, `S3_FORCE_PATH_STYLE`,
+//! `AUTH_RATE_LIMIT_ENABLED` (default `true`).
+//!
+//! A few more env vars live outside this file but are just as real:
+//! `DATABASE_MAX_CONNECTIONS` (SQLite reader pool size, `crates/db/src/sqlite.rs`),
+//! `EMBEDDINGS_BASE_URL` / `EMBEDDINGS_API_KEY` (`crate::embeddings`), and
+//! `CB_PG_DUMP_PATH` / `CB_PG_RESTORE_PATH` (override the `PATH` search
+//! for `pg_dump`/`pg_restore` when backing up or restoring a Postgres
+//! main database, `crates/db/src/pg_tools.rs`).
+//! [`KNOWN_ENV_VARS`] below is the canonical, exhaustive list across all of
+//! these — it's what keeps `.env.example` from drifting (see
+//! `crates/server/tests/env_example.rs`).
 
 use std::path::{Path, PathBuf};
 
@@ -52,16 +67,92 @@ pub const DEFAULT_DATA_DIR: &str = "./pb_data";
 /// File holding the generated app secret when none is configured.
 pub const SECRET_FILE: &str = ".secret";
 
+/// Every environment variable Cratebase's server binary reads or accepts,
+/// across every crate — the module doc above has the per-variable
+/// defaults and meaning. `.env.example` at the repo root must document
+/// exactly this set: `crates/server/tests/env_example.rs` parses it and
+/// fails the build if it lists a key that isn't here, so a var can't be
+/// added to (or renamed in) `.env.example` without a matching entry (or
+/// vice versa) — that's the drift this list exists to catch.
+pub const KNOWN_ENV_VARS: &[&str] = &[
+    // --- core --------------------------------------------------------
+    "CRATEBASE_DATA_DIR",
+    "DATABASE_URL",
+    "HOST",
+    "PORT",
+    "CORS_ALLOW_ORIGINS",
+    "CB_HOOKS_DIR",
+    "CB_MIGRATIONS_DIR",
+    "CB_SEED_DIR",
+    "LOG_REQUESTS",
+    // --- database ------------------------------------------------------
+    "DATABASE_MAX_CONNECTIONS", // crates/db/src/sqlite.rs
+    "DB_POOL_SIZE",
+    "CB_PG_DUMP_PATH",    // crates/db/src/pg_tools.rs
+    "CB_PG_RESTORE_PATH", // crates/db/src/pg_tools.rs
+    // --- auth / sessions -------------------------------------------
+    "CB_ENCRYPTION",
+    "CB_SECRET",
+    "AUTH_SECRET",
+    "AUTH_RATE_LIMIT_ENABLED",
+    "CB_SETUP_TOKEN",
+    "SESSION_TRACKING",
+    "SESSION_COOKIE",
+    "SESSION_COOKIE_NAME",
+    "SESSION_COOKIE_DOMAIN",
+    "SESSION_COOKIE_SAMESITE",
+    "SESSION_COOKIE_SECURE",
+    // --- first-boot settings seed: mail (Settings::smtp/meta) --------
+    "CB_APP_NAME",
+    "CB_APP_URL",
+    "CB_SENDER_NAME",
+    "CB_SENDER_ADDRESS",
+    "SMTP_ENABLED",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+    "SMTP_TLS",
+    // --- first-boot settings seed: storage (Settings::s3) -----------
+    "S3_ENABLED",
+    "S3_BUCKET",
+    "S3_REGION",
+    "S3_ENDPOINT",
+    "S3_ACCESS_KEY",
+    "S3_SECRET",
+    "S3_FORCE_PATH_STYLE",
+    // --- AI / embeddings (crates/server/src/embeddings.rs) ----------
+    "EMBEDDINGS_BASE_URL",
+    "EMBEDDINGS_API_KEY",
+    // --- dev -----------------------------------------------------------
+    "CB_DEV",
+    "CB_AUTOMIGRATE",
+    "CB_TYPEGEN_OUT",
+    "CB_ADMIN_EMAIL",
+    "CB_ADMIN_PASSWORD",
+];
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub data_dir: String,
     pub database_url: String,
+    /// Postgres connection pool size (`DB_POOL_SIZE`). Ignored on SQLite.
+    pub db_pool_size: usize,
     pub host: String,
     pub port: u16,
     /// Directory scanned for `*.pb.js` hooks by the JS runtime (W5).
     pub hooks_dir: String,
     /// Directory holding `*.js` migrations written by automigrate.
     pub migrations_dir: String,
+    /// Convention directory for `cratebase seed`/the (future) `cratebase
+    /// dev` auto-seed: a JSON file or a directory of `*.json`/`*.js` seed
+    /// files (`CB_SEED_DIR`, default `<data_dir>/../pb_seed`). Only a
+    /// default location — `cratebase seed <path>` always takes its path
+    /// as an explicit argument and ignores this field; it exists so a
+    /// caller that wants the convention (`cratebase dev`, a test) has a
+    /// ready answer for "where is it" without recomputing the sibling
+    /// path itself.
+    pub seed_dir: String,
     /// Static files served at `/` instead of the embedded dashboard.
     pub public_dir: Option<String>,
     pub dev: bool,
@@ -90,6 +181,16 @@ pub struct Config {
     pub session_cookie_domain: String,
     pub session_cookie_same_site: SameSite,
     pub session_cookie_secure: bool,
+    /// `CB_SETUP_TOKEN`: the first-run install token, set explicitly for
+    /// a scripted deploy. `None` means `App::bootstrap` generates a
+    /// random one instead (see `crate::routes::setup`).
+    pub setup_token: Option<String>,
+    /// `CB_TYPEGEN_OUT`: when set and `dev` is true, `cratebase
+    /// typegen`'s output is rewritten to this path every time a
+    /// collection is created, updated or deleted (see
+    /// `crate::routes::collections::apply`). `None` disables the watch;
+    /// `cratebase typegen` still works as a one-shot regardless.
+    pub typegen_out: Option<String>,
 }
 
 /// A cookie's `SameSite` attribute. Parsed case-insensitively from
@@ -138,8 +239,10 @@ impl Config {
         let dir = data_dir.as_ref().to_string_lossy().into_owned();
         Config {
             database_url: format!("sqlite:{dir}/data.db"),
+            db_pool_size: cratebase_db::postgres::DEFAULT_POOL_SIZE,
             hooks_dir: sibling(&dir, "pb_hooks"),
             migrations_dir: sibling(&dir, "pb_migrations"),
+            seed_dir: sibling(&dir, "pb_seed"),
             data_dir: dir,
             host: "0.0.0.0".into(),
             port: 8090,
@@ -156,6 +259,8 @@ impl Config {
             session_cookie_domain: String::new(),
             session_cookie_same_site: SameSite::Lax,
             session_cookie_secure: true,
+            setup_token: None,
+            typegen_out: None,
         }
     }
 
@@ -195,10 +300,14 @@ impl Config {
 
         let mut config = Config::for_data_dir(&data_dir);
         config.database_url = env_or("DATABASE_URL", &config.database_url);
+        config.db_pool_size = env_or("DB_POOL_SIZE", &config.db_pool_size.to_string())
+            .parse()
+            .unwrap_or(config.db_pool_size);
         config.host = env_or("HOST", &config.host);
         config.port = env_or("PORT", "8090").parse().unwrap_or(8090);
         config.hooks_dir = env_or("CB_HOOKS_DIR", &config.hooks_dir);
         config.migrations_dir = env_or("CB_MIGRATIONS_DIR", &config.migrations_dir);
+        config.seed_dir = env_or("CB_SEED_DIR", &config.seed_dir);
         config.dev = env_bool("CB_DEV", false);
         config.automigrate = env_bool("CB_AUTOMIGRATE", true);
         config.log_requests = env_bool("LOG_REQUESTS", true);
@@ -206,9 +315,15 @@ impl Config {
             .ok()
             .filter(|v| !v.is_empty());
         config.origins = split_csv(&env_or("CORS_ALLOW_ORIGINS", "*"));
-        config.secret = std::env::var("CB_SECRET")
-            .or_else(|_| std::env::var("AUTH_SECRET"))
-            .unwrap_or_else(|_| load_or_create_secret(&data_dir));
+        config.secret = resolve_secret(
+            &data_dir,
+            std::env::var("CB_SECRET").ok(),
+            std::env::var("AUTH_SECRET").ok(),
+        )
+        .unwrap_or_else(|msg| {
+            eprintln!("cratebase: refusing to start: {msg}");
+            std::process::exit(1);
+        });
         config.session_tracking = env_bool("SESSION_TRACKING", true);
         config.session_cookie = env_bool("SESSION_COOKIE", false);
         config.session_cookie_name = env_or("SESSION_COOKIE_NAME", &config.session_cookie_name);
@@ -224,6 +339,12 @@ impl Config {
             Err(_) => SameSite::Lax,
         };
         config.session_cookie_secure = env_bool("SESSION_COOKIE_SECURE", true);
+        config.setup_token = std::env::var("CB_SETUP_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty());
+        config.typegen_out = std::env::var("CB_TYPEGEN_OUT")
+            .ok()
+            .filter(|v| !v.is_empty());
         config
     }
 
@@ -246,6 +367,10 @@ impl Config {
     /// when `_params` holds no settings row yet.
     pub fn seed_settings(&self) -> Settings {
         let mut s = Settings::default();
+        // Documented as on-by-default (.env.example, docs/deploy); the
+        // env var only lets an operator opt out (e.g. already
+        // rate-limiting at a reverse proxy in front of Cratebase).
+        s.rate_limits.enabled = env_bool("AUTH_RATE_LIMIT_ENABLED", s.rate_limits.enabled);
         if let Ok(v) = std::env::var("CB_APP_NAME") {
             s.meta.app_name = v;
         }
@@ -327,6 +452,41 @@ pub fn split_csv(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Signing secrets shorter than this are brute-forceable over HMAC; refuse
+/// to boot rather than run with one.
+const MIN_SECRET_LEN: usize = 32;
+
+/// Resolves the app-wide signing secret from the two env vars that can
+/// carry it, falling back to the generated/persisted one for `data_dir`
+/// when neither is set.
+///
+/// An empty value (e.g. docker-compose's `AUTH_SECRET: ${AUTH_SECRET:-}`
+/// resolving to `""` when the operator never set it) is treated the same
+/// as unset, mirroring `encryption_key`'s `.filter(|v| !v.is_empty())`
+/// above — an empty string must never become the signing key. A
+/// non-empty value shorter than [`MIN_SECRET_LEN`] is rejected outright
+/// rather than silently accepted, since it's very likely a placeholder or
+/// typo, not an intentional weak secret.
+fn resolve_secret(
+    data_dir: &str,
+    cb_secret: Option<String>,
+    auth_secret: Option<String>,
+) -> Result<String, String> {
+    let explicit = cb_secret
+        .filter(|v| !v.is_empty())
+        .or_else(|| auth_secret.filter(|v| !v.is_empty()));
+    match explicit {
+        Some(secret) if secret.len() < MIN_SECRET_LEN => Err(format!(
+            "CB_SECRET/AUTH_SECRET is {} bytes, but must be at least {MIN_SECRET_LEN}; \
+             generate one with e.g. `openssl rand -base64 48`, or unset it to have \
+             cratebase generate and persist one",
+            secret.len()
+        )),
+        Some(secret) => Ok(secret),
+        None => Ok(load_or_create_secret(data_dir)),
+    }
+}
+
 /// Generate a random 64-char app secret on first run and persist it under
 /// the data dir, so tokens keep validating across restarts without every
 /// self-hoster having to set `CB_SECRET` by hand.
@@ -357,12 +517,14 @@ mod tests {
         assert_eq!(c.database_url, "sqlite:./pb_data/data.db");
         assert!(c.hooks_dir.ends_with("pb_hooks"));
         assert!(c.migrations_dir.ends_with("pb_migrations"));
+        assert!(c.seed_dir.ends_with("pb_seed"));
         assert!(c.automigrate);
         assert_eq!(c.port, 8090);
         assert_eq!(
             c.sqlite_main_path(),
             Some(PathBuf::from("./pb_data/data.db"))
         );
+        assert_eq!(c.db_pool_size, cratebase_db::postgres::DEFAULT_POOL_SIZE);
     }
 
     #[test]
@@ -375,6 +537,63 @@ mod tests {
         assert_eq!(
             split_csv("https://a.example , https://b.example,"),
             vec!["https://a.example", "https://b.example"]
+        );
+    }
+
+    #[test]
+    fn empty_secret_env_vars_fall_back_to_generated_secret() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        // docker-compose.yml's `AUTH_SECRET: ${AUTH_SECRET:-}` resolves to
+        // `""` when the operator never set it; that must not become the
+        // signing secret (an empty HMAC key is worse than none).
+        let secret = resolve_secret(&data_dir, Some(String::new()), Some(String::new()))
+            .expect("empty env vars are treated as unset");
+        assert!(!secret.is_empty());
+        assert!(secret.len() >= MIN_SECRET_LEN);
+    }
+
+    #[test]
+    fn short_explicit_secret_is_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let err = resolve_secret(&data_dir, Some("too-short".into()), None)
+            .expect_err("a 9-byte secret must be rejected");
+        assert!(
+            err.contains("32"),
+            "error should mention the minimum: {err}"
+        );
+    }
+
+    #[test]
+    fn short_auth_secret_fallback_is_also_rejected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let err = resolve_secret(&data_dir, None, Some("also-too-short".into()))
+            .expect_err("AUTH_SECRET is checked the same as CB_SECRET");
+        assert!(err.contains("32"));
+    }
+
+    #[test]
+    fn sufficiently_long_explicit_secret_is_used_verbatim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let secret = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            resolve_secret(&data_dir, Some(secret.into()), None).unwrap(),
+            secret
+        );
+    }
+
+    #[test]
+    fn cb_secret_takes_priority_over_auth_secret() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_string_lossy().into_owned();
+        let cb = "cb-0123456789abcdef0123456789abcdef";
+        let auth = "auth-0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            resolve_secret(&data_dir, Some(cb.into()), Some(auth.into())).unwrap(),
+            cb
         );
     }
 }

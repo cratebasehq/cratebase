@@ -9,13 +9,15 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    // `@cratebase/client` isn't published to npm yet — this example lives
-    // in the Cratebase monorepo, so it resolves the SDK straight from
-    // source, the same alias `web/admin/vite.config.ts` uses. Cloning
-    // this directory standalone (outside the monorepo) needs the real
-    // published package instead once it ships.
+    // Neither `@cratebase/client` nor `@cratebase/react` is published to
+    // npm yet — this example lives in the Cratebase monorepo, so it
+    // resolves both straight from source, the same alias
+    // `web/admin/vite.config.ts` uses for the client. Cloning this
+    // directory standalone (outside the monorepo) needs the real
+    // published packages instead once they ship.
     alias: {
       "@cratebase/client": fileURLToPath(new URL("../../sdk/js/client/src/index.ts", import.meta.url)),
+      "@cratebase/react": fileURLToPath(new URL("../../sdk/js/react/src/index.ts", import.meta.url)),
     },
   },
   server: {

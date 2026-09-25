@@ -23,11 +23,12 @@ component tree with real state management than as hand-rolled
 `document.createElement` calls. So this one has an actual `package.json`
 and runs on Vite + React + TypeScript with its own dev server. It talks to
 Cratebase with the first-party `@cratebase/client` SDK (`src/cratebase.ts`)
-rather than the `pocketbase` npm package the zero-build examples use —
-`@cratebase/client` isn't published yet, so this example resolves it
-straight from `sdk/js/client/src` via a Vite alias, which only works from
-inside this monorepo checkout; once it ships to npm this becomes an
-ordinary dependency. `app.js`'s realtime/optimistic-update pattern carries
+and its `@cratebase/react` hooks package for auth, rather than the
+`pocketbase` npm package the zero-build examples use — neither is
+published yet, so this example resolves both straight from `sdk/js/{client,
+react}/src` via a Vite alias, which only works from inside this monorepo
+checkout; once they ship to npm this becomes an ordinary dependency.
+`app.js`'s realtime/optimistic-update pattern carries
 over unchanged in spirit — see "How it works" below — it's just spread
 across hooks and components instead of one file.
 
@@ -90,13 +91,21 @@ open the same URL in a second tab to see the two-tab realtime sync.
 
 ## How it works
 
-- **Auth**: `useAuth` mirrors the todo example's exact calls —
-  `cb.auth.signUp(...)` for register (auto-signs-in by default),
-  `cb.auth.signIn.password(...)` alone for sign in — and subscribes to the
-  SDK's `auth.onChange` to drive the auth-screen ↔ board swap. `cards` and
-  `presence` share that same client/auth store, so every request after
-  sign-in automatically carries the bearer token; no manual header wiring
-  anywhere in the app.
+- **Auth**: `useAuth` (`src/hooks/useAuth.ts`) is a thin adapter over
+  `@cratebase/react`'s own `useAuth`, keeping this app's small `{ user,
+  register, login, logout }` shape — register calls `cb.auth.signUp(...)`
+  (auto-signs-in by default), login calls `signIn.password(...)`, and the
+  auth-screen ↔ board swap is driven by `@cratebase/react` subscribing to
+  the SDK's `auth.onChange` under the hood, same as it does everywhere
+  else. `cards` and `presence` share that same client/auth store, so every
+  request after sign-in automatically carries the bearer token; no manual
+  header wiring anywhere in the app. `useCards`/`usePresence` stay
+  hand-rolled directly on `@cratebase/client` rather than moving to
+  `@cratebase/react`'s `useRecords`/`usePresence`: both have real,
+  board-specific logic (fractional-index reordering with
+  optimistic-then-reconcile writes; an own-presence-row id persisted in
+  `localStorage` across reloads plus a `beforeunload` beacon) that the
+  generic hooks intentionally don't try to cover.
 - **Cards + ordering**: each card has a `status` and a numeric `order`.
   Reordering (within a column or across columns) computes a new `order`
   as the midpoint between the two neighboring cards' `order` values

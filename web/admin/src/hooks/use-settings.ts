@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { cb } from "@/lib/api";
+import { cb, checkDevMailInboxAvailable } from "@/lib/api";
 
 /**
  * `GET /api/settings`, as the server actually returns it.
@@ -89,12 +89,37 @@ export interface ServerSettings {
 }
 
 /** Settings-gated nav visibility, additive to `lib/settings-nav.ts`'s
- * static registry: a toggle-gated built-in module's page (currently just
- * `/settings/llm`) is hidden from the sidebar and command palette until
- * its flag is on, even though the route itself still exists. */
-export function isSettingsItemVisible(to: string, settings: ServerSettings | undefined): boolean {
+ * static registry: a toggle-gated built-in module's page (currently
+ * `/settings/llm` and `/settings/mail-inbox`) is hidden from the sidebar
+ * and command palette until its flag is on, even though the route itself
+ * still exists.
+ *
+ * `/settings/mail-inbox`'s flag isn't part of `ServerSettings` — it's
+ * derived server state (`GET /api/health`'s `data.devMailInbox`, see
+ * `useDevMailInboxAvailable`), not persisted config — so it comes in
+ * through its own optional parameter instead of `settings`. */
+export function isSettingsItemVisible(
+  to: string,
+  settings: ServerSettings | undefined,
+  devMailInboxAvailable?: boolean,
+): boolean {
   if (to === "/settings/llm") return Boolean(settings?.llm.enabled);
+  if (to === "/settings/mail-inbox") return devMailInboxAvailable === true;
   return true;
+}
+
+/** Whether the mailer is running the zero-config `Log` backend right now
+ * — the same condition `/api/dev/mails` gates on. Polled at a modest
+ * interval since a `PATCH /api/settings` that toggles SMTP elsewhere
+ * (another tab, another admin) should hide/show the inbox page without a
+ * full reload. */
+export function useDevMailInboxAvailable() {
+  return useQuery({
+    queryKey: ["dev-mail-inbox", "capability"],
+    queryFn: checkDevMailInboxAvailable,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+  });
 }
 
 export const SETTINGS_KEY = ["settings"] as const;

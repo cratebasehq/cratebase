@@ -27,6 +27,11 @@ struct Cli {
 enum Command {
     /// Start the HTTP API and the embedded admin dashboard.
     Serve(ServeArgs),
+    /// One-command local dev: create the data dir if missing, provision a
+    /// superuser, apply a schema file additively, seed an empty database,
+    /// write TypeScript types, then serve exactly like `serve --dev`. See
+    /// `crate::dev`'s module doc for what each step does.
+    Dev(DevArgs),
     /// Manage superuser accounts (records in the `_superusers` collection).
     Superuser {
         #[command(subcommand)]
@@ -80,6 +85,42 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// Write TypeScript types for the local schema to a `.d.ts` file (or
+    /// stdout with `-o -`) — the same generator `GET /api/typegen` and
+    /// the `--dev` `CB_TYPEGEN_OUT` watch use.
+    Typegen {
+        /// Output file, or `-` for stdout. Default: ./cratebase-types.d.ts.
+        #[arg(short = 'o', long = "out")]
+        out: Option<String>,
+        /// Data directory.
+        #[arg(long = "dir")]
+        dir: Option<String>,
+    },
+    /// Populate collections from a JSON seed file (or a directory of
+    /// `*.json`/`*.js` seed files) through the ordinary record-creation
+    /// path. See `crate::seed`'s module doc for the file format.
+    Seed {
+        /// A JSON seed file, or a directory of `*.json`/`*.js` seed files.
+        path: String,
+        /// Update a record whose `id` already exists instead of failing,
+        /// making a rerun idempotent.
+        #[arg(long, default_value_t = false)]
+        upsert: bool,
+        /// Data directory.
+        #[arg(long = "dir", global = true)]
+        dir: Option<String>,
+    },
+    /// Wipe the data directory's database and re-run migrations. SQLite
+    /// only — see `crate::reset::refuse_if_postgres`. Requires
+    /// confirmation: an interactive `yes`/`no` prompt, or `--yes`.
+    Reset {
+        /// Skip the interactive confirmation prompt.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+        /// Data directory.
+        #[arg(long = "dir", global = true)]
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -106,6 +147,38 @@ enum SchemaAction {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct DevArgs {
+    /// `host:port` to listen on.
+    #[arg(long = "http")]
+    http: Option<String>,
+    /// Data directory (default `./pb_data`).
+    #[arg(long = "dir")]
+    dir: Option<String>,
+    /// Schema-as-code JSON file to apply additively. Default: `./schema.json`
+    /// if it exists.
+    #[arg(long = "schema")]
+    schema: Option<String>,
+    /// A seed file or directory (see `cratebase seed --help`). Default:
+    /// `CB_SEED_DIR`/`./pb_seed` if it exists.
+    #[arg(long = "seed")]
+    seed: Option<String>,
+    /// Where to write generated TypeScript types. Default:
+    /// `CB_TYPEGEN_OUT`/`./cratebase-types.d.ts`.
+    #[arg(long = "types")]
+    types: Option<String>,
+    /// Never auto-seed, even if the database is empty and a seed path
+    /// exists.
+    #[arg(long = "no-seed", default_value_t = false)]
+    no_seed: bool,
+    /// Never write or watch TypeScript types.
+    #[arg(long = "no-types", default_value_t = false)]
+    no_types: bool,
+    /// Also drop fields the schema file omits from an existing collection.
+    #[arg(long = "force-schema", default_value_t = false)]
+    force_schema: bool,
 }
 
 #[derive(clap::Args)]
@@ -145,12 +218,14 @@ struct ServeArgs {
     /// (default true).
     #[arg(long = "session-tracking")]
     session_tracking: Option<bool>,
-    /// Verbose logging and hook reloading.
-    #[arg(long = "dev", default_value_t = false)]
-    dev: bool,
-    /// Write a migration file on every collection change.
-    #[arg(long = "automigrate", default_value_t = true, action = clap::ArgAction::Set)]
-    automigrate: bool,
+    /// Verbose logging and hook reloading. Unset falls back to `CB_DEV`
+    /// (default `false`).
+    #[arg(long = "dev", action = clap::ArgAction::SetTrue)]
+    dev: Option<bool>,
+    /// Write a migration file on every collection change. Unset falls
+    /// back to `CB_AUTOMIGRATE` (default `true`).
+    #[arg(long = "automigrate", action = clap::ArgAction::Set)]
+    automigrate: Option<bool>,
 }
 
 #[derive(Subcommand, Clone)]
@@ -163,7 +238,12 @@ enum SuperuserAction {
     Upsert { email: String, password: String },
     /// Delete a superuser.
     Delete { email: String },
-    /// Print a one-time login URL for a superuser.
+    /// Print a one-time OTP code (and its id) for a superuser, for when
+    /// the dashboard is unreachable. Redeem it exactly like a mailed one:
+    /// `POST /api/collections/_superusers/auth-with-otp` with the printed
+    /// `otpId`/`password` — which only succeeds if OTP auth is enabled on
+    /// `_superusers` (`PATCH .../collections/_superusers` with
+    /// `{"otp": {"enabled": true}}`).
     Otp { email: String },
 }
 
@@ -171,7 +251,9 @@ enum SuperuserAction {
 enum MigrateAction {
     /// Apply every unapplied migration.
     Up,
-    /// Revert the last `n` migrations (default 1).
+    /// Revert the last `n` migrations (default 1) from each of the core
+    /// and JS (`pb_migrations`) histories independently — they keep
+    /// separate ledgers, so `n` is not a count across a merged history.
     Down { n: Option<usize> },
     /// Scaffold a new migration file.
     Create { name: String },
@@ -197,10 +279,16 @@ enum PluginAction {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    init_tracing(matches!(&cli.command, Command::Serve(a) if a.dev));
+    init_tracing(
+        matches!(
+            &cli.command,
+            Command::Serve(a) if a.dev == Some(true)
+        ) || matches!(&cli.command, Command::Dev(_)),
+    );
 
     match cli.command {
         Command::Serve(args) => serve(args).await,
+        Command::Dev(args) => dev_cmd(args).await,
         Command::Superuser { action, dir } | Command::Admin { action, dir } => {
             superuser(dir, action).await
         }
@@ -210,6 +298,9 @@ async fn main() -> anyhow::Result<()> {
             migrate_from_pocketbase(dir, pb_dir).await
         }
         Command::Plugin { action, dir } => plugin_cmd(dir, action).await,
+        Command::Typegen { out, dir } => typegen(dir, out).await,
+        Command::Seed { path, upsert, dir } => seed_cmd(dir, path, upsert).await,
+        Command::Reset { yes, dir } => reset_cmd(dir, yes).await,
     }
 }
 
@@ -267,12 +358,150 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         config.session_tracking = v;
     }
     config.public_dir = args.public_dir;
-    config.dev = args.dev;
-    config.automigrate = args.automigrate;
+    // `config` was already seeded from `CB_DEV`/`CB_AUTOMIGRATE` by
+    // `config_for` above; only override it when the flag was actually
+    // passed, so an unset flag lets the environment decide instead of
+    // silently reasserting each var's own hard-coded default.
+    if let Some(v) = args.dev {
+        config.dev = v;
+    }
+    if let Some(v) = args.automigrate {
+        config.automigrate = v;
+    }
 
     let app = App::new(config);
     cratebase_server::plugin_wasm::discover_and_register(&app)?;
     app.serve().await
+}
+
+/// `cratebase dev`: resolve flags/env vars into `dev::DevOptions`
+/// following the conventions documented on `DevArgs`, run
+/// `dev::bootstrap`, print the startup banner, then fall through to the
+/// same `App::listen` path `serve --dev` uses. Never overrides SMTP
+/// settings — it never touches `Settings` at all, only the boot-time
+/// `Config` and the one-time bootstrap steps in `crate::dev`.
+async fn dev_cmd(args: DevArgs) -> anyhow::Result<()> {
+    let mut config = config_for(args.dir);
+    config.dev = true;
+    if let Some(http) = args.http {
+        let (host, port) = http
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("--http expects host:port"))?;
+        if !host.is_empty() {
+            config.host = host.to_string();
+        }
+        config.port = port.parse()?;
+    }
+
+    let schema = args
+        .schema
+        .clone()
+        .or_else(|| {
+            std::path::Path::new("schema.json")
+                .exists()
+                .then(|| "schema.json".to_string())
+        })
+        .map(std::path::PathBuf::from);
+
+    let seed = if args.no_seed {
+        None
+    } else if let Some(explicit) = args.seed.clone() {
+        Some(std::path::PathBuf::from(explicit))
+    } else {
+        let candidate = config.seed_dir.clone();
+        std::path::Path::new(&candidate)
+            .exists()
+            .then(|| std::path::PathBuf::from(candidate))
+    };
+
+    let types = if args.no_types {
+        None
+    } else {
+        let out = args
+            .types
+            .clone()
+            .or_else(|| config.typegen_out.clone())
+            .unwrap_or_else(|| DEFAULT_TYPEGEN_OUT.to_string());
+        Some(std::path::PathBuf::from(out))
+    };
+    config.typegen_out = types.as_ref().map(|p| p.to_string_lossy().into_owned());
+
+    let admin_email = std::env::var("CB_ADMIN_EMAIL")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let admin_password = std::env::var("CB_ADMIN_PASSWORD")
+        .ok()
+        .filter(|v| !v.is_empty());
+
+    let app = App::new(config);
+    cratebase_server::plugin_wasm::discover_and_register(&app)?;
+
+    let opts = cratebase_server::dev::DevOptions {
+        schema,
+        seed,
+        types,
+        force_schema: args.force_schema,
+        admin_email,
+        admin_password,
+    };
+
+    let report = cratebase_server::dev::bootstrap(&app, &opts).await?;
+    print_dev_banner(&app, &report);
+
+    app.listen().await
+}
+
+/// The startup banner `cratebase dev` prints once bootstrap finishes:
+/// where to reach the API and dashboard, the superuser credentials
+/// (only when freshly created or upserted), the schema diff and seed
+/// summary (only when either ran), the types file, the mail inbox, and
+/// the hooks/migrations directories.
+fn print_dev_banner(app: &App, report: &cratebase_server::dev::DevReport) {
+    let config = app.config();
+    let display_host = if config.host.is_empty() || config.host == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        config.host.as_str()
+    };
+    let base = format!("http://{display_host}:{}", config.port);
+
+    println!();
+    println!("  cratebase dev");
+    println!("  ------------------------------------------------------------");
+    println!("  API:            {base}/api/");
+    println!("  Dashboard:      {base}/_/");
+    match (&report.superuser_email, &report.generated_password) {
+        (Some(email), Some(password)) => {
+            println!("  Superuser:      {email} / {password}  (generated; change it)");
+        }
+        (Some(email), None) => println!("  Superuser:      {email}"),
+        (None, _) => {}
+    }
+    if let Some(diff) = &report.schema_diff {
+        println!(
+            "  Schema:         applied ({} collection(s))",
+            diff.collections.len()
+        );
+        for c in &diff.collections {
+            if c.action != "unchanged" {
+                println!("                    {:9} {}", c.action, c.name);
+            }
+        }
+    }
+    if let Some(seed) = &report.seed_report {
+        println!(
+            "  Seed:           {} record(s) from {} file(s)",
+            seed.total(),
+            seed.files.len()
+        );
+    }
+    if let Some(types_path) = &report.types_path {
+        println!("  Types:          {}", types_path.display());
+    }
+    println!("  Mail inbox:     {base}/api/dev/mails");
+    println!("  Hooks dir:      {}", config.hooks_dir);
+    println!("  Migrations dir: {}", config.migrations_dir);
+    println!();
 }
 
 /// `cratebase plugin install|list`. Both act purely on the filesystem —
@@ -316,6 +545,80 @@ async fn plugin_cmd(dir: Option<String>, action: PluginAction) -> anyhow::Result
             Ok(())
         }
     }
+}
+
+/// `cratebase seed <path> [--upsert]`. Bootstraps the target database
+/// (creating it fresh if `--dir` is new) and applies the seed file(s)
+/// through `cratebase_server::seed::run` — see that module's doc for the
+/// file format, the upsert semantics and what's transactional.
+async fn seed_cmd(dir: Option<String>, path: String, upsert: bool) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+
+    let report = cratebase_server::seed::run(&app, std::path::Path::new(&path), upsert)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"));
+
+    app.terminate(false).await;
+    let report = report?;
+    println!(
+        "seeded {} file(s): {} created, {} upserted",
+        report.files.len(),
+        report.created,
+        report.upserted
+    );
+    Ok(())
+}
+
+/// `cratebase reset [--yes]`. SQLite only (see
+/// `cratebase_server::reset::refuse_if_postgres`): wipes the data
+/// directory's database files and re-runs every migration (core and JS),
+/// so the next boot starts from a schema-only, empty database. Requires
+/// confirmation — `--yes`, or an interactive `y`/`N` prompt — since this
+/// permanently deletes data.
+async fn reset_cmd(dir: Option<String>, yes: bool) -> anyhow::Result<()> {
+    let config = config_for(dir);
+    cratebase_server::reset::refuse_if_postgres(&config).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let Some(main_path) = config.sqlite_main_path() else {
+        anyhow::bail!("cratebase reset needs a file-backed SQLite database, not `:memory:`");
+    };
+
+    println!(
+        "This will permanently delete the database at {} (and its logs) under {}.",
+        main_path.display(),
+        config.data_dir
+    );
+    if !yes && !confirm("Type 'yes' to continue: ")? {
+        anyhow::bail!("aborted; pass --yes to skip this prompt");
+    }
+
+    let removed = cratebase_server::reset::wipe_sqlite_files(&config)?;
+    for path in &removed {
+        println!("removed {}", path.display());
+    }
+
+    let app = App::new(config);
+    app.bootstrap().await?;
+    for file in cratebase_server::js_migrations::run_up(&app).await? {
+        println!("applied {file}");
+    }
+    app.terminate(false).await;
+    println!("database reset and migrations re-applied");
+    Ok(())
+}
+
+/// Read a `y`/`yes` confirmation from stdin, printing `prompt` first.
+/// Anything else (including a plain Enter) is a "no".
+fn confirm(prompt: &str) -> anyhow::Result<bool> {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 /// Superuser records are ordinary auth records in the system
@@ -363,14 +666,22 @@ async fn superuser(dir: Option<String>, action: SuperuserAction) -> anyhow::Resu
             format!("deleted superuser {email}")
         }
         SuperuserAction::Otp { email } => {
-            let Some(_) = app.find_superuser_by_email(&email).await? else {
+            let Some(row) = app.find_superuser_by_email(&email).await? else {
                 anyhow::bail!("no superuser with email {email}");
             };
-            let code = cratebase_auth::generate_otp(cratebase_auth::DEFAULT_OTP_LENGTH);
-            // Persist the code in `_otps` through the auth service so
-            // `auth-with-otp` accepts it. Printing it is already useful for
-            // an operator locked out of the dashboard.
-            format!("one-time code for {email}: {code}")
+            let record_id = row.get_str("id").unwrap_or_default().to_string();
+            let superusers = app
+                .db()
+                .collections
+                .get(cratebase_core::SUPERUSERS_COLLECTION)
+                .expect("_superusers is a default system collection");
+            // Same path `POST .../request-otp` uses, so the code this
+            // prints redeems through the ordinary `auth-with-otp` endpoint.
+            let (otp_id, code) =
+                cratebase_server::routes::auth::create_otp(&app, &superusers, &record_id, &email)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            format!("otpId: {otp_id}\ncode: {code}")
         }
     };
 
@@ -396,7 +707,8 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
 
     match action {
         MigrateAction::Up => {
-            let applied = runner.up(app.db()).await?;
+            let mut applied = runner.up(app.db()).await?;
+            applied.extend(cratebase_server::js_migrations::run_up(&app).await?);
             if applied.is_empty() {
                 println!("no new migrations to apply");
             } else {
@@ -406,7 +718,14 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             }
         }
         MigrateAction::Down { n } => {
-            for file in runner.down(app.db(), n.unwrap_or(1)).await? {
+            let n = n.unwrap_or(1);
+            // Core and JS migrations keep independent ledgers/histories
+            // (see `js_migrations`'s module doc), so `n` applies to each
+            // separately rather than to some merged, cross-source order.
+            for file in cratebase_server::js_migrations::run_down(&app, n).await? {
+                println!("reverted {file}");
+            }
+            for file in runner.down(app.db(), n).await? {
                 println!("reverted {file}");
             }
         }
@@ -415,13 +734,14 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
             println!("created {}", path.display());
         }
         MigrateAction::Collections => {
-            // Snapshot the collection set into a JS migration. The JSON
-            // export exists now (`Collection::to_json`); what is missing
-            // is the JS migration file format the runtime reads.
-            anyhow::bail!("`migrate collections` needs the JS migration runtime (W7)");
+            let path = cratebase_server::js_migrations::write_collections_snapshot(&app)?;
+            println!("created {}", path.display());
         }
         MigrateAction::HistorySync => {
-            let known: Vec<String> = runner.files().map(str::to_string).collect();
+            let mut known: Vec<String> = runner.files().map(str::to_string).collect();
+            known.extend(cratebase_server::js_migrations::known_migration_files(
+                &app,
+            )?);
             let removed = cratebase_db::migrations::history_sync(app.db(), &known).await?;
             println!("pruned {} stale ledger row(s)", removed.len());
             for file in removed {
@@ -517,6 +837,37 @@ async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()>
     }
 
     app.terminate(false).await;
+    Ok(())
+}
+
+/// Default `cratebase typegen` output path when `-o` is omitted.
+const DEFAULT_TYPEGEN_OUT: &str = "./cratebase-types.d.ts";
+
+/// `cratebase typegen`: write every non-system collection's TypeScript
+/// types to a `.d.ts` file (or stdout, with `-o -`). Reuses `schema
+/// pull`'s collection-loading path (`App::bootstrap` +
+/// `app.db().collections.all()`) and calls the same
+/// `cratebase_server::typegen::generate` that `GET /api/typegen` and the
+/// `--dev` `CB_TYPEGEN_OUT` watch use, so all three surfaces can never
+/// disagree about the generated shape.
+async fn typegen(dir: Option<String>, out: Option<String>) -> anyhow::Result<()> {
+    let app = App::new(config_for(dir));
+    app.bootstrap().await?;
+    let snapshot = app.db().collections.all();
+    let generated = cratebase_server::typegen::generate(snapshot.all.iter().map(|c| c.as_ref()));
+    app.terminate(false).await;
+
+    match out.as_deref() {
+        Some("-") => print!("{generated}"),
+        Some(path) => {
+            std::fs::write(path, &generated)?;
+            println!("wrote types to {path}");
+        }
+        None => {
+            std::fs::write(DEFAULT_TYPEGEN_OUT, &generated)?;
+            println!("wrote types to {DEFAULT_TYPEGEN_OUT}");
+        }
+    }
     Ok(())
 }
 

@@ -46,6 +46,13 @@ pub const JSON_PAYLOAD: &str = "@jsonPayload";
 /// held in memory while the rest of the request is parsed.
 pub const SPILL_THRESHOLD: usize = 2 * 1024 * 1024;
 
+/// How many leading bytes of an upload are kept for magic-byte sniffing.
+/// `infer`'s matchers only ever look at a small fixed prefix of the file
+/// (container formats need the most, and none of those need more than a
+/// few hundred bytes), so this is copied out before the rest of the body
+/// is read, spilled or discarded.
+const SNIFF_LEN: usize = 512;
+
 /// Random suffix length in a stored file name (`notes_<10>.txt`).
 const SUFFIX_LEN: usize = 10;
 /// PocketBase pads a very short base name so the result is not just the
@@ -536,12 +543,20 @@ pub(crate) async fn stage_field(
     let mut buffered = BytesMut::new();
     let mut spilled: Option<(tokio::fs::File, tempfile::TempPath)> = None;
     let mut size: i64 = 0;
+    // Kept independent of `buffered`/spilling so the mime sniff below
+    // always sees the file's first bytes, whether the upload ends up
+    // fully in memory or streamed to disk.
+    let mut sniff = Vec::with_capacity(SNIFF_LEN);
 
     while let Some(chunk) = field
         .chunk()
         .await
         .map_err(|_| ApiError(AppError::bad_request("")))?
     {
+        if sniff.len() < SNIFF_LEN {
+            let take = (SNIFF_LEN - sniff.len()).min(chunk.len());
+            sniff.extend_from_slice(&chunk[..take]);
+        }
         size += chunk.len() as i64;
         match &mut spilled {
             Some((file, _)) => file.write_all(&chunk).await?,
@@ -572,19 +587,32 @@ pub(crate) async fn stage_field(
         name: stored_file_name(original_name),
         original: original_name.to_string(),
         size,
-        mime: mime_of(content_type.as_deref(), original_name),
+        mime: mime_of(content_type.as_deref(), original_name, &sniff),
         data,
     })
 }
 
 /// The mime type a `mimeTypes` constraint is checked against.
 ///
-/// The declared part header wins, but only its *essence*: browsers and
-/// `fetch` send `text/plain;charset=utf-8`, and comparing that against a
-/// configured `text/plain` would reject every text upload. A missing or
-/// deliberately vague declaration falls back to the extension, which is
-/// what PocketBase lands on for files its content sniffer cannot place.
-fn mime_of(declared: Option<&str>, filename: &str) -> String {
+/// The client-declared part header is not trusted: it is the uploader's
+/// own claim, and a `mimeTypes: ["image/png"]` field is not a real
+/// allow-list if a caller can satisfy it by simply lying about the
+/// `Content-Type` of an HTML payload. `head` — the upload's first bytes —
+/// is sniffed first and wins whenever it lands on a concrete type.
+///
+/// Sniffing only ever recognizes a handful of binary/container formats
+/// and a couple of markup ones (see `infer`'s magic-number tables); a
+/// plain-text upload — `.txt`, `.svg`, `.json`, `.csv` and the like —
+/// has no reliable magic bytes at all; for those `head` comes back
+/// `None` and this falls back to the declared header's *essence*
+/// (browsers and `fetch` send `text/plain;charset=utf-8`, and comparing
+/// that against a configured `text/plain` would reject every text
+/// upload), then to the extension — which is what PocketBase lands on
+/// for files its own content sniffer cannot place either.
+fn mime_of(declared: Option<&str>, filename: &str, head: &[u8]) -> String {
+    if let Some(kind) = infer::get(head) {
+        return kind.mime_type().to_string();
+    }
     let essence = declared
         .and_then(|v| v.split(';').next())
         .map(|v| v.trim().to_ascii_lowercase())

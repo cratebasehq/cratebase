@@ -364,6 +364,13 @@ impl Worker {
             for id in self.state.registered_crons.borrow_mut().drain(..) {
                 self.state.host.remove_cron(&id);
             }
+            // Routes have no per-registration id to retract individually
+            // (unlike hooks/crons above): the host's whole route table is
+            // dropped and `load_hooks` below rebuilds it from scratch as
+            // it re-evaluates every `routerAdd` call in the reloaded
+            // files, so a route a changed file no longer registers is
+            // gone rather than stale.
+            self.state.host.clear_routes();
         }
         self.with_ctx(|ctx| {
             let reset: Function = Self::cb(ctx)?.get("reset")?;

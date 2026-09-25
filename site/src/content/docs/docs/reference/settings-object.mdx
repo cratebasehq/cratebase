@@ -37,6 +37,15 @@ value rather than blanking it.
 | `tls` | `false` | |
 | `localName` | `""` | HELO/EHLO hostname. |
 
+`smtp.enabled: false` — the default, and every fresh local install —
+doesn't mean mail goes nowhere: the `Log` backend keeps the last 100
+emails it "sends" in memory, browsable superuser-only at
+`GET /api/dev/mails` and in the dashboard's **Mail inbox** page (next to
+**Mail & storage**), including the raw HTML and any verification /
+password-reset / OTP token link. It stops the moment `smtp.enabled` is
+`true` — `/api/dev/mails` then 404s outright — so real outgoing mail is
+never captured there.
+
 ## `s3` (file storage)
 
 | Key | Default |
@@ -161,7 +170,8 @@ backends:
 ## `superuserIPs`
 
 A top-level `string[]`, default `[]` (unrestricted) — an IP allow-list
-for every `_superusers` auth endpoint when non-empty.
+for every `_superusers` auth endpoint when non-empty. Entries are either
+an exact IP (`10.0.0.5`) or a CIDR range (`10.0.0.0/8`, `2001:db8::/32`).
 
 See [Reference → REST API → Settings](/docs/reference/rest-api/settings/)
 for the endpoint shape itself, including the `testS3`/`testMail`/
