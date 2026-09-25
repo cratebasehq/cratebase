@@ -7,8 +7,15 @@
 //! consistent view for the duration of a request even if a collection
 //! is modified concurrently.
 //!
-//! Two server processes sharing one database will not see each other's
-//! schema changes until restart, the same limitation PocketBase has.
+//! Two server processes sharing one database used to never see each
+//! other's schema changes until restart (the same limitation PocketBase
+//! has) — a running server's own snapshot only ever got reloaded by its
+//! *own* writes (see [`CollectionStore::insert`]/[`update`](CollectionStore::update)/
+//! [`delete`](CollectionStore::delete) below). [`watermark`] backs a
+//! short poll (`crate::App`'s schema-change watcher, in the server
+//! crate) that notices a different process's write — another server
+//! instance, or a `cratebase schema push` run from a separate CLI
+//! invocation — and reloads the snapshot without a restart.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,6 +35,31 @@ pub struct Snapshot {
     pub all: Vec<Arc<Collection>>,
     pub by_id: HashMap<String, Arc<Collection>>,
     pub by_name: HashMap<String, Arc<Collection>>,
+    /// This snapshot's own fingerprint, in the exact same `"{count}:
+    /// {max updated}"` shape [`watermark`] computes from a live SQL
+    /// query — computed here purely in memory (`c.updated.to_pb_string()`
+    /// is byte-identical to the `"updated"` column's stored text; see
+    /// `row_params`), so building a `Snapshot` never needs a second
+    /// round trip just to know its own watermark.
+    ///
+    /// This is *not* just a cache of the last value [`watermark`]
+    /// happened to return: it is recomputed fresh, from the exact rows
+    /// this `Snapshot` was built from, every single time — by
+    /// `crate::App`'s (server-crate) schema-change poller, whether the
+    /// reload that produced it was caused by this process's own write or
+    /// by the poller noticing someone else's. That matters: a poller
+    /// that instead remembered "the last value I, the poller, happened
+    /// to observe" independently of what actually got cached could miss
+    /// a real change — this process's own write moves the cache forward
+    /// without the poller's private tracker ever hearing about it, so a
+    /// *later* external write that coincidentally lands back on the
+    /// poller's stale, pre-that-write baseline (same row count, same max
+    /// `updated` — trivially reproducible by creating and then deleting
+    /// the same single collection between polls, touching no other row)
+    /// would look like "no change" even though the cache is now stale.
+    /// Comparing a fresh live query against *this* field instead — what
+    /// the cache actually, currently holds — has no such blind spot.
+    pub watermark: String,
 }
 
 impl Snapshot {
@@ -36,10 +68,18 @@ impl Snapshot {
         all.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
         let by_id = all.iter().map(|c| (c.id.clone(), c.clone())).collect();
         let by_name = all.iter().map(|c| (c.name.clone(), c.clone())).collect();
+        let max_updated = all
+            .iter()
+            .map(|c| c.updated)
+            .max()
+            .map(|d| d.to_pb_string())
+            .unwrap_or_default();
+        let watermark = format!("{}:{max_updated}", all.len());
         Snapshot {
             all,
             by_id,
             by_name,
+            watermark,
         }
     }
 
@@ -75,6 +115,15 @@ impl CollectionStore {
 
     pub fn all(&self) -> Arc<Snapshot> {
         self.snapshot.load_full()
+    }
+
+    /// The currently cached [`Snapshot::watermark`] — what a fresh
+    /// [`watermark`] query against the database is compared against to
+    /// tell whether the cache is stale. See [`Snapshot::watermark`]'s own
+    /// doc for why this has to read the cache's *own* recorded value
+    /// rather than something tracked independently of it.
+    pub fn watermark(&self) -> String {
+        self.snapshot.load().watermark.clone()
     }
 
     pub fn get(&self, name_or_id: &str) -> Option<Arc<Collection>> {
@@ -236,6 +285,38 @@ pub async fn delete_in(ex: &dyn Executor, c: &Collection) -> DbResult<()> {
     )
     .await?;
     schema::drop_object(ex, c).await
+}
+
+/// A cheap, comparable summary of `_collections`' current contents,
+/// straight from the database: how many rows it has, plus the most
+/// recently written row's own `updated` timestamp, in exactly the same
+/// `"{count}:{max updated}"` shape [`Snapshot::watermark`] computes in
+/// memory from an already-loaded snapshot — the two are meant to be
+/// compared against each other directly, byte for byte.
+///
+/// Used by `crate::App`'s (server-crate) schema-change poller: a fresh
+/// call to *this* function, against the live database, compared against
+/// [`CollectionStore::watermark`] (what is currently cached) tells the
+/// poller whether a collection was created or changed by a *different*
+/// process sharing this database — another server instance, or
+/// `cratebase schema push` run from a separate CLI invocation — so it
+/// can reload without needing a restart. See [`Snapshot::watermark`]'s
+/// doc for why the comparison has to be against the cache's own recorded
+/// value specifically, not some third, independently-tracked value.
+pub async fn watermark(ex: &dyn Executor) -> DbResult<String> {
+    let row = ex
+        .query_one(
+            r#"SELECT COUNT(*) AS "n", COALESCE(MAX("updated"), '') AS "u" FROM "_collections""#,
+            &[],
+        )
+        .await?;
+    let row = row.unwrap_or(Row {
+        columns: Arc::from(vec!["n".to_string(), "u".to_string()]),
+        values: vec![],
+    });
+    let count = row.get_i64("n").unwrap_or(0);
+    let updated = row.get_str("u").unwrap_or_default();
+    Ok(format!("{count}:{updated}"))
 }
 
 const SELECT: &str = r#"SELECT "id", "name", "type", "system", "fields", "indexes",

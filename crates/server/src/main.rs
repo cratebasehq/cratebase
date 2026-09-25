@@ -777,6 +777,33 @@ fn write_migration_stub(app: &App, name: &str) -> anyhow::Result<std::path::Path
 /// diff/apply logic the `POST /api/schema/apply` endpoint uses (see
 /// `routes::schema::plan_and_apply`), so the CLI and the HTTP surface
 /// never disagree about what "the difference" means.
+/// Best-effort heads-up for `cratebase schema push`: since Cratebase
+/// server processes now poll for exactly this
+/// (`App::start_schema_watch`), a server sharing this data directory
+/// picks the change up on its own, live, no restart needed -- but that
+/// is easy to miss if the only thing on screen is this CLI's own
+/// "applied" and nothing says a server is even there to notice. A quick
+/// TCP probe of the configured port is a heuristic, not a guarantee (the
+/// port could be something else entirely, or the real server could be
+/// bound to a different host/port than this data directory's own
+/// config.toml equivalent) -- an unreachable port just means no hint
+/// gets printed, never an error, so it never gets in the way of the push
+/// itself.
+async fn print_running_server_hint(config: &Config) {
+    let addr = format!("127.0.0.1:{}", config.port);
+    let probe = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await;
+    if matches!(probe, Ok(Ok(_))) {
+        println!(
+            "note: a server appears to be listening on {addr} -- it will pick up this schema \
+             change on its own within ~1s, no restart needed"
+        );
+    }
+}
+
 async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()> {
     let app = App::new(config_for(dir));
     app.bootstrap().await?;
@@ -832,6 +859,9 @@ async fn schema(dir: Option<String>, action: SchemaAction) -> anyhow::Result<()>
                 println!("dry run: nothing was written");
             } else {
                 println!("applied");
+                if !diff.collections.is_empty() {
+                    print_running_server_hint(app.config()).await;
+                }
             }
         }
     }
