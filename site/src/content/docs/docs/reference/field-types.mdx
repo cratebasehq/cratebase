@@ -10,3 +10,16 @@ via `maxSelect`, points at a target collection), `file` (single/multi,
 `geoPoint`, and `vector` (fixed `dimensions`, optional `embedding`
 config) — see [Fields](/docs/concepts/fields/) for how each is physically
 stored on SQLite vs Postgres.
+
+### `required` and zero values
+
+A `required` field rejects that type's zero value, not just a missing
+key: `""` for `text`, `[]` for a multi-select/relation — and **`0` for
+`number`**. This matches PocketBase (`core/field_number.go` runs the
+same `Required` check against the raw value), but it surprises people
+writing counters, scores, or quantities that can legitimately be `0`.
+If a `number` field needs to allow `0`, leave it non-required (and
+validate "must be present" some other way, e.g. a `filter`-based rule),
+or use a sentinel/nullable convention instead. The API error message
+spells this out: `"Cannot be blank (0 counts as blank for required
+number fields)."`.

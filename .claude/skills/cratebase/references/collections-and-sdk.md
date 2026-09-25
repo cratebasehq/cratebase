@@ -49,6 +49,13 @@ structs in `crates/core/src/collection.rs:296-297,515-516`.) Superuser
 only — this is schema management, not record CRUD. Real, runnable
 examples of this shape:
 
+**Footgun: `required: true` on a `number` field rejects `0`.** PocketBase
+treats a field's zero value as "blank" for `required` purposes (`""` for
+text, `[]` for multi-relation, and `0` for number) — Cratebase matches
+this (`crates/db/src/validate.rs`'s `required`/`is_blank`). A counter,
+score, or quantity field that can legitimately be `0` should be left
+non-required if you want `0` to be a valid write.
+
 - `examples/todo/setup.sh:13-18` — a minimal `base` collection with
   standard rules.
 - `examples/kanban/setup.sh:15-30` — `text`/`select`/`number`/`autodate`
@@ -137,6 +144,20 @@ client-side (small collections, e.g. cards on a board); use `getList`
 for server-paginated views. Both accept the same `filter`/`sort` options
 as the raw `?filter=`/`?sort=` query params — see
 `references/filter-syntax.md` for what's legal in `filter`.
+
+**Footgun: `expand` silently drops fields the viewer's rules deny.**
+`expand=someRelation` re-checks the *target* collection's own `viewRule`
+per record; if it says no for the current user, that record's expand is
+just missing from the response — no error. The built-in `users`
+collection defaults to `viewRule: "id = @request.auth.id"` (self-service
+only), so `expand`ing a relation to another user (assignee, comment
+author, teammate, ...) comes back empty for everyone but the record
+owner unless you relax `users`' `viewRule`, e.g. to any signed-in user
+(`@request.auth.id != ""`) or to members of a shared team
+(`id = @request.auth.id || @collection._team_members.userRef ?= @request.auth.id`,
+see `examples/team-board/scripts/gen-schema.ts`). This matches
+PocketBase's own expand behavior — not a Cratebase bug, just easy to
+mistake for one.
 
 ### Realtime
 

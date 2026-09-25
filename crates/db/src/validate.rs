@@ -90,9 +90,22 @@ pub fn is_blank(value: &Value) -> bool {
 }
 
 /// `Cannot be blank.` when a required field holds its zero value.
+///
+/// Matches PocketBase (`core/field_number.go`'s `Required` validator,
+/// which runs `validation.Required` against the raw Go value): a
+/// required `number` field's zero value is `0`, so `0` is treated as
+/// blank exactly like `""` for text or `[]` for a multi-relation. This
+/// trips people up in practice (a literal `0` is a meaningful value for
+/// counters, scores, etc.), so the `number` case gets a more specific
+/// message than the generic "Cannot be blank." to explain why.
 pub fn required(field: &Field, value: &Value) -> Option<FieldError> {
     if field.required && is_blank(value) {
-        return Some(err(codes::REQUIRED, "Cannot be blank."));
+        let message = if field.field_type() == FieldType::Number {
+            "Cannot be blank (0 counts as blank for required number fields)."
+        } else {
+            "Cannot be blank."
+        };
+        return Some(err(codes::REQUIRED, message));
     }
     None
 }
@@ -952,6 +965,32 @@ mod tests {
         field.required = true;
         assert_eq!(required(&field, &json!("")).unwrap().code, codes::REQUIRED);
         assert!(required(&field, &json!("x")).is_none());
+    }
+
+    #[test]
+    fn required_number_zero_is_blank_with_explanatory_message() {
+        // Matches PocketBase: a required number field's zero value (0) is
+        // blank, same as `""` for text. This is intentional (see PB's
+        // `core/field_number.go`), but the message should explain it since
+        // it surprises people writing counters/scores that can be 0.
+        let mut field = f(
+            "score",
+            FieldKind::Number {
+                min: None,
+                max: None,
+                only_int: false,
+            },
+        );
+        field.required = true;
+        let err = required(&field, &json!(0)).expect("0 is blank for a required number field");
+        assert_eq!(err.code, codes::REQUIRED);
+        assert!(
+            err.message.contains("0 counts as blank"),
+            "message should explain why 0 is rejected: {}",
+            err.message
+        );
+        assert!(required(&field, &json!(1)).is_none());
+        assert!(required(&field, &json!(-1)).is_none());
     }
 
     #[test]
