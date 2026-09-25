@@ -19,6 +19,10 @@ import { settingsNetworkRoute } from "@/routes/settings-network";
 import { settingsSqlConsoleRoute } from "@/routes/settings-sql-console";
 import { settingsFileManagerRoute } from "@/routes/settings-file-manager";
 import { settingsWebhooksRoute } from "@/routes/settings-webhooks";
+import { settingsEmailTemplatesRoute } from "@/routes/settings-email-templates";
+import { settingsEmailTemplateEditorRoute } from "@/routes/settings-email-template-editor";
+import { settingsEmailTriggersRoute } from "@/routes/settings-email-triggers";
+import { settingsMailLogRoute } from "@/routes/settings-mail-log";
 import { settingsLlmRoute } from "@/routes/settings-llm";
 import { settingsApiKeysRoute } from "@/routes/settings-api-keys";
 import { settingsMcpRoute } from "@/routes/settings-mcp";
@@ -45,6 +49,10 @@ const routeTree = rootRoute.addChildren([
       settingsSqlConsoleRoute,
       settingsFileManagerRoute,
       settingsWebhooksRoute,
+      settingsEmailTemplatesRoute,
+      settingsEmailTemplateEditorRoute,
+      settingsEmailTriggersRoute,
+      settingsMailLogRoute,
       settingsLlmRoute,
       settingsApiKeysRoute,
       settingsMcpRoute,

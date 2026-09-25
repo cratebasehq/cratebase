@@ -197,9 +197,25 @@ export interface SendMailResult {
   error?: string;
 }
 
-/** `POST /api/mails/send` — superuser or API key only. Either `template`
- * (resolved through `_emailTemplates`, see the docs) or `subject` plus
- * `html`/`text` must be given. */
+/** `POST /api/mails/send`.
+ *
+ * A superuser or API key may always send anything: a `template`, or raw
+ * `subject`/`html`/`text`, with any `from`/`cc`/`bcc`/`replyTo` override.
+ *
+ * Any other caller — including an anonymous one — may call this too, but
+ * only `to` + `template` (+ `data`/`locale`): raw content and every
+ * override are refused outright. It's allowed only when that template's
+ * `_emailTemplates.sendRule` is set (non-`null`) and evaluates `true` for
+ * every `to` address, evaluated against `@request.auth.*` (the caller,
+ * if any) and `@request.body.{to,data,locale}` — the same filter-rule
+ * language a collection API rule uses. This is what lets a frontend call
+ * `cb.mails.send({ template: "invite", to, data })` directly with no
+ * backend of its own; see the email docs' "Frontend sends" section for
+ * the security model and worked examples. A denied call is a `403` that
+ * never distinguishes "no such template" from "the rule rejected you".
+ *
+ * Either way, `to`/`cc`/`bcc` together may not exceed 50 recipients for a
+ * superuser/API key, or 5 for anyone else. */
 export async function sendMail(sender: Sender, options: SendMailOptions): Promise<SendMailResult> {
   return sender.send<SendMailResult>("/api/mails/send", { method: "POST", body: options });
 }
@@ -213,7 +229,9 @@ export interface PreviewMailResult {
 }
 
 /** `POST /api/mails/preview` — renders a template (or raw content)
- * without sending or logging anything. */
+ * without sending or logging anything. Superuser/API key only, unlike
+ * `sendMail` above — this is a dashboard/tooling affordance, not part of
+ * the `sendRule`-gated frontend surface. */
 export async function previewMail(sender: Sender, options: PreviewMailOptions): Promise<PreviewMailResult> {
   return sender.send<PreviewMailResult>("/api/mails/preview", { method: "POST", body: options });
 }

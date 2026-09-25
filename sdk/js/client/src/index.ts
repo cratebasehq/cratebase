@@ -180,8 +180,10 @@ export class CratebaseClient<
       cratebaseOnly.enqueue(this, queue, payload, options),
   };
 
-  /** `POST /api/mails/send`/`/preview` — superuser or API key only (sign
-   * in via `client.auth.as("_superusers")` or attach an API key header). */
+  /** `send` works for any caller a template's `sendRule` allows (see
+   * `sendMail`'s own doc comment) — including a signed-in `users` record,
+   * or no session at all. `preview` stays superuser/API-key only (sign in
+   * via `client.auth.as("_superusers")` or attach an API key header). */
   readonly mails = {
     send: (options: cratebaseOnly.SendMailOptions) => cratebaseOnly.sendMail(this, options),
     preview: (options: cratebaseOnly.PreviewMailOptions) => cratebaseOnly.previewMail(this, options),
