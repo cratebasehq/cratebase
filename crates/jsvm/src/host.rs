@@ -134,8 +134,10 @@ hook_kinds! {
     RecordAuthWithPasswordRequest => "onRecordAuthWithPasswordRequest",
     RecordAuthWithOAuth2Request => "onRecordAuthWithOAuth2Request",
     RecordAuthWithOTPRequest => "onRecordAuthWithOTPRequest",
+    RecordAuthWithMagicLinkRequest => "onRecordAuthWithMagicLinkRequest",
     RecordAuthRefreshRequest => "onRecordAuthRefreshRequest",
     RecordRequestOTPRequest => "onRecordRequestOTPRequest",
+    RecordRequestMagicLinkRequest => "onRecordRequestMagicLinkRequest",
     RecordRequestPasswordResetRequest => "onRecordRequestPasswordResetRequest",
     RecordConfirmPasswordResetRequest => "onRecordConfirmPasswordResetRequest",
     RecordRequestVerificationRequest => "onRecordRequestVerificationRequest",
@@ -148,6 +150,7 @@ hook_kinds! {
     MailerRecordPasswordResetSend => "onMailerRecordPasswordResetSend",
     MailerRecordEmailChangeSend => "onMailerRecordEmailChangeSend",
     MailerRecordOTPSend => "onMailerRecordOTPSend",
+    MailerRecordMagicLinkSend => "onMailerRecordMagicLinkSend",
     MailerRecordAuthAlertSend => "onMailerRecordAuthAlertSend",
 
     RealtimeConnectRequest => "onRealtimeConnectRequest",

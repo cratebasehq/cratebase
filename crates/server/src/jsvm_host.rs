@@ -615,8 +615,14 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
             HookKind::RecordAuthWithPasswordRequest => bind!(on_record_auth_with_password_request),
             HookKind::RecordAuthWithOAuth2Request => bind!(on_record_auth_with_oauth2_request),
             HookKind::RecordAuthWithOTPRequest => bind!(on_record_auth_with_otp_request),
+            HookKind::RecordAuthWithMagicLinkRequest => {
+                bind!(on_record_auth_with_magic_link_request)
+            }
             HookKind::RecordAuthRefreshRequest => bind!(on_record_auth_refresh_request),
             HookKind::RecordRequestOTPRequest => bind!(on_record_request_otp_request),
+            HookKind::RecordRequestMagicLinkRequest => {
+                bind!(on_record_request_magic_link_request)
+            }
             HookKind::RecordRequestPasswordResetRequest => {
                 bind!(on_record_request_password_reset_request)
             }
@@ -641,6 +647,7 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
             HookKind::MailerRecordPasswordResetSend => bind!(on_mailer_record_password_reset_send),
             HookKind::MailerRecordEmailChangeSend => bind!(on_mailer_record_email_change_send),
             HookKind::MailerRecordOTPSend => bind!(on_mailer_record_otp_send),
+            HookKind::MailerRecordMagicLinkSend => bind!(on_mailer_record_magic_link_send),
             HookKind::MailerRecordAuthAlertSend => bind!(on_mailer_record_auth_alert_send),
 
             HookKind::RealtimeConnectRequest => bind!(on_realtime_connect_request),

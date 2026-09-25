@@ -758,47 +758,65 @@ async fn decode_and_verify(
     Some(record)
 }
 
-/// Renders `template`, sends it to `to` and runs the record-scoped mailer
-/// hook (then `onMailerSend`) around the actual delivery. Failures are
-/// returned rather than swallowed; every call site that must never leak
-/// account existence swallows them itself, deliberately, at the point
-/// that decision belongs.
+/// Resolves and renders one of the six auth-flow templates through
+/// `crate::mail_templates::resolve_auth_mail`, sends it to `to` and runs
+/// the record-scoped mailer hook (then `onMailerSend`) around the actual
+/// delivery. Failures are returned rather than swallowed; every call site
+/// that must never leak account existence swallows them itself,
+/// deliberately, at the point that decision belongs.
+///
+/// `extra_vars` are the legacy `{PLACEHOLDER}` values beyond `{APP_NAME}`/
+/// `{APP_URL}` (e.g. `[("TOKEN", tok)]`); `data` are the matching
+/// `{{var}}` values beyond `{{appName}}`/`{{appUrl}}` for the
+/// `_emailTemplates` resolution path (e.g. `json!({ "token": tok })`) —
+/// see `resolve_auth_mail`'s own doc for why both exist. The locale is
+/// resolved from `record`'s own `locale`/`lang` field, if it has one.
+#[allow(clippy::too_many_arguments)]
 async fn send_record_mail(
     app: &App,
     collection: &Arc<Collection>,
     record: &Record,
-    template: &cratebase_core::EmailTemplate,
+    kind: crate::mail_templates::AuthMailKind,
     extra_vars: &[(&str, &str)],
+    data: Value,
     to: &str,
     hook: fn(&Hooks) -> &Hook<MailerRecordEvent>,
 ) -> ApiResult<()> {
+    let locale = crate::mail_templates::resolve_locale(None, Some(record));
+    let resolved =
+        crate::mail_templates::resolve_auth_mail(app, collection, kind, &locale, extra_vars, data)
+            .await;
     let settings = app.settings();
-    let mut vars: Vec<(&str, &str)> = vec![
-        ("APP_NAME", settings.meta.app_name.as_str()),
-        ("APP_URL", settings.meta.app_url.as_str()),
-    ];
-    vars.extend_from_slice(extra_vars);
-    let (subject, html) = cratebase_mailer::render_template(template, &vars);
-    let message = cratebase_mailer::Message::new(
+    let mut message = cratebase_mailer::Message::new(
         (
             settings.meta.sender_address.clone(),
             settings.meta.sender_name.clone(),
         ),
         (to.to_string(), String::new()),
-        subject,
-        html,
+        resolved.subject,
+        resolved.html,
     );
-    let meta = Value::Object(
-        vars.iter()
-            .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
-            .collect(),
+    if let Some(text) = resolved.text {
+        message = message.with_text(text);
+    }
+    let mut meta_map: Map<String, Value> = extra_vars
+        .iter()
+        .map(|(k, v)| (k.to_string(), Value::String(v.to_string())))
+        .collect();
+    meta_map.insert(
+        "APP_NAME".into(),
+        Value::String(settings.meta.app_name.clone()),
+    );
+    meta_map.insert(
+        "APP_URL".into(),
+        Value::String(settings.meta.app_url.clone()),
     );
     let mut event = MailerRecordEvent::new(
         app.clone(),
         collection.clone(),
         record.clone(),
         message,
-        meta,
+        Value::Object(meta_map),
         collection_tags(collection),
     );
     let app2 = app.clone();
@@ -911,8 +929,9 @@ async fn request_verification(
                     &app,
                     &collection,
                     &record,
-                    &collection.auth.verification_template,
+                    crate::mail_templates::AuthMailKind::Verification,
                     &[("TOKEN", token.as_str())],
+                    json!({ "token": token }),
                     &record.email(),
                     |h| &h.on_mailer_record_verification_send,
                 )
@@ -1008,8 +1027,9 @@ async fn request_password_reset(
                 &app,
                 &collection,
                 &record,
-                &collection.auth.reset_password_template,
+                crate::mail_templates::AuthMailKind::PasswordReset,
                 &[("TOKEN", token.as_str())],
+                json!({ "token": token }),
                 &record.email(),
                 |h| &h.on_mailer_record_password_reset_send,
             )
@@ -1141,8 +1161,9 @@ async fn request_email_change(
             &app,
             &collection,
             &auth.record,
-            &collection.auth.confirm_email_change_template,
+            crate::mail_templates::AuthMailKind::EmailChange,
             &[("TOKEN", token.as_str())],
+            json!({ "token": token }),
             &body.new_email,
             |h| &h.on_mailer_record_email_change_send,
         )
@@ -1283,16 +1304,18 @@ async fn request_otp(
             let (otp_id, code) = create_otp(&app, &collection, record.id(), &body.email).await?;
 
             let minutes = (collection.auth.otp.duration.max(1) + 59) / 60;
+            let expires_in = format!("{minutes} minutes");
             let _ = send_record_mail(
                 &app,
                 &collection,
                 &record,
-                &collection.auth.otp.email_template,
+                crate::mail_templates::AuthMailKind::Otp,
                 &[
                     ("OTP", code.as_str()),
                     ("OTP_ID", otp_id.as_str()),
-                    ("EXPIRES_IN", format!("{minutes} minutes").as_str()),
+                    ("EXPIRES_IN", expires_in.as_str()),
                 ],
+                json!({ "otp": code, "otpId": otp_id, "expiresIn": expires_in }),
                 &body.email,
                 |h| &h.on_mailer_record_otp_send,
             )
@@ -2232,8 +2255,9 @@ async fn record_login_origin_inner(
             app,
             collection,
             record,
-            &collection.auth.auth_alert.email_template,
+            crate::mail_templates::AuthMailKind::LoginAlert,
             &[("ALERT_INFO", alert_info.as_str())],
+            json!({ "alertInfo": alert_info }),
             &record.email(),
             |h| &h.on_mailer_record_auth_alert_send,
         )
