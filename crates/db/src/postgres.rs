@@ -597,6 +597,14 @@ impl Engine for PostgresEngine {
         self.execute("ANALYZE", &[]).await.map(|_| ())
     }
 
+    /// See the trait doc: a real server-side `prepare` (the extended-query
+    /// `Parse` message) both validates syntax and refuses more than one
+    /// statement, so this is a stronger check on Postgres than on SQLite.
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        let client = self.pool.get().await.map_err(pool_err)?;
+        client.prepare(sql).await.map(|_| ()).map_err(map_err)
+    }
+
     async fn snapshot_to(&self, dest_path: &str) -> DbResult<()> {
         let params = self.conn_params()?;
         let pg_dump = pg_tools::find_pg_tool("pg_dump", pg_tools::CB_PG_DUMP_PATH)?;

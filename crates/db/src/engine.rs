@@ -262,6 +262,25 @@ pub trait Engine: Executor {
         Err(DbError::Unsupported("engine restore".into()))
     }
 
+    /// Parse/prepare `sql` against the driver without executing it or
+    /// binding any parameters. Used by `_rpc`'s save-time validation
+    /// (`crates/server/src/rpc.rs`) to catch a syntax error before the
+    /// statement is ever stored, not on its first real call.
+    ///
+    /// On Postgres this doubles as multi-statement rejection for free:
+    /// the extended-query `Parse` message a real `prepare` sends refuses
+    /// more than one statement. SQLite's `prepare` has no such guarantee
+    /// (it silently compiles only the first statement and ignores the
+    /// rest), so a caller that also needs to reject a multi-statement
+    /// `_rpc.sql` must check for that itself first — see
+    /// `crates/server/src/rpc.rs`'s own `is_single_statement`.
+    ///
+    /// The default (used by [`Transaction`], which nothing calls this
+    /// through) treats every statement as valid.
+    async fn prepare_check(&self, _sql: &str) -> DbResult<()> {
+        Ok(())
+    }
+
     /// Close every connection. Called before a backup restore swaps the
     /// data directory.
     async fn close(&self) -> DbResult<()>;

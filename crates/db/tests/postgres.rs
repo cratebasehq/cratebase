@@ -338,3 +338,52 @@ async fn snapshot_to_reports_a_specific_error_when_pg_dump_is_missing() {
 
     db.close().await.unwrap();
 }
+
+/// `Engine::prepare_check` on Postgres: a real server-side `prepare`
+/// validates syntax and, unlike SQLite's, refuses more than one statement
+/// outright — see the trait doc and `crates/server/src/rpc.rs`, which
+/// relies on exactly this for `_rpc.sql` save-time validation.
+#[tokio::test]
+async fn postgres_prepare_check_validates_syntax_and_rejects_multiple_statements() {
+    let _guard = ONE_TEST_AT_A_TIME.lock().await;
+    let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
+        eprintln!(
+            "skipping postgres_prepare_check_validates_syntax_and_rejects_multiple_statements: \
+             TEST_POSTGRES_URL not set"
+        );
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::connect(&url, &dir.path().to_string_lossy())
+        .await
+        .unwrap();
+    db.execute("DROP SCHEMA public CASCADE", &[]).await.unwrap();
+    db.execute("CREATE SCHEMA public", &[]).await.unwrap();
+    db.execute("CREATE TABLE t (id TEXT)", &[]).await.unwrap();
+
+    db.engine
+        .prepare_check("SELECT * FROM t WHERE id = $1")
+        .await
+        .expect("valid parameterized statement prepares");
+    assert!(
+        db.engine.prepare_check("SELECT * FROM nope").await.is_err(),
+        "a nonexistent table must fail to prepare"
+    );
+    assert!(
+        db.engine
+            .prepare_check("SELECT 1; SELECT 2")
+            .await
+            .is_err(),
+        "a real server-side prepare must refuse more than one statement"
+    );
+    // Nothing was executed: no row was inserted.
+    let count = db
+        .query_scalar("SELECT COUNT(*) FROM t", &[])
+        .await
+        .unwrap()
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(count, 0);
+
+    db.close().await.unwrap();
+}
