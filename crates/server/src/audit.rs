@@ -110,6 +110,7 @@ pub(crate) async fn write(
                 None,
                 crate::routes::records::Write::Create,
                 Vec::new(),
+                serde_json::Map::new(),
             )
         })
         .await;
@@ -146,6 +147,7 @@ pub(crate) async fn write_in_tx(
         None,
         crate::routes::records::Write::Create,
         Vec::new(),
+        serde_json::Map::new(),
     )
     .await;
     if let Err(e) = result {

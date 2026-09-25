@@ -312,6 +312,7 @@ pub async fn log_usage(
                 None,
                 crate::routes::records::Write::Create,
                 Vec::new(),
+                input,
             )
         })
         .await;

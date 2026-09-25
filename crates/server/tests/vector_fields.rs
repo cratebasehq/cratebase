@@ -11,6 +11,7 @@ use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use cratebase_server::app::App;
 use cratebase_server::config::Config;
+use cratebase_server::Event as _;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -274,6 +275,163 @@ async fn echo_provider_auto_embeds_from_the_source_field_on_create() {
         )
         .await;
     assert_eq!(untouched["embedding"], updated["embedding"]);
+}
+
+/// Reproduces the dogfooding bug report: `apply_embeddings` used to run
+/// *before* `onRecordCreate`/`onRecordUpdate` fired, so a hook that
+/// derives or overwrites a vector field's `sourceField` was embedded
+/// against stale (pre-hook) text instead of what the hook actually
+/// wrote. `crate::routes::records::write_record` now computes embeddings
+/// after the create/update hook has run, mirroring PocketBase's own
+/// "onRecordCreate → e.next() → persist" ordering.
+#[tokio::test]
+async fn a_hook_that_sets_the_source_field_is_embedded_from_the_hook_s_text_on_create() {
+    let harness = Harness::new().await;
+    harness.collection(chunks_collection()).await;
+
+    // Ground truth: what "hook derived text" embeds to, with no hook
+    // involved at all.
+    let (_, reference) = harness
+        .admin(
+            "POST",
+            "/api/collections/chunks/records",
+            Some(json!({"body": "hook derived text"})),
+        )
+        .await;
+    let reference_vector = reference["embedding"].clone();
+
+    // `onRecordCreate` overwrites `body` before the record is persisted
+    // — the "hook derives the source field" pattern from the bug report.
+    // If embeddings still ran before hooks, the created record below
+    // would embed the client's original text instead.
+    harness.app.hooks().on_record_create.bind_func(|e| {
+        Box::pin(async move {
+            e.record.set("body", json!("hook derived text"));
+            e.next().await
+        })
+    });
+
+    let (status, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/chunks/records",
+            Some(json!({"body": "whatever the client actually sent"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["body"], "hook derived text");
+    assert_eq!(
+        created["embedding"], reference_vector,
+        "embedding should reflect the hook-set body, not the client's original text"
+    );
+}
+
+#[tokio::test]
+async fn a_hook_that_sets_the_source_field_is_embedded_from_the_hook_s_text_on_update() {
+    let harness = Harness::new().await;
+    harness.collection(chunks_collection()).await;
+
+    // Ground truth vector for the text the update hook will force `body`
+    // to, computed with no hook involved.
+    let (_, reference) = harness
+        .admin(
+            "POST",
+            "/api/collections/chunks/records",
+            Some(json!({"body": "hook derived text v2"})),
+        )
+        .await;
+    let reference_vector = reference["embedding"].clone();
+
+    let (_, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/chunks/records",
+            Some(json!({"body": "original"})),
+        )
+        .await;
+    let id = created["id"].as_str().expect("id").to_string();
+
+    // `onRecordUpdate` overwrites `body` regardless of what the client
+    // PATCHed.
+    harness.app.hooks().on_record_update.bind_func(|e| {
+        Box::pin(async move {
+            e.record.set("body", json!("hook derived text v2"));
+            e.next().await
+        })
+    });
+
+    let (status, updated) = harness
+        .admin(
+            "PATCH",
+            &format!("/api/collections/chunks/records/{id}"),
+            Some(json!({"body": "client typed this instead"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{updated}");
+    assert_eq!(updated["body"], "hook derived text v2");
+    assert_eq!(
+        updated["embedding"], reference_vector,
+        "embedding should reflect the hook-set body, not the client's PATCH body"
+    );
+}
+
+/// Same bug, but through `POST /api/batch`: that route builds its own
+/// `input` (the sub-request's body, pre-hooks) and threads it into the
+/// shared `write_record`, rather than calling `apply_embeddings` itself
+/// — so it must get the same after-hooks ordering as the single-record
+/// create/update endpoints, not a separate (and separately buggy) copy
+/// of the old before-hooks behavior.
+#[tokio::test]
+async fn a_hook_that_sets_the_source_field_is_embedded_from_the_hook_s_text_via_batch() {
+    let harness = Harness::new().await;
+    harness.collection(chunks_collection()).await;
+
+    // `/api/batch` is off by default (`settings.batch.enabled == false`).
+    let mut settings = (*harness.app.settings()).clone();
+    settings.batch.enabled = true;
+    harness
+        .app
+        .set_settings(settings)
+        .await
+        .expect("enable batch");
+
+    let (_, reference) = harness
+        .admin(
+            "POST",
+            "/api/collections/chunks/records",
+            Some(json!({"body": "hook derived text via batch"})),
+        )
+        .await;
+    let reference_vector = reference["embedding"].clone();
+
+    harness.app.hooks().on_record_create.bind_func(|e| {
+        Box::pin(async move {
+            e.record.set("body", json!("hook derived text via batch"));
+            e.next().await
+        })
+    });
+
+    let (status, results) = harness
+        .admin(
+            "POST",
+            "/api/batch",
+            Some(json!({
+                "requests": [{
+                    "method": "POST",
+                    "url": "/api/collections/chunks/records",
+                    "body": {"body": "whatever the client actually sent via batch"},
+                }],
+            })),
+        )
+        .await;
+    assert_eq!(status, 200, "{results}");
+    let entry = &results.as_array().expect("batch results array")[0];
+    assert_eq!(entry["status"], 200, "{entry}");
+    assert_eq!(entry["body"]["body"], "hook derived text via batch");
+    assert_eq!(
+        entry["body"]["embedding"], reference_vector,
+        "batch create should embed the hook-set body, not the client's original text"
+    );
 }
 
 // ------------------------------------------------------------- nearestTo
