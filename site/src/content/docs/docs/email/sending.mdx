@@ -9,9 +9,10 @@ Three equivalent ways to send, all going through the same pipeline (log
 to `_mailLog`, then deliver — see [Mail log](/docs/email/mail-log/) and
 [Delivery](#delivery)):
 
-**REST** — `POST /api/mails/send`, superuser or [API key](/docs/concepts/authentication/api-keys/)
-only (see [Reference → REST API → Mails](/docs/reference/rest-api/mails/)
-for the full body/response shape):
+**REST** — `POST /api/mails/send` (see
+[Reference → REST API → Mails](/docs/reference/rest-api/mails/) for the
+full body/response shape). A superuser or [API key](/docs/concepts/authentication/api-keys/)
+may always call it with anything:
 
 ```bash
 curl -X POST https://your-app/api/mails/send \
@@ -19,9 +20,27 @@ curl -X POST https://your-app/api/mails/send \
   -d '{"to":"user@example.com","template":"welcome","data":{"user":{"name":"Ada"}}}'
 ```
 
-**TypeScript SDK** — `cb.mails.send`/`cb.mails.preview`, superuser or
-API key only (sign in via `cb.auth.as("_superusers")`, or attach an API
-key as a header):
+Any other caller — an authenticated app user, or even an anonymous one —
+may call it too, but only `to` + `template` (+ `data`/`locale`), and only
+when that template's [`sendRule`](/docs/email/templates/#sendrule-who-else-can-send-this)
+allows it. This is what lets a frontend send transactional mail with no
+backend of its own:
+
+```ts
+// No superuser session, no API key — just a signed-in (or anonymous,
+// if the template's sendRule allows it) app user calling Cratebase
+// directly.
+await cb.mails.send({
+  to: recipientEmail,
+  template: "invite",
+  data: { invitedBy: currentUserName, teamName: "Acme" },
+});
+```
+
+**TypeScript SDK** — `cb.mails.send` (subject to `sendRule` for a
+non-superuser caller, as above) and `cb.mails.preview` (superuser/API-key
+only — a dashboard/tooling affordance, sign in via
+`cb.auth.as("_superusers")` or attach an API key as a header):
 
 ```ts
 const result = await cb.mails.send({
@@ -67,6 +86,9 @@ regardless of what happens next.
 ## Validation
 
 Either `template` or `subject` plus `html`/`text` must be given;
-`to`/`cc`/`bcc` together may not exceed 50 recipients, and every address
-must be well-formed — both are `400`s, checked before anything is
-logged or sent.
+`to`/`cc`/`bcc` together may not exceed 50 recipients (5 for a
+non-superuser/non-API-key caller — see
+[Templates → sendRule](/docs/email/templates/#sendrule-who-else-can-send-this)),
+and every address must be well-formed — both are `400`s, checked before
+anything is logged or sent. A `sendRule` denial is a `403`, checked
+*before* this validation.

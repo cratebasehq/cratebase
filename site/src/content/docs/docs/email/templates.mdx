@@ -8,11 +8,14 @@ sidebar:
 `_emailTemplates` is a superuser-only system collection: `key` (e.g.
 `auth.verification`, `welcome`), `name`, `subject`, `html`, `text`
 (optional — auto-derived from `html` when empty), `locale` (optional,
-default `""`), `layout` (bool), `description`. It's seeded with seven
-rows on first boot: the five built-in auth emails (`auth.verification`,
+default `""`), `layout` (bool), `description`, `sendRule` (see below),
+`design` and `editor` (dashboard-only, see
+[Dashboard editor](#dashboard-editor)). It's seeded with seven rows on
+first boot: the five built-in auth emails (`auth.verification`,
 `auth.passwordReset`, `auth.emailChange`, `auth.otp`, `auth.loginAlert`),
 `auth.magic-link`, and a `welcome` example — all editable, none wired to
-anything by default beyond the auth-flow resolution below.
+anything by default beyond the auth-flow resolution below. Every seeded
+row's `sendRule` starts `null` (superuser/API-key only).
 
 ## `{{var}}` syntax
 
@@ -87,3 +90,103 @@ an admin edited the `_emailTemplates` row *without* also customizing the
 collection's own template field. Editing either one is a real,
 independent way to change what gets sent — customizing the collection
 field always wins if both are touched.
+
+## `sendRule`: who else can send this
+
+`POST /api/mails/send` (and `cb.mails.send`) is superuser/API-key-only by
+default, same as every other admin-facing endpoint. `sendRule` is what
+lets a **frontend call it directly, with no backend of its own**, for
+exactly the templates an admin opts in — the same three-state shape a
+collection's `listRule`/`viewRule`/etc. already uses:
+
+- **`null`** (the default for every new/seeded template) — superuser or
+  API key only. A non-superuser `to`/`template` send for this template is
+  a `403`.
+- **`""`** — anyone may send it, including an anonymous caller. This is
+  a real capability, not a placeholder — see the danger note below.
+- **anything else** — a [filter-rule expression](/docs/concepts/api-rules/),
+  evaluated per recipient, exactly like a collection rule.
+
+A non-superuser caller (an authenticated app user, or anonymous) that
+sends this way is restricted well beyond what a superuser/API key may
+do:
+
+- Only `to` + `template` (+ `data`/`locale`) — **no** raw
+  `subject`/`html`/`text`, and **no** `from`/`cc`/`bcc`/`replyTo`
+  override. Any of those present is a `403`, regardless of `sendRule`.
+- At most **5** recipients (vs. 50 for a superuser/API key).
+- Also rate-limited on its own, tighter tag (`mails:send:user`, 10/minute
+  per auth record by default — see
+  [Settings object → rateLimits](/docs/reference/settings-object/#ratelimits)),
+  on top of the general `mails:send` ceiling every caller shares.
+
+The rule sees `@request.auth.*` (the caller, or all-null when
+anonymous), `@request.body.to` (**one** address — with multiple `to`
+recipients, the rule is evaluated once per address and *every one* must
+pass), `@request.body.data.*`, and `@request.body.locale`. A denial is
+always a plain `403` with no detail — a template that doesn't exist, has
+no `sendRule`, or a rule that rejected the caller/recipient all look
+identical from the outside, so this endpoint never confirms which
+templates exist or leaks a rule's logic to a probing caller.
+
+```ts
+// A frontend, signed in as an ordinary `users` record (or anonymous),
+// calling Cratebase directly — no backend route of its own.
+await cb.mails.send({
+  to: someUsersEmail,
+  template: "invite",
+  data: { invitedBy: cb.auth.record?.name, teamName: "Acme" },
+});
+```
+
+For that to work, the `invite` template's `sendRule` needs to actually
+allow it — e.g., only the inviting team's own members:
+
+```
+@request.auth.id != "" && @request.body.data.teamId = @request.auth.teamId
+```
+
+:::danger[`sendRule: ""` is a public mail relay]
+Anyone on the internet, with no session at all, can trigger that
+template — at whatever address they name in `to`, with whatever `data`
+they submit (which flows straight into `{{var}}` interpolation). Reserve
+`""` for something that's genuinely fine to spam-send on request (e.g. a
+"resend this public newsletter issue" link with no sensitive data), and
+prefer a real rule — even a permissive one like
+`@request.auth.id != ""` (any signed-in user) — for anything that
+shouldn't be a free mail relay.
+:::
+
+## Dashboard editor
+
+Settings → **Email templates** lists every row (key, name, locale,
+editor, and a `sendRule` badge) with create/duplicate/delete. Opening one
+gives:
+
+- **Subject, name, locale, layout toggle**, and a plain-text alternative
+  field with an "Auto-derive from HTML" button (a client-side
+  approximation of the server's own strip-tags fallback — a starting
+  point to edit, not a preview of exactly what the server would derive).
+- **HTML mode** — a CodeMirror editor for hand-written or
+  externally-authored (e.g. exported [React Email](https://react.email))
+  HTML, with an "Insert variable" menu populated from the sample data
+  below.
+- **Visual mode** — a block-based editor
+  ([`@react-email/editor`](https://react.email/docs/editor/overview)).
+  Its document is stored in the opaque `design` field (the server never
+  reads it); saving derives `html`/`text` from it, which is what actually
+  gets sent. Switching from HTML to visual (or back) re-parses the
+  current HTML into/out of the editor's document — round-tripping
+  through both a few times can lose formatting the visual editor doesn't
+  represent, so pick one mode per template rather than bouncing between
+  them.
+- **`sendRule`**, via the same rule editor a collection API rule uses.
+- **Live preview** — renders through the real `POST /api/mails/preview`
+  pipeline against an editable sample-data JSON blob, debounced, with a
+  desktop/mobile width toggle, in a sandboxed (`srcdoc`, no scripts)
+  iframe. It reflects unsaved edits, including mid-edit visual-editor
+  content — nothing needs to be saved first to see it.
+- **Test send** — `POST /api/mails/send` to an address (defaulting to
+  the signed-in superuser's own), also unsaved-edit-aware. When the dev
+  mail inbox is active (no real SMTP configured), a link jumps straight
+  to it.

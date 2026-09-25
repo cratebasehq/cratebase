@@ -5,10 +5,15 @@ sidebar:
   order: 5
 ---
 
-Every [send](/docs/email/sending/) — REST, SDK, or `$mails.send` — writes
-a `_mailLog` row before attempting delivery and updates it once an
-attempt resolves. It's an ordinary system collection, so it's readable
-through the generic Records API:
+Every [send](/docs/email/sending/) — REST, SDK, `$mails.send`, or an
+[email trigger](/docs/email/triggers/) — writes a `_mailLog` row before
+attempting delivery and updates it once an attempt resolves. A trigger
+whose `toField` doesn't resolve to anything usable also writes a
+`"failed"` row directly, with no send ever attempted, so a
+misconfigured trigger is visible here rather than silent. It's an
+ordinary system collection, so it's readable through the generic Records
+API, or through the dashboard's **Settings → Mail log** page (filterable
+by status/template):
 
 ```
 GET /api/collections/_mailLog/records?sort=-created&filter=status='failed'

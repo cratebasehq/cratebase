@@ -1,0 +1,87 @@
+---
+title: "Triggers"
+description: "_emailTriggers: send an email template automatically on a record event, no code, no redeploy."
+sidebar:
+  order: 3.5
+---
+
+`_emailTriggers` is a superuser-only system collection — the same
+"no-code, no redeploy" shape as [`_webhooks`](/docs/extending/outgoing-webhooks/):
+fire an [`_emailTemplates`](/docs/email/templates/) template through the
+ordinary [send](/docs/email/sending/) pipeline whenever `event` happens
+on `collection`. Manage it through the dashboard's **Settings → Email
+triggers** page, or the generic Records API against
+`_emailTriggers`.
+
+| Field | Notes |
+| --- | --- |
+| `collection` | Name (or id) of the collection to watch |
+| `event` | `create` \| `update` \| `delete` |
+| `template` | An `_emailTemplates.key` |
+| `toField` | A dotted path into the written record holding the recipient's email, or a literal address |
+| `condition` | Optional filter expression — see below |
+| `enabled` | Defaults to `false` (a freshly created trigger is off until you flip it) |
+| `dataMap` | Optional JSON object merged onto the default template data — see below |
+
+A trigger fires **after** the record write already succeeded, from an
+after-success hook, the same as `_webhooks` — it can never fail the
+request that triggered it. A `toField` that resolves to nothing usable
+is recorded as a `_mailLog` failure (see [Mail log](/docs/email/mail-log/))
+without attempting a send.
+
+## `toField`
+
+Resolved against the written record's own JSON first — a dotted path,
+e.g. `email` or `customer.email` — and, if that resolves to a non-empty
+string, that's the recipient. Otherwise `toField` itself is used
+verbatim as a literal address (e.g. `ops@example.com`, for a trigger
+that always mails the same inbox regardless of the record).
+
+## `condition`
+
+The same filter-expression language as every other
+[API rule](/docs/concepts/api-rules/), but evaluated in-process, directly
+against the written record's own fields as bare identifiers —
+`status = "paid"`, not `@request.*` or `@record.*` (there is no request
+to speak of here, and no `@record` macro). Left blank, the trigger always
+fires on a matching `collection`/`event`.
+
+```
+status = "paid" && amount > 0
+```
+
+`@record.old.*` (the pre-write values, for an `update` — useful for
+"only when a field *changed to* X" conditions) is **not** supported: it
+would need a new macro namespace in the filter engine for this one
+caller. A condition that references it, or anything else that can't be
+evaluated without a database round trip (a relation path, `@collection.X`),
+is treated as **not matched** and logged as a warning server-side —
+never as a crash, and never as a false "matched".
+
+## `dataMap`
+
+Template data defaults to `{ "record": <written record as JSON> }`.
+When `dataMap` is a JSON object, its keys are merged on top — added if
+new, overriding if they collide — so a template written for
+`{{record.customer.name}}` keeps working while a trigger adds extra
+literal context:
+
+```json
+{ "appEnv": "production", "supportEmail": "help@example.com" }
+```
+
+## Example
+
+Email a customer when their order is marked paid:
+
+- `collection`: `orders`
+- `event`: `update`
+- `template`: `order-paid`
+- `toField`: `customer.email`
+- `condition`: `status = "paid"`
+- `enabled`: on
+
+Every trigger runs with the same trust as the server itself — it is
+never subject to the target template's own `sendRule` (that gate is an
+HTTP-layer check for an untrusted caller; a trigger is admin-configured
+and always allowed to send).
