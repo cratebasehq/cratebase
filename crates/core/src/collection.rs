@@ -433,6 +433,10 @@ impl Collection {
         self.name == crate::CRON_JOBS_COLLECTION
     }
 
+    pub fn is_rpc(&self) -> bool {
+        self.name == crate::RPC_COLLECTION
+    }
+
     /// A JSON-Schema / OpenAI-function-calling-shaped description of this
     /// collection's writable, non-system fields:
     /// `{name, description, parameters: {type: "object",
@@ -630,10 +634,10 @@ impl Collection {
     }
 
     /// The system `_externalAuths`, `_mfas`, `_otps`, `_authOrigins`,
-    /// `_cron_jobs`, `_webhooks`, `_teams`, `_team_members` base
+    /// `_cron_jobs`, `_rpc`, `_webhooks`, `_teams`, `_team_members` base
     /// collections, with PocketBase's rules and indexes (`_cron_jobs`,
-    /// `_webhooks`, `_teams` and `_team_members` have no PocketBase
-    /// equivalent — see their own comments).
+    /// `_rpc`, `_webhooks`, `_teams` and `_team_members` have no
+    /// PocketBase equivalent — see their own comments).
     pub fn default_system_collections() -> Vec<Self> {
         let text = |name: &str| {
             let mut f = Field::new(
@@ -870,6 +874,49 @@ impl Collection {
                 last_message,
             ],
         );
+
+        // Superuser-only end to end, same trust tier as `_cron_jobs` just
+        // above: a definition's `sql` is arbitrary SQL, gated at *call*
+        // time (`POST /api/rpc/{name}`) by its own `rule` field, not by a
+        // rule here — managing the definitions themselves (like managing
+        // cron jobs) is an operator action, not something any
+        // non-superuser record should ever reach.
+        //
+        // `rule`/`params` are `json`, not `text`: the generic column
+        // encoder normalizes a plain `text` field's JSON `null` to `''`
+        // (see `crates/db/src/records.rs`'s `column_value`), which would
+        // erase the `rule = null` ("superuser only") / `rule = ""`
+        // ("anyone") distinction the RPC endpoint's rule semantics depend
+        // on. A `json` field keeps `null` and `""` distinct end to end.
+        let mut rpc = Collection::new(crate::RPC_COLLECTION, CollectionType::Base);
+        rpc.system = true;
+        let mut rpc_params = Field::new("params", FieldKind::Json { max_size: 0 });
+        rpc_params.required = false;
+        let mut rpc_rule = Field::new("rule", FieldKind::Json { max_size: 0 });
+        rpc_rule.required = false;
+        let mut rpc_read_only = Field::new("readOnly", FieldKind::Bool {});
+        rpc_read_only.required = false;
+        let mut rpc_timeout_ms = Field::new("timeoutMs", FieldKind::default_for(FieldType::Number));
+        rpc_timeout_ms.required = false;
+        let mut rpc_max_rows = Field::new("maxRows", FieldKind::default_for(FieldType::Number));
+        rpc_max_rows.required = false;
+        let pos = rpc.fields.len() - 2;
+        rpc.fields.splice(
+            pos..pos,
+            [
+                text("name"),
+                text("sql"),
+                rpc_params,
+                rpc_rule,
+                rpc_read_only,
+                rpc_timeout_ms,
+                rpc_max_rows,
+            ],
+        );
+        rpc.indexes = vec![format!(
+            "CREATE UNIQUE INDEX `idx_rpc_name_{}` ON `_rpc` (`name`)",
+            rpc.id
+        )];
 
         // Superuser-only end to end, same reasoning as `_cron_jobs` above:
         // a webhook's `url`/`secret` are operator-configured integration
@@ -1194,6 +1241,7 @@ impl Collection {
             sessions,
             bans,
             cron_jobs,
+            rpc,
             webhooks,
             teams,
             team_members,
@@ -1354,6 +1402,7 @@ mod tests {
                 crate::ids::collection_id("base", "_sessions").as_str(),
                 crate::ids::collection_id("base", "_bans").as_str(),
                 crate::ids::collection_id("base", "_cron_jobs").as_str(),
+                crate::ids::collection_id("base", "_rpc").as_str(),
                 crate::ids::collection_id("base", "_webhooks").as_str(),
                 crate::ids::collection_id("base", "_teams").as_str(),
                 crate::ids::collection_id("base", "_team_members").as_str(),
