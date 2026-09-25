@@ -1232,6 +1232,85 @@ impl Collection {
             "CREATE INDEX `idx_audit_log_created` ON `_audit_log` (created)".into(),
         ];
 
+        // The editable template store `crate::routes::mails` (server
+        // crate) resolves against: `key` (e.g. `auth.verification`,
+        // `welcome`) plus an optional `locale`, unique together so one
+        // key can have a row per locale. Superuser-only end to end, same
+        // tier as `_cron_jobs`/`_webhooks` — a template's `html` is
+        // rendered and mailed verbatim, no different in trust terms from
+        // a cron job's `sql` or a webhook's `url`. `html` is an `Editor`
+        // field (not `Text`) purely so the dashboard's future template
+        // editor gets a rich-text widget for free; the server never
+        // interprets it as anything but a `{{var}}` template string. See
+        // `crates/mailer/src/template.rs`'s `TemplateDoc`.
+        let mut email_templates = Collection::new("_emailTemplates", CollectionType::Base);
+        email_templates.system = true;
+        let mut et_html = Field::new(
+            "html",
+            FieldKind::Editor {
+                max_size: 0,
+                convert_urls: false,
+            },
+        );
+        et_html.required = false;
+        let mut et_text = text("text");
+        et_text.required = false;
+        let mut et_locale = text("locale");
+        et_locale.required = false;
+        let mut et_layout = Field::new("layout", FieldKind::Bool {});
+        et_layout.required = false;
+        let mut et_description = text("description");
+        et_description.required = false;
+        let pos = email_templates.fields.len() - 2;
+        email_templates.fields.splice(
+            pos..pos,
+            [
+                text("key"),
+                text("name"),
+                text("subject"),
+                et_html,
+                et_text,
+                et_locale,
+                et_layout,
+                et_description,
+            ],
+        );
+        email_templates.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_emailTemplates_key_locale` ON `_emailTemplates` (key, locale)".into(),
+        ];
+
+        // Send log for `POST /api/mails/send`/JS `$mails.send` — append-
+        // only and superuser-read-only, same reasoning as `_audit_log`
+        // immediately above (list/view stay `None`; create/update/delete
+        // stay `None` too since the only writer is `crate::routes::mails`
+        // itself, not a rule-driven client path). `to` is a JSON array of
+        // `{address, name}` recipients rather than a single text column,
+        // since one send can fan out to several. `retention` cleanup is
+        // `settings.logs.mailLogMaxDays`, mirroring `_logs`.
+        let mut mail_log = Collection::new("_mailLog", CollectionType::Base);
+        mail_log.system = true;
+        let mut ml_to = Field::new("to", FieldKind::Json { max_size: 0 });
+        ml_to.system = true;
+        let mut ml_subject = text("subject");
+        ml_subject.required = false;
+        let mut ml_template = text("template");
+        ml_template.required = false;
+        let mut ml_status = text("status");
+        ml_status.system = true;
+        let mut ml_error = text("error");
+        ml_error.required = false;
+        let mut ml_message_id = text("messageId");
+        ml_message_id.required = false;
+        let pos = mail_log.fields.len() - 2;
+        mail_log.fields.splice(
+            pos..pos,
+            [ml_to, ml_subject, ml_template, ml_status, ml_error, ml_message_id],
+        );
+        mail_log.indexes = vec![
+            "CREATE INDEX `idx_mailLog_created` ON `_mailLog` (created)".into(),
+            "CREATE INDEX `idx_mailLog_status` ON `_mailLog` (status)".into(),
+        ];
+
         vec![
             external,
             mfas,
@@ -1247,6 +1326,8 @@ impl Collection {
             api_keys,
             push_subscriptions,
             audit_log,
+            email_templates,
+            mail_log,
         ]
     }
 }
@@ -1407,6 +1488,8 @@ mod tests {
                 crate::ids::collection_id("base", "_api_keys").as_str(),
                 crate::ids::collection_id("base", "_push_subscriptions").as_str(),
                 crate::ids::collection_id("base", "_audit_log").as_str(),
+                crate::ids::collection_id("base", "_emailTemplates").as_str(),
+                crate::ids::collection_id("base", "_mailLog").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

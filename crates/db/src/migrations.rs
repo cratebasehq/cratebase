@@ -173,6 +173,15 @@ impl Runner {
             Box::new(|db| Box::pin(add_bans_up(db))),
             Box::new(|db| Box::pin(add_bans_down(db))),
         ));
+        // `_emailTemplates`/`_mailLog` follow the same story as every
+        // migration above, plus a one-time seed of seven default
+        // `_emailTemplates` rows (the five auth templates, magic-link,
+        // and a `welcome` example) — see `add_email_platform_up`'s doc.
+        r.register(Migration::new(
+            ADD_EMAIL_PLATFORM,
+            Box::new(|db| Box::pin(add_email_platform_up(db))),
+            Box::new(|db| Box::pin(add_email_platform_down(db))),
+        ));
         r
     }
 
@@ -679,6 +688,145 @@ async fn add_bans_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_EMAIL_PLATFORM: &str = "13_add_email_platform.rs";
+
+/// `_emailTemplates`/`_mailLog` follow the same story as every migration
+/// above: added to `default_system_collections()` after `INIT_SYSTEM`
+/// shipped, so an existing database needs this follow-up migration to
+/// retroactively get both tables. A fresh database already has them from
+/// `INIT_SYSTEM`, so those two inserts are no-ops there — but the seed
+/// step below always runs (once, per the migration ledger), on a fresh
+/// database and an upgraded one alike, since seeding rows is not
+/// something `default_system_collections()`/`INIT_SYSTEM` do for *any*
+/// collection.
+async fn add_email_platform_up(db: &Db) -> DbResult<()> {
+    for name in ["_emailTemplates", "_mailLog"] {
+        if db.collections.get_by_name(name).is_none() {
+            let collection = Collection::default_system_collections()
+                .into_iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} is a default system collection"));
+            db.collections.insert(&*db.engine, &collection).await?;
+        }
+    }
+    seed_default_email_templates(db).await?;
+    Ok(())
+}
+
+async fn add_email_platform_down(db: &Db) -> DbResult<()> {
+    for name in ["_mailLog", "_emailTemplates"] {
+        if db.collections.get_by_name(name).is_some() {
+            db.collections.delete(&*db.engine, name).await?;
+        }
+    }
+    Ok(())
+}
+
+/// One `_emailTemplates` seed row: `{{var}}`-syntax content matching the
+/// wording of the corresponding built-in `{PLACEHOLDER}` template in
+/// `cratebase_core::collection` (see that module's
+/// `*_template_default()` functions), so an admin who opens this row in
+/// the dashboard sees the email they already know, in the new editable
+/// form — not a divergent rewrite. Rendered via
+/// `cratebase_mailer::template::render_email_template`, never the legacy
+/// `render_template`.
+struct SeedTemplate {
+    key: &'static str,
+    name: &'static str,
+    subject: &'static str,
+    html: &'static str,
+    description: &'static str,
+}
+
+const SEED_EMAIL_TEMPLATES: &[SeedTemplate] = &[
+    SeedTemplate {
+        key: "auth.verification",
+        name: "Verification email",
+        subject: "Verify your {{appName}} email",
+        html: "<p>Hello,</p>\n<p>Thank you for joining us at {{appName}}.</p>\n<p>Click on the button below to verify your email address.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}/_/#/auth/confirm-verification/{{token}}\" target=\"_blank\" rel=\"noopener\">Verify</a>\n</p>\n<p><i>If you didn't recently register, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Editable copy of the built-in email-verification template. A collection's own authOptions.verificationTemplate, if customized away from its default, still takes priority over this row.",
+    },
+    SeedTemplate {
+        key: "auth.passwordReset",
+        name: "Password reset email",
+        subject: "Reset your {{appName}} password",
+        html: "<p>Hello,</p>\n<p>Click on the button below to reset your password.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}/_/#/auth/confirm-password-reset/{{token}}\" target=\"_blank\" rel=\"noopener\">Reset password</a>\n</p>\n<p><i>If you didn't ask to reset your password, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Editable copy of the built-in password-reset template. A collection's own authOptions.resetPasswordTemplate, if customized away from its default, still takes priority over this row.",
+    },
+    SeedTemplate {
+        key: "auth.emailChange",
+        name: "Confirm new email address",
+        subject: "Confirm your {{appName}} new email address",
+        html: "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}/_/#/auth/confirm-email-change/{{token}}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Editable copy of the built-in email-change confirmation template. A collection's own authOptions.confirmEmailChangeTemplate, if customized away from its default, still takes priority over this row.",
+    },
+    SeedTemplate {
+        key: "auth.otp",
+        name: "One-time password",
+        subject: "OTP for {{appName}}",
+        html: "<p>Hello,</p>\n<p>Your one-time password is: <strong>{{otp}}</strong></p>\n<p><i>If you didn't ask for the one-time password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Editable copy of the built-in OTP template. A collection's own authOptions.otp.emailTemplate, if customized away from its default, still takes priority over this row.",
+    },
+    SeedTemplate {
+        key: "auth.loginAlert",
+        name: "New-location login alert",
+        subject: "Login from a new location",
+        html: "<p>Hello,</p>\n<p>We noticed a login to your {{appName}} account from a new location:</p>\n<p><em>{{alertInfo}}</em></p>\n<p><strong>If this wasn't you, you should immediately change your {{appName}} account password to revoke access from all other locations.</strong></p>\n<p>If this was you, you may disregard this email.</p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Editable copy of the built-in new-location login alert. A collection's own authOptions.authAlert.emailTemplate, if customized away from its default, still takes priority over this row.",
+    },
+    SeedTemplate {
+        key: "auth.magic-link",
+        name: "Magic link sign-in",
+        subject: "Sign in to {{appName}}",
+        html: "<p>Hello,</p>\n<p>Click on the button below to sign in to {{appName}}.</p>\n<p>\n  <a class=\"btn\" href=\"{{magicLink}}\" target=\"_blank\" rel=\"noopener\">Sign in</a>\n</p>\n<p><i>If you didn't ask to sign in, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Editable copy of the built-in magic-link sign-in template. A collection's own authOptions.magicLink.emailTemplate, if customized away from its default, still takes priority over this row.",
+    },
+    SeedTemplate {
+        key: "welcome",
+        name: "Welcome email",
+        subject: "Welcome to {{appName}}!",
+        html: "<p>Hi {{user.name}},</p>\n<p>Welcome to {{appName}} — we're glad to have you.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}\" target=\"_blank\" rel=\"noopener\">Get started</a>\n</p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
+        description: "Example template, not wired to any built-in flow. Send it with $mails.send({ to, template: \"welcome\", data: { user: { name } } }) or POST /api/mails/send.",
+    },
+];
+
+/// Inserts [`SEED_EMAIL_TEMPLATES`] into `_emailTemplates`, skipping any
+/// `key` that already has a `locale: ""` row — so re-running this
+/// (safe, since the migration ledger only calls it once, but `seed::run`
+/// or a hand-written script could call it again) never clobbers an
+/// admin's edits.
+async fn seed_default_email_templates(db: &Db) -> DbResult<()> {
+    let Some(collection) = db.collections.get_by_name("_emailTemplates") else {
+        return Ok(());
+    };
+    for tpl in SEED_EMAIL_TEMPLATES {
+        let exists = db
+            .query_scalar(
+                r#"SELECT 1 FROM "_emailTemplates" WHERE "key" = $1 AND "locale" = ''"#,
+                &[Sql::Text(tpl.key.to_string())],
+            )
+            .await?
+            .is_some();
+        if exists {
+            continue;
+        }
+        let mut record = cratebase_core::Record::new(collection.clone());
+        record.set("key", serde_json::Value::String(tpl.key.to_string()));
+        record.set("name", serde_json::Value::String(tpl.name.to_string()));
+        record.set("subject", serde_json::Value::String(tpl.subject.to_string()));
+        record.set("html", serde_json::Value::String(tpl.html.to_string()));
+        record.set("text", serde_json::Value::String(String::new()));
+        record.set("locale", serde_json::Value::String(String::new()));
+        record.set("layout", serde_json::Value::Bool(true));
+        record.set(
+            "description",
+            serde_json::Value::String(tpl.description.to_string()),
+        );
+        crate::records::create(db, &db.collections, &mut record).await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,6 +860,7 @@ mod tests {
                 ADD_API_KEY_SCOPING.to_string(),
                 ADD_SESSIONS.to_string(),
                 ADD_BANS.to_string(),
+                ADD_EMAIL_PLATFORM.to_string(),
             ]
         );
         assert_eq!(
@@ -733,6 +882,8 @@ mod tests {
         assert!(db.collections.get("_api_keys").is_some());
         assert!(db.collections.get("_push_subscriptions").is_some());
         assert!(db.collections.get("_audit_log").is_some());
+        assert!(db.collections.get("_emailTemplates").is_some());
+        assert!(db.collections.get("_mailLog").is_some());
         assert!(db.collections.get("_superusers").unwrap().system);
         for t in [
             "_superusers",
@@ -751,17 +902,28 @@ mod tests {
             "_api_keys",
             "_push_subscriptions",
             "_audit_log",
+            "_emailTemplates",
+            "_mailLog",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
+        // A fresh database's `_emailTemplates` already has the seed rows.
+        let seeded: i64 = db
+            .query_scalar(r#"SELECT COUNT(*) FROM "_emailTemplates""#, &[])
+            .await
+            .unwrap()
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1);
+        assert_eq!(seeded, SEED_EMAIL_TEMPLATES.len() as i64);
         // Second run is a no-op.
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 12).await.unwrap();
+        let reverted = Runner::core().down(&db, 13).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_EMAIL_PLATFORM.to_string(),
                 ADD_BANS.to_string(),
                 ADD_SESSIONS.to_string(),
                 ADD_API_KEY_SCOPING.to_string(),
