@@ -599,3 +599,53 @@ async fn the_mails_send_user_rate_limit_tag_applies_to_non_superuser_callers() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body:?}");
 }
+
+// ------------------------------------------------------- design/editor
+
+#[tokio::test]
+async fn design_and_editor_are_opaque_and_send_still_renders_from_html() {
+    let h = Harness::new().await;
+    let (status, list) = h
+        .get(
+            "/api/collections/_emailTemplates/records?filter=key='welcome'",
+            &h.superuser_token,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{list:?}");
+    let id = list["items"][0]["id"].as_str().unwrap().to_string();
+
+    // A visual-editor document is opaque JSON the server never
+    // interprets — only `html`/`text` are ever sent from.
+    let (status, body) = h
+        .request(
+            "PATCH",
+            &format!("/api/collections/_emailTemplates/records/{id}"),
+            Some(&h.superuser_token),
+            json!({
+                "html": "<p>Hi {{user.name}}</p><p><a href=\"{{link}}\">Click</a></p>",
+                "editor": "visual",
+                "design": { "blocks": [{ "type": "text", "value": "Hi {{user.name}}" }] },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    assert_eq!(body["editor"], "visual");
+    assert_eq!(body["design"]["blocks"][0]["type"], "text");
+
+    let (status, body) = h
+        .post(
+            "/api/mails/preview",
+            Some(&h.superuser_token),
+            json!({
+                "template": "welcome",
+                "data": { "user": { "name": "Ada" }, "link": "https://ex.com/a&b" },
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body:?}");
+    let html = body["html"].as_str().unwrap();
+    assert!(html.contains("Hi Ada"));
+    // The link is rendered through the same escaped `{{var}}` path as
+    // everything else in the HTML body — `&` becomes `&amp;`.
+    assert!(html.contains("href=\"https://ex.com/a&amp;b\""), "{html}");
+}
