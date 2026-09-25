@@ -76,6 +76,14 @@ impl Query {
         self.order_by = order_by;
     }
 
+    /// Append parameters an `ORDER BY` clause already bound (a
+    /// `sort=geoDistance(...)` token — see [`order_by`]) — same convention
+    /// as [`push_filter`](Query::push_filter), just for a caller that
+    /// already has the SQL string and only needs the params appended.
+    pub fn push_order_params(&mut self, params: Vec<Sql>) {
+        self.params.extend(params);
+    }
+
     /// Bind the `LIMIT`/`OFFSET` values [`Query::select_sql`] emitted
     /// placeholders for. Call it *after* rendering the SQL (and after
     /// [`Query::count_sql`], which must not see them).
@@ -166,21 +174,38 @@ fn invalid_sort(path: &str) -> DbError {
     DbError::Filter(FilterError::UnknownField(path.to_string()))
 }
 
-/// Compile PocketBase's `sort` parameter into an `ORDER BY` list.
+/// Compile PocketBase's `sort` parameter into an `ORDER BY` list, plus any
+/// parameters it bound (only ever non-empty for a `geoDistance(...)` sort
+/// call, the one `sort` construct with literal arguments of its own — see
+/// below). `param_offset` is where those parameters start (1-based `$n`),
+/// same convention as [`cratebase_filter::compile`]'s: pass
+/// `query.params().len()` so they land right after whatever the filter
+/// already bound, then [`Query::push_order_params`] the returned values in
+/// the same call.
 ///
 /// * `-field` sorts descending, a bare `field` ascending.
 /// * `@random` orders randomly, `@rowid` by physical row order.
+/// * `geoDistance(...)`/`-geoDistance(...)` sorts nearest/farthest first,
+///   compiled by [`cratebase_filter::compile_sort_function`] — the exact
+///   same SQL a `geoDistance(...) < r` filter over the same call would
+///   produce, so a "nearest to X,Y" sort and a "within r of X,Y" filter
+///   agree on distance.
 /// * anything else goes through [`cratebase_filter::resolve_sort_path`],
 ///   so `author.name` and `data.key` work exactly as in filters.
 ///
 /// An unresolvable path is a validation error on the `sort` key rather
 /// than a silently ignored token, so a typo surfaces immediately.
-pub fn order_by(resolver: &CollectionResolver<'_>, sort: Option<&str>) -> DbResult<String> {
+pub fn order_by(
+    resolver: &CollectionResolver<'_>,
+    sort: Option<&str>,
+    param_offset: usize,
+) -> DbResult<(String, Vec<Sql>)> {
     let Some(sort) = sort.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Ok(default_order_by(resolver));
+        return Ok((default_order_by(resolver), Vec::new()));
     };
     let mut parts = Vec::new();
-    for token in sort.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+    let mut params = Vec::new();
+    for token in split_sort_tokens(sort) {
         // `+field` is the explicit form of the default ascending order.
         let (path, direction) = match token.strip_prefix('-') {
             Some(rest) => (rest.trim(), "DESC"),
@@ -193,6 +218,12 @@ pub fn order_by(resolver: &CollectionResolver<'_>, sort: Option<&str>) -> DbResu
             // PocketBase ignores the direction of `@random`.
             "@random" => "RANDOM()".to_string(),
             "@rowid" => format!("{} {direction}", rowid_expr(resolver)),
+            _ if path.contains('(') => {
+                let compiled =
+                    cratebase_filter::compile_sort_function(path, resolver, param_offset + params.len())?;
+                params.extend(compiled.params.iter().map(to_param));
+                format!("{} {direction}", compiled.sql)
+            }
             _ => {
                 let sql = cratebase_filter::resolve_sort_path(resolver, path)?;
                 format!("{sql} {direction}")
@@ -200,9 +231,35 @@ pub fn order_by(resolver: &CollectionResolver<'_>, sort: Option<&str>) -> DbResu
         });
     }
     if parts.is_empty() {
-        return Ok(default_order_by(resolver));
+        return Ok((default_order_by(resolver), Vec::new()));
     }
-    Ok(parts.join(", "))
+    Ok((parts.join(", "), params))
+}
+
+/// Split `sort` on commas, except commas nested inside a `geoDistance(...)`
+/// call's own argument list: a bare `sort.split(',')` would otherwise cut
+/// `geoDistance(loc.lon, loc.lat, 1, 2)` into five bogus tokens instead of
+/// one. Depth tracking is enough here because a sort call's arguments are
+/// never themselves parenthesized (see `ast::FUNCTIONS`'s "no nested calls"
+/// rule, enforced by the parser [`compile_sort_function`] hands this token
+/// to).
+fn split_sort_tokens(sort: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    for (i, c) in sort.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth <= 0 => {
+                tokens.push(sort[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    tokens.push(sort[start..].trim());
+    tokens.into_iter().filter(|t| !t.is_empty()).collect()
 }
 
 /// Newest first, the order the dashboard and most clients expect. Skipped
@@ -313,6 +370,11 @@ mod tests {
         );
         posts.indexes =
             vec!["CREATE UNIQUE INDEX `idx_posts_x` ON `posts` (`title`, `author`)".into()];
+        let pos = posts.fields.len() - 2;
+        posts.fields.insert(
+            pos,
+            Field::new("loc", FieldKind::GeoPoint {}),
+        );
         store.replace(vec![users, posts]);
         let posts = store.get("posts").unwrap();
         (store, posts)
@@ -324,31 +386,75 @@ mod tests {
         let ctx = RequestContext::default();
         let r = CollectionResolver::new(posts, &store, &ctx, Dialect::Sqlite);
 
-        assert_eq!(order_by(&r, None).unwrap(), "\"posts\".\"created\" DESC");
         assert_eq!(
-            order_by(&r, Some("")).unwrap(),
+            order_by(&r, None, 0).unwrap(),
+            ("\"posts\".\"created\" DESC".to_string(), vec![])
+        );
+        assert_eq!(
+            order_by(&r, Some(""), 0).unwrap().0,
             "\"posts\".\"created\" DESC"
         );
         assert_eq!(
-            order_by(&r, Some("title,-created")).unwrap(),
+            order_by(&r, Some("title,-created"), 0).unwrap().0,
             "\"posts\".\"title\" ASC, \"posts\".\"created\" DESC"
         );
-        assert_eq!(order_by(&r, Some("@random")).unwrap(), "RANDOM()");
+        assert_eq!(order_by(&r, Some("@random"), 0).unwrap().0, "RANDOM()");
         assert_eq!(
-            order_by(&r, Some("-@rowid")).unwrap(),
+            order_by(&r, Some("-@rowid"), 0).unwrap().0,
             "\"posts\".\"rowid\" DESC"
         );
-        assert!(order_by(&r, Some("author.name"))
+        assert!(order_by(&r, Some("author.name"), 0)
             .unwrap()
+            .0
             .contains("SELECT \"users\".\"name\""));
         assert_eq!(
-            order_by(&r, Some("+title")).unwrap(),
+            order_by(&r, Some("+title"), 0).unwrap().0,
             "\"posts\".\"title\" ASC"
         );
         // An unknown sort is a bare 400 with no `data` entry.
-        let err = order_by(&r, Some("nope")).unwrap_err();
+        let err = order_by(&r, Some("nope"), 0).unwrap_err();
         assert!(matches!(err, DbError::Filter(_)), "{err:?}");
         assert!(cratebase_core::AppError::from(err).body().data.is_empty());
+    }
+
+    #[test]
+    fn split_sort_tokens_keeps_a_call_s_commas_together() {
+        assert_eq!(
+            split_sort_tokens("title,-created"),
+            vec!["title", "-created"]
+        );
+        assert_eq!(
+            split_sort_tokens("geoDistance(loc.lon, loc.lat, 1, 2)"),
+            vec!["geoDistance(loc.lon, loc.lat, 1, 2)"]
+        );
+        assert_eq!(
+            split_sort_tokens("-geoDistance(loc.lon, loc.lat, 1, 2),title"),
+            vec!["-geoDistance(loc.lon, loc.lat, 1, 2)", "title"]
+        );
+        assert_eq!(split_sort_tokens(""), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn sort_geo_distance_binds_params_after_the_offset() {
+        let (store, posts) = store();
+        let ctx = RequestContext::default();
+        let r = CollectionResolver::new(posts, &store, &ctx, Dialect::Sqlite);
+
+        let (sql, params) = order_by(&r, Some("geoDistance(loc.lon, loc.lat, 1, 2)"), 0).unwrap();
+        assert_eq!(
+            sql,
+            "geoDistance(json_extract(\"posts\".\"loc\", '$.lon'), json_extract(\"posts\".\"loc\", '$.lat'), $1, $2) ASC"
+        );
+        assert_eq!(params, vec![Sql::Int(1), Sql::Int(2)]);
+
+        let (sql, params) =
+            order_by(&r, Some("-geoDistance(loc.lon, loc.lat, 1, 2)"), 3).unwrap();
+        assert!(sql.ends_with("$4, $5) DESC"), "{sql}");
+        assert_eq!(params.len(), 2);
+
+        // An invalid geoDistance sort (unknown field) is still a filter error.
+        let err = order_by(&r, Some("geoDistance(nope.lon, loc.lat, 1, 2)"), 0).unwrap_err();
+        assert!(matches!(err, DbError::Filter(_)), "{err:?}");
     }
 
     #[test]
@@ -363,7 +469,9 @@ mod tests {
         let user =
             cratebase_filter::parse_and_compile("title = 'x'", &r, q.params().len()).unwrap();
         q.push_filter(user);
-        q.set_order_by(order_by(&r, Some("title")).unwrap());
+        let (order_sql, order_params) = order_by(&r, Some("title"), q.params().len()).unwrap();
+        q.set_order_by(order_sql);
+        q.push_order_params(order_params);
         let sql = q.select_sql();
         assert!(sql.starts_with("SELECT \"posts\".* FROM \"posts\" WHERE"));
         assert!(sql.contains(" AND "));

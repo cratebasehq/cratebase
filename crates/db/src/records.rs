@@ -278,7 +278,9 @@ pub async fn list(
         let compiled = cratebase_filter::parse_and_compile(expr, &resolver, query.params().len())?;
         query.push_filter(compiled);
     }
-    query.set_order_by(query::order_by(&resolver, params.sort)?);
+    let (order_sql, order_params) = query::order_by(&resolver, params.sort, query.params().len())?;
+    query.set_order_by(order_sql);
+    query.push_order_params(order_params);
 
     let total_items = if params.skip_total {
         -1
@@ -422,7 +424,9 @@ pub async fn find_first_by_filter(
 
     let mut query = Query::new(collection);
     query.push_filter(compiled);
-    query.set_order_by(query::order_by(&resolver, None)?);
+    let (order_sql, order_params) = query::order_by(&resolver, None, query.params().len())?;
+    query.set_order_by(order_sql);
+    query.push_order_params(order_params);
     let sql = query.select_sql();
     query.bind_page(1, 0);
     let row = ex.query_one(&sql, query.params()).await?;

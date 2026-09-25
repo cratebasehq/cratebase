@@ -278,7 +278,11 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         } else {
             Some(sort)
         };
-        compiled_query.set_order_by(query::order_by(&resolver, sort).map_err(AppError::from)?);
+        let (order_sql, order_params) =
+            query::order_by(&resolver, sort, compiled_query.params().len())
+                .map_err(AppError::from)?;
+        compiled_query.set_order_by(order_sql);
+        compiled_query.push_order_params(order_params);
 
         let sql = compiled_query.select_sql();
         let lim = if limit <= 0 {

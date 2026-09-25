@@ -774,6 +774,49 @@ pub fn parse_and_compile(
     compile(&expr, resolver, param_offset)
 }
 
+/// Compile a `sort=<call>` token — today only `geoDistance(...)` — to the
+/// SQL expression to order by, plus the parameters it binds starting at
+/// `param_offset`. Reuses the exact same call-resolution path a filter
+/// comparison goes through ([`Compiler::resolve_call`] via
+/// [`Compiler::resolve_operand`]), so `sort=geoDistance(loc.lon, loc.lat,
+/// 1, 2)` and `filter=geoDistance(loc.lon, loc.lat, 1, 2) < 5` compile the
+/// call itself identically. Rejects anything that isn't a function call
+/// (plain field paths go through [`resolve_sort_path`] instead, which has
+/// no parameters to bind) and anything that resolves to a multi-valued or
+/// constant term (neither is orderable).
+pub fn compile_sort_function(
+    src: &str,
+    resolver: &dyn Resolver,
+    param_offset: usize,
+) -> Result<CompiledFilter, FilterError> {
+    let operand = crate::parser::Parser::parse_operand_str(src)?;
+    if !matches!(operand, Operand::Call { .. }) {
+        return Err(FilterError::Unsupported(format!(
+            "'{src}' is not a sortable function call"
+        )));
+    }
+    let mut compiler = Compiler::new(resolver, param_offset);
+    let term = compiler.resolve_operand(&operand, false)?;
+    let sql = match term {
+        Term::Scalar { sql, .. } => sql,
+        Term::Value { .. } => {
+            return Err(FilterError::Unsupported(format!(
+                "'{src}' is a constant and has no sort order"
+            )))
+        }
+        Term::Multi { .. } => {
+            return Err(FilterError::Unsupported(format!(
+                "cannot sort by '{src}': it is multi-valued"
+            )))
+        }
+    };
+    Ok(CompiledFilter {
+        sql,
+        params: compiler.params,
+        joins: compiler.paths.joins,
+    })
+}
+
 /// Resolve a sort path (`title`, `author.name`, `data.key`) to the SQL
 /// expression to order by, using the same resolution as filters. Paths
 /// through multi-valued relations, back-relations and `@collection` are

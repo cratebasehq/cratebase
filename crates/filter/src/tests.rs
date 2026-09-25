@@ -1122,6 +1122,47 @@ fn sort_paths() {
     );
 }
 
+#[test]
+fn sort_geo_distance() {
+    let r = TestResolver::sqlite("posts");
+    let c = compile_sort_function("geoDistance(loc.lon, loc.lat, 10.5, 20)", &r, 0).unwrap();
+    assert_eq!(
+        c.sql,
+        "geoDistance(json_extract(\"posts\".\"loc\", '$.lon'), json_extract(\"posts\".\"loc\", '$.lat'), $1, $2)"
+    );
+    assert_eq!(c.params, vec![json!(10.5), json!(20)]);
+
+    // Matches the filter compiler's own SQL for the identical call, so a
+    // nearest-first sort and a radius filter over the same expression agree.
+    let filtered = sqlite("geoDistance(loc.lon, loc.lat, 10.5, 20) < 100");
+    assert!(filtered.sql.starts_with(&c.sql));
+
+    // A non-zero param_offset shifts the placeholders, like a filter's own
+    // `param_offset` does when it isn't the first thing bound.
+    let shifted = compile_sort_function("geoDistance(loc.lon, loc.lat, 1, 2)", &r, 3).unwrap();
+    assert_eq!(
+        shifted.sql,
+        "geoDistance(json_extract(\"posts\".\"loc\", '$.lon'), json_extract(\"posts\".\"loc\", '$.lat'), $4, $5)"
+    );
+
+    let pg = TestResolver::postgres("posts");
+    let c = compile_sort_function("geoDistance(loc.lon, loc.lat, 10.5, 20)", &pg, 0).unwrap();
+    assert!(c.sql.starts_with("(6371 * acos("));
+    assert_eq!(c.params, vec![json!(10.5), json!(20)]);
+
+    // A plain field path is not a function call.
+    assert!(matches!(
+        compile_sort_function("title", &r, 0),
+        Err(FilterError::Unsupported(_))
+    ));
+    // Arguments that don't resolve (a multi relation path) still error the
+    // same way the filter compiler does.
+    assert!(matches!(
+        compile_sort_function("geoDistance(tags.name, 1, 2, 3)", &r, 0),
+        Err(FilterError::Unsupported(_))
+    ));
+}
+
 // --- evaluator ----------------------------------------------------------------
 
 fn record() -> Map<String, Value> {
