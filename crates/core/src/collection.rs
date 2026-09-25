@@ -1310,6 +1310,43 @@ impl Collection {
                 et_description,
             ],
         );
+        // `sendRule` gates non-superuser access to `POST /api/mails/send`
+        // for this template (see `crate::mail_templates`/`crate::mails`
+        // in the server crate): `null` (the column's own SQL default —
+        // see `column_default`) means superuser/API-key only, `""` means
+        // any caller may send it, and anything else is a filter-rule
+        // expression evaluated per recipient. It is a `Json`-kind field
+        // rather than `Text` purely so the column keeps `NULL` and `""`
+        // distinct — a plain `Text` field normalizes both to `''`
+        // (see `crates/db/src/schema.rs`'s `column_default` doc), which
+        // would make "superuser only" and "anyone" indistinguishable.
+        // `crate::routes::records` (server crate) special-cases writing
+        // an empty-string `sendRule` for this one collection so the
+        // dangerous "anyone" value round-trips correctly through the
+        // generic records API — see that module's comment.
+        let mut et_send_rule = Field::new("sendRule", FieldKind::Json { max_size: 0 });
+        et_send_rule.required = false;
+        // Opaque visual-editor document (`@react-email/editor`'s JSON,
+        // dashboard-only) the server never reads — it always sends from
+        // the `html`/`text` columns, which the editor writes back to on
+        // save. `null` for a template authored/edited as raw HTML.
+        let mut et_design = Field::new("design", FieldKind::Json { max_size: 0 });
+        et_design.required = false;
+        // Which editor the dashboard opens this template in; the server
+        // never reads this either (see `et_design` above) — it only
+        // steers the dashboard's own UI.
+        let mut et_editor = Field::new(
+            "editor",
+            FieldKind::Select {
+                values: vec!["visual".into(), "html".into()],
+                max_select: 1,
+            },
+        );
+        et_editor.required = false;
+        let pos = email_templates.fields.len() - 2;
+        email_templates
+            .fields
+            .splice(pos..pos, [et_send_rule, et_design, et_editor]);
         email_templates.indexes = vec![
             "CREATE UNIQUE INDEX `idx_emailTemplates_key_locale` ON `_emailTemplates` (key, locale)".into(),
         ];
@@ -1353,6 +1390,63 @@ impl Collection {
             "CREATE INDEX `idx_mailLog_status` ON `_mailLog` (status)".into(),
         ];
 
+        // No-code email triggers (`crate::email_triggers` in the server
+        // crate): fire `template` through the ordinary send pipeline
+        // whenever `event` happens on `collection`, entirely from the
+        // dashboard/Records API — the same "no Rust code, no redeploy"
+        // shape as `_webhooks`, and superuser-only end to end for the
+        // same reason (an admin-configured integration point, not
+        // something a non-superuser record should read or edit).
+        let mut email_triggers = Collection::new("_emailTriggers", CollectionType::Base);
+        email_triggers.system = true;
+        let mut et2_collection = text("collection");
+        et2_collection.required = true;
+        let mut et2_event = Field::new(
+            "event",
+            FieldKind::Select {
+                values: vec!["create".into(), "update".into(), "delete".into()],
+                max_select: 1,
+            },
+        );
+        et2_event.required = true;
+        let mut et2_template = text("template");
+        et2_template.required = true;
+        let mut et2_to_field = text("toField");
+        et2_to_field.required = true;
+        // Same expression language as `sendRule`/every other API rule,
+        // evaluated with `crates/filter`'s in-process `evaluate()`
+        // against the written record's own fields (bare identifiers —
+        // `status = "paid"` — not a `@request.*`/`@record.*` macro,
+        // which this condition has no need of). `null` here means
+        // "always fire" (there is no "who may configure this" tension
+        // the way `sendRule`'s `null` guards, so it stays a plain
+        // optional `Text` field rather than `sendRule`'s `Json` one).
+        let mut et2_condition = text("condition");
+        et2_condition.required = false;
+        let mut et2_enabled = Field::new("enabled", FieldKind::Bool {});
+        et2_enabled.required = true;
+        // Extra literal values merged onto the default `{ record }`
+        // template data — see `crate::email_triggers`'s module doc for
+        // the exact merge order.
+        let mut et2_data_map = Field::new("dataMap", FieldKind::Json { max_size: 0 });
+        et2_data_map.required = false;
+        let pos = email_triggers.fields.len() - 2;
+        email_triggers.fields.splice(
+            pos..pos,
+            [
+                et2_collection,
+                et2_event,
+                et2_template,
+                et2_to_field,
+                et2_condition,
+                et2_enabled,
+                et2_data_map,
+            ],
+        );
+        email_triggers.indexes = vec![
+            "CREATE INDEX `idx_emailTriggers_collection` ON `_emailTriggers` (collection)".into(),
+        ];
+
         vec![
             external,
             mfas,
@@ -1371,6 +1465,7 @@ impl Collection {
             audit_log,
             email_templates,
             mail_log,
+            email_triggers,
         ]
     }
 }
