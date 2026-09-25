@@ -1,12 +1,17 @@
 //! The transport-agnostic email envelope handed to a [`crate::MailBackend`].
 
+use serde::{Deserialize, Serialize};
+
 /// An `(address, display name)` pair; the name may be empty.
 pub type Address = (String, String);
 
 /// One outgoing email. Built by the server (subject/body rendered from a
 /// collection's [`cratebase_core::EmailTemplate`]) and handed to whichever
-/// backend the [`crate::Mailer`] wraps.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// backend the [`crate::Mailer`] wraps. `Serialize`/`Deserialize` so a
+/// fully-rendered `Message` can be stored as a `_queue_jobs.payload` and
+/// reconstructed by the worker (`crate::mails`'s queue handler in the
+/// server crate), rather than re-resolving the template on retry.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Message {
     /// Recipients as `(address, name)`.
     pub to: Vec<Address>,

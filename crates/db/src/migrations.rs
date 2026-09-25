@@ -813,7 +813,10 @@ async fn seed_default_email_templates(db: &Db) -> DbResult<()> {
         let mut record = cratebase_core::Record::new(collection.clone());
         record.set("key", serde_json::Value::String(tpl.key.to_string()));
         record.set("name", serde_json::Value::String(tpl.name.to_string()));
-        record.set("subject", serde_json::Value::String(tpl.subject.to_string()));
+        record.set(
+            "subject",
+            serde_json::Value::String(tpl.subject.to_string()),
+        );
         record.set("html", serde_json::Value::String(tpl.html.to_string()));
         record.set("text", serde_json::Value::String(String::new()));
         record.set("locale", serde_json::Value::String(String::new()));

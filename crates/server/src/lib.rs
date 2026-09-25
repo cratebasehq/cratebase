@@ -41,6 +41,8 @@ pub mod http_error;
 pub mod js_migrations;
 pub mod jsvm_host;
 pub mod llm;
+pub mod mail_templates;
+pub mod mails;
 pub mod mcp;
 pub mod middleware;
 pub mod plugin;

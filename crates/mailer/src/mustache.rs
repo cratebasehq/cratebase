@@ -144,10 +144,7 @@ mod tests {
     #[test]
     fn triple_braces_are_always_raw_even_in_escaped_context() {
         let data = json!({ "html": "<b>bold</b>" });
-        assert_eq!(
-            render_mustache("{{{html}}}", &data, true),
-            "<b>bold</b>"
-        );
+        assert_eq!(render_mustache("{{{html}}}", &data, true), "<b>bold</b>");
     }
 
     #[test]

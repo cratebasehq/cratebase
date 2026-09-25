@@ -411,6 +411,36 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
             .map_err(|e| AppError::internal(e.to_string()))
     }
 
+    async fn mails_send(&self, input: Map<String, Value>) -> Result<Value, AppError> {
+        let get_str = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
+        let recipients = |key: &str| -> Result<Vec<crate::mails::Recipient>, AppError> {
+            crate::mails::parse_recipients(input.get(key).unwrap_or(&Value::Null))
+                .map_err(AppError::bad_request)
+        };
+        let from = match input.get("from") {
+            Some(v) if !v.is_null() => crate::mails::parse_recipients(v)
+                .map_err(AppError::bad_request)?
+                .into_iter()
+                .next(),
+            _ => None,
+        };
+        let send_input = crate::mails::SendInput {
+            to: recipients("to")?,
+            cc: recipients("cc")?,
+            bcc: recipients("bcc")?,
+            template: get_str("template"),
+            locale: get_str("locale"),
+            data: input.get("data").cloned().unwrap_or(Value::Null),
+            subject: get_str("subject"),
+            html: get_str("html"),
+            text: get_str("text"),
+            from,
+            reply_to: get_str("replyTo"),
+        };
+        let outcome = crate::mails::send(self.0.app(), send_input).await?;
+        serde_json::to_value(outcome).map_err(|e| AppError::internal(e.to_string()))
+    }
+
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
         static CLIENT: std::sync::LazyLock<reqwest::Client> =
             std::sync::LazyLock::new(reqwest::Client::new);
@@ -1103,6 +1133,59 @@ mod raw_query_tests {
         let err =
             bind_raw_query_params("SELECT * FROM t WHERE x = {:missing}", &params).unwrap_err();
         assert!(err.to_string().contains("missing"));
+    }
+}
+
+/// `HostApi::mails_send`'s glue — called directly (not through the JS
+/// runtime) since the `hostCall("mailsSend", ...)` dispatch it sits
+/// behind is exercised the same mechanical way as every other hostCall
+/// in `cratebase_jsvm::bridge`, and the payload shape it produces
+/// (`{ to, template, data, ... }` in, `{ id, status, error }` out) is the
+/// same one `crate::routes::mails` builds from JSON — see
+/// `crate::mails`'s own tests for the pipeline itself.
+#[cfg(test)]
+mod mails_send_tests {
+    use super::{wrap_host, Map, Value};
+    use crate::app::App;
+    use crate::config::Config;
+
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let app = App::new(Config::memory(dir.path()));
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    #[tokio::test]
+    async fn sends_a_template_mail_through_the_real_pipeline() {
+        let (app, _dir) = test_app().await;
+        let host = wrap_host(app.clone());
+        let mut input = Map::new();
+        input.insert("to".into(), Value::String("someone@example.com".into()));
+        input.insert("template".into(), Value::String("welcome".into()));
+        input.insert(
+            "data".into(),
+            serde_json::json!({ "user": { "name": "Bob" } }),
+        );
+        let result = host.mails_send(input).await.expect("mails_send");
+        assert_eq!(result["status"], "sent");
+        assert!(result["id"].as_str().is_some_and(|s| !s.is_empty()));
+
+        let mailbox = app.mailer().dev_mailbox().expect("dev mailbox in tests");
+        assert_eq!(mailbox.len(), 1);
+        assert!(mailbox.list()[0].subject.contains("Welcome"));
+    }
+
+    #[tokio::test]
+    async fn rejects_an_invalid_recipient() {
+        let (app, _dir) = test_app().await;
+        let host = wrap_host(app);
+        let mut input = Map::new();
+        input.insert("to".into(), Value::String("not-an-email".into()));
+        input.insert("subject".into(), Value::String("S".into()));
+        input.insert("html".into(), Value::String("<p>hi</p>".into()));
+        let err = host.mails_send(input).await.unwrap_err();
+        assert!(err.to_string().contains("valid email"));
     }
 }
 

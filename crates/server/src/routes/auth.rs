@@ -813,7 +813,11 @@ async fn send_record_mail(
     Ok(())
 }
 
-async fn deliver_mail(app: &App, message: cratebase_mailer::Message) -> HookResult {
+/// Fires `onMailerSend` and, by default, actually sends `message` through
+/// `app.mailer()`. `pub(crate)` so `crate::mails`'s `POST /api/mails/send`/
+/// `$mails.send` pipeline goes through the same hook rather than calling
+/// `app.mailer()` directly and bypassing it.
+pub(crate) async fn deliver_mail(app: &App, message: cratebase_mailer::Message) -> HookResult {
     let mut event = MailerEvent::new(app.clone(), message);
     let app2 = app.clone();
     app.hooks()

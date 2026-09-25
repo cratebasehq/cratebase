@@ -325,6 +325,15 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             tags.push("*:file".into());
             return tags;
         }
+        // `POST /api/mails/send` — not under `/api/collections/...`, so
+        // it needs its own branch rather than falling into the
+        // `collection`/`action` shape below.
+        Some("mails") => {
+            if segments.next() == Some("send") {
+                tags.push("mails:send".into());
+            }
+            return tags;
+        }
         _ => return tags,
     }
     let (Some(collection), Some(action)) = (segments.next(), segments.next()) else {

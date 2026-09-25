@@ -272,6 +272,15 @@ pub trait HostApi: Send + Sync + 'static {
         html: String,
     ) -> Result<(), AppError>;
 
+    /// `$mails.send(...)` — the full template-resolution/logging/queue
+    /// pipeline (`crate::mails` in the server crate), unlike
+    /// [`HostApi::send_mail`]'s bare subject/html. `input` and the
+    /// returned value are both plain JSON (a `{ to, template, data,
+    /// locale, subject, html, text, from, replyTo, cc, bcc }` object in,
+    /// a `{ id, status, error }` object out) so this crate stays
+    /// unaware of the server's own `SendInput`/`SendOutcome` shapes.
+    async fn mails_send(&self, input: Map<String, Value>) -> Result<Value, AppError>;
+
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError>;
 
     /// `level` follows PocketBase's slog levels: -4 debug, 0 info,

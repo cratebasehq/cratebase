@@ -192,7 +192,11 @@ pub struct TemplateDoc<'a> {
 /// `{{appUrl}}` always available (from `meta`, overriding any same-named
 /// key in `data` — they are built-ins, not caller data). Returns
 /// `(subject, html, text)`.
-pub fn render_email_template(doc: &TemplateDoc, data: &Value, meta: &Meta) -> (String, String, String) {
+pub fn render_email_template(
+    doc: &TemplateDoc,
+    data: &Value,
+    meta: &Meta,
+) -> (String, String, String) {
     let mut map = data.as_object().cloned().unwrap_or_default();
     map.insert("appName".into(), Value::String(meta.app_name.clone()));
     map.insert("appUrl".into(), Value::String(meta.app_url.clone()));
@@ -279,7 +283,10 @@ mod tests {
         };
         let html = render_layout("<p>hi</p>", &meta);
         assert!(html.contains("background: #ff0000 !important;"));
-        assert!(html.contains("color: #16161a;"), "body text color untouched");
+        assert!(
+            html.contains("color: #16161a;"),
+            "body text color untouched"
+        );
         assert!(html.contains("<p>hi</p>"));
     }
 

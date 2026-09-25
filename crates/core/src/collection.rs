@@ -1304,7 +1304,14 @@ impl Collection {
         let pos = mail_log.fields.len() - 2;
         mail_log.fields.splice(
             pos..pos,
-            [ml_to, ml_subject, ml_template, ml_status, ml_error, ml_message_id],
+            [
+                ml_to,
+                ml_subject,
+                ml_template,
+                ml_status,
+                ml_error,
+                ml_message_id,
+            ],
         );
         mail_log.indexes = vec![
             "CREATE INDEX `idx_mailLog_created` ON `_mailLog` (created)".into(),

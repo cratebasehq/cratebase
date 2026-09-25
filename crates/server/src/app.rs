@@ -583,7 +583,9 @@ impl App {
         // a hook or a route merge.
         if self.settings().queue.enabled {
             crate::queue::ensure_collection(self).await?;
-            self.register_plugin(crate::queue::QueuePlugin::new())?;
+            let queue_plugin = crate::queue::QueuePlugin::new();
+            crate::mails::register_queue_handler(self, queue_plugin.handle());
+            self.register_plugin(queue_plugin)?;
         }
         // Same toggle-gated pattern as Queue above:
         // `settings.zipExport.enabled` defaults `false`.
@@ -825,6 +827,33 @@ impl App {
             .add(cron::JOB_SESSION_SWEEP, "0 * * * *", move || {
                 let app = app.clone();
                 async move { crate::sessions::sweep_expired(&app).await }
+            });
+
+        let app = self.clone();
+        let _ = self
+            .inner
+            .cron
+            .add(cron::JOB_MAIL_LOG_CLEANUP, "0 */6 * * *", move || {
+                let app = app.clone();
+                async move {
+                    let days = app.settings().logs.mail_log_max_days;
+                    if days <= 0 {
+                        return;
+                    }
+                    let cutoff = cratebase_core::DateTime::from_utc(
+                        chrono::Utc::now() - chrono::Duration::days(days),
+                    );
+                    let sql = r#"DELETE FROM "_mailLog" WHERE "created" < $1"#;
+                    match app
+                        .db()
+                        .execute(sql, &[Sql::Text(cutoff.to_pb_string())])
+                        .await
+                    {
+                        Ok(n) if n > 0 => tracing::info!(removed = n, "pruned old _mailLog rows"),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "_mailLog cleanup failed"),
+                    }
+                }
             });
     }
 
