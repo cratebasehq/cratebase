@@ -17,6 +17,8 @@ import { settingsBackupsRoute } from "@/routes/settings-backups";
 import { settingsCronRoute } from "@/routes/settings-cron";
 import { settingsNetworkRoute } from "@/routes/settings-network";
 import { settingsSqlConsoleRoute } from "@/routes/settings-sql-console";
+import { settingsExtensionsRoute } from "@/routes/settings-extensions";
+import { settingsRpcRoute } from "@/routes/settings-rpc";
 import { settingsFileManagerRoute } from "@/routes/settings-file-manager";
 import { settingsWebhooksRoute } from "@/routes/settings-webhooks";
 import { settingsLlmRoute } from "@/routes/settings-llm";
@@ -42,7 +44,9 @@ const routeTree = rootRoute.addChildren([
       settingsBackupsRoute,
       settingsNetworkRoute,
       settingsCronRoute,
+      settingsRpcRoute,
       settingsSqlConsoleRoute,
+      settingsExtensionsRoute,
       settingsFileManagerRoute,
       settingsWebhooksRoute,
       settingsLlmRoute,

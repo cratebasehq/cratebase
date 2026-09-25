@@ -76,16 +76,6 @@ pub fn router() -> Router<App> {
     Router::new().route("/rpc/{name}", post(call_rpc))
 }
 
-/// Fill in `_rpc`'s create-time defaults for the fields a generic
-/// `Bool`/`Number` zero-value (`false`/`0`) would otherwise silently
-/// stand in for. There is no schema-level "default value" mechanism in
-/// this codebase (see `crates/core/src/collection.rs`'s `_rpc` doc), so
-/// this runs on the raw JSON request body — before it becomes a
-/// [`cratebase_core::Record`], which would already have every field at
-/// its zero value and could no longer tell "the caller wrote `false`"
-/// from "the caller wrote nothing" — exactly the way
-/// `routes::records::create_record` calls this for `_rpc` specifically,
-/// mirroring its own `is_cron_jobs`/`is_superusers` special cases.
 /// `_rpc.rule` is stored as `json`, not `text` (see the collection's own
 /// doc for why), but the wire contract — and `rule-field.tsx`'s reuse on
 /// the dashboard — is a plain string or `null`, exactly like a
@@ -117,6 +107,16 @@ pub(crate) fn normalize_rule_field(input: &mut Map<String, Value>) {
     }
 }
 
+/// Fill in `_rpc`'s create-time defaults for the fields a generic
+/// `Bool`/`Number` zero-value (`false`/`0`) would otherwise silently
+/// stand in for. There is no schema-level "default value" mechanism in
+/// this codebase (see `crates/core/src/collection.rs`'s `_rpc` doc), so
+/// this runs on the raw JSON request body — before it becomes a
+/// [`cratebase_core::Record`], which would already have every field at
+/// its zero value and could no longer tell "the caller wrote `false`"
+/// from "the caller wrote nothing" — exactly the way
+/// `routes::records::create_record` calls this for `_rpc` specifically,
+/// mirroring its own `is_cron_jobs`/`is_superusers` special cases.
 pub(crate) fn apply_create_defaults(input: &mut Map<String, Value>) {
     input
         .entry("readOnly".to_string())
