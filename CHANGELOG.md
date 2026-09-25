@@ -10,6 +10,36 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Email platform**: an editable `_emailTemplates` system collection
+  (`{{var}}` syntax — dotted paths, HTML-escaped, `{{{raw}}}` for
+  unescaped, locale fallback, a shared branded base layout styled by new
+  `settings.meta.logoUrl`/`brandColor`), seeded with the five built-in
+  auth emails (`auth.verification`, `auth.passwordReset`,
+  `auth.emailChange`, `auth.otp`, `auth.loginAlert`), `auth.magic-link`,
+  and a `welcome` example. Each auth-flow email now resolves through a
+  three-step priority chain — a customized `authOptions.*Template` field
+  wins, else the matching `_emailTemplates` row, else the same built-in
+  default — so an unmodified install's mail is unchanged.
+- **`POST /api/mails/send` / `/api/mails/preview`** (superuser or API
+  key): send or preview by `template` key or raw `subject`/`html`/
+  `text`, up to 50 recipients, logged to a new `_mailLog` system
+  collection (pruned by `settings.logs.mailLogMaxDays`, default 30),
+  delivered inline (one retry) or via the durable job queue when
+  `settings.queue.enabled`. `$mails.send(...)` in JS hooks goes through
+  the same pipeline; `cb.mails.send`/`cb.mails.preview` in
+  `@cratebase/client`.
+- **Magic-link login**: `POST /collections/{c}/request-magic-link` /
+  `auth-with-magic-link`, gated by a new
+  `authOptions.magicLink.enabled` (default `false`), backed by a new
+  `_magicLinks` system collection. Same account-enumeration-resistant
+  `request-*` contract as OTP, and the same ban/MFA/verified-on-success/
+  login-alert handling as every other login path.
+  `cb.auth.magicLink.request(...)` / `cb.auth.signIn.magicLink(...)` and
+  `getMagicLinkTokenFromUrl(...)` in `@cratebase/client`;
+  `useMagicLinkCallback(...)` in `@cratebase/react`.
+
 ## 0.3.0 — 2026-09-25
 
 Security-hardening and developer-experience release, the result of a

@@ -23,6 +23,13 @@ value rather than blanking it.
 | `senderAddress` | `"support@example.com"` |
 | `hideControls` | `false` |
 | `accentColor` | `"#1055c9"` |
+| `logoUrl` | `""` |
+| `brandColor` | `""` |
+
+`logoUrl`/`brandColor` style the shared email base layout — see
+[Email → Templates](/docs/email/templates/): a non-empty `logoUrl` is
+shown at the top of every layout-wrapped email, and `brandColor`
+replaces the layout's default `#16161a` button/accent color.
 
 ## `smtp`
 
@@ -90,6 +97,7 @@ defaults:
 | `*:auth` | 3s | 2 |
 | `*:create` | 5s | 20 |
 | `/api/batch` | 1s | 3 |
+| `mails:send` | 60s | 20 |
 | `/api/` | 10s | 300 |
 
 More specific labels win over less specific ones for the same request —
@@ -125,6 +133,11 @@ correctly behind a proxy.
 | `logIP` | `true` |
 | `logAuthId` | `false` |
 | `maxDataSize` | `0` (unlimited) |
+| `mailLogMaxDays` | `30` |
+
+`mailLogMaxDays` prunes `_mailLog` rows (see
+[Email → Mail log](/docs/email/mail-log/)) on the same `0 */6 * * *`
+cadence as `maxDays` prunes `_logs`; `<= 0` disables cleanup.
 
 ## `llm`
 

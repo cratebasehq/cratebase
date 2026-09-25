@@ -1,0 +1,42 @@
+---
+title: "Email overview"
+description: "SMTP/Resend transport, editable templates, a transactional send API, and magic-link login."
+sidebar:
+  order: 1
+---
+
+Cratebase's email platform is four pieces on top of the same
+[mailer](/docs/project/architecture/) every auth flow already uses:
+
+1. **Transport** — SMTP or [Resend](https://resend.com), configured via
+   `settings.smtp` (see [Settings object](/docs/reference/settings-object/)),
+   with a zero-config `Log` backend fallback that captures mail in-memory
+   (the dashboard's **Mail inbox**, `GET /api/dev/mails`) instead of
+   sending it — see [SMTP/Resend setup](/docs/email/smtp-and-resend/).
+2. **Templates** — an editable `_emailTemplates` store using `{{var}}`
+   syntax (dotted paths, HTML-escaped, `{{{raw}}}` for unescaped), a
+   shared branded base layout, and locale fallback — see
+   [Templates](/docs/email/templates/).
+3. **Sending** — `POST /api/mails/send`/`/preview`, `$mails.send(...)` in
+   JS hooks, and `cb.mails.send(...)`/`cb.mails.preview(...)` in the
+   TypeScript SDK, all going through the same pipeline and logging to
+   `_mailLog` — see [Sending](/docs/email/sending/) and
+   [Mail log](/docs/email/mail-log/).
+4. **Magic-link login** — a passwordless flow parallel to
+   [OTP](/docs/concepts/authentication/otp/), covered in
+   [Authentication → Magic link](/docs/concepts/authentication/magic-link/)
+   and [Recipes](/docs/email/recipes/).
+
+None of this changes the five built-in auth emails (verification,
+password reset, email change, OTP, new-location login alert): they keep
+using their existing per-collection `authOptions.*Template` fields and
+`{PLACEHOLDER}` syntax unchanged. What's new is an *additional*,
+lower-priority layer — an admin who never touches
+`authOptions.verificationTemplate` still gets an editable copy of that
+email at `_emailTemplates` key `auth.verification`, in the new `{{var}}`
+syntax, with no behavior change until they actually edit it. See
+[Templates → Resolution order](/docs/email/templates/#resolution-order).
+
+The dashboard template editor itself is not part of this release —
+everything above is reachable today through the REST API, the SDK, and
+JS hooks; a visual editor is separate, planned follow-up work.

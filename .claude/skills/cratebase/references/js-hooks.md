@@ -38,6 +38,7 @@ onRecordAuthWithOTPRequest onRecordAuthRefreshRequest onRecordRequestOTPRequest
 onRecordRequestPasswordResetRequest onRecordConfirmPasswordResetRequest
 onRecordRequestVerificationRequest onRecordConfirmVerificationRequest
 onRecordRequestEmailChangeRequest onRecordConfirmEmailChangeRequest
+onRecordRequestMagicLinkRequest onRecordAuthWithMagicLinkRequest
 ```
 
 **Collection hooks** (same create/update/delete/execute/after-success/
@@ -57,6 +58,7 @@ onCollectionsListRequest onCollectionViewRequest onCollectionsImportRequest
 ```
 onMailerSend onMailerRecordVerificationSend onMailerRecordPasswordResetSend
 onMailerRecordEmailChangeSend onMailerRecordOTPSend onMailerRecordAuthAlertSend
+onMailerRecordMagicLinkSend
 ```
 
 **Everything else:**
@@ -153,9 +155,14 @@ record write), `e.next()` to continue the hook chain.
 - **`$tokens`** — mint record-scoped tokens: `recordAuthToken(app,
   record)`, `recordVerifyToken`, `recordResetPasswordToken`,
   `recordChangeEmailToken`, `recordFileToken`.
-- **`$mails`** — trigger the built-in transactional emails:
-  `sendRecordVerification(app, record)`, `sendRecordPasswordReset`,
-  `sendRecordChangeEmail`, `sendRecordOTP`.
+- **`$mails`** — `sendRecordVerification(app, record)`,
+  `sendRecordPasswordReset`, `sendRecordChangeEmail`, `sendRecordOTP`
+  trigger the built-in transactional emails with a bare subject/html (no
+  template resolution, log, or queue). `send({ to, template?, data?,
+  locale?, subject?, html?, text?, from?, replyTo?, cc?, bcc? })` is the
+  full pipeline instead — resolves a `_emailTemplates` key (or raw
+  content), logs to `_mailLog`, and delivers inline or via the queue
+  exactly like `POST /api/mails/send`; returns `{ id, status, error }`.
 - **`$filesystem`** — build file markers to attach to a `file` field:
   `fileFromPath(path, name?)`, `fileFromBytes(bytes, name?)`,
   `fileFromURL(url, name?)`.

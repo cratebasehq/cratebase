@@ -1,0 +1,72 @@
+---
+title: "Sending"
+description: "POST /api/mails/send, cb.mails.send, and $mails.send in JS hooks."
+sidebar:
+  order: 4
+---
+
+Three equivalent ways to send, all going through the same pipeline (log
+to `_mailLog`, then deliver — see [Mail log](/docs/email/mail-log/) and
+[Delivery](#delivery)):
+
+**REST** — `POST /api/mails/send`, superuser or [API key](/docs/concepts/authentication/api-keys/)
+only (see [Reference → REST API → Mails](/docs/reference/rest-api/mails/)
+for the full body/response shape):
+
+```bash
+curl -X POST https://your-app/api/mails/send \
+  -H "Authorization: $SUPERUSER_TOKEN" -H "Content-Type: application/json" \
+  -d '{"to":"user@example.com","template":"welcome","data":{"user":{"name":"Ada"}}}'
+```
+
+**TypeScript SDK** — `cb.mails.send`/`cb.mails.preview`, superuser or
+API key only (sign in via `cb.auth.as("_superusers")`, or attach an API
+key as a header):
+
+```ts
+const result = await cb.mails.send({
+  to: "user@example.com",
+  template: "welcome",
+  data: { user: { name: "Ada" } },
+});
+// { id: "...", status: "sent" | "failed" | "queued", error?: string }
+
+const preview = await cb.mails.preview({ template: "welcome", data: { user: { name: "Ada" } } });
+// { subject, html, text? } — never sent, never logged
+```
+
+**JS hooks** — `$mails.send(...)`, the same pipeline as the REST/SDK
+calls above (distinct from `$app.newMailClient().send(...)`, which only
+ever sends a bare `subject`/`html` with no template resolution, log row,
+or queue delivery):
+
+```js
+onRecordAfterCreateSuccess((e) => {
+  $mails.send({
+    to: e.record.get("email"),
+    template: "welcome",
+    data: { user: { name: e.record.get("name") } },
+  });
+  e.next();
+}, "users");
+```
+
+## Delivery
+
+If `settings.queue.enabled`, a send enqueues onto the durable job queue
+(`mail:send`, with the queue's own retry/backoff) instead of sending
+inline — the `_mailLog` row starts (and, until a worker attempt
+resolves it, stays) `"queued"`. Otherwise, delivery is inline: one
+attempt, then one immediate retry on failure, ending at `"sent"` or
+`"failed"`. Either way, `POST /api/mails/send` itself always answers
+`200` once validation passes — a delivery failure is reported in the
+response body (`status: "failed"`, `error`), not as an HTTP error, same
+as `request-otp`/`request-magic-link` always answering success
+regardless of what happens next.
+
+## Validation
+
+Either `template` or `subject` plus `html`/`text` must be given;
+`to`/`cc`/`bcc` together may not exceed 50 recipients, and every address
+must be well-formed — both are `400`s, checked before anything is
+logged or sent.

@@ -76,6 +76,8 @@ source. Everything referenced below is real and current, not aspirational.
   - `POST /collections/{c}/request-password-reset`, `POST /collections/{c}/confirm-password-reset`
   - `POST /collections/{c}/request-email-change`, `POST /collections/{c}/confirm-email-change`
   - `POST /collections/{c}/request-otp`, `POST /collections/{c}/auth-with-otp`
+  - `POST /collections/{c}/request-magic-link`, `POST /collections/{c}/auth-with-magic-link`
+    — passwordless login via an emailed single-use link; requires `authOptions.magicLink.enabled`
   - `POST /collections/{c}/impersonate/{id}` (superuser only), `POST /collections/{c}/stop-impersonating` (cookie mode only)
   - `POST /collections/{c}/auth-signout` — server-side session revocation (not just clearing the local auth store)
   - `GET /collections/{c}/sessions?recordId=`, `DELETE /collections/{c}/sessions/{id}`,
@@ -92,6 +94,16 @@ source. Everything referenced below is real and current, not aspirational.
 - `GET /typegen` (superuser only) — generated TypeScript types for the
   current schema, the same generator `cratebase typegen` (CLI) and the
   `--dev` `CB_TYPEGEN_OUT` watch use.
+- `POST /mails/send`, `POST /mails/preview` (superuser or API key only) —
+  send/preview a transactional email, by `template` key (resolved
+  through the editable `_emailTemplates` collection, `{{var}}` syntax) or
+  raw `subject`/`html`/`text`. Every send logs to `_mailLog`. Same
+  pipeline as JS hooks' `$mails.send(...)`. The five built-in auth emails
+  (verification, password reset, email change, OTP, new-location login
+  alert) plus the magic-link email are still resolved through each
+  collection's own `authOptions.*Template` field first, falling back to
+  an `_emailTemplates` row (`auth.verification`, ...) only when that
+  field hasn't been customized — see `_emailTemplates`'s own doc.
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.

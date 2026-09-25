@@ -1,0 +1,50 @@
+---
+title: "SMTP / Resend setup"
+description: "Configuring settings.smtp, or the dashboard's zero-config dev mailbox."
+sidebar:
+  order: 2
+---
+
+Configure `settings.smtp` via `PATCH /api/settings` or the dashboard's
+**Mail & storage** page (see [Settings pages](/docs/dashboard/settings-pages/)):
+
+```json
+{
+  "smtp": {
+    "enabled": true,
+    "host": "smtp.resend.com",
+    "port": 465,
+    "username": "resend",
+    "password": "re_...",
+    "tls": true
+  }
+}
+```
+
+Resend, SendGrid, Postmark, and most transactional providers all speak
+SMTP — point `host`/`port`/`username`/`password` at whatever the
+provider's SMTP credentials page gives you (Resend's SMTP host is
+`smtp.resend.com`, username `resend`, password an API key). `tls: true`
+selects implicit TLS (typically port 465); leave it `false` for
+opportunistic STARTTLS (typically port 587).
+
+`POST /api/settings/test/email` sends a real test message through
+whatever's currently configured — use it to verify credentials before
+relying on a flow that depends on mail (verification, password reset,
+magic link) actually reaching an inbox.
+
+## No SMTP configured
+
+`smtp.enabled: false` — the default on every fresh install — doesn't
+mean mail goes nowhere: a zero-config `Log` backend keeps the last 100
+messages in memory, browsable at `GET /api/dev/mails` and in the
+dashboard's **Mail inbox** page, HTML and all. Every endpoint and recipe
+on this page (`POST /api/mails/send`, magic-link login, OTP, template
+previews) works exactly the same way with no mail server at all —
+useful for local development and for this feature's own test suite. It
+stops the moment `smtp.enabled` is `true`: `/api/dev/mails` then 404s
+outright, so real outgoing mail is never captured there.
+
+`settings.meta.senderName`/`senderAddress` set the default `From:` for
+every mail this platform sends, overridable per send via `$mails.send`'s
+own `from` (superuser/API-key sends only — see [Sending](/docs/email/sending/)).

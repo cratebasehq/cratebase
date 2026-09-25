@@ -16,3 +16,10 @@ rotation). The bundled [mailer](/docs/project/architecture/) falls back
 to a `Log` backend that writes the email to `tracing` instead of
 delivering it, so every flow above is exercisable with zero external
 mail setup in development.
+
+Each flow's email is customizable two ways — see
+[Email → Templates](/docs/email/templates/#resolution-order) for the
+exact priority order: the collection's own `authOptions.*Template`
+field (the original mechanism), or the newer, editable
+`_emailTemplates` row (`auth.verification`, `auth.passwordReset`,
+`auth.emailChange`).

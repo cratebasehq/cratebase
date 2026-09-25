@@ -1,0 +1,34 @@
+---
+title: "Mail log"
+description: "_mailLog: every send's outcome, superuser-read-only, pruned on a schedule."
+sidebar:
+  order: 5
+---
+
+Every [send](/docs/email/sending/) — REST, SDK, or `$mails.send` — writes
+a `_mailLog` row before attempting delivery and updates it once an
+attempt resolves. It's an ordinary system collection, so it's readable
+through the generic Records API:
+
+```
+GET /api/collections/_mailLog/records?sort=-created&filter=status='failed'
+```
+
+| Field | Notes |
+| --- | --- |
+| `to` | JSON array of `{ address, name }` |
+| `subject` | |
+| `template` | The `template` key used, or `""` for a raw send |
+| `status` | `queued` \| `sent` \| `failed` |
+| `error` | Set when `status` is `failed` |
+| `messageId` | Backend-provided message id, when available |
+| `created` / `updated` | Standard autodate fields |
+
+Superuser-read-only end to end (`listRule`/`viewRule`/`createRule`/
+`updateRule`/`deleteRule` all stay superuser-only) and append-only in
+practice, like `_audit_log` — the only writer is the send pipeline
+itself, not a rule-driven client path.
+
+`settings.logs.mailLogMaxDays` (default `30`) prunes old rows on the
+same `0 */6 * * *` cadence as `_logs`' own `maxDays`; `<= 0` disables
+cleanup. See [Settings object](/docs/reference/settings-object/#logs).
