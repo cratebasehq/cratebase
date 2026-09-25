@@ -80,14 +80,26 @@ use serde_json::Value;
 
 use crate::app::{App, TxApp};
 use crate::events::RecordEvent;
-use crate::hooks::Handler;
+use crate::hooks::{Event as _, Handler};
 
 const COLLECTION: &str = "_teams";
 const MEMBERS_COLLECTION: &str = "_team_members";
 
-/// Bind the reactive hook. Called once from
-/// [`crate::app::App::bootstrap`], tagged to `_teams` so it never fires
-/// for any other collection's writes.
+/// Bind the reactive hook. Called unconditionally from
+/// [`crate::app::App::bootstrap`] (regardless of whether
+/// `settings.teams.enabled` is currently on), tagged to `_teams` so it
+/// never fires for any other collection's writes.
+///
+/// It has to be bound unconditionally rather than only when the toggle
+/// starts out on: `settings.teams.enabled` can flip via a running
+/// server's `PATCH /api/settings`, and a hook that is only ever bound at
+/// boot would never notice — a server started with teams disabled and
+/// then enabled at runtime would leave every `_teams` row created after
+/// that PATCH ownerless, exactly as if this module didn't exist, until
+/// the process restarted and `bootstrap` ran again. So the handler binds
+/// every time and instead checks the *current* setting itself, on every
+/// `_teams` create, and falls straight through to `e.next()` — a no-op —
+/// while teams is disabled.
 ///
 /// Bound at a negative priority (lower runs first, PocketBase's default
 /// is 0) rather than the default: `crate::webhooks::bind_hooks` binds
@@ -102,6 +114,9 @@ const MEMBERS_COLLECTION: &str = "_team_members";
 pub fn bind_hooks(app: &App) {
     app.hooks().on_record_after_create_success.bind(
         Handler::new(|e: &mut RecordEvent| {
+            if !e.app.settings().teams.enabled {
+                return e.next();
+            }
             // Built synchronously, from data owned outright (a cloned
             // `TxApp`, an owned `Record`): `RecordEvent` itself is `Send`
             // but not `Sync` (its hook chain's finalizer is a boxed

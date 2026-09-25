@@ -157,6 +157,11 @@ async fn a_disabled_teams_module_never_bootstraps_the_owner_membership() {
 #[tokio::test]
 async fn an_enabled_teams_module_bootstraps_the_owner_membership_as_before() {
     let harness = Harness::new().await;
+    // `crate::teams::bind_hooks` is now bound unconditionally from
+    // `App::bootstrap` (see `teams_enabled_toggle_takes_effect_without_a_restart`
+    // below for why) — it checks the *current* setting itself, so simply
+    // flipping the setting is enough; binding again here would double-
+    // register the handler and insert two owner rows.
     let mut settings = (*harness.app.settings()).clone();
     settings.teams.enabled = true;
     harness
@@ -164,7 +169,6 @@ async fn an_enabled_teams_module_bootstraps_the_owner_membership_as_before() {
         .set_settings(settings)
         .await
         .expect("enable teams");
-    cratebase_server::teams::bind_hooks(&harness.app);
 
     let (user_id, user_token) = register_user(&harness, "owner2@example.com").await;
 
@@ -195,4 +199,106 @@ async fn an_enabled_teams_module_bootstraps_the_owner_membership_as_before() {
     );
     assert_eq!(items[0]["userRef"], user_id);
     assert_eq!(items[0]["role"], "owner");
+}
+
+/// Reproduces the dogfooding bug report: enabling `settings.teams.enabled`
+/// via `PATCH /api/settings` against a *running* server — no restart —
+/// used to leave the bootstrap-owner hook unbound forever, because
+/// `App::bootstrap` only ever called `teams::bind_hooks` once, at boot,
+/// gated on whatever the setting was at that moment. `crate::teams::bind_hooks`
+/// is now bound unconditionally and reads the setting live, so the exact
+/// same request path a real operator uses (`PATCH /api/settings`, not
+/// `App::set_settings` + a manual rebind) must start bootstrapping owner
+/// rows immediately, and stop again just as immediately when the flag is
+/// turned back off.
+#[tokio::test]
+async fn teams_enabled_toggle_via_patch_settings_takes_effect_without_a_restart() {
+    let harness = Harness::new().await;
+    assert!(!harness.app.settings().teams.enabled);
+
+    let (user_id, user_token) = register_user(&harness, "toggle@example.com").await;
+
+    let member_rows = |team_id: String| {
+        let harness = &harness;
+        async move {
+            let (status, rows) = harness
+                .admin(
+                    "GET",
+                    &format!("/api/collections/_team_members/records?filter=teamRef='{team_id}'"),
+                    None,
+                )
+                .await;
+            assert_eq!(status, 200, "{rows}");
+            rows["items"].as_array().unwrap().len()
+        }
+    };
+
+    // Still disabled: creating a team bootstraps nothing.
+    let (status, team) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_teams/records",
+            Some(json!({"name": "Before Enable", "ownerRef": user_id})),
+            Some(&user_token),
+        )
+        .await;
+    assert_eq!(status, 200, "{team}");
+    let team_id = team["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        member_rows(team_id).await,
+        0,
+        "disabled teams module must not bootstrap an owner membership row"
+    );
+
+    // Enable it the way an operator actually would: a live PATCH, no
+    // restart, no direct `App::set_settings` call, no manual rebind.
+    let (status, patched) = harness
+        .admin("PATCH", "/api/settings", Some(json!({"teams": {"enabled": true}})))
+        .await;
+    assert_eq!(status, 200, "{patched}");
+    assert!(harness.app.settings().teams.enabled);
+
+    let (status, team) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_teams/records",
+            Some(json!({"name": "After Enable", "ownerRef": user_id})),
+            Some(&user_token),
+        )
+        .await;
+    assert_eq!(status, 200, "{team}");
+    let team_id = team["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        member_rows(team_id).await,
+        1,
+        "enabling teams via a live PATCH must bootstrap an owner row on the very next create, no restart"
+    );
+
+    // Disable it again, same way: the next create must stop bootstrapping
+    // immediately too.
+    let (status, patched) = harness
+        .admin(
+            "PATCH",
+            "/api/settings",
+            Some(json!({"teams": {"enabled": false}})),
+        )
+        .await;
+    assert_eq!(status, 200, "{patched}");
+    assert!(!harness.app.settings().teams.enabled);
+
+    let (status, team) = harness
+        .as_user(
+            "POST",
+            "/api/collections/_teams/records",
+            Some(json!({"name": "After Disable", "ownerRef": user_id})),
+            Some(&user_token),
+        )
+        .await;
+    assert_eq!(status, 200, "{team}");
+    let team_id = team["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        member_rows(team_id).await,
+        0,
+        "disabling teams via a live PATCH must stop bootstrapping on the very next create, no restart"
+    );
 }

@@ -319,13 +319,16 @@ impl Default for Logs {
 }
 
 /// Toggle for the built-in Teams module (`crates/server/src/teams.rs`):
-/// off by default. When `false`, the reactive `_teams`/`_team_members`
-/// bootstrap-owner hook is never bound at all (`App::bootstrap` checks
-/// this before calling `teams::bind_hooks`) — zero background cost, not
-/// just a request-time 403. The `_teams`/`_team_members` system
-/// collections themselves always exist (cheap, and removing them would
-/// need a real migration-reversibility story); only the hook wiring and
-/// dashboard visibility are gated.
+/// off by default. `App::bootstrap` binds the reactive
+/// `_teams`/`_team_members` bootstrap-owner hook unconditionally, and the
+/// hook itself checks *this* setting — read live, on every `_teams`
+/// create — falling straight through as a no-op while `false`. That way
+/// flipping the flag via `PATCH /api/settings` on a running server takes
+/// effect immediately, rather than only after a restart. The
+/// `_teams`/`_team_members` system collections themselves always exist
+/// (cheap, and removing them would need a real migration-reversibility
+/// story); only the owner-bootstrap behavior and dashboard visibility are
+/// gated.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Teams {

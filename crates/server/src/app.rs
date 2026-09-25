@@ -458,16 +458,19 @@ impl App {
         crate::cron_jobs::bind_hooks(self);
         crate::cron_jobs::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
-        // Toggle-gated built-in module: `settings.teams.enabled` defaults
-        // `false`, and when it stays that way `bind_hooks` is simply never
-        // called — no reactive hook bound, zero background cost, matching
-        // `routes::api_router`'s equivalent gate on `settings.llm.enabled`.
-        // The `_teams`/`_team_members` system collections still exist
-        // either way; only the hook wiring (and, in the dashboard, the
-        // sidebar's System group visibility) is gated.
-        if self.settings().teams.enabled {
-            crate::teams::bind_hooks(self);
-        }
+        // Always bound, unlike `settings.llm.enabled`'s route-merge gate:
+        // `settings.teams.enabled` can flip on a *running* server via
+        // `PATCH /api/settings`, and a hook bound only here at boot would
+        // never see that change — new `_teams` rows would stay ownerless
+        // until the process restarted. `crate::teams::bind_hooks` checks
+        // the *current* setting itself on every `_teams` create and is a
+        // no-op (falls straight through to `e.next()`) while teams stays
+        // disabled, so this costs nothing beyond one settings read per
+        // `_teams` create either way. The `_teams`/`_team_members` system
+        // collections still exist regardless of the toggle; only the
+        // owner-bootstrap behaviour (and, in the dashboard, the sidebar's
+        // System group visibility) is gated.
+        crate::teams::bind_hooks(self);
         // Postgres only (see `crate::realtime`'s module doc); a no-op on
         // SQLite because `Engine::subscribe_realtime`'s default is.
         crate::realtime::start_cross_node_listener(self);
