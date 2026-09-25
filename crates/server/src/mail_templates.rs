@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use cratebase_core::collection::AuthOptions;
 use cratebase_core::{Collection, EmailTemplate};
-use cratebase_db::records;
+use cratebase_db::{records, AuthContext, CollectionResolver, RequestContext};
 use serde_json::{Map, Value};
 
 use crate::app::App;
@@ -167,6 +167,71 @@ pub struct EmailTemplateRow {
     pub html: String,
     pub text: String,
     pub layout: bool,
+    /// `None` (superuser/API-key only), `Some("")` (anyone), or
+    /// `Some(expr)` (a filter-rule expression evaluated per recipient) —
+    /// see `crate::routes::mails`'s `check_send_rule` for how this gates
+    /// a non-superuser `POST /api/mails/send`.
+    pub send_rule: Option<String>,
+}
+
+/// Reads `_emailTemplates.sendRule` off an already-decoded record value.
+/// The column is `Json`-kind precisely so `NULL` and `""` stay distinct
+/// (see `cratebase_core::Collection::default_system_collections`'s
+/// comment on the field) — anything else stored there (a client wrote
+/// non-string JSON directly) is treated as `None`, the safe/deny
+/// reading, rather than as a rule that could evaluate to `true`.
+pub fn decode_send_rule(record: &cratebase_core::Record) -> Option<String> {
+    match record.get("sendRule") {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Evaluates a non-`None` `sendRule` for one `to` recipient — see
+/// `crate::routes::mails`'s module doc for the gate this backs.
+///
+/// The rule sees `@request.auth.*` (the caller, or all-null when
+/// anonymous), `@request.body.to` (`to_address`, evaluated per
+/// recipient — the caller evaluates this once per address and requires
+/// every one to pass), `@request.body.data.*` and `@request.body.locale`
+/// — no other `@request.*` path, and no bare field reference (there is
+/// no "record" a send is about). An empty rule (`""`) always passes. A
+/// rule that cannot be evaluated in-process (a relation path,
+/// `@collection.X`, ...) or fails to parse is treated as a deny — a
+/// broken/overly ambitious `sendRule` fails closed, never open.
+pub async fn eval_send_rule(
+    app: &crate::app::App,
+    send_rule: &str,
+    auth: Option<&AuthContext>,
+    to_address: &str,
+    data: &Value,
+    locale: &str,
+) -> bool {
+    let rule = send_rule.trim();
+    if rule.is_empty() {
+        return true;
+    }
+    let Ok(ast) = cratebase_filter::parse_cached(rule) else {
+        return false;
+    };
+    let Some(collection) = app.db().collections.get_by_name("_emailTemplates") else {
+        return false;
+    };
+    let mut body = Map::new();
+    body.insert("to".into(), Value::String(to_address.to_string()));
+    body.insert("data".into(), data.clone());
+    body.insert("locale".into(), Value::String(locale.to_string()));
+    let ctx = RequestContext {
+        auth: auth.cloned(),
+        body,
+        ..RequestContext::default()
+    };
+    let resolver =
+        CollectionResolver::new(collection, &app.db().collections, &ctx, app.db().dialect());
+    matches!(
+        cratebase_filter::evaluate(&ast, &Map::new(), &resolver),
+        Ok(true)
+    )
 }
 
 /// Looks up `_emailTemplates` by `key`, trying `locale` first (when
@@ -199,11 +264,13 @@ async fn find_email_template_row(
     )
     .await
     .ok()??;
+    let send_rule = decode_send_rule(&record);
     Some(EmailTemplateRow {
         subject: record.get_string("subject"),
         html: record.get_string("html"),
         text: record.get_string("text"),
         layout: record.get_bool("layout"),
+        send_rule,
     })
 }
 

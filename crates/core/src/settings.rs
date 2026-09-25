@@ -265,14 +265,27 @@ impl Default for RateLimits {
                     max_requests: 3,
                 },
                 // `POST /api/mails/send` (`crate::routes::mails` in the
-                // server crate): superuser/API-key-only, but still worth
-                // a dedicated ceiling since a single call can fan out to
-                // up to 50 recipients.
+                // server crate): every caller, superuser/API-key
+                // included, still worth a dedicated ceiling since a
+                // single call can fan out to up to 50 recipients.
                 RateLimitRule {
                     label: "mails:send".into(),
                     audience: String::new(),
                     duration: 60,
                     max_requests: 20,
+                },
+                // A non-superuser/non-API-key caller — the shape
+                // `_emailTemplates.sendRule` newly opens this endpoint
+                // to (see that field's doc comment) — is capped again,
+                // tighter and per-caller (`@auth`, so it keys on the
+                // record id, not a shared IP): a compromised or abusive
+                // account can at most send a handful of mails a minute
+                // even with a permissive `sendRule`.
+                RateLimitRule {
+                    label: "mails:send:user".into(),
+                    audience: "@auth".into(),
+                    duration: 60,
+                    max_requests: 10,
                 },
                 RateLimitRule {
                     label: "/api/".into(),

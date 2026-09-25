@@ -760,19 +760,11 @@ async fn add_email_send_rules_up(db: &Db) -> DbResult<()> {
     }
     let mut next = (*previous).clone();
     let pos = next.fields.len() - 2;
-    next.fields.insert(
-        pos,
-        Field::new(
-            "sendRule",
-            FieldKind::Json { max_size: 0 },
-        ),
-    );
+    next.fields
+        .insert(pos, Field::new("sendRule", FieldKind::Json { max_size: 0 }));
     next.fields.insert(
         pos + 1,
-        Field::new(
-            "design",
-            FieldKind::Json { max_size: 0 },
-        ),
+        Field::new("design", FieldKind::Json { max_size: 0 }),
     );
     next.fields.insert(
         pos + 2,
