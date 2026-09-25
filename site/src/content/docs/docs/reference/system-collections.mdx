@@ -4,7 +4,7 @@ description: "Names, fixed ids, and rules for every built-in collection."
 ---
 
 `_superusers`, `_mfas`, `_otps`, `_externalAuths`, `_authOrigins`,
-`_teams`, `_team_members`, `_cron_jobs`, `_webhooks`, `_audit_log`,
+`_teams`, `_team_members`, `_cron_jobs`, `_rpc`, `_webhooks`, `_audit_log`,
 `_push_subscriptions`, `_sessions`, `_bans`, and the default `users`
 auth collection all ship with fixed, deterministic ids shared with
 PocketBase's own equivalents where one exists — see
@@ -30,3 +30,13 @@ target's signing key and revokes every one of its `_sessions` rows, so
 a ban takes effect on live sessions immediately, not just on the next
 login attempt. See [REST API → Auth](/docs/reference/rest-api/auth/)'s
 `ban/{id}` entry.
+
+`_rpc` is superuser-only end to end, the same trust tier as `_cron_jobs`:
+`id`, `name` (unique slug), `sql`, `params` (json), `rule` (json — see
+[Custom SQL RPC](/docs/database/custom-sql-rpc/) for why this is `json`
+and not `text`), `readOnly`, `timeoutMs`, `maxRows`. A definition's own
+`sql` is superuser-authored and runs with no rule of this collection's
+own in between; per-call authorization comes from the definition's
+`rule` field instead, evaluated by
+[`POST /rpc/{name}`](/docs/reference/rest-api/rpc/), not by
+`_rpc.createRule`/`viewRule`/etc.
