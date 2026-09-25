@@ -1423,8 +1423,14 @@ impl Collection {
         // optional `Text` field rather than `sendRule`'s `Json` one).
         let mut et2_condition = text("condition");
         et2_condition.required = false;
-        let mut et2_enabled = Field::new("enabled", FieldKind::Bool {});
-        et2_enabled.required = true;
+        // Not `required`: a required `bool`'s zero value (`false`) reads
+        // as blank (see `cratebase_db::validate::is_blank`/`required`'s
+        // own doc comment — the same "0 counts as blank" footgun as a
+        // required number), which would make a trigger impossible to
+        // *disable* through the ordinary update API. Leaving it optional
+        // also makes "not yet set" default to `false` (disabled) — the
+        // safer reading for a freshly created trigger.
+        let et2_enabled = Field::new("enabled", FieldKind::Bool {});
         // Extra literal values merged onto the default `{ record }`
         // template data — see `crate::email_triggers`'s module doc for
         // the exact merge order.
@@ -1629,6 +1635,7 @@ mod tests {
                 crate::ids::collection_id("base", "_audit_log").as_str(),
                 crate::ids::collection_id("base", "_emailTemplates").as_str(),
                 crate::ids::collection_id("base", "_mailLog").as_str(),
+                crate::ids::collection_id("base", "_emailTriggers").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

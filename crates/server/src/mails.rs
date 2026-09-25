@@ -294,7 +294,7 @@ pub async fn send(app: &App, input: SendInput) -> Result<SendOutcome, AppError> 
 
 /// Inserts a `_mailLog` row, `status: "queued"`, before any delivery is
 /// attempted. Returns the new row's id.
-async fn create_log_row(
+pub(crate) async fn create_log_row(
     app: &App,
     message: &Message,
     template: Option<&str>,

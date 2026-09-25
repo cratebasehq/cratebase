@@ -548,6 +548,7 @@ impl App {
         crate::cron_jobs::bind_hooks(self);
         crate::cron_jobs::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
+        crate::email_triggers::bind_hooks(self);
         // Always bound, unlike `settings.llm.enabled`'s route-merge gate:
         // `settings.teams.enabled` can flip on a *running* server via
         // `PATCH /api/settings`, and a hook bound only here at boot would

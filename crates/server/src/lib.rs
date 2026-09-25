@@ -33,6 +33,7 @@ pub mod cron;
 pub mod cron_jobs;
 mod dashboard;
 pub mod dev;
+pub mod email_triggers;
 pub mod embeddings;
 pub mod events;
 pub mod extract;
