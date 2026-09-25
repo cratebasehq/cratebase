@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.2.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.3.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
@@ -10,7 +10,73 @@ first real tagged release.
 
 ## [Unreleased]
 
+## 0.3.0 — 2026-09-25
+
+Security-hardening and developer-experience release, the result of a
+full audit (PR [#27](https://github.com/cratebasehq/cratebase/pull/27)).
+**Everyone on 0.2.0 should upgrade** — several fixes below close
+privilege-escalation, stored-XSS and data-loss paths.
+
+### Upgrading from 0.2.0 (breaking changes)
+
+- **First-run setup needs an install token.** `POST /api/setup` now
+  requires the one-time token printed in the server log at boot (or
+  `CB_SETUP_TOKEN`), sent as `token` in the body or `X-Setup-Token`.
+  `@cratebase/client`'s `admin.setup()` takes it too. The dashboard reads
+  it from the logged link. `cratebase superuser create` is unchanged.
+- **Auth rate limiting is on by default** for fresh installs
+  (`AUTH_RATE_LIMIT_ENABLED=false` opts out). Existing installs keep their
+  stored settings.
+- **Signing secrets are validated.** An empty `CB_SECRET`/`AUTH_SECRET`
+  is ignored (the generated `.secret` is used) and a non-empty one shorter
+  than 32 bytes refuses to boot.
+- **Active file types are served as downloads.** html/svg/xml/js uploads
+  get `Content-Disposition: attachment` plus a sandbox CSP; upload
+  `mimeTypes` checks now use the sniffed type, not the client's header.
+- **`.env.example` / `docker-compose.yml` use the env vars the server
+  actually reads** (e.g. `S3_ACCESS_KEY`/`S3_SECRET`, `CB_SENDER_ADDRESS`,
+  `SMTP_TLS`). Names like `STORAGE_DRIVER`, `MAIL_DRIVER`,
+  `S3_ACCESS_KEY_ID` were never read — update any `.env` copied from the
+  old example.
+- **Passwords are capped at 256 bytes.**
+- **Generated TypeScript types use `type` aliases instead of
+  `interface`**, which makes `createClient<Schema>()` type-check.
+
+### Security
+
+- SQL console: a data-modifying CTE could bypass the read-only gate on
+  Postgres (e.g. promote an admin to owner). Reads now run in a
+  `READ ONLY` transaction with a real `statement_timeout`.
+- Stored XSS via uploads closed: magic-byte MIME sniffing, sandbox CSP on
+  file responses, global `nosniff`/`Referrer-Policy`, frame protection on
+  the dashboard.
+- Backup restore no longer deletes the live database when `DATABASE_URL`
+  isn't `data.db`, and keeps `.secret` and `plugins/`; swaps roll back on
+  failure.
+- `POST /api/setup` race (concurrent calls created several owners) fixed.
+- Tokens are redacted from request logs; `$http.send` has a default
+  timeout; `rustls` bumped to 0.23.45 (RUSTSEC-2026-0285).
+
 ### Added
+
+- **`cratebase dev`** — one command for local development: data dir,
+  superuser, `schema.json`, seed data, TypeScript types, hook hot reload.
+- **`cratebase typegen`**, `GET /api/typegen` and a `--dev` watch
+  (`CB_TYPEGEN_OUT`); select unions, relation `expand` and Create/Update
+  input types.
+- **`cratebase seed` / `cratebase reset`**, `pb_seed/` / `CB_SEED_DIR`.
+- **JS migrations actually run** (`pb_migrations/`, on boot and via
+  `migrate up/down/collections/history-sync`), and `--automigrate`
+  writes migration files.
+- **Postgres**: TLS via `sslmode` (including `verify-full`),
+  `DB_POOL_SIZE`, and backup/restore via `pg_dump`/`pg_restore`.
+- **Dev mail inbox** in the dashboard (Settings → Mail inbox) whenever no
+  SMTP/Resend is configured.
+- Scheduled backup status and failures surfaced in the dashboard and
+  audit log; CIDR entries in the superuser IP allowlist; `/api/health`
+  checks the database.
+- `examples/team-board` flagship app, `.devcontainer` for Codespaces,
+  and a rewritten landing page.
 
 - **`@cratebase/react` upgrade**: a `CratebaseProvider`/`useCratebase()`
   context (every hook keeps working with an explicit client too),

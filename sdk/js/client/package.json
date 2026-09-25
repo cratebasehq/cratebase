@@ -1,6 +1,6 @@
 {
   "name": "@cratebase/client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "First-party typed TypeScript SDK for Cratebase: records, auth (password/OTP/OAuth2/MFA, cookie sessions, impersonation, bans), realtime, files, batch, and admin APIs.",
   "type": "module",
   "license": "MIT",
