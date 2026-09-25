@@ -228,6 +228,50 @@ fn confirm_email_change_template_default() -> EmailTemplate {
         body: "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>".into(),
     }
 }
+fn magic_link_url_template_default() -> String {
+    "{APP_URL}/auth/magic-link?token={TOKEN}".into()
+}
+fn magic_link_duration_default() -> i64 {
+    900
+}
+fn magic_link_template_default() -> EmailTemplate {
+    EmailTemplate {
+        subject: "Sign in to {APP_NAME}".into(),
+        body: "<p>Hello,</p>\n<p>Click on the button below to sign in to {APP_NAME}.</p>\n<p>\n  <a class=\"btn\" href=\"{MAGIC_LINK}\" target=\"_blank\" rel=\"noopener\">Sign in</a>\n</p>\n<p><i>If you didn't ask to sign in, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>".into(),
+    }
+}
+
+/// `authOptions.magicLink` — a passwordless login flow parallel to
+/// [`Otp`], but mailing a single-use link instead of a user-typed code.
+/// Disabled by default, same as `Mfa`/`Otp`; see
+/// `crate::routes::auth`'s `request-magic-link`/`auth-with-magic-link` in
+/// the server crate (`_magicLinks` is the token store — same shape as
+/// `_otps`, just holding a `tokenHash` instead of a hashed short code).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MagicLink {
+    pub enabled: bool,
+    #[serde(default = "magic_link_duration_default")]
+    pub duration: i64,
+    /// The link built when the request body doesn't supply an allow-listed
+    /// `redirectUrl`. `{APP_URL}` and `{TOKEN}` are substituted the same
+    /// way every other auth template placeholder is.
+    #[serde(default = "magic_link_url_template_default")]
+    pub url_template: String,
+    #[serde(default = "magic_link_template_default")]
+    pub email_template: EmailTemplate,
+}
+
+impl Default for MagicLink {
+    fn default() -> Self {
+        MagicLink {
+            enabled: false,
+            duration: magic_link_duration_default(),
+            url_template: magic_link_url_template_default(),
+            email_template: magic_link_template_default(),
+        }
+    }
+}
 
 /// Everything specific to `type: "auth"` collections, flattened onto the
 /// collection JSON. Defaults are PocketBase's (captured from a freshly
@@ -260,6 +304,7 @@ pub struct AuthOptions {
     pub reset_password_template: EmailTemplate,
     #[serde(default = "confirm_email_change_template_default")]
     pub confirm_email_change_template: EmailTemplate,
+    pub magic_link: MagicLink,
 }
 
 impl Default for AuthOptions {
@@ -280,6 +325,7 @@ impl Default for AuthOptions {
             verification_template: verification_template_default(),
             reset_password_template: reset_password_template_default(),
             confirm_email_change_template: confirm_email_change_template_default(),
+            magic_link: MagicLink::default(),
         }
     }
 }
