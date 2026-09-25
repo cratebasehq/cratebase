@@ -19,6 +19,10 @@ COPY web/email web/email
 # use for the suite itself, so only its manifest is copied — enough for
 # the workspace to resolve, without dragging the tests into the build.
 COPY tests/conformance/package.json tests/conformance/package.json
+# Same for the SDK packages that aren't needed to build the dashboard:
+# `sdk/js/client` is copied in full above because web/admin imports it.
+COPY sdk/js/react/package.json sdk/js/react/package.json
+COPY sdk/js/extras/package.json sdk/js/extras/package.json
 RUN bun install && bun run admin:build && bun run email:build
 
 # ---- deps cache layer -------------------------------------------------
