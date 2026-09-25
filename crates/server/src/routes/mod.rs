@@ -17,6 +17,7 @@ pub mod collections;
 pub mod common;
 pub mod crons;
 pub mod dev_mail;
+pub mod extensions;
 pub mod file_manager;
 pub mod files;
 pub mod functions;
@@ -67,6 +68,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(utils::router())
         .merge(file_manager::router())
         .merge(sql_console::router())
+        .merge(extensions::router())
         .merge(tool_schema::router())
         .merge(schema::router())
         .merge(typegen::router())
