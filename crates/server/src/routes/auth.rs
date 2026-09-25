@@ -92,6 +92,12 @@ const VALIDATION_FAILED: &str = "An error occurred while validating the submitte
 const PASSWORD_DISABLED: &str =
     "The collection is not configured to allow password authentication.";
 const OTP_DISABLED: &str = "The collection is not configured to allow OTP authentication.";
+const MAGIC_LINK_DISABLED: &str =
+    "The collection is not configured to allow magic-link authentication.";
+/// A `token` that doesn't hash to any pending `_magicLinks` row, or one
+/// that did but has expired — deliberately the same message both ways
+/// (like `auth-with-otp`'s), so neither leaks which case it was.
+const MAGIC_LINK_INVALID: &str = "Invalid or expired magic link.";
 const OAUTH2_DISABLED: &str = "The collection is not configured to allow OAuth2 authentication.";
 /// PocketBase's exact code for an unrecognized/disabled `provider` name.
 const OAUTH2_INVALID_PROVIDER: &str = "validation_invalid_provider";
@@ -143,6 +149,14 @@ pub fn router() -> Router<App> {
         .route(
             "/collections/{collection}/auth-with-otp",
             post(auth_with_otp),
+        )
+        .route(
+            "/collections/{collection}/request-magic-link",
+            post(request_magic_link),
+        )
+        .route(
+            "/collections/{collection}/auth-with-magic-link",
+            post(auth_with_magic_link),
         )
         .route(
             "/collections/{collection}/impersonate/{id}",
@@ -482,6 +496,10 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
         "otp": {
             "enabled": auth.otp.enabled,
             "duration": if auth.otp.enabled { auth.otp.duration } else { 0 },
+        },
+        "magicLink": {
+            "enabled": auth.magic_link.enabled,
+            "duration": if auth.magic_link.enabled { auth.magic_link.duration } else { 0 },
         },
     })))
 }
@@ -1504,6 +1522,243 @@ async fn auth_with_otp(
         raw,
         |hooks| &hooks.on_record_auth_with_otp_request,
         Some(("otp", origin)),
+        None,
+    )
+    .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MagicLinkRequestBody {
+    #[serde(default)]
+    email: String,
+    /// A redirect target to build the link against instead of
+    /// `authOptions.magicLink.urlTemplate`, when it passes
+    /// [`is_same_origin`] against `settings.meta.appURL` — see
+    /// [`build_magic_link`].
+    #[serde(default, rename = "redirectURL", alias = "redirectUrl")]
+    redirect_url: String,
+}
+
+/// `POST /api/collections/{collection}/request-magic-link` — mirrors
+/// `request-otp`: always `200` regardless of whether `email` matches an
+/// account, so the endpoint can never be used to enumerate addresses. A
+/// disabled `authOptions.magicLink` is a `403`, same as OTP's own
+/// disabled check — that is a deployment-config answer, not an account
+/// one, so it doesn't need the same enumeration protection.
+async fn request_magic_link(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    info: RequestInfo,
+    ApiJson(raw): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    let collection = common::auth_collection_of(&app, &name)?;
+    if !collection.auth.magic_link.enabled {
+        return Err(ApiError::forbidden(MAGIC_LINK_DISABLED));
+    }
+    let body: MagicLinkRequestBody = serde_json::from_value(raw).unwrap_or_default();
+    if !is_email(&body.email) {
+        return Err(email_validation_error());
+    }
+
+    if let Some(record) = find_by_email(&app, &collection, &body.email).await? {
+        fire_request_hook(&app, &collection, &info, Some(record.clone()), |h| {
+            &h.on_record_request_magic_link_request
+        })
+        .await?;
+
+        let token = cratebase_auth::random_alphanumeric(48);
+        let magic_links = app
+            .db()
+            .collections
+            .get("_magicLinks")
+            .expect("_magicLinks is a default system collection");
+        let mut row = Record::new(magic_links);
+        row.set("collectionRef", Value::String(collection.id.clone()));
+        row.set("recordRef", Value::String(record.id().to_string()));
+        // Reuses the OTP hash — see `cratebase_auth::hash_otp`'s own doc:
+        // a magic link is just as single-use and short-lived as an OTP
+        // code, so the same fast, unsalted SHA-256 is the right trade-off
+        // here too.
+        row.set("tokenHash", Value::String(cratebase_auth::hash_otp(&token)));
+        row.set("sentTo", Value::String(body.email.clone()));
+        row.set("redirectUrl", Value::String(body.redirect_url.clone()));
+        records::create(app.db(), &app.db().collections, &mut row)
+            .await
+            .map_err(|e| ApiError(e.into()))?;
+
+        let link = build_magic_link(&app, &collection, &token, &body.redirect_url);
+        let _ = send_record_mail(
+            &app,
+            &collection,
+            &record,
+            crate::mail_templates::AuthMailKind::MagicLink,
+            &[("MAGIC_LINK", link.as_str())],
+            json!({ "magicLink": link }),
+            &body.email,
+            |h| &h.on_mailer_record_magic_link_send,
+        )
+        .await;
+    }
+    Ok(Json(json!({})))
+}
+
+/// The link a magic-link email points at: `redirect_url` when non-empty
+/// and same-origin as `settings.meta.appURL` (a `?token=`/`&token=` query
+/// param appended to it), otherwise `authOptions.magicLink.urlTemplate`
+/// with `{APP_URL}`/`{TOKEN}` substituted — PocketBase's own
+/// `{PLACEHOLDER}` convention, since this is a URL an admin configures
+/// the same way they configure a template.
+fn build_magic_link(app: &App, collection: &Collection, token: &str, redirect_url: &str) -> String {
+    let app_url = app.settings().meta.app_url.clone();
+    let redirect_url = redirect_url.trim();
+    if !redirect_url.is_empty() && is_same_origin(redirect_url, &app_url) {
+        let sep = if redirect_url.contains('?') { '&' } else { '?' };
+        return format!("{redirect_url}{sep}token={token}");
+    }
+    collection
+        .auth
+        .magic_link
+        .url_template
+        .replace("{APP_URL}", &app_url)
+        .replace("{TOKEN}", token)
+}
+
+/// Whether `url` shares `app_url`'s scheme, host and (explicit or
+/// scheme-default) port — the redirect allow-list `request-magic-link`
+/// applies to a caller-supplied `redirectUrl`, since there is no existing
+/// OAuth2-style redirect allow-list in this codebase to reuse. An
+/// unparseable `url` is never allowed.
+fn is_same_origin(url: &str, app_url: &str) -> bool {
+    let (Ok(a), Ok(b)) = (reqwest::Url::parse(url), reqwest::Url::parse(app_url)) else {
+        return false;
+    };
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MagicLinkAuthBody {
+    #[serde(default)]
+    token: String,
+    /// A pending MFA session id from a previous `401 {mfaId}` response.
+    #[serde(default)]
+    mfa_id: Option<String>,
+}
+
+/// `POST /api/collections/{collection}/auth-with-magic-link` — single-use
+/// (the `_magicLinks` row is deleted on both a correct and, unlike an OTP
+/// guess, an expired attempt: unlike an OTP's separate `otpId`, the token
+/// itself is the only lookup key, so there is no "still-pending, keep
+/// retrying" state a wrong-but-well-formed token could usefully leave
+/// behind) and marks the record verified on success, same as
+/// `auth-with-otp` — a clicked magic link proves control of the mailbox
+/// exactly as well as a typed-back OTP code does.
+async fn auth_with_magic_link(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    info: RequestInfo,
+    headers: HeaderMap,
+    peer: crate::middleware::client_ip::PeerAddr,
+    ApiJson(raw): ApiJson<Value>,
+) -> Result<Response, ApiError> {
+    let collection = common::auth_collection_of(&app, &name)?;
+    if !collection.auth.magic_link.enabled {
+        return Err(ApiError::forbidden(MAGIC_LINK_DISABLED));
+    }
+    let body: MagicLinkAuthBody = serde_json::from_value(raw.clone())
+        .map_err(|_| ApiError::bad_request(AppError::DEFAULT_BAD_REQUEST))?;
+    if body.token.trim().is_empty() {
+        let mut errors: BTreeMap<String, FieldError> = BTreeMap::new();
+        errors.insert(
+            "token".into(),
+            FieldError::new(codes::REQUIRED, "Cannot be blank."),
+        );
+        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
+    }
+
+    let magic_links = app
+        .db()
+        .collections
+        .get("_magicLinks")
+        .expect("_magicLinks is a default system collection");
+    let token_hash = cratebase_auth::hash_otp(&body.token);
+    let mut params = Map::new();
+    params.insert("h".into(), Value::String(token_hash));
+    params.insert("c".into(), Value::String(collection.id.clone()));
+    let row = records::find_first_by_filter(
+        app.db(),
+        &app.db().collections,
+        &magic_links,
+        "tokenHash = {:h} && collectionRef = {:c}",
+        &params,
+    )
+    .await
+    .map_err(|e| ApiError(e.into()))?;
+    let Some(row) = row else {
+        return Err(ApiError::bad_request(MAGIC_LINK_INVALID));
+    };
+
+    let expired = match row.get_datetime("created") {
+        Some(created) => {
+            let age = chrono::Utc::now() - created.inner();
+            age.num_seconds() > collection.auth.magic_link.duration.max(1)
+        }
+        None => true,
+    };
+    // Single-use either way — see the function doc.
+    records::delete(app.db(), &app.db().collections, &row)
+        .await
+        .map_err(|e| ApiError(e.into()))?;
+    if expired {
+        return Err(ApiError::bad_request(MAGIC_LINK_INVALID));
+    }
+
+    let mut record = records::find_by_id_raw(app.db(), &collection, &row.get_string("recordRef"))
+        .await
+        .map_err(|e| ApiError(e.into()))?;
+
+    if crate::routes::session::active_ban(&app, &collection, record.id())
+        .await
+        .is_some()
+    {
+        return Err(ApiError::forbidden("This account is banned."));
+    }
+
+    match mfa_gate(
+        &app,
+        &collection,
+        &record,
+        "magicLink",
+        body.mfa_id.as_deref(),
+    )
+    .await?
+    {
+        MfaGate::Pending(mfa_id) => return Ok(mfa_pending_response(mfa_id)),
+        MfaGate::Passed => {}
+    }
+
+    // A clicked magic link proves control of the mailbox, same as a
+    // successful OTP.
+    if !record.verified() {
+        record.set("verified", Value::Bool(true));
+        records::update(app.db(), &app.db().collections, &mut record)
+            .await
+            .map_err(|e| ApiError(e.into()))?;
+    }
+
+    let origin = record_login_origin(&app, &collection, &record, &headers, peer).await;
+
+    respond_with_token(
+        &app,
+        &collection,
+        record,
+        info,
+        raw,
+        |hooks| &hooks.on_record_auth_with_magic_link_request,
+        Some(("magicLink", origin)),
         None,
     )
     .await

@@ -372,7 +372,11 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
                 _ => {}
             }
         }
-        "auth-with-password" | "auth-with-oauth2" | "auth-refresh" | "auth-with-otp" => {
+        "auth-with-password"
+        | "auth-with-oauth2"
+        | "auth-refresh"
+        | "auth-with-otp"
+        | "auth-with-magic-link" => {
             push("auth");
             push(&lower_camel(action));
         }
@@ -385,6 +389,7 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             push("authWithOauth2");
         }
         "request-otp"
+        | "request-magic-link"
         | "request-password-reset"
         | "confirm-password-reset"
         | "request-verification"
