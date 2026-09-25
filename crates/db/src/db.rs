@@ -174,6 +174,10 @@ impl Executor for Db {
             .execute_interruptible(sql, params, timeout)
             .await
     }
+
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        self.engine.prepare_check(sql).await
+    }
 }
 
 async fn open_sqlite(path: &str, readers: usize) -> DbResult<SqliteEngine> {

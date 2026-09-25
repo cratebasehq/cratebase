@@ -177,7 +177,7 @@ fn may_write(sql: &str) -> bool {
 /// semicolon-separated piece (a naive check — a semicolon inside a
 /// string literal falls back to `None` too, which is a safe, merely
 /// conservative failure mode, not a wrong-result one).
-fn cappable_select(sql: &str, cap: usize) -> Option<String> {
+pub(crate) fn cappable_select(sql: &str, cap: usize) -> Option<String> {
     let trimmed = sql.trim();
     if statement_head(trimmed) != "SELECT" {
         return None;

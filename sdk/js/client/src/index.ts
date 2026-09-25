@@ -55,7 +55,7 @@ export type {
   SortSpec,
   OAuth2Provider,
 } from "./types.js";
-export type { NearestToOptions } from "./cratebase-only.js";
+export type { NearestToOptions, RpcRow } from "./cratebase-only.js";
 export type { ChatMessage, ChatOptions, ChatResult, ToolSchema, EnqueueOptions, EnqueuedJob, PresenceOptions, Presence, Sender } from "./cratebase-only.js";
 
 export interface CreateClientOptions {
@@ -153,6 +153,12 @@ export class CratebaseClient<
 
   batch(): BatchBuilder {
     return new BatchBuilder(this.transport, () => this.authHeaderFor(this.authCollection));
+  }
+
+  /** Call a custom-SQL RPC (`POST /api/rpc/{name}`) — see
+   * `cratebase-only.ts`'s `rpc` for the full contract. */
+  rpc<T = cratebaseOnly.RpcRow>(name: string, params?: Record<string, unknown>): Promise<{ items: T[] }> {
+    return cratebaseOnly.rpc<T>(this, name, params);
   }
 
   send<T>(path: string, options: Parameters<Transport["send"]>[1] = {}): Promise<T> {

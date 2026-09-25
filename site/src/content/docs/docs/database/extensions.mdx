@@ -1,0 +1,62 @@
+---
+title: "Postgres extensions"
+description: "Enable PostGIS, pgvector, pg_trgm and friends from the dashboard, the API, or a migration."
+---
+
+Postgres extensions add capabilities the core server doesn't: PostGIS for real geographic
+indexes, pgvector for a second vector index strategy, `pg_trgm`/`unaccent` for fuzzy text search,
+`pgcrypto`, `citext`, `pg_stat_statements`. Cratebase can enable and disable them for you — this is
+**Postgres only**; SQLite has no extension mechanism, and every surface below says so plainly
+rather than pretending to support a no-op version.
+
+## From the dashboard
+
+**Settings → Database extensions** lists every extension `pg_available_extensions` knows about
+(name, default version, and whether it's installed), with a one-click enable/disable and a docs
+link for each of the popular ones: `postgis`, `vector` (pgvector), `pg_trgm`, `unaccent`,
+`citext`, `pg_stat_statements`, `pgcrypto`. The page is hidden entirely on a SQLite database.
+
+## From the API
+
+Superuser-only, same trust tier as the [SQL console](/docs/dashboard/) and a collection schema
+edit:
+
+```txt
+GET    /api/db/extensions                 # list, with install state
+POST   /api/db/extensions/{name}          # CREATE EXTENSION IF NOT EXISTS
+       { "schema": "public" }             # optional
+DELETE /api/db/extensions/{name}          # DROP EXTENSION
+DELETE /api/db/extensions/{name}?cascade=true
+```
+
+A plain `DELETE` is refused by Postgres itself when something depends on the extension (a PostGIS
+index, say) — pass `?cascade=true` only when you mean to take those dependents down with it. Every
+install/drop is written to `_audit_log`.
+
+## From a migration
+
+`$app.db().exec(sql, params?)` is a write-capable escape hatch available in `pb_migrations/*.js`
+(and in `pb_hooks`) for exactly this kind of thing — SQL a record write or a filter can't express:
+
+```js
+migrate(
+  (app) => {
+    app.db().exec("CREATE EXTENSION IF NOT EXISTS postgis");
+  },
+  (app) => {
+    app.db().exec("DROP EXTENSION IF EXISTS postgis");
+  },
+);
+```
+
+Versioning it this way means a fresh environment (a new dev machine, a CI database, a second
+region) ends up with the same extensions as production, checked into the same migration history as
+your schema — instead of a manual step someone has to remember.
+
+## What installing PostGIS unlocks
+
+Once `postgis` is installed, a `geoPoint` field's radius filters and nearest-first sorts are
+automatically compiled against a GiST-indexed geography expression instead of the portable
+haversine fallback — see [Geo queries](/docs/database/geo-queries/). Nothing else changes: the
+same `filter`/`sort` syntax works with or without the extension: only the plan (and the
+speed) at scale differs.

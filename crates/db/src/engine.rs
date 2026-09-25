@@ -221,6 +221,34 @@ pub trait Executor: Send + Sync {
             ))),
         }
     }
+
+    /// Parse/prepare `sql` against the driver without executing it or
+    /// binding any parameters. Used by `_rpc`'s save-time validation
+    /// (`crates/server/src/rpc.rs`) to catch a syntax error before the
+    /// statement is ever stored, not on its first real call.
+    ///
+    /// On Postgres this doubles as multi-statement rejection for free:
+    /// the extended-query `Parse` message a real `prepare` sends refuses
+    /// more than one statement. SQLite's `prepare` has no such guarantee
+    /// (it silently compiles only the first statement and ignores the
+    /// rest), so a caller that also needs to reject a multi-statement
+    /// `_rpc.sql` must check for that itself first — see
+    /// `crates/server/src/rpc.rs`'s own `is_single_statement`.
+    ///
+    /// This is an [`Executor`] method, not an [`Engine`] one, specifically
+    /// so [`Transaction`] (and the server crate's transactional app
+    /// handle, which forwards to it) can override it to validate against
+    /// the connection they already hold, rather than through the
+    /// engine's own pool — going through the engine while a write
+    /// transaction is open self-deadlocks on SQLite's `:memory:` mode,
+    /// whose reader pool is empty and therefore falls back to the very
+    /// writer lock the transaction is already holding (see
+    /// `crate::sqlite::SqliteEngine`'s `on_reader`). The default here
+    /// (used by anything with no real driver to check against, or no
+    /// open transaction to reuse) treats every statement as valid.
+    async fn prepare_check(&self, _sql: &str) -> DbResult<()> {
+        Ok(())
+    }
 }
 
 /// A backend. `Engine` is `Executor` plus transaction support and the
@@ -260,25 +288,6 @@ pub trait Engine: Executor {
     /// the live database (`crate::pg_tools`).
     async fn restore_from(&self, _source_path: &str) -> DbResult<()> {
         Err(DbError::Unsupported("engine restore".into()))
-    }
-
-    /// Parse/prepare `sql` against the driver without executing it or
-    /// binding any parameters. Used by `_rpc`'s save-time validation
-    /// (`crates/server/src/rpc.rs`) to catch a syntax error before the
-    /// statement is ever stored, not on its first real call.
-    ///
-    /// On Postgres this doubles as multi-statement rejection for free:
-    /// the extended-query `Parse` message a real `prepare` sends refuses
-    /// more than one statement. SQLite's `prepare` has no such guarantee
-    /// (it silently compiles only the first statement and ignores the
-    /// rest), so a caller that also needs to reject a multi-statement
-    /// `_rpc.sql` must check for that itself first — see
-    /// `crates/server/src/rpc.rs`'s own `is_single_statement`.
-    ///
-    /// The default (used by [`Transaction`], which nothing calls this
-    /// through) treats every statement as valid.
-    async fn prepare_check(&self, _sql: &str) -> DbResult<()> {
-        Ok(())
     }
 
     /// Close every connection. Called before a backup restore swaps the
@@ -377,6 +386,9 @@ impl Executor for Transaction {
     }
     async fn execute(&self, sql: &str, params: &[Sql]) -> DbResult<u64> {
         self.inner.execute(sql, params).await
+    }
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        self.inner.prepare_check(sql).await
     }
 }
 

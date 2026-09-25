@@ -100,10 +100,18 @@ param, which has no request to read):
 
 ## Functions
 
-`geoDistance(lonA, latA, lonB, latB)` — great-circle-ish distance between
-two coordinates, usable against a literal or a `geoPoint` field's
-`.lon`/`.lat` paths, e.g.
-`geoDistance(loc.lon, loc.lat, -122.42, 37.77) < 50000`.
+`geoDistance(lonA, latA, lonB, latB)` — great-circle-ish distance in
+**kilometers** between two coordinates, usable against a literal or a
+`geoPoint` field's `.lon`/`.lat` paths, e.g. a 50km radius filter:
+`geoDistance(loc.lon, loc.lat, -122.42, 37.77) < 50`.
+
+The same call works in `sort`, for a nearest/farthest-first order:
+`sort=geoDistance(loc.lon, loc.lat, -122.42, 37.77)` (nearest first) or
+`sort=-geoDistance(...)` (farthest first) — it compiles to the exact
+same SQL a filter over the identical call would, so a radius filter and
+a nearest sort always agree on distance. See
+[Geo queries](/docs/database/geo-queries/) for the PostGIS-accelerated
+path on Postgres.
 
 ## Semantics worth knowing before writing a rule
 

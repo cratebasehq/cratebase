@@ -126,7 +126,10 @@ async fn list_install_and_drop_a_postgres_extension() {
     let (status, body) = request(&app, "GET", "/api/db/extensions", &token, None).await;
     assert_eq!(status, StatusCode::OK, "body: {body:?}");
     let items = body["items"].as_array().expect("items array");
-    assert!(!items.is_empty(), "pg_available_extensions should be non-empty");
+    assert!(
+        !items.is_empty(),
+        "pg_available_extensions should be non-empty"
+    );
     let trgm = items
         .iter()
         .find(|e| e["name"] == "pg_trgm")
@@ -278,10 +281,7 @@ async fn dropping_an_extension_with_dependents_needs_cascade() {
 
     // A dependent object: an index using pg_trgm's operator class.
     app.db()
-        .execute(
-            r#"CREATE TABLE "trgm_dep" ("name" TEXT)"#,
-            &[],
-        )
+        .execute(r#"CREATE TABLE "trgm_dep" ("name" TEXT)"#, &[])
         .await
         .unwrap();
     app.db()

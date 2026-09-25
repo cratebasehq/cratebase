@@ -69,6 +69,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(file_manager::router())
         .merge(sql_console::router())
         .merge(extensions::router())
+        .merge(crate::rpc::router())
         .merge(tool_schema::router())
         .merge(schema::router())
         .merge(typegen::router())

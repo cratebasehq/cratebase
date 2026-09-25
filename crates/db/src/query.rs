@@ -219,8 +219,11 @@ pub fn order_by(
             "@random" => "RANDOM()".to_string(),
             "@rowid" => format!("{} {direction}", rowid_expr(resolver)),
             _ if path.contains('(') => {
-                let compiled =
-                    cratebase_filter::compile_sort_function(path, resolver, param_offset + params.len())?;
+                let compiled = cratebase_filter::compile_sort_function(
+                    path,
+                    resolver,
+                    param_offset + params.len(),
+                )?;
                 params.extend(compiled.params.iter().map(to_param));
                 format!("{} {direction}", compiled.sql)
             }
@@ -371,10 +374,9 @@ mod tests {
         posts.indexes =
             vec!["CREATE UNIQUE INDEX `idx_posts_x` ON `posts` (`title`, `author`)".into()];
         let pos = posts.fields.len() - 2;
-        posts.fields.insert(
-            pos,
-            Field::new("loc", FieldKind::GeoPoint {}),
-        );
+        posts
+            .fields
+            .insert(pos, Field::new("loc", FieldKind::GeoPoint {}));
         store.replace(vec![users, posts]);
         let posts = store.get("posts").unwrap();
         (store, posts)
@@ -447,8 +449,7 @@ mod tests {
         );
         assert_eq!(params, vec![Sql::Int(1), Sql::Int(2)]);
 
-        let (sql, params) =
-            order_by(&r, Some("-geoDistance(loc.lon, loc.lat, 1, 2)"), 3).unwrap();
+        let (sql, params) = order_by(&r, Some("-geoDistance(loc.lon, loc.lat, 1, 2)"), 3).unwrap();
         assert!(sql.ends_with("$4, $5) DESC"), "{sql}");
         assert_eq!(params.len(), 2);
 

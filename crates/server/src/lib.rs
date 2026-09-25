@@ -53,6 +53,7 @@ pub mod realtime;
 mod records_multi_file_tests;
 pub mod reset;
 pub mod routes;
+pub mod rpc;
 pub mod seed;
 pub mod sessions;
 pub mod store;

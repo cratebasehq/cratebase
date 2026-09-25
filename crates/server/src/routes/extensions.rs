@@ -46,11 +46,12 @@ use crate::extract::RequireSuperuser;
 use crate::http_error::{ApiError, ApiResult};
 
 pub fn router() -> Router<App> {
-    Router::new().route(
-        "/db/extensions/{name}",
-        axum::routing::post(install_extension).delete(drop_extension),
-    )
-    .route("/db/extensions", get(list_extensions))
+    Router::new()
+        .route(
+            "/db/extensions/{name}",
+            axum::routing::post(install_extension).delete(drop_extension),
+        )
+        .route("/db/extensions", get(list_extensions))
 }
 
 fn require_postgres(app: &App) -> ApiResult<()> {
@@ -77,10 +78,7 @@ struct ExtensionInfo {
 /// `GET /api/db/extensions` — every extension `pg_available_extensions`
 /// knows about, left-joined against `pg_extension`/`pg_namespace` so an
 /// installed one also reports its version and schema.
-async fn list_extensions(
-    State(app): State<App>,
-    _su: RequireSuperuser,
-) -> ApiResult<Json<Value>> {
+async fn list_extensions(State(app): State<App>, _su: RequireSuperuser) -> ApiResult<Json<Value>> {
     require_postgres(&app)?;
     let rows = app
         .db()

@@ -537,10 +537,7 @@ impl App {
         // default, the same as "not installed".
         if db.backend.is_postgres() {
             if let Ok(Some(_)) = db
-                .query_scalar(
-                    "SELECT 1 FROM pg_extension WHERE extname = 'postgis'",
-                    &[],
-                )
+                .query_scalar("SELECT 1 FROM pg_extension WHERE extname = 'postgis'", &[])
                 .await
             {
                 self.inner
@@ -594,6 +591,7 @@ impl App {
         self.sync_backup_cron();
         crate::cron_jobs::bind_hooks(self);
         crate::cron_jobs::sync_all(self).await;
+        crate::rpc::bind_hooks(self);
         crate::webhooks::bind_hooks(self);
         // Always bound, unlike `settings.llm.enabled`'s route-merge gate:
         // `settings.teams.enabled` can flip on a *running* server via
@@ -1298,6 +1296,22 @@ impl Executor for TxApp {
         let guard = self.handle.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx.execute(sql, params).await,
+            None => Err(cratebase_db::DbError::other("transaction already finished")),
+        }
+    }
+
+    /// Validates against the open transaction's own connection when
+    /// there is one, never through `self.app.db()`'s engine — see
+    /// `Executor::prepare_check`'s trait doc for why going through the
+    /// engine while a write transaction is open would self-deadlock on
+    /// SQLite's `:memory:`.
+    async fn prepare_check(&self, sql: &str) -> cratebase_db::DbResult<()> {
+        if !self.handle.transactional {
+            return self.app.db().prepare_check(sql).await;
+        }
+        let guard = self.handle.tx.lock().await;
+        match guard.as_ref() {
+            Some(tx) => tx.prepare_check(sql).await,
             None => Err(cratebase_db::DbError::other("transaction already finished")),
         }
     }

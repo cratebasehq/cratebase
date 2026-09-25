@@ -370,10 +370,7 @@ async fn postgres_prepare_check_validates_syntax_and_rejects_multiple_statements
         "a nonexistent table must fail to prepare"
     );
     assert!(
-        db.engine
-            .prepare_check("SELECT 1; SELECT 2")
-            .await
-            .is_err(),
+        db.engine.prepare_check("SELECT 1; SELECT 2").await.is_err(),
         "a real server-side prepare must refuse more than one statement"
     );
     // Nothing was executed: no row was inserted.

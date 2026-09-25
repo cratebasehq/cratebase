@@ -768,6 +768,15 @@ impl Executor for SqliteEngine {
             ))),
         }
     }
+
+    /// See the trait doc: SQLite's `prepare` compiles only the first
+    /// statement and silently ignores anything after it, so this catches
+    /// a real syntax error but never a multi-statement `sql`.
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        let sql = self.inner.rewritten(sql);
+        self.on_reader(move |conn| conn.prepare(&sql).map(|_| ()).map_err(map_err))
+            .await
+    }
 }
 
 #[async_trait]
@@ -833,15 +842,6 @@ impl Engine for SqliteEngine {
                 .map_err(map_err)
         })
         .await
-    }
-
-    /// See the trait doc: SQLite's `prepare` compiles only the first
-    /// statement and silently ignores anything after it, so this catches
-    /// a real syntax error but never a multi-statement `sql`.
-    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
-        let sql = self.inner.rewritten(sql);
-        self.on_reader(move |conn| conn.prepare(&sql).map(|_| ()).map_err(map_err))
-            .await
     }
 
     async fn snapshot_to(&self, dest_path: &str) -> DbResult<()> {
@@ -931,6 +931,19 @@ impl Executor for SqliteTransaction {
         let sql = self.inner.rewritten(sql);
         let params = params.to_vec();
         run_on_shared(&self.conn, move |conn| run_execute(conn, &sql, &params)).await
+    }
+
+    /// Runs against the connection this transaction already exclusively
+    /// owns (`self.conn`), not through `SqliteEngine::on_reader` — that
+    /// matters specifically on `:memory:`, whose reader pool is empty and
+    /// would otherwise fall back to the very writer lock this transaction
+    /// is already holding, deadlocking (see the trait doc).
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        let sql = self.inner.rewritten(sql);
+        run_on_shared(&self.conn, move |conn| {
+            conn.prepare(&sql).map(|_| ()).map_err(map_err)
+        })
+        .await
     }
 }
 
