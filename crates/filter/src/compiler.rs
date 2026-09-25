@@ -351,29 +351,138 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// `Some(field)` when `lon`/`lat` are exactly `<field>.lon` and
+    /// `<field>.lat` (same `field`, no modifier) — the one shape
+    /// `Resolver::postgis_geo_index` can possibly answer for, since it
+    /// only knows about a whole `geoPoint` field, not an arbitrary pair
+    /// of numeric expressions that happen to be adjacent.
+    fn geo_field_operand<'op>(lon: &'op Operand, lat: &'op Operand) -> Option<&'op str> {
+        let Operand::Ident {
+            path: lon_path,
+            modifier: None,
+        } = lon
+        else {
+            return None;
+        };
+        let Operand::Ident {
+            path: lat_path,
+            modifier: None,
+        } = lat
+        else {
+            return None;
+        };
+        let lon_field = lon_path.strip_suffix(".lon")?;
+        let lat_field = lat_path.strip_suffix(".lat")?;
+        (lon_field == lat_field && !lon_field.is_empty()).then_some(lon_field)
+    }
+
+    /// See [`compile_compare`](Compiler::compile_compare)'s call site.
+    /// Returns `Ok(None)` for anything that isn't the accelerable shape
+    /// (not a `geoDistance(...)` call, not a `field.lon`/`field.lat`
+    /// pair, or the host has no index for this field) — the caller falls
+    /// through to the ordinary path in every one of those cases, so this
+    /// never turns a filter that would otherwise work into an error; it
+    /// only ever changes *which* SQL a match compiles to.
+    fn try_accelerated_geo_radius(
+        &mut self,
+        left: &Operand,
+        right: &Operand,
+    ) -> Result<Option<String>, FilterError> {
+        if self.dialect != Dialect::Postgres {
+            return Ok(None);
+        }
+        let Operand::Call { name, args } = left else {
+            return Ok(None);
+        };
+        if name != "geoDistance" || args.len() != 4 {
+            return Ok(None);
+        }
+        let Some(field) = Self::geo_field_operand(&args[0], &args[1]) else {
+            return Ok(None);
+        };
+        let Some(geog) = self.resolver.postgis_geo_index(field) else {
+            return Ok(None);
+        };
+
+        let lon_b_term = self.resolve_operand(&args[2], false)?;
+        let lat_b_term = self.resolve_operand(&args[3], false)?;
+        let radius_term = self.resolve_operand(right, false)?;
+        // Any of the three could resolve to something a scalar geo
+        // argument can't be (a multi-valued path, say) — bail to the
+        // ordinary path rather than erroring, since that path handles it
+        // (correctly, if more slowly) already.
+        let (Some(lon_b), Some(lat_b), Some(radius_km)) = (
+            self.geo_arg_sql(lon_b_term),
+            self.geo_arg_sql(lat_b_term),
+            self.geo_arg_sql(radius_term),
+        ) else {
+            return Ok(None);
+        };
+
+        let point = format!("ST_MakePoint({lon_b}, {lat_b})::geography");
+        // `geoDistance` is kilometers; `ST_DWithin` on a `geography` wants
+        // meters.
+        Ok(Some(format!(
+            "ST_DWithin({geog}, {point}, ({radius_km}) * 1000)"
+        )))
+    }
+
+    /// See [`compile_sort_function`]'s call site: the KNN counterpart of
+    /// [`try_accelerated_geo_radius`](Compiler::try_accelerated_geo_radius),
+    /// for a `sort=geoDistance(...)` rather than a filter. `Ok(None)` for
+    /// anything that isn't the accelerable shape, same fall-through
+    /// contract as the radius case.
+    fn try_accelerated_geo_knn(&mut self, args: &[Operand]) -> Result<Option<String>, FilterError> {
+        if self.dialect != Dialect::Postgres {
+            return Ok(None);
+        }
+        let Some(field) = Self::geo_field_operand(&args[0], &args[1]) else {
+            return Ok(None);
+        };
+        let Some(geog) = self.resolver.postgis_geo_index(field) else {
+            return Ok(None);
+        };
+        let lon_term = self.resolve_operand(&args[2], false)?;
+        let lat_term = self.resolve_operand(&args[3], false)?;
+        let (Some(lon), Some(lat)) = (self.geo_arg_sql(lon_term), self.geo_arg_sql(lat_term))
+        else {
+            return Ok(None);
+        };
+        Ok(Some(format!(
+            "{geog} <-> ST_MakePoint({lon}, {lat})::geography"
+        )))
+    }
+
+    /// A resolved geo-call argument (one of `geoDistance`'s four operands,
+    /// or the radius on the right of `< r`) as plain SQL text, or `None`
+    /// for a shape that isn't a single scalar value (a multi-valued path)
+    /// — shared by [`try_accelerated_geo_radius`](Compiler::try_accelerated_geo_radius)
+    /// and the ordinary [`resolve_call`](Compiler::resolve_call) geoDistance
+    /// branch, so both bind a literal number exactly the same way.
+    fn geo_arg_sql(&mut self, term: Term) -> Option<String> {
+        match term {
+            Term::Value { value, .. } => {
+                let v = match &value {
+                    Value::Number(_) => value,
+                    Value::String(s) => s.trim().parse::<f64>().map(number_value).unwrap_or(value),
+                    _ => value,
+                };
+                Some(self.push_param(v))
+            }
+            Term::Scalar { sql, .. } => Some(sql),
+            Term::Multi { .. } => None,
+        }
+    }
+
     fn resolve_call(&mut self, name: &str, args: &[Operand]) -> Result<Term, FilterError> {
         match name {
             "geoDistance" => {
                 let mut parts = Vec::with_capacity(4);
                 for arg in args {
-                    let sql = match self.resolve_operand(arg, false)? {
-                        Term::Value { value, .. } => {
-                            let v = match &value {
-                                Value::Number(_) => value,
-                                Value::String(s) => {
-                                    s.trim().parse::<f64>().map(number_value).unwrap_or(value)
-                                }
-                                _ => value,
-                            };
-                            self.push_param(v)
-                        }
-                        Term::Scalar { sql, .. } => sql,
-                        Term::Multi { .. } => {
-                            return Err(FilterError::Unsupported(
-                                "geoDistance arguments must be scalar".into(),
-                            ))
-                        }
-                    };
+                    let term = self.resolve_operand(arg, false)?;
+                    let sql = self.geo_arg_sql(term).ok_or_else(|| {
+                        FilterError::Unsupported("geoDistance arguments must be scalar".into())
+                    })?;
                     parts.push(sql);
                 }
                 let (lon_a, lat_a, lon_b, lat_b) = (&parts[0], &parts[1], &parts[2], &parts[3]);
@@ -559,6 +668,21 @@ impl<'a> Compiler<'a> {
         any_of: bool,
         right: &Operand,
     ) -> Result<String, FilterError> {
+        // PostGIS-accelerated radius filter: `geoDistance(field.lon,
+        // field.lat, x, y) < r` / `<= r` becomes `ST_DWithin(...)`
+        // instead of a haversine value compared to a literal, when the
+        // host says an index exists for `field` (see `Resolver::
+        // postgis_geo_index`'s doc). Only for `<`/`<=` and only when
+        // `any_of` is false (a radius filter is never multi-valued) —
+        // anything else falls straight through to the unmodified path
+        // below, which still gives the exact same haversine-based answer
+        // it always has.
+        if !any_of && matches!(op, CompareOp::Lt | CompareOp::Lte) {
+            if let Some(sql) = self.try_accelerated_geo_radius(left, right)? {
+                return Ok(sql);
+            }
+        }
+
         let mut l = self.resolve_operand(left, !any_of)?;
         let mut r = self.resolve_operand(right, !any_of)?;
 
@@ -790,12 +914,21 @@ pub fn compile_sort_function(
     param_offset: usize,
 ) -> Result<CompiledFilter, FilterError> {
     let operand = crate::parser::Parser::parse_operand_str(src)?;
-    if !matches!(operand, Operand::Call { .. }) {
+    let Operand::Call { name, args } = &operand else {
         return Err(FilterError::Unsupported(format!(
             "'{src}' is not a sortable function call"
         )));
-    }
+    };
     let mut compiler = Compiler::new(resolver, param_offset);
+    if name == "geoDistance" && args.len() == 4 {
+        if let Some(sql) = compiler.try_accelerated_geo_knn(args)? {
+            return Ok(CompiledFilter {
+                sql,
+                params: compiler.params,
+                joins: compiler.paths.joins,
+            });
+        }
+    }
     let term = compiler.resolve_operand(&operand, false)?;
     let sql = match term {
         Term::Scalar { sql, .. } => sql,

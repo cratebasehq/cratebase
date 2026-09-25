@@ -793,6 +793,11 @@ fn rule_context(auth: Option<&Auth>, superuser: bool) -> RequestContext {
         method: "GET".to_string(),
         context: CONTEXT_REALTIME.to_string(),
         superuser,
+        // Rule re-evaluation here runs in-process against an in-memory
+        // row snapshot (see `check`/`check_via_sql`'s fallback), never a
+        // fresh geo query a GiST index could speed up, so there is
+        // nothing this would ever accelerate.
+        postgis_available: false,
     }
 }
 
@@ -842,6 +847,7 @@ async fn render(
             method: "GET".to_string(),
             context: CONTEXT_REALTIME.to_string(),
             superuser: auth.is_some_and(|a| a.is_superuser),
+            postgis_available: false,
         };
         let mut items = vec![record];
         if let Err(err) = cratebase_db::expand::resolve(

@@ -36,6 +36,7 @@ pub mod dev;
 pub mod embeddings;
 pub mod events;
 pub mod extract;
+pub mod geo;
 pub mod hooks;
 pub mod http_error;
 pub mod js_migrations;

@@ -161,6 +161,11 @@ async fn install_extension(
 
     if name.eq_ignore_ascii_case("postgis") {
         app.set_postgis_available(true);
+        // A `geoPoint` field created before `postgis` existed never got
+        // its GiST index (see `crate::geo::sync_collection`'s doc) —
+        // catch every collection up now rather than waiting for each
+        // one's next schema change.
+        crate::geo::sync_all(&app).await;
     }
 
     crate::audit::write(

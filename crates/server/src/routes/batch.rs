@@ -350,6 +350,7 @@ fn sub_request_info(outer: &RequestInfo, item: &BatchItem, target: &Target) -> R
         body: item.body.clone(),
         context: "batch".to_string(),
         auth: outer.auth.clone(),
+        postgis_available: outer.postgis_available,
     }
 }
 

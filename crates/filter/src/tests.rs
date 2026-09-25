@@ -1075,6 +1075,55 @@ fn geo_distance() {
     ));
 }
 
+#[test]
+fn geo_distance_accelerates_a_radius_filter_when_the_host_has_an_index() {
+    let r = TestResolver::postgres("posts").with_postgis_index("loc", "GEOG(posts.loc)");
+    let c = with("geoDistance(loc.lon, loc.lat, 10.5, 20) < 5", &r);
+    assert_eq!(
+        c.sql,
+        "ST_DWithin(GEOG(posts.loc), ST_MakePoint($1, $2)::geography, ($3) * 1000)"
+    );
+    assert_eq!(c.params, vec![json!(10.5), json!(20), json!(5)]);
+
+    // <= also accelerates.
+    let c = with("geoDistance(loc.lon, loc.lat, 10.5, 20) <= 5", &r);
+    assert!(c.sql.starts_with("ST_DWithin("), "{}", c.sql);
+
+    // Anything other than </<=  falls back to the ordinary haversine path
+    // (an index can't help "farther than" or "exactly equal to").
+    let c = with("geoDistance(loc.lon, loc.lat, 10.5, 20) > 5", &r);
+    assert!(c.sql.starts_with("(6371 * acos("), "{}", c.sql);
+    let c = with("geoDistance(loc.lon, loc.lat, 10.5, 20) = 5", &r);
+    assert!(c.sql.starts_with("(6371 * acos("), "{}", c.sql);
+
+    // No index for this field on the host: falls back too.
+    let plain = postgres("geoDistance(loc.lon, loc.lat, 10.5, 20) < 5");
+    assert!(plain.sql.starts_with("(6371 * acos("), "{}", plain.sql);
+
+    // SQLite never accelerates, index or not.
+    let sqlite_r = TestResolver::sqlite("posts").with_postgis_index("loc", "GEOG(posts.loc)");
+    let c = with("geoDistance(loc.lon, loc.lat, 10.5, 20) < 5", &sqlite_r);
+    assert!(c.sql.starts_with("geoDistance("), "{}", c.sql);
+
+    // A geoDistance call over two arbitrary points (not `field.lon`/
+    // `field.lat`) never accelerates, even with an index available.
+    let c = with("geoDistance(1, 2, loc.lon, loc.lat) < 5", &r);
+    assert!(c.sql.starts_with("(6371 * acos("), "{}", c.sql);
+}
+
+#[test]
+fn geo_distance_accelerates_a_nearest_sort_to_knn() {
+    let r = TestResolver::postgres("posts").with_postgis_index("loc", "GEOG(posts.loc)");
+    let c = compile_sort_function("geoDistance(loc.lon, loc.lat, 10.5, 20)", &r, 0).unwrap();
+    assert_eq!(c.sql, "GEOG(posts.loc) <-> ST_MakePoint($1, $2)::geography");
+    assert_eq!(c.params, vec![json!(10.5), json!(20)]);
+
+    // No index: ordinary haversine sort SQL, unchanged.
+    let plain = TestResolver::postgres("posts");
+    let c = compile_sort_function("geoDistance(loc.lon, loc.lat, 10.5, 20)", &plain, 0).unwrap();
+    assert!(c.sql.starts_with("(6371 * acos("), "{}", c.sql);
+}
+
 // --- sort ---------------------------------------------------------------------
 
 #[test]
