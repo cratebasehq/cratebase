@@ -76,12 +76,16 @@ default and hidden from the dashboard until an operator opts in, rather
 than always-on background cost or a permanently deleted feature:
 
 - **Teams** (`crates/server/src/teams.rs`). `settings.teams.enabled`
-  (default `false`). `App::bootstrap` only calls `teams::bind_hooks` when
-  set — the reactive bootstrap-owner hook is never bound otherwise, zero
-  background cost. The `_teams`/`_team_members` system collections
-  always exist regardless (cheap, and avoids a migration-reversibility
-  story), but stay out of the dashboard sidebar's System group until
-  enabled.
+  (default `false`). Unlike LLM/Queue below, `App::bootstrap`
+  unconditionally calls `teams::bind_hooks` — the reactive bootstrap-owner
+  hook itself checks the *current* setting on every `_teams` create and
+  falls straight through (a no-op, `e.next()`) while disabled, so a
+  `PATCH /api/settings` toggle takes effect immediately on a running
+  server rather than needing a restart, matching PocketBase's own
+  settings-are-live-immediately behaviour. The `_teams`/`_team_members`
+  system collections always exist regardless (cheap, and avoids a
+  migration-reversibility story), but stay out of the dashboard sidebar's
+  System group until enabled.
 - **LLM chat gateway** (`crates/server/src/routes/llm.rs`). Reuses the
   existing `settings.llm.enabled` flag rather than adding a redundant
   second one: `routes::api_router` only merges `llm::router()` when it's
@@ -97,12 +101,15 @@ than always-on background cost or a permanently deleted feature:
   registers `QueuePlugin` when set, so an idle install never spawns the
   worker tick.
 
-Both flags' route/hook wiring is decided once, at boot (`App::serve`
+LLM's and Queue's route/hook wiring is decided once, at boot (`App::serve`
 assembles the router exactly once from `App::bootstrap`'s already-loaded
-settings) — flipping a toggle via `PATCH /api/settings` takes effect on
-the next restart, not live. That is the deliberate trade-off for "zero
+settings) — flipping either toggle via `PATCH /api/settings` takes effect
+on the next restart, not live. That is the deliberate trade-off for "zero
 background cost while disabled": there is nothing to tear down or
-re-wire at runtime because nothing was ever wired up.
+re-wire at runtime because nothing was ever wired up. Teams is the
+exception (see above): its hook is always bound and reads the setting
+live, specifically so enabling it doesn't silently miss ownership rows
+until someone happens to restart the server.
 
 ## Shipped
 

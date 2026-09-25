@@ -551,9 +551,11 @@ pub(crate) async fn create_record(
     common::apply_number_modifiers(None, &mut input, &collection);
     validate::apply_modifiers(None, &mut input, &collection);
     let mut record = records::from_body(collection.clone(), &input);
-    crate::embeddings::apply_embeddings(&mut record, &input)
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    // Auto-embeddings for `vector` fields are computed inside
+    // `write_record`, after `onRecordCreate` has run — not here — so a
+    // hook that derives/overwrites a vector field's `sourceField` is
+    // embedded from what the hook actually wrote, not from this
+    // pre-hook `record`. See `write_record`'s doc comment.
     // The id must exist before the files are stored: the object key is
     // `{collectionId}/{recordId}/{name}`.
     if record.id().is_empty() {
@@ -587,6 +589,7 @@ pub(crate) async fn create_record(
                 None,
                 Write::Create,
                 uploads,
+                input,
             ))
         },
         record,
@@ -676,9 +679,11 @@ pub(crate) async fn update_record(
     validate::apply_modifiers(Some(&previous), &mut input, &collection);
     let mut record = previous.clone();
     records::apply_body(&mut record, &input);
-    crate::embeddings::apply_embeddings(&mut record, &input)
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    // Auto-embeddings for `vector` fields are computed inside
+    // `write_record`, after `onRecordUpdate` has run — not here — so a
+    // hook that derives/overwrites a vector field's `sourceField` is
+    // embedded from what the hook actually wrote, not from this
+    // pre-hook `record`. See `write_record`'s doc comment.
     apply_auth_fields(
         &collection,
         &body.data,
@@ -713,6 +718,7 @@ pub(crate) async fn update_record(
                     Some(before),
                     Write::Update,
                     uploads,
+                    input,
                 )
                 .await?;
                 if is_superusers
@@ -1051,6 +1057,18 @@ where
 /// Validate + write one record inside the caller's transaction, firing
 /// `onRecordValidate`, `onRecord{Create,Update}`, their `*Execute`
 /// siblings and finally the after-success / after-error hooks.
+///
+/// `input` is the raw request body (post-modifiers, pre-hooks) that
+/// produced `record`. It is threaded all the way in here — rather than
+/// having the caller apply auto-embeddings before this function even
+/// starts — so that `vector` fields get (re)computed from the record
+/// *after* `onRecordCreate`/`onRecordUpdate` have had a chance to
+/// mutate it, mirroring PocketBase's own
+/// "onRecordCreate → e.next() → persist" ordering. Computing embeddings
+/// any earlier means a hook that derives or overwrites a vector field's
+/// `sourceField` (a common pattern — see `pb_hooks/*.pb.js` examples)
+/// gets embedded from stale or empty text instead of what the hook
+/// actually wrote.
 pub(crate) async fn write_record(
     tx: TxApp,
     collection: Arc<Collection>,
@@ -1058,6 +1076,7 @@ pub(crate) async fn write_record(
     previous: Option<Record>,
     write: Write,
     uploads: Vec<UploadMeta>,
+    input: Map<String, Value>,
 ) -> Result<Record, AppError> {
     let tags = collection_tags(&collection);
 
@@ -1087,8 +1106,20 @@ pub(crate) async fn write_record(
             let app = e.app.clone();
             let collection = e.collection.clone();
             let previous = e.previous.clone();
-            let record = std::mem::replace(&mut e.record, Record::new(collection.clone()));
+            let mut record = std::mem::replace(&mut e.record, Record::new(collection.clone()));
             Box::pin(async move {
+                // `onRecordCreate`/`onRecordUpdate` (the hook that just
+                // ran to get here, via `e.next()`) has already had its
+                // say on `record` — compute vector embeddings now, from
+                // whatever it left behind, before the `*Execute` hook
+                // and the actual persist below.
+                if let Err(err) =
+                    crate::embeddings::apply_embeddings(&mut record, &input, previous.as_ref())
+                        .await
+                {
+                    e.record = record;
+                    return Err(AppError::internal(err.to_string()));
+                }
                 let mut inner =
                     RecordEvent::new(app.clone(), collection, record, previous, inner_tags);
                 let outcome = write

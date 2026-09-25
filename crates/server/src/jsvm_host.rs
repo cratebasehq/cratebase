@@ -1161,6 +1161,78 @@ mod hot_reload_tests {
             .to_vec()
     }
 
+    async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+        let bytes = body_bytes(resp).await;
+        if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        }
+    }
+
+    fn json_request(
+        method: &str,
+        uri: &str,
+        token: &str,
+        body: serde_json::Value,
+    ) -> Request<Body> {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", token)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+        req
+    }
+
+    fn authed_get(uri: &str, token: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", token)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+        req
+    }
+
+    /// Retries `check` every 50ms until it returns `true` or `timeout`
+    /// elapses, for tests driven by `spawn_watcher`'s background polling
+    /// thread rather than a synchronous `Runtime::reload()` call.
+    async fn poll_until<F, Fut>(timeout: std::time::Duration, mut check: F) -> bool
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if check().await {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A superuser token for a freshly bootstrapped `app`, for tests that
+    /// need to create collections or write records through the real HTTP
+    /// router rather than reaching into `App` internals directly.
+    async fn superuser_token(app: &App) -> String {
+        let id = app
+            .create_superuser("admin@example.com", "hunter2hunter2")
+            .await
+            .expect("superuser");
+        app.mint_token("_superusers", &id, cratebase_auth::TokenType::Auth, 3600)
+            .await
+            .expect("token")
+    }
+
     /// A `--dev` app booted against an *empty* `pb_hooks/` directory. Hot
     /// reload only ever reloads an already-running pool (`Runtime::reload`
     /// re-evaluates files on the existing workers), so this is only
@@ -1303,6 +1375,370 @@ mod hot_reload_tests {
         assert!(
             !app.cron().has("goneAfterReload"),
             "a cron job a reloaded file no longer registers must be removed"
+        );
+    }
+
+    /// Dogfooding bug report: editing a `pb_hooks/*.pb.js` file while
+    /// `--dev` runs reportedly left record-hook *enforcement* stuck on
+    /// the old file's behavior until a restart, unlike `routerAdd`/
+    /// `cronAdd` above (already covered, and already working). Reproduce
+    /// it the same way as those: bind `onRecordCreate` to reject a
+    /// create missing a field, confirm the rejection, rewrite the file
+    /// with a different message, `Runtime::reload()`, and confirm the
+    /// *new* message is what a create now gets — proving the record hook
+    /// itself, not just the router/cron tables, is rebuilt by reload.
+    #[tokio::test]
+    async fn record_hook_enforcement_and_message_change_after_edit_take_effect_on_reload() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        let hook_file = hooks_dir.join("main.pb.js");
+        std::fs::write(
+            &hook_file,
+            r#"onRecordCreate((e) => {
+                if (!e.record.get("name")) { throw new BadRequestError("name is required v1"); }
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("initial reload");
+
+        let rejected = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(rejected).await;
+        assert_eq!(body["message"], "name is required v1", "{body}");
+
+        std::fs::write(
+            &hook_file,
+            r#"onRecordCreate((e) => {
+                if (!e.record.get("name")) { throw new BadRequestError("name is required v2"); }
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after editing the hook file");
+
+        let rejected_again = router
+            .oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected_again.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(rejected_again).await;
+        assert_eq!(
+            body["message"], "name is required v2",
+            "a rewritten hook file's message must take effect after reload, not the stale one: {body}"
+        );
+    }
+
+    /// Dogfooding bug report: `onRecordAfterUpdateSuccess` reportedly
+    /// never fired on `PATCH` at all — independent of hot reload, so
+    /// this is checked with no reload in between first — and, per the
+    /// bug report, possibly the same root cause as the reload issue
+    /// above, so it is checked again *after* a reload too. The hook
+    /// writes a `markers` row (rather than just observing) so a false
+    /// pass can't come from an event that "fires" with nothing to prove
+    /// it actually ran and reached `$app.save`.
+    #[tokio::test]
+    async fn on_record_after_update_success_fires_on_patch_before_and_after_reload() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        for (name, fields) in [
+            (
+                "widgets",
+                serde_json::json!([{"name": "name", "type": "text"}]),
+            ),
+            (
+                "markers",
+                serde_json::json!([{"name": "note", "type": "text"}]),
+            ),
+        ] {
+            let resp = router
+                .clone()
+                .oneshot(json_request(
+                    "POST",
+                    "/api/collections",
+                    &token,
+                    serde_json::json!({
+                        "name": name,
+                        "type": "base",
+                        "listRule": "",
+                        "viewRule": "",
+                        "createRule": "",
+                        "updateRule": "",
+                        "deleteRule": "",
+                        "fields": fields,
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "creating {name}");
+        }
+
+        let hook_file = hooks_dir.join("main.pb.js");
+        std::fs::write(
+            &hook_file,
+            r#"onRecordAfterUpdateSuccess((e) => {
+                const markers = $app.findCollectionByNameOrId("markers");
+                const marker = new Record(markers, { note: "updated-v1:" + e.record.id });
+                e.app.save(marker);
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("initial reload");
+
+        let created = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({"name": "before"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let created = body_json(created).await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let updated = router
+            .clone()
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/api/collections/widgets/records/{id}"),
+                &token,
+                serde_json::json!({"name": "after"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+
+        let markers_before_reload = router
+            .clone()
+            .oneshot(authed_get(
+                &format!("/api/collections/markers/records?filter=note='updated-v1:{id}'"),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(markers_before_reload.status(), StatusCode::OK);
+        let markers_before_reload = body_json(markers_before_reload).await;
+        assert_eq!(
+            markers_before_reload["items"].as_array().unwrap().len(),
+            1,
+            "onRecordAfterUpdateSuccess must fire on PATCH and its $app.save must land: {markers_before_reload}"
+        );
+
+        // Same hook, rewritten, then reloaded — the marker's prefix
+        // changes, so a marker row appearing after this PATCH can only
+        // have come from the *reloaded* handler actually running, not a
+        // stale binding from before.
+        std::fs::write(
+            &hook_file,
+            r#"onRecordAfterUpdateSuccess((e) => {
+                const markers = $app.findCollectionByNameOrId("markers");
+                const marker = new Record(markers, { note: "updated-v2:" + e.record.id });
+                e.app.save(marker);
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm()
+            .unwrap()
+            .reload()
+            .await
+            .expect("reload after editing the hook file");
+
+        let updated_again = router
+            .clone()
+            .oneshot(json_request(
+                "PATCH",
+                &format!("/api/collections/widgets/records/{id}"),
+                &token,
+                serde_json::json!({"name": "after-again"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(updated_again.status(), StatusCode::OK);
+
+        let markers_after_reload = router
+            .oneshot(authed_get(
+                &format!("/api/collections/markers/records?filter=note='updated-v2:{id}'"),
+                &token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(markers_after_reload.status(), StatusCode::OK);
+        let markers_after_reload = body_json(markers_after_reload).await;
+        assert_eq!(
+            markers_after_reload["items"].as_array().unwrap().len(),
+            1,
+            "onRecordAfterUpdateSuccess must still fire on PATCH after a reload: {markers_after_reload}"
+        );
+    }
+
+    /// Root cause of the dogfooding bug report ("editing a pb_hooks/*.pb.js
+    /// while --dev runs reportedly disables record-hook enforcement until
+    /// restart"): unlike the tests above, which call `Runtime::reload()`
+    /// directly, this drives the *actual* `--dev` mechanism a developer
+    /// relies on — `spawn_watcher`'s background poll of `snapshot()`
+    /// (`crates/jsvm/src/runtime.rs`), which only ever compared each
+    /// file's path and mtime. Rewriting a hook file with new content that
+    /// happens to land on the *same* mtime (a coarse or stalled clock
+    /// tick; trivial to hit editing a short string constant, exactly this
+    /// test's "v1" -> "v2" edit) is indistinguishable from "nothing
+    /// changed" to that comparison, so the watcher never notices and the
+    /// stale (v1) hook stays bound — indefinitely, since nothing about a
+    /// *subsequent*, differently-timed edit is needed to unstick it; the
+    /// process just never reloads again until something else forces it.
+    /// Forces the second write's mtime to exactly equal the first's to
+    /// make the collision deterministic rather than hoping to win a race
+    /// against filesystem timestamp resolution.
+    #[tokio::test]
+    async fn editing_a_hook_file_with_no_mtime_change_still_reloads_via_the_dev_watcher() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        let reject_message = || {
+            let router = router.clone();
+            let token = token.clone();
+            async move {
+                let resp = router
+                    .oneshot(json_request(
+                        "POST",
+                        "/api/collections/widgets/records",
+                        &token,
+                        serde_json::json!({}),
+                    ))
+                    .await
+                    .unwrap();
+                if resp.status() != StatusCode::BAD_REQUEST {
+                    return None;
+                }
+                let body = body_json(resp).await;
+                body["message"].as_str().map(str::to_string)
+            }
+        };
+
+        let hook_file = hooks_dir.join("main.pb.js");
+        std::fs::write(
+            &hook_file,
+            r#"onRecordCreate((e) => {
+                if (!e.record.get("name")) { throw new BadRequestError("watcher v1"); }
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+
+        // No manual `reload()` here — only the `--dev` watcher, which
+        // polls once a second, gets this first version live.
+        let saw_v1 = poll_until(std::time::Duration::from_secs(5), || {
+            let check = reject_message;
+            async move { check().await.as_deref() == Some("watcher v1") }
+        })
+        .await;
+        assert!(
+            saw_v1,
+            "the --dev watcher never picked up the first hook file write"
+        );
+
+        // Same mtime as the file already has, new content — the same
+        // shape of edit a developer makes tweaking a string in place.
+        let stuck_mtime = std::fs::metadata(&hook_file).unwrap().modified().unwrap();
+        std::fs::write(
+            &hook_file,
+            r#"onRecordCreate((e) => {
+                if (!e.record.get("name")) { throw new BadRequestError("watcher v2"); }
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&hook_file)
+            .unwrap()
+            .set_modified(stuck_mtime)
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&hook_file).unwrap().modified().unwrap(),
+            stuck_mtime,
+            "test setup: the second write must keep exactly the first write's mtime"
+        );
+
+        let saw_v2 = poll_until(std::time::Duration::from_secs(5), || {
+            let check = reject_message;
+            async move { check().await.as_deref() == Some("watcher v2") }
+        })
+        .await;
+        assert!(
+            saw_v2,
+            "a hook file rewritten with the same mtime as before must still reload via the \
+             --dev watcher, not stay stuck on the previous version until something else \
+             happens to change the mtime"
         );
     }
 }

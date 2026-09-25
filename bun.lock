@@ -7,7 +7,7 @@
     },
     "sdk/js/client": {
       "name": "@cratebase/client",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "typescript": "~6.0.2",
       },
@@ -27,7 +27,7 @@
       "name": "@cratebase/react",
       "version": "0.2.0",
       "devDependencies": {
-        "@cratebase/client": "^0.1.0",
+        "@cratebase/client": "^0.2.0",
         "@happy-dom/global-registrator": "^20.14.5",
         "@testing-library/react": "^16.3.3",
         "@types/react": "^19.0.0",
@@ -38,7 +38,7 @@
         "typescript": "~6.0.2",
       },
       "peerDependencies": {
-        "@cratebase/client": "^0.1.0",
+        "@cratebase/client": "^0.2.0",
         "react": "^18 || ^19",
       },
     },

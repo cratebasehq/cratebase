@@ -101,6 +101,12 @@ pub struct AppInner {
     setup_token: OnceLock<String>,
 }
 
+/// How often [`App::start_schema_watch`] polls for another process's
+/// schema change: short enough that a `cratebase schema push` run right
+/// after a server started is visible almost immediately, cheap enough
+/// (one small aggregate query) to run this often forever.
+const SCHEMA_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+
 #[derive(Clone)]
 pub struct App {
     inner: Arc<AppInner>,
@@ -373,6 +379,90 @@ impl App {
         cratebase_auth::signing_key(&self.inner.config.secret, record_token_key, type_secret)
     }
 
+    /// A running server used to have no way to notice a collection
+    /// created or changed by a *different* process sharing the same
+    /// database — `_collections`'s in-memory `CollectionStore` only ever
+    /// got reloaded by *this* process's own writes (see
+    /// `cratebase_db::collections::CollectionStore::insert`/`update`/
+    /// `delete`) — so `cratebase schema push` run from a separate CLI
+    /// invocation, or a second server instance, left every other process
+    /// serving "Missing collection context." 404s for the new/changed
+    /// collection until it restarted. Started once from
+    /// [`App::bootstrap`], this polls `cratebase_db::collections::watermark`
+    /// (a cheap `COUNT`/`MAX` over `_collections`, not a full re-fetch)
+    /// every [`SCHEMA_WATCH_INTERVAL`] and reloads the snapshot the
+    /// moment it disagrees with the last-seen value — including on the
+    /// very first tick, which is a harmless no-op reload rather than a
+    /// special case to skip, since `db.bootstrap()` already loaded the
+    /// same data moments earlier.
+    ///
+    /// A poll rather than reusing `crate::realtime`'s existing Postgres
+    /// LISTEN/NOTIFY channel: that channel's payload shape is
+    /// record-fan-out specific (`collection`/`action`/`id`, dispatched in
+    /// `crate::realtime::receive_cross_node`), and SQLite's
+    /// `Engine::notify_realtime`/`subscribe_realtime` are no-ops by
+    /// design (see that module's doc) — a poll is the one mechanism that
+    /// works identically on both backends, at the cost of the bounded
+    /// `SCHEMA_WATCH_INTERVAL` staleness window rather than
+    /// near-instant delivery on Postgres specifically.
+    ///
+    /// Uses a weak reference so the poll loop stops on its own once every
+    /// `App` clone is gone, rather than pinning the database connection
+    /// pool open forever the way a strong-referencing `tokio::spawn`
+    /// would; in production `App` lives for the process's whole life, so
+    /// this only actually matters for tests, which build a fresh `App`
+    /// per test on a `#[tokio::test]` runtime that gets torn down (and
+    /// every task on it dropped) when the test function returns.
+    fn start_schema_watch(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(SCHEMA_WATCH_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let app = App { inner };
+                let Some(db) = app.try_db() else {
+                    // Still mid-`bootstrap()` (the schema watch is only
+                    // started after `db` is set, but a very first tick
+                    // could in principle race a slow bootstrap hook);
+                    // try again next tick rather than panicking.
+                    continue;
+                };
+                // Compared against `db.collections.watermark()` — what is
+                // *currently cached* — rather than a value this loop
+                // tracks independently of the cache. See
+                // `cratebase_db::collections::Snapshot::watermark`'s doc
+                // for why that distinction matters: this process's own
+                // writes (`CollectionStore::insert`/`update`/`delete`)
+                // reload the cache without this loop ever hearing about
+                // it, so a private "last value I saw" tracker here could
+                // go stale relative to the cache and then miss a real
+                // external change that happens to coincide with that
+                // stale value.
+                let live = match cratebase_db::collections::watermark(db).await {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "schema-change watch: failed to read the _collections watermark");
+                        continue;
+                    }
+                };
+                if live == db.collections.watermark() {
+                    continue;
+                }
+                if let Err(e) = db.collections.load(db).await {
+                    tracing::warn!(error = %e, "schema-change watch: failed to reload collections");
+                } else {
+                    tracing::debug!(
+                        "schema-change watch: reloaded collections (external write detected)"
+                    );
+                }
+            }
+        });
+    }
+
     /// Open everything and get the app ready to serve. Idempotent-ish:
     /// calling it twice is refused rather than silently reopening the
     /// database.
@@ -458,19 +548,29 @@ impl App {
         crate::cron_jobs::bind_hooks(self);
         crate::cron_jobs::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
-        // Toggle-gated built-in module: `settings.teams.enabled` defaults
-        // `false`, and when it stays that way `bind_hooks` is simply never
-        // called — no reactive hook bound, zero background cost, matching
-        // `routes::api_router`'s equivalent gate on `settings.llm.enabled`.
-        // The `_teams`/`_team_members` system collections still exist
-        // either way; only the hook wiring (and, in the dashboard, the
-        // sidebar's System group visibility) is gated.
-        if self.settings().teams.enabled {
-            crate::teams::bind_hooks(self);
-        }
+        // Always bound, unlike `settings.llm.enabled`'s route-merge gate:
+        // `settings.teams.enabled` can flip on a *running* server via
+        // `PATCH /api/settings`, and a hook bound only here at boot would
+        // never see that change — new `_teams` rows would stay ownerless
+        // until the process restarted. `crate::teams::bind_hooks` checks
+        // the *current* setting itself on every `_teams` create and is a
+        // no-op (falls straight through to `e.next()`) while teams stays
+        // disabled, so this costs nothing beyond one settings read per
+        // `_teams` create either way. The `_teams`/`_team_members` system
+        // collections still exist regardless of the toggle; only the
+        // owner-bootstrap behaviour (and, in the dashboard, the sidebar's
+        // System group visibility) is gated.
+        crate::teams::bind_hooks(self);
         // Postgres only (see `crate::realtime`'s module doc); a no-op on
         // SQLite because `Engine::subscribe_realtime`'s default is.
         crate::realtime::start_cross_node_listener(self);
+        // Both backends: notices a collection created or changed by a
+        // *different* process sharing this database (another server
+        // instance, or `cratebase schema push` run separately) and
+        // reloads this process's collection cache without a restart. See
+        // `Self::start_schema_watch`'s own doc for why this is a poll
+        // rather than reusing the realtime LISTEN/NOTIFY channel above.
+        self.start_schema_watch();
         crate::push::bind_hooks(self);
         crate::audit::bind_hooks(self);
         crate::automigrate::bind_hooks(self);

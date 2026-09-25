@@ -489,6 +489,7 @@ async fn create_item(
         None,
         Write::Create,
         upload_meta,
+        input,
     )
     .await;
     let saved = match saved {
@@ -609,6 +610,7 @@ async fn update_item(
         Some(before),
         Write::Update,
         upload_meta,
+        input,
     )
     .await;
     let saved = match saved {

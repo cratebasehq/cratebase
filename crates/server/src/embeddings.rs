@@ -247,21 +247,34 @@ pub fn vector_of(record: &Record, field: &str) -> Option<Vec<f32>> {
 /// that has `embedding` configured, and write the resulting float arrays
 /// directly onto `record`.
 ///
-/// `input` is the caller's request body (after the number/multi-value
-/// modifier passes, before the write), used only to tell "the caller
-/// supplied this field/its source explicitly this request" from "nothing
-/// changed" — never mutated:
+/// Called from `crate::routes::records::write_record`, *after*
+/// `onRecordCreate`/`onRecordUpdate` have run — so `record` already
+/// reflects anything a hook derived or overwrote — and before the
+/// record is actually persisted. Computing embeddings any earlier (this
+/// function used to be called before any hook ran at all) meant a hook
+/// that derives a vector field's `sourceField` got embedded from stale
+/// or empty text instead of what the hook wrote.
+///
+/// `input` is the caller's original request body (after the
+/// number/multi-value modifier passes, before any hook ran), used only
+/// to tell "the caller supplied this field explicitly this request"
+/// from "nothing changed" — never mutated. `previous` is the row as it
+/// was before this write (`None` on create), used to detect whether the
+/// source field's *value* actually changed — which also catches a hook
+/// changing it, unlike checking `input` alone:
 ///
 /// * a vector field present in `input` is caller-supplied and is never
 ///   overridden;
 /// * on create, a configured vector field is always computed (when its
 ///   source field has non-blank text);
-/// * on update, it is only recomputed when the source field itself was
-///   part of this request — an update that doesn't touch the source text
-///   leaves a previously computed vector alone.
+/// * on update, it is only recomputed when the source field's value
+///   differs from `previous` — an update that doesn't change the source
+///   text (whether via the request body or a hook) leaves a previously
+///   computed vector alone.
 pub async fn apply_embeddings(
     record: &mut Record,
     input: &Map<String, Value>,
+    previous: Option<&Record>,
 ) -> Result<(), EmbeddingError> {
     let collection = record.collection().clone();
     let is_new = record.is_new();
@@ -276,10 +289,16 @@ pub async fn apply_embeddings(
         if input.contains_key(&field.name) {
             continue;
         }
-        if !is_new && !input.contains_key(&cfg.source_field) {
-            continue;
-        }
         let source = record.get_string(&cfg.source_field);
+        if !is_new {
+            let source_changed = match previous {
+                Some(previous) => previous.get_string(&cfg.source_field) != source,
+                None => input.contains_key(&cfg.source_field),
+            };
+            if !source_changed {
+                continue;
+            }
+        }
         if source.trim().is_empty() {
             continue;
         }

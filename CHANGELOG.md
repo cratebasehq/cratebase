@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.2.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.3.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
@@ -10,7 +10,73 @@ first real tagged release.
 
 ## [Unreleased]
 
+## 0.3.0 — 2026-09-25
+
+Security-hardening and developer-experience release, the result of a
+full audit (PR [#27](https://github.com/cratebasehq/cratebase/pull/27)).
+**Everyone on 0.2.0 should upgrade** — several fixes below close
+privilege-escalation, stored-XSS and data-loss paths.
+
+### Upgrading from 0.2.0 (breaking changes)
+
+- **First-run setup needs an install token.** `POST /api/setup` now
+  requires the one-time token printed in the server log at boot (or
+  `CB_SETUP_TOKEN`), sent as `token` in the body or `X-Setup-Token`.
+  `@cratebase/client`'s `admin.setup()` takes it too. The dashboard reads
+  it from the logged link. `cratebase superuser create` is unchanged.
+- **Auth rate limiting is on by default** for fresh installs
+  (`AUTH_RATE_LIMIT_ENABLED=false` opts out). Existing installs keep their
+  stored settings.
+- **Signing secrets are validated.** An empty `CB_SECRET`/`AUTH_SECRET`
+  is ignored (the generated `.secret` is used) and a non-empty one shorter
+  than 32 bytes refuses to boot.
+- **Active file types are served as downloads.** html/svg/xml/js uploads
+  get `Content-Disposition: attachment` plus a sandbox CSP; upload
+  `mimeTypes` checks now use the sniffed type, not the client's header.
+- **`.env.example` / `docker-compose.yml` use the env vars the server
+  actually reads** (e.g. `S3_ACCESS_KEY`/`S3_SECRET`, `CB_SENDER_ADDRESS`,
+  `SMTP_TLS`). Names like `STORAGE_DRIVER`, `MAIL_DRIVER`,
+  `S3_ACCESS_KEY_ID` were never read — update any `.env` copied from the
+  old example.
+- **Passwords are capped at 256 bytes.**
+- **Generated TypeScript types use `type` aliases instead of
+  `interface`**, which makes `createClient<Schema>()` type-check.
+
+### Security
+
+- SQL console: a data-modifying CTE could bypass the read-only gate on
+  Postgres (e.g. promote an admin to owner). Reads now run in a
+  `READ ONLY` transaction with a real `statement_timeout`.
+- Stored XSS via uploads closed: magic-byte MIME sniffing, sandbox CSP on
+  file responses, global `nosniff`/`Referrer-Policy`, frame protection on
+  the dashboard.
+- Backup restore no longer deletes the live database when `DATABASE_URL`
+  isn't `data.db`, and keeps `.secret` and `plugins/`; swaps roll back on
+  failure.
+- `POST /api/setup` race (concurrent calls created several owners) fixed.
+- Tokens are redacted from request logs; `$http.send` has a default
+  timeout; `rustls` bumped to 0.23.45 (RUSTSEC-2026-0285).
+
 ### Added
+
+- **`cratebase dev`** — one command for local development: data dir,
+  superuser, `schema.json`, seed data, TypeScript types, hook hot reload.
+- **`cratebase typegen`**, `GET /api/typegen` and a `--dev` watch
+  (`CB_TYPEGEN_OUT`); select unions, relation `expand` and Create/Update
+  input types.
+- **`cratebase seed` / `cratebase reset`**, `pb_seed/` / `CB_SEED_DIR`.
+- **JS migrations actually run** (`pb_migrations/`, on boot and via
+  `migrate up/down/collections/history-sync`), and `--automigrate`
+  writes migration files.
+- **Postgres**: TLS via `sslmode` (including `verify-full`),
+  `DB_POOL_SIZE`, and backup/restore via `pg_dump`/`pg_restore`.
+- **Dev mail inbox** in the dashboard (Settings → Mail inbox) whenever no
+  SMTP/Resend is configured.
+- Scheduled backup status and failures surfaced in the dashboard and
+  audit log; CIDR entries in the superuser IP allowlist; `/api/health`
+  checks the database.
+- `examples/team-board` flagship app, `.devcontainer` for Codespaces,
+  and a rewritten landing page.
 
 - **`@cratebase/react` upgrade**: a `CratebaseProvider`/`useCratebase()`
   context (every hook keeps working with an explicit client too),
@@ -25,6 +91,40 @@ first real tagged release.
   workspace and CI (`bun run sdk:check`), with a new bun-test suite for
   every hook against a mocked client and a `tsc`-checked
   type-inference regression fixture.
+
+### Fixed
+
+- **Auto-embeddings ran before `onRecordCreate`/`onRecordUpdate` hooks.**
+  A hook that derives or overwrites a `vector` field's `sourceField` was
+  embedded against stale pre-hook text, since `apply_embeddings` ran
+  before any request hook had a chance to run at all. Embeddings are now
+  computed inside `write_record`, after the create/update hook has run
+  and before the record is persisted, matching PocketBase's own
+  `onRecordCreate -> e.next() -> persist` ordering — fixed for
+  create, update, and `POST /api/batch` alike.
+- **`settings.teams.enabled` needed a restart to take effect.**
+  `App::bootstrap` only bound the `_teams` owner-bootstrap hook when the
+  setting was already on at boot, so enabling Teams via a running
+  server's `PATCH /api/settings` left every `_teams` row created
+  afterwards ownerless until the next restart. The hook is now always
+  bound and checks the current setting live, on every `_teams` create.
+- **The `--dev` hook-file watcher missed same-mtime content edits.**
+  `spawn_watcher`'s change detection compared only path and modification
+  time; rewriting a `pb_hooks/*.pb.js` file's content while its mtime
+  happened to land on the same value as before (trivial editing a short
+  string constant in place) went unnoticed, leaving the stale hook bound
+  until some later, differently-timed edit came along. The watcher now
+  also hashes each file's content.
+- **A running server never saw a collection created by a separate
+  process** (most notably `cratebase schema push`) **sharing the same
+  database** — every request for it 404'd with "Missing collection
+  context." until the server restarted, because the in-memory collection
+  cache only ever reloaded on this process's own writes. A new
+  background poll (`App::start_schema_watch`, both SQLite and Postgres)
+  compares a cheap `_collections` fingerprint against what is currently
+  cached and reloads the moment they disagree, with no restart needed;
+  `cratebase schema push` also now prints a heads-up when a server
+  appears to be listening on the configured port.
 
 ## 0.2.0 — 2026-09-09
 

@@ -52,6 +52,7 @@
 //! `prelude.js` would change; the public API would not.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
@@ -619,8 +620,8 @@ pub(crate) fn list_files(
 }
 
 /// Poll the hooks directory once a second and reload when any hook file's
-/// modification time or the file set changes. Stops when the runtime is
-/// dropped.
+/// content, modification time, or the file set changes. Stops when the
+/// runtime is dropped.
 fn spawn_watcher(inner: Weak<Inner>, runtime: Runtime) {
     // The watcher must not keep the runtime alive, so drop the strong
     // reference and use the weak one for the reload trigger.
@@ -648,13 +649,42 @@ fn spawn_watcher(inner: Weak<Inner>, runtime: Runtime) {
         .ok();
 }
 
-fn snapshot(dir: &Path) -> Vec<(PathBuf, Option<std::time::SystemTime>)> {
+/// One entry's change-detection key: path, mtime (best-effort, kept
+/// alongside the hash below rather than replaced by it — a cheap extra
+/// trigger that costs nothing since equality only ever needs to be *more*
+/// sensitive, never less, and a spurious extra reload is harmless), and a
+/// hash of the file's own bytes for a regular file.
+///
+/// The hash is load-bearing, not redundant with the mtime: relying on
+/// mtime alone missed a real edit whenever the rewritten file happened to
+/// land on the same modification time as before — trivially possible
+/// editing a short string constant in place (this module's own
+/// `hot_reload_tests` in `crates/server/src/jsvm_host.rs` pins exactly
+/// that case, forcing the second write's mtime to equal the first's) on
+/// any filesystem coarser or slower than the wall clock, and once missed
+/// the stale hook stayed bound indefinitely — nothing about *this*
+/// comparison ever self-corrects; only some later, differently-timed
+/// edit would.
+type FileKey = (PathBuf, Option<std::time::SystemTime>, Option<u64>);
+
+fn snapshot(dir: &Path) -> Vec<FileKey> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
             let p = e.path();
-            let mtime = e.metadata().ok().and_then(|m| m.modified().ok());
-            out.push((p, mtime));
+            let metadata = e.metadata().ok();
+            let mtime = metadata.as_ref().and_then(|m| m.modified().ok());
+            let content_hash = metadata
+                .as_ref()
+                .is_some_and(std::fs::Metadata::is_file)
+                .then(|| std::fs::read(&p).ok())
+                .flatten()
+                .map(|bytes| {
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    bytes.hash(&mut hasher);
+                    hasher.finish()
+                });
+            out.push((p, mtime, content_hash));
         }
     }
     out.sort();
