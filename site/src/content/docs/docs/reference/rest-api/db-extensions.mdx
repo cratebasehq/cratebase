@@ -1,0 +1,41 @@
+---
+title: "Database extensions"
+description: "List, enable and disable Postgres extensions. Superuser only, Postgres only."
+sidebar:
+  order: 25
+---
+
+### `GET /db/extensions`
+
+```json
+{
+  "items": [
+    { "name": "postgis", "defaultVersion": "3.4.2", "installedVersion": null, "installed": false, "schema": null, "comment": "PostGIS geometry and geography spatial types and functions" }
+  ]
+}
+```
+
+Every extension `pg_available_extensions` knows about, joined against
+`pg_extension`/`pg_namespace` for install state, version and schema.
+`404`s on SQLite, which has no extension mechanism.
+
+### `POST /db/extensions/{name}`
+
+```json
+{ "schema": "public" }
+```
+
+`CREATE EXTENSION IF NOT EXISTS "{name}"`, optionally into `schema`.
+`name`/`schema` are validated as plain identifiers before ever reaching
+SQL — a malformed name is a `400`, never passed to the database.
+Audited in [`_audit_log`](/docs/reference/system-collections/).
+
+### `DELETE /db/extensions/{name}`
+
+`?cascade=true` appends `CASCADE`. Without it, Postgres itself refuses
+the drop when something depends on the extension (a PostGIS index, say)
+— that refusal comes back as a `400` with the driver's own message, not
+a silent cascade.
+
+See [Extensions](/docs/database/extensions/) for the dashboard page and
+versioning one from a migration with `$app.db().exec(...)`.

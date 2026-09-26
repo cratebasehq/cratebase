@@ -10,11 +10,12 @@
 
 use std::sync::Arc;
 
-use cratebase_core::{Collection, Record};
+use cratebase_core::{Collection, FieldType, Record};
 use cratebase_filter::{Dialect, RequestPath, Resolver};
 use serde_json::{Map, Value};
 
 use crate::collections::CollectionStore;
+use crate::engine::quote_ident;
 
 /// The authenticated caller: the auth record itself plus the collection
 /// it belongs to. `is_superuser` is `true` only for records of the
@@ -68,6 +69,16 @@ pub struct RequestContext {
     /// internal callers (migrations, hooks, the dashboard) that have no
     /// auth record to attach but must not be filtered.
     pub superuser: bool,
+    /// Whether `postgis` is installed on the current (necessarily
+    /// Postgres) database — the server sets this from its own cached
+    /// `App::postgis_available()` when it builds a context for a
+    /// records list/query request. `false` by default, which is also
+    /// correct on SQLite and for every internal caller that doesn't set
+    /// it: [`CollectionResolver::postgis_geo_index`] only ever offers
+    /// acceleration when this is `true` *and* the field it's asked about
+    /// is actually a `geoPoint`, so a stale/wrong `false` here just means
+    /// "compile the portable way", never a wrong answer.
+    pub postgis_available: bool,
 }
 
 impl Default for RequestContext {
@@ -80,6 +91,7 @@ impl Default for RequestContext {
             method: "GET".into(),
             context: "default".into(),
             superuser: false,
+            postgis_available: false,
         }
     }
 }
@@ -257,6 +269,41 @@ impl Resolver for CollectionResolver<'_> {
     fn dialect(&self) -> Dialect {
         self.dialect
     }
+
+    /// See the trait doc. `field` has to be a plain, unqualified
+    /// root-level column name — [`cratebase_filter::compiler`]'s
+    /// acceleration check only ever asks about one, straight out of a
+    /// `field.lon`/`field.lat` pair — so a dotted path (through a
+    /// relation) or an unknown/non-`geoPoint` field both correctly fall
+    /// through to `None`, same as "no index".
+    fn postgis_geo_index(&self, field: &str) -> Option<String> {
+        if self.dialect != Dialect::Postgres || !self.ctx.postgis_available {
+            return None;
+        }
+        let f = self.root.field(field)?;
+        if f.field_type() != FieldType::GeoPoint {
+            return None;
+        }
+        let col = format!(
+            "{}.{}",
+            quote_ident(self.root.table_name()),
+            quote_ident(field)
+        );
+        Some(geo_index_expr(&col))
+    }
+}
+
+/// The `geography` expression a `geoPoint` column compiles to for
+/// PostGIS acceleration — shared by [`CollectionResolver::postgis_geo_index`]
+/// (used at query time) and `crates/server/src/geo.rs` (used to build
+/// the *index* DDL), which must produce the textually-equivalent
+/// expression for Postgres to actually recognize the index as usable for
+/// a query built from this same function.
+pub fn geo_index_expr(col: &str) -> String {
+    format!(
+        "ST_MakePoint(({col}::jsonb->>'lon')::double precision, \
+         ({col}::jsonb->>'lat')::double precision)::geography"
+    )
 }
 
 #[cfg(test)]
@@ -352,5 +399,52 @@ mod tests {
             RequestContext::header_key("X-Custom-Token"),
             "x_custom_token"
         );
+    }
+
+    #[test]
+    fn postgis_geo_index_requires_postgres_the_flag_and_a_real_geo_point_field() {
+        use cratebase_core::{CollectionType, Field, FieldKind};
+
+        let mut posts = Collection::new("posts", CollectionType::Base);
+        let pos = posts.fields.len() - 2;
+        posts
+            .fields
+            .insert(pos, Field::new("loc", FieldKind::GeoPoint {}));
+        posts.fields.insert(
+            pos + 1,
+            Field::new("title", FieldKind::default_for(FieldType::Text)),
+        );
+        let store = CollectionStore::new();
+        store.replace(vec![posts]);
+        let posts = store.get("posts").unwrap();
+
+        let mut ctx = RequestContext {
+            postgis_available: true,
+            ..Default::default()
+        };
+
+        let r = CollectionResolver::new(posts.clone(), &store, &ctx, Dialect::Postgres);
+        let geog = r
+            .postgis_geo_index("loc")
+            .expect("geoPoint field, flag set, Postgres");
+        assert_eq!(
+            geog,
+            "ST_MakePoint((\"posts\".\"loc\"::jsonb->>'lon')::double precision, \
+             (\"posts\".\"loc\"::jsonb->>'lat')::double precision)::geography"
+        );
+
+        // Not a geoPoint field.
+        assert!(r.postgis_geo_index("title").is_none());
+        // Unknown field.
+        assert!(r.postgis_geo_index("nope").is_none());
+
+        // SQLite never accelerates, flag or not.
+        let sqlite_r = CollectionResolver::new(posts.clone(), &store, &ctx, Dialect::Sqlite);
+        assert!(sqlite_r.postgis_geo_index("loc").is_none());
+
+        // Flag unset: no acceleration even on Postgres.
+        ctx.postgis_available = false;
+        let r = CollectionResolver::new(posts, &store, &ctx, Dialect::Postgres);
+        assert!(r.postgis_geo_index("loc").is_none());
     }
 }

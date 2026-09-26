@@ -1,0 +1,117 @@
+---
+title: "Custom SQL RPC"
+description: "Versioned, rule-gated SQL endpoints for the queries a filter expression can't express."
+---
+
+The Records API's `filter`/`sort` language covers most reads, but some queries genuinely need real
+SQL: a `GROUP BY` report, a window function, a PostGIS `ST_DWithin` + `<->` nearest-store lookup, a
+`pg_trgm` fuzzy search with a similarity score. Custom SQL RPC lets a superuser save one of those as
+a named, parameterized, rule-gated endpoint — `POST /api/rpc/{name}` — instead of writing a Rust
+route or a JS hook for it.
+
+## Defining one
+
+RPC definitions live in the `_rpc` system collection (dashboard: **RPC functions**, or
+`POST /api/collections/_rpc/records`, superuser-only either way):
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Unique slug; becomes the URL, `POST /api/rpc/{name}`. |
+| `sql` | A single statement, `:name`-style named placeholders. |
+| `params` | `[{ name, type, required, default }]` — `type` is `text \| number \| bool \| json \| date`. |
+| `rule` | A filter expression, evaluated against `@request.auth`/`@request.body` before `sql` ever runs. `null` = superuser only, `""` = anyone. |
+| `readOnly` | Default `true` — runs in a read-only transaction; see below. |
+| `timeoutMs` | Default `5000`. |
+| `maxRows` | Default `1000`. |
+
+A definition is validated the moment you save it, not on its first call: `sql` must be exactly one
+statement, every `:name` it references must appear in `params`, and it must actually parse against
+the real database driver (a real `PREPARE`, no values bound, nothing executed) — a typo in a column
+name is a `400` on save, not a `500` on the first real call.
+
+### Example: nearest stores (PostGIS)
+
+```json
+{
+  "name": "nearest_stores",
+  "sql": "SELECT id, name, geoDistance(loc.lon, loc.lat, :lon, :lat) AS km FROM stores WHERE geoDistance(loc.lon, loc.lat, :lon, :lat) < :radiusKm ORDER BY km LIMIT :limit",
+  "params": [
+    { "name": "lon", "type": "number", "required": true },
+    { "name": "lat", "type": "number", "required": true },
+    { "name": "radiusKm", "type": "number", "default": 10 },
+    { "name": "limit", "type": "number", "default": 20 }
+  ],
+  "rule": ""
+}
+```
+
+With PostGIS installed, the exact same `geoDistance(...)` call this RPC uses is what a plain
+`filter`/`sort` on a `geoPoint` field compiles to as well — see
+[Geo queries](/docs/database/geo-queries/) for the index it uses.
+
+### Example: fuzzy search (pg_trgm)
+
+```json
+{
+  "name": "search_products",
+  "sql": "SELECT id, name, similarity(name, :q) AS score FROM products WHERE name % :q ORDER BY score DESC LIMIT :limit",
+  "params": [
+    { "name": "q", "type": "text", "required": true },
+    { "name": "limit", "type": "number", "default": 20 }
+  ],
+  "rule": ""
+}
+```
+
+(Needs `pg_trgm` installed — see [Extensions](/docs/database/extensions/) — and a
+`CREATE INDEX ... USING gin (name gin_trgm_ops)` for it to actually use an index at scale.)
+
+## Calling one
+
+```ts
+const { items } = await cb.rpc("nearest_stores", { lon: -122.42, lat: 37.77, radiusKm: 5 });
+```
+
+`params` becomes the request body. Every value is bound as a real, typed SQL parameter — never
+concatenated into the statement — so an attempted injection in a parameter value can only ever be
+the *value* of that parameter, never additional SQL.
+
+## Security model
+
+- **Definitions are superuser-only end to end.** Only a superuser can create, edit, or delete an
+  `_rpc` row; `sql` runs with no rule of its own in between (the same trust tier as a `_cron_jobs`
+  row or the SQL console).
+- **Calling one is gated by its own `rule`**, evaluated against `@request.auth.*` and
+  `@request.body.*` (the call's own `params`) *before* `sql` runs. `rule: null` (the default if you
+  omit it) means superuser-only; `rule: ""` means anyone; anything else is a normal filter
+  expression, the same language as a collection's API rules.
+- **`readOnly: true` (the default) is enforced by the database, not just a text check.** The
+  statement runs inside `BEGIN READ ONLY` on Postgres (with `SET LOCAL statement_timeout`) and
+  against SQLite's `PRAGMA query_only` reader connections — so a data-modifying CTE dressed up as a
+  `SELECT` is rejected by the server, not by trusting the statement's own syntax.
+- **`timeoutMs`/`maxRows` bound the damage** of an expensive or unexpectedly large query: on
+  Postgres a read-only RPC is genuinely cancelled server-side when it times out, not just abandoned
+  client-side; a bare `SELECT` is capped at the source (wrapped in an outer `LIMIT`) rather than
+  fetching everything and truncating the response.
+- **Rate limiting** applies per definition: the tag is `rpc:{name}`, so `POST /api/settings` can
+  cap `nearest_stores` differently from `search_products`.
+
+## From React
+
+```tsx
+import { createClient } from "@cratebase/client";
+
+const cb = createClient(import.meta.env.VITE_CRATEBASE_URL);
+
+function useNearestStores(lon: number, lat: number) {
+  const [stores, setStores] = useState<{ id: string; name: string; km: number }[]>([]);
+  useEffect(() => {
+    cb.rpc<{ id: string; name: string; km: number }>("nearest_stores", { lon, lat, radiusKm: 5 })
+      .then(({ items }) => setStores(items));
+  }, [lon, lat]);
+  return stores;
+}
+```
+
+See [View collections vs. RPC](/docs/database/view-collections-vs-rpc/) for when a view collection
+is the better fit instead.

@@ -99,6 +99,16 @@ pub struct AppInner {
     /// already existed at boot, since that endpoint is closed either way
     /// and there is nothing worth printing. See that method's doc.
     setup_token: OnceLock<String>,
+    /// Whether the `postgis` extension is currently installed on the main
+    /// database — always `false` on SQLite. Checked once at boot
+    /// (`bootstrap_inner`, one cheap `pg_extension` lookup) and kept in
+    /// sync by `routes::extensions`' install/drop handlers, rather than
+    /// queried per request: `crates/filter` geo-distance compilation
+    /// (`Resolver::postgis_geo_index`) reads it synchronously on every
+    /// list/sort, and a `SELECT ... FROM pg_extension` on that path would
+    /// be an extra round trip per request for a fact that changes only
+    /// when a superuser installs or drops an extension.
+    postgis_available: std::sync::atomic::AtomicBool,
 }
 
 /// How often [`App::start_schema_watch`] polls for another process's
@@ -179,6 +189,7 @@ impl App {
                 revoked_sessions: parking_lot::RwLock::new(std::collections::HashSet::new()),
                 revoked_len: std::sync::atomic::AtomicUsize::new(0),
                 setup_token: OnceLock::new(),
+                postgis_available: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -345,6 +356,25 @@ impl App {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Whether `postgis` is currently installed — see
+    /// [`AppInner::postgis_available`]'s doc for why this is a cached flag
+    /// rather than a per-call query.
+    pub fn postgis_available(&self) -> bool {
+        self.inner
+            .postgis_available
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Update the cached [`App::postgis_available`] flag. `pub(crate)`:
+    /// only `routes::extensions`' install/drop handlers call this, right
+    /// after a `CREATE EXTENSION "postgis"`/`DROP EXTENSION "postgis"`
+    /// they ran themselves succeeds.
+    pub(crate) fn set_postgis_available(&self, available: bool) {
+        self.inner
+            .postgis_available
+            .store(available, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Register a plugin. Must happen before [`App::bootstrap`], which is
     /// where every registered plugin's `setup` runs.
     pub fn register_plugin(&self, plugin: impl Plugin + 'static) -> Result<(), AppError> {
@@ -501,6 +531,20 @@ impl App {
         // core migrations (which seed `_superusers`, `users` and the other
         // system collections) and loads the collection store.
         db.bootstrap().await.map_err(AppError::from)?;
+        // Cheap, one-time: see `AppInner::postgis_available`'s doc for why
+        // this is checked once at boot rather than per request. Best
+        // effort — a lookup failure just leaves the flag at its `false`
+        // default, the same as "not installed".
+        if db.backend.is_postgres() {
+            if let Ok(Some(_)) = db
+                .query_scalar("SELECT 1 FROM pg_extension WHERE extname = 'postgis'", &[])
+                .await
+            {
+                self.inner
+                    .postgis_available
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         let _ = self.inner.db.set(db);
 
         // Right after `_superusers` exists (just above) and before
@@ -547,6 +591,9 @@ impl App {
         self.sync_backup_cron();
         crate::cron_jobs::bind_hooks(self);
         crate::cron_jobs::sync_all(self).await;
+        crate::rpc::bind_hooks(self);
+        crate::geo::bind_hooks(self);
+        crate::geo::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
         crate::email_triggers::bind_hooks(self);
         // Always bound, unlike `settings.llm.enabled`'s route-merge gate:
@@ -1281,6 +1328,22 @@ impl Executor for TxApp {
         let guard = self.handle.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx.execute(sql, params).await,
+            None => Err(cratebase_db::DbError::other("transaction already finished")),
+        }
+    }
+
+    /// Validates against the open transaction's own connection when
+    /// there is one, never through `self.app.db()`'s engine — see
+    /// `Executor::prepare_check`'s trait doc for why going through the
+    /// engine while a write transaction is open would self-deadlock on
+    /// SQLite's `:memory:`.
+    async fn prepare_check(&self, sql: &str) -> cratebase_db::DbResult<()> {
+        if !self.handle.transactional {
+            return self.app.db().prepare_check(sql).await;
+        }
+        let guard = self.handle.tx.lock().await;
+        match guard.as_ref() {
+            Some(tx) => tx.prepare_check(sql).await,
             None => Err(cratebase_db::DbError::other("transaction already finished")),
         }
     }

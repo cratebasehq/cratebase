@@ -1,0 +1,37 @@
+---
+title: "RPC"
+description: "Call a custom-SQL RPC definition saved to the _rpc collection."
+sidebar:
+  order: 26
+---
+
+### `POST /rpc/{name}`
+
+```json
+{ "lon": -122.42, "lat": 37.77, "radiusKm": 5 }
+```
+
+```json
+{ "items": [ { "id": "abc123", "name": "Ferry Building", "km": 0.8 } ] }
+```
+
+Runs the named [`_rpc`](/docs/database/custom-sql-rpc/) definition's
+`sql` with the request body bound as named, typed parameters — never
+string-interpolated. The definition's own `rule` (evaluated against
+`@request.auth`/`@request.body` — the body above — before `sql` ever
+runs) decides who may call it: `rule: null` is superuser only,
+`rule: ""` is anyone, anything else is a normal filter expression.
+
+`_rpc` itself (`name`, `sql`, `params`, `rule`, `readOnly`, `timeoutMs`,
+`maxRows`) is managed like any other system collection, through the
+generic Records API on `/collections/_rpc/records` — superuser only,
+no dedicated management endpoint.
+
+| Status | Meaning |
+| --- | --- |
+| `400` | Missing/invalid parameter, a write attempted under `readOnly: true`, or the statement timed out |
+| `403` | The definition's `rule` denied this caller |
+| `404` | No `_rpc` definition with this name |
+
+See [Custom SQL RPC](/docs/database/custom-sql-rpc/) for the full
+security model and worked examples.

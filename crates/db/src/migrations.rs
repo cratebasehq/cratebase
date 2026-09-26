@@ -209,6 +209,12 @@ impl Runner {
             Box::new(|db| Box::pin(add_email_triggers_up(db))),
             Box::new(|db| Box::pin(add_email_triggers_down(db))),
         ));
+        // `_rpc` follows the same story as `_bans` above.
+        r.register(Migration::new(
+            ADD_RPC,
+            Box::new(|db| Box::pin(add_rpc_up(db))),
+            Box::new(|db| Box::pin(add_rpc_down(db))),
+        ));
         r
     }
 
@@ -715,6 +721,31 @@ async fn add_bans_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_RPC: &str = "16_add_rpc.rs";
+
+/// `_rpc` follows the same story as `_bans`: added to
+/// `default_system_collections()` after `INIT_SYSTEM` shipped, so an
+/// existing database needs this follow-up migration to get the table. A
+/// fresh database already has it and this migration is a no-op there.
+async fn add_rpc_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_rpc").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_rpc")
+        .expect("_rpc is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_rpc_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_rpc").is_some() {
+        db.collections.delete(&*db.engine, "_rpc").await?;
+    }
+    Ok(())
+}
+
 pub const ADD_EMAIL_PLATFORM: &str = "13_add_email_platform.rs";
 pub const ADD_EMAIL_SEND_RULES: &str = "14_add_email_send_rules.rs";
 pub const ADD_EMAIL_TRIGGERS: &str = "15_add_email_triggers.rs";
@@ -956,6 +987,7 @@ mod tests {
                 ADD_EMAIL_PLATFORM.to_string(),
                 ADD_EMAIL_SEND_RULES.to_string(),
                 ADD_EMAIL_TRIGGERS.to_string(),
+                ADD_RPC.to_string(),
             ]
         );
         assert_eq!(
@@ -1025,10 +1057,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 15).await.unwrap();
+        let reverted = Runner::core().down(&db, 16).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_RPC.to_string(),
                 ADD_EMAIL_TRIGGERS.to_string(),
                 ADD_EMAIL_SEND_RULES.to_string(),
                 ADD_EMAIL_PLATFORM.to_string(),

@@ -325,6 +325,16 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             tags.push("*:file".into());
             return tags;
         }
+        // `POST /api/rpc/{name}` — one bucket per RPC definition, same
+        // per-resource shape as `{collection}:{action}` just below, but
+        // there is no fixed action list to enumerate: any name a
+        // superuser saves to `_rpc` becomes its own tag.
+        Some("rpc") => {
+            if let Some(name) = segments.next() {
+                tags.push(format!("rpc:{}", decode_path_segment(name)));
+            }
+            return tags;
+        }
         // `POST /api/mails/send` — not under `/api/collections/...`, so
         // it needs its own branch rather than falling into the
         // `collection`/`action` shape below.

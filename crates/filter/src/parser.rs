@@ -25,6 +25,23 @@ impl Parser {
         Ok(expr)
     }
 
+    /// Parse a single standalone operand — a literal, field path, or
+    /// function call — with no surrounding comparison or boolean
+    /// structure. Used to compile a `sort=geoDistance(...)` token the same
+    /// way the identical text would compile inside a filter comparison
+    /// (see `compiler::compile_sort_function`), so a sort and a filter over
+    /// the same call always agree on the SQL they produce.
+    pub fn parse_operand_str(src: &str) -> Result<Operand, FilterError> {
+        if src.trim().is_empty() {
+            return Err(FilterError::Empty);
+        }
+        let tokens = Lexer::new(src).tokenize()?;
+        let mut parser = Parser { tokens, pos: 0 };
+        let operand = parser.parse_operand()?;
+        parser.expect_eof()?;
+        Ok(operand)
+    }
+
     fn peek(&self) -> &Token {
         &self.tokens[self.pos]
     }

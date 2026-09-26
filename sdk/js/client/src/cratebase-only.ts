@@ -1,15 +1,38 @@
 /** Cratebase-only endpoints with no PocketBase equivalent: vector
  * search, the LLM chat gateway, MCP tool schemas, the durable job queue,
- * and a client-side presence pattern. Written against the minimal
- * `Sender` shape rather than `Transport` directly, so `@cratebase/extras`
- * (which wraps the official `pocketbase` client's `pb.send`) can reuse
- * these implementations without a second copy. */
+ * a client-side presence pattern, and custom SQL RPC. Written against
+ * the minimal `Sender` shape rather than `Transport` directly, so
+ * `@cratebase/extras` (which wraps the official `pocketbase` client's
+ * `pb.send`) can reuse these implementations without a second copy. */
 
 import type { RealtimeClient } from "./realtime.js";
 import type { ListResult, RecordModel } from "./types.js";
 
 export interface Sender {
   send<T>(path: string, options?: { method?: string; query?: Record<string, unknown>; body?: unknown }): Promise<T>;
+}
+
+/** A row `rpc()` returns: whatever columns the RPC's own `sql` selects,
+ * shaped as a plain JSON object — no `RecordModel` bookkeeping, since a
+ * `POST /api/rpc/{name}` result isn't a record of any collection. */
+export type RpcRow = Record<string, unknown>;
+
+/** `cb.rpc(name, params)`: call a custom-SQL RPC definition saved to the
+ * `_rpc` collection (dashboard or `POST /api/collections/_rpc/records`).
+ * `params` becomes the request body — bound by the server as real,
+ * named SQL parameters against the definition's own declared `params`
+ * schema, never string-interpolated — and the definition's `rule` is
+ * evaluated against `@request.auth`/`@request.body` (`params`) before
+ * anything runs. */
+export async function rpc<T = RpcRow>(
+  sender: Sender,
+  name: string,
+  params?: Record<string, unknown>,
+): Promise<{ items: T[] }> {
+  return sender.send<{ items: T[] }>(`/api/rpc/${encodeURIComponent(name)}`, {
+    method: "POST",
+    body: params ?? {},
+  });
 }
 
 export interface NearestToOptions {

@@ -68,7 +68,9 @@ pub mod testing;
 
 pub use ast::{CompareOp, Expr, Literal, Modifier, Operand, FUNCTIONS};
 pub use cache::{parse_cached, CACHE_CAPACITY};
-pub use compiler::{compile, parse_and_compile, resolve_sort_path, CompiledFilter};
+pub use compiler::{
+    compile, compile_sort_function, parse_and_compile, resolve_sort_path, CompiledFilter,
+};
 pub use error::FilterError;
 pub use eval::evaluate;
 pub use macros::{date_macro, DATE_MACROS};

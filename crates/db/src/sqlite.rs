@@ -768,6 +768,15 @@ impl Executor for SqliteEngine {
             ))),
         }
     }
+
+    /// See the trait doc: SQLite's `prepare` compiles only the first
+    /// statement and silently ignores anything after it, so this catches
+    /// a real syntax error but never a multi-statement `sql`.
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        let sql = self.inner.rewritten(sql);
+        self.on_reader(move |conn| conn.prepare(&sql).map(|_| ()).map_err(map_err))
+            .await
+    }
 }
 
 #[async_trait]
@@ -923,6 +932,19 @@ impl Executor for SqliteTransaction {
         let params = params.to_vec();
         run_on_shared(&self.conn, move |conn| run_execute(conn, &sql, &params)).await
     }
+
+    /// Runs against the connection this transaction already exclusively
+    /// owns (`self.conn`), not through `SqliteEngine::on_reader` — that
+    /// matters specifically on `:memory:`, whose reader pool is empty and
+    /// would otherwise fall back to the very writer lock this transaction
+    /// is already holding, deadlocking (see the trait doc).
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        let sql = self.inner.rewritten(sql);
+        run_on_shared(&self.conn, move |conn| {
+            conn.prepare(&sql).map(|_| ()).map_err(map_err)
+        })
+        .await
+    }
 }
 
 #[async_trait]
@@ -966,6 +988,28 @@ mod tests {
         assert_eq!(rewrite_placeholders("SELECT 1"), "SELECT 1");
         assert_eq!(rewrite_placeholders("SELECT '$'"), "SELECT '$'");
         assert_eq!(rewrite_placeholders("SELECT $x"), "SELECT $x");
+    }
+
+    #[tokio::test]
+    async fn prepare_check_validates_syntax_without_executing() {
+        let e = SqliteEngine::open_memory().unwrap();
+        e.execute("CREATE TABLE t (id TEXT)", &[]).await.unwrap();
+        e.prepare_check("SELECT * FROM t WHERE id = $1")
+            .await
+            .expect("valid statement prepares");
+        assert!(
+            e.prepare_check("SELECT * FROM nope").await.is_err(),
+            "a nonexistent table must fail to prepare"
+        );
+        // Nothing was executed: no row was inserted, no error surfaced from
+        // actually running anything.
+        let count = e
+            .query_scalar("SELECT COUNT(*) FROM t", &[])
+            .await
+            .unwrap()
+            .and_then(|v| v.as_i64())
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]

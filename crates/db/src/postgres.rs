@@ -534,6 +534,14 @@ impl Executor for PostgresEngine {
         }
         result
     }
+
+    /// See the trait doc: a real server-side `prepare` (the extended-query
+    /// `Parse` message) both validates syntax and refuses more than one
+    /// statement, so this is a stronger check on Postgres than on SQLite.
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        let client = self.pool.get().await.map_err(pool_err)?;
+        client.prepare(sql).await.map(|_| ()).map_err(map_err)
+    }
 }
 
 #[async_trait]
@@ -811,6 +819,14 @@ impl Executor for PgTransaction {
 
     async fn execute(&self, sql: &str, params: &[Sql]) -> DbResult<u64> {
         client_execute(self.client()?, sql, params).await
+    }
+
+    async fn prepare_check(&self, sql: &str) -> DbResult<()> {
+        self.client()?
+            .prepare(sql)
+            .await
+            .map(|_| ())
+            .map_err(map_err)
     }
 }
 
