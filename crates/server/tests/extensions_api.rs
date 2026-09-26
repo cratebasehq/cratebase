@@ -228,7 +228,23 @@ async fn installing_postgis_updates_the_cached_flag_immediately() {
             .await
             .unwrap();
         wipe.execute("CREATE SCHEMA public", &[]).await.unwrap();
+        let available = wipe
+            .engine
+            .query_scalar(
+                "SELECT COUNT(*) FROM pg_available_extensions WHERE name = 'postgis'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         wipe.close().await.unwrap();
+        if available == 0 {
+            eprintln!(
+                "skipping installing_postgis_updates_the_cached_flag_immediately: postgis is not available on this server"
+            );
+            return;
+        }
     }
 
     let dir = tempfile::tempdir().unwrap();
