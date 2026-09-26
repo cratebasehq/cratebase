@@ -5,6 +5,7 @@ import {
   Clock,
   Code2,
   Database,
+  FileText,
   FolderOpen,
   FunctionSquare,
   History,
@@ -13,12 +14,14 @@ import {
   ListTree,
   Mail,
   Plug,
+  MailWarning,
   Radio,
   Shield,
   ShieldUser,
   SlidersHorizontal,
   Sparkles,
   Webhook,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -65,6 +68,20 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         icon: Inbox,
         description:
           "Every email the zero-config Log backend has \"sent\" — only shown while no real SMTP transport is configured.",
+      },
+      {
+        to: "/settings/email-templates",
+        label: "Email templates",
+        icon: FileText,
+        description: "Design and edit the emails this instance sends, and who else may send them.",
+        collection: "_emailTemplates",
+      },
+      {
+        to: "/settings/mail-log",
+        label: "Mail log",
+        icon: MailWarning,
+        description: "Every send attempt through POST /api/mails/send and _emailTriggers, sent or failed.",
+        collection: "_mailLog",
       },
       {
         to: "/settings/network",
@@ -152,6 +169,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         icon: Webhook,
         description: "POST a JSON payload to a URL when a record event fires.",
         collection: "_webhooks",
+      },
+      {
+        to: "/settings/email-triggers",
+        label: "Email triggers",
+        icon: Zap,
+        description: "Send an email template automatically when a record event fires.",
+        collection: "_emailTriggers",
       },
       {
         to: "/settings/push",

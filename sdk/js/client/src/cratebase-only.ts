@@ -193,6 +193,89 @@ export async function enqueue(
   });
 }
 
+export interface MailRecipient {
+  address: string;
+  name?: string;
+}
+
+export type MailAddress = string | MailRecipient | Array<string | MailRecipient>;
+
+export interface SendMailOptions {
+  to: MailAddress;
+  cc?: MailAddress;
+  bcc?: MailAddress;
+  template?: string;
+  locale?: string;
+  data?: Record<string, unknown>;
+  subject?: string;
+  html?: string;
+  text?: string;
+  from?: string | MailRecipient;
+  replyTo?: string;
+}
+
+export interface SendMailResult {
+  id: string;
+  status: "queued" | "sent" | "failed";
+  error?: string;
+}
+
+/** `POST /api/mails/send`.
+ *
+ * A superuser or API key may always send anything: a `template`, or raw
+ * `subject`/`html`/`text`, with any `from`/`cc`/`bcc`/`replyTo` override.
+ *
+ * Any other caller — including an anonymous one — may call this too, but
+ * only `to` + `template` (+ `data`/`locale`): raw content and every
+ * override are refused outright. It's allowed only when that template's
+ * `_emailTemplates.sendRule` is set (non-`null`) and evaluates `true` for
+ * every `to` address, evaluated against `@request.auth.*` (the caller,
+ * if any) and `@request.body.{to,data,locale}` — the same filter-rule
+ * language a collection API rule uses. This is what lets a frontend call
+ * `cb.mails.send({ template: "invite", to, data })` directly with no
+ * backend of its own; see the email docs' "Frontend sends" section for
+ * the security model and worked examples. A denied call is a `403` that
+ * never distinguishes "no such template" from "the rule rejected you".
+ *
+ * Either way, `to`/`cc`/`bcc` together may not exceed 50 recipients for a
+ * superuser/API key, or 5 for anyone else. */
+export async function sendMail(sender: Sender, options: SendMailOptions): Promise<SendMailResult> {
+  return sender.send<SendMailResult>("/api/mails/send", { method: "POST", body: options });
+}
+
+export type PreviewMailOptions = Omit<SendMailOptions, "to" | "cc" | "bcc" | "from" | "replyTo">;
+
+export interface PreviewMailResult {
+  subject: string;
+  html: string;
+  text?: string;
+}
+
+/** `POST /api/mails/preview` — renders a template (or raw content)
+ * without sending or logging anything. Superuser/API key only, unlike
+ * `sendMail` above — this is a dashboard/tooling affordance, not part of
+ * the `sendRule`-gated frontend surface. */
+export async function previewMail(sender: Sender, options: PreviewMailOptions): Promise<PreviewMailResult> {
+  return sender.send<PreviewMailResult>("/api/mails/preview", { method: "POST", body: options });
+}
+
+/** Reads a magic-link token out of the current page's URL (or an
+ * explicitly-passed one), matching the default
+ * `authOptions.magicLink.urlTemplate` (`.../auth/magic-link?token=...`).
+ * `null` outside a browser or when the param is absent — this never
+ * throws, so it's safe to call unconditionally on every page load before
+ * deciding whether to call `auth.signIn.magicLink`. */
+export function getMagicLinkTokenFromUrl(url?: string | URL, param = "token"): string | null {
+  try {
+    const target = url ?? (typeof window === "undefined" ? undefined : window.location.href);
+    if (!target) return null;
+    const parsed = typeof target === "string" ? new URL(target) : target;
+    return parsed.searchParams.get(param);
+  } catch {
+    return null;
+  }
+}
+
 export interface PresenceOptions {
   heartbeatMs?: number;
   staleMs?: number;

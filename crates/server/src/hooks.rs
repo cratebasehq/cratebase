@@ -420,6 +420,7 @@ hook_set! {
     on_record_auth_with_password_request: RecordRequestEvent,
     on_record_auth_with_oauth2_request: RecordRequestEvent,
     on_record_auth_with_otp_request: RecordRequestEvent,
+    on_record_auth_with_magic_link_request: RecordRequestEvent,
     on_record_auth_refresh_request: RecordRequestEvent,
     on_record_request_password_reset_request: RecordRequestEvent,
     on_record_confirm_password_reset_request: RecordRequestEvent,
@@ -428,6 +429,7 @@ hook_set! {
     on_record_request_email_change_request: RecordRequestEvent,
     on_record_confirm_email_change_request: RecordRequestEvent,
     on_record_request_otp_request: RecordRequestEvent,
+    on_record_request_magic_link_request: RecordRequestEvent,
     on_record_list_external_auths_request: RecordRequestEvent,
     on_record_unlink_external_auth_request: RecordRequestEvent,
 
@@ -459,6 +461,7 @@ hook_set! {
     on_mailer_record_verification_send: MailerRecordEvent,
     on_mailer_record_email_change_send: MailerRecordEvent,
     on_mailer_record_otp_send: MailerRecordEvent,
+    on_mailer_record_magic_link_send: MailerRecordEvent,
 
     // realtime
     on_realtime_connect_request: RealtimeConnectEvent,

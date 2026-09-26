@@ -24,6 +24,7 @@ pub mod functions;
 pub mod health;
 pub mod llm;
 pub mod logs;
+pub mod mails;
 pub mod metrics;
 pub mod oauth2_flow;
 pub mod push;
@@ -75,6 +76,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(typegen::router())
         .merge(api_keys::router())
         .merge(push::router())
+        .merge(mails::router())
         // MCP lives in its own top-level module (like `realtime`), not
         // under `routes`, because it is a protocol server (JSON-RPC +
         // SSE) rather than a plain REST route table.

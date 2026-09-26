@@ -6,7 +6,11 @@
 //! PocketBase's are `{APP_NAME}`, `{APP_URL}`, `{TOKEN}`, `{OTP}`,
 //! `{ALERT_INFO}` and `{RECORD:field}` (pass the key as `RECORD:name`).
 
+use cratebase_core::settings::Meta;
 use cratebase_core::EmailTemplate;
+use serde_json::Value;
+
+use crate::mustache::{html_to_text, render_mustache};
 
 /// The outer HTML shell every rendered body is placed into, modelled on
 /// PocketBase's `mails/layout.html`: a centered, single-column, responsive
@@ -138,6 +142,83 @@ pub fn render_template(template: &EmailTemplate, vars: &[(&str, &str)]) -> (Stri
     (subject, html)
 }
 
+/// [`DEFAULT_LAYOUT`], but with the `.btn` accent color swapped for
+/// `meta.brand_color` (when set) and an optional logo (`meta.logo_url`)
+/// inserted above `content_html`. Used for `_emailTemplates` rows with
+/// `layout: true`; the five legacy per-collection auth templates keep
+/// using the unbranded [`DEFAULT_LAYOUT`] via [`render_template`].
+pub fn render_layout(content_html: &str, meta: &Meta) -> String {
+    let accent = meta.brand_color.trim();
+    let layout = if accent.is_empty() {
+        DEFAULT_LAYOUT.to_string()
+    } else {
+        // This exact string appears exactly once in `DEFAULT_LAYOUT`, in
+        // the `.btn` rule — the body's own `color: #16161a;` is left
+        // alone so ordinary text doesn't turn into the brand color.
+        DEFAULT_LAYOUT.replace(
+            "background: #16161a !important;",
+            &format!("background: {accent} !important;"),
+        )
+    };
+    let logo_url = meta.logo_url.trim();
+    let logo = if logo_url.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p style=\"text-align:center;margin:0 0 20px;\"><img src=\"{}\" alt=\"{}\" style=\"max-height:40px;border:0;\"></p>\n",
+            escape_html(logo_url),
+            escape_html(&meta.app_name),
+        )
+    };
+    layout.replacen("{CONTENT}", &format!("{logo}{content_html}"), 1)
+}
+
+/// One `_emailTemplates` row's renderable content: `{{var}}`-style
+/// (dotted paths, HTML-escaped by default, `{{{raw}}}` for unescaped),
+/// distinct from the legacy `{PLACEHOLDER}` syntax [`render_template`]
+/// uses for the five per-collection auth templates.
+pub struct TemplateDoc<'a> {
+    pub subject: &'a str,
+    pub html: &'a str,
+    /// Plain-text alternative; when empty, derived from `html` via
+    /// [`html_to_text`] after rendering.
+    pub text: &'a str,
+    /// Wrap `html` in [`render_layout`] (with `meta`'s logo/brand color)
+    /// before returning it.
+    pub layout: bool,
+}
+
+/// Renders a [`TemplateDoc`] against `data`, with `{{appName}}`/
+/// `{{appUrl}}` always available (from `meta`, overriding any same-named
+/// key in `data` — they are built-ins, not caller data). Returns
+/// `(subject, html, text)`.
+pub fn render_email_template(
+    doc: &TemplateDoc,
+    data: &Value,
+    meta: &Meta,
+) -> (String, String, String) {
+    let mut map = data.as_object().cloned().unwrap_or_default();
+    map.insert("appName".into(), Value::String(meta.app_name.clone()));
+    map.insert("appUrl".into(), Value::String(meta.app_url.clone()));
+    let data = Value::Object(map);
+
+    // The subject line and the plain-text alternative are not HTML
+    // contexts, so their `{{var}}`s are never escaped.
+    let subject = render_mustache(doc.subject, &data, false);
+    let body_html = render_mustache(doc.html, &data, true);
+    let html = if doc.layout {
+        render_layout(&body_html, meta)
+    } else {
+        body_html.clone()
+    };
+    let text = if doc.text.trim().is_empty() {
+        html_to_text(&body_html)
+    } else {
+        render_mustache(doc.text, &data, false)
+    };
+    (subject, html, text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +273,87 @@ mod tests {
         let (subject, html) = render_template(&template, &[("APP_NAME", "x")]);
         assert_eq!(subject, "{UNKNOWN}");
         assert!(html.contains("{ALSO_UNKNOWN}"));
+    }
+
+    #[test]
+    fn render_layout_swaps_brand_color_and_leaves_body_text_color_alone() {
+        let meta = Meta {
+            brand_color: "#ff0000".into(),
+            ..Meta::default()
+        };
+        let html = render_layout("<p>hi</p>", &meta);
+        assert!(html.contains("background: #ff0000 !important;"));
+        assert!(
+            html.contains("color: #16161a;"),
+            "body text color untouched"
+        );
+        assert!(html.contains("<p>hi</p>"));
+    }
+
+    #[test]
+    fn render_layout_with_no_brand_color_is_unchanged() {
+        let html = render_layout("<p>hi</p>", &Meta::default());
+        assert!(html.contains("background: #16161a !important;"));
+    }
+
+    #[test]
+    fn render_layout_inserts_logo_before_content() {
+        let meta = Meta {
+            logo_url: "https://example.com/logo.png".into(),
+            app_name: "Acme".into(),
+            ..Meta::default()
+        };
+        let html = render_layout("<p>hi</p>", &meta);
+        let logo_pos = html.find("logo.png").unwrap();
+        let content_pos = html.find("<p>hi</p>").unwrap();
+        assert!(logo_pos < content_pos);
+        assert!(html.contains("alt=\"Acme\""));
+    }
+
+    #[test]
+    fn render_email_template_uses_mustache_and_builtins() {
+        let doc = TemplateDoc {
+            subject: "Welcome {{user.name}}",
+            html: "<p>Hi {{user.name}}, visit {{appUrl}}</p>",
+            text: "",
+            layout: true,
+        };
+        let meta = Meta {
+            app_name: "Acme".into(),
+            app_url: "https://acme.test".into(),
+            ..Meta::default()
+        };
+        let data = serde_json::json!({ "user": { "name": "<Bob>" } });
+        let (subject, html, text) = render_email_template(&doc, &data, &meta);
+        assert_eq!(subject, "Welcome <Bob>", "subject is not HTML-escaped");
+        assert!(html.contains("Hi &lt;Bob&gt;, visit https://acme.test"));
+        assert!(html.starts_with("<!DOCTYPE html>"));
+        assert_eq!(text, "Hi <Bob>, visit https://acme.test");
+    }
+
+    #[test]
+    fn render_email_template_without_layout_skips_the_shell() {
+        let doc = TemplateDoc {
+            subject: "S",
+            html: "<p>body only</p>",
+            text: "",
+            layout: false,
+        };
+        let (_, html, _) = render_email_template(&doc, &serde_json::json!({}), &Meta::default());
+        assert_eq!(html, "<p>body only</p>");
+    }
+
+    #[test]
+    fn render_email_template_prefers_explicit_text_over_derived() {
+        let doc = TemplateDoc {
+            subject: "S",
+            html: "<p>Hi {{name}}</p>",
+            text: "Plain hi {{name}}",
+            layout: false,
+        };
+        let data = serde_json::json!({ "name": "Bob" });
+        let (_, _, text) = render_email_template(&doc, &data, &Meta::default());
+        assert_eq!(text, "Plain hi Bob");
     }
 
     #[test]

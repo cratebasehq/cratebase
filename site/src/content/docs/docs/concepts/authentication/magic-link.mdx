@@ -1,0 +1,34 @@
+---
+title: "Magic link (passwordless)"
+description: "request-magic-link / auth-with-magic-link, backed by the _magicLinks collection."
+sidebar:
+  order: 4.5
+---
+
+`POST .../request-magic-link` (`{ email, redirectUrl? }`) emails a
+single-use sign-in link instead of a password or a typed-back code.
+Disabled by default — enable it per collection with
+`authOptions.magicLink.enabled` (see [Settings](/docs/reference/settings-object/)
+and [collection options](/docs/concepts/collections/)). Like
+`request-otp`, it **always** answers `200`, even for an unknown address,
+so it can't be used to enumerate accounts.
+
+The token is a random 48-character string, hashed (`SHA-256`, same
+trade-off as an OTP code) into a new `_magicLinks` row alongside a short
+TTL (`authOptions.magicLink.duration`, default 900 seconds). The emailed
+link is either `authOptions.magicLink.urlTemplate` (default
+`{APP_URL}/auth/magic-link?token={TOKEN}`) or a caller-supplied
+`redirectUrl`, but only when it's same-origin as `settings.meta.appURL`
+— anything else falls back to the template, so a request body can't be
+used to redirect a login link off-site.
+
+`POST .../auth-with-magic-link` (`{ token, mfaId? }`) looks the token up
+by its hash, consumes it either way (a correct token *or* an expired
+one), and goes through the same ban/[MFA](/docs/concepts/authentication/mfa/)
+gate and new-location [login alert](/docs/concepts/authentication/login-alerts/)
+as every other login. A successful magic-link login marks the record
+`verified`, exactly like a successful [OTP](/docs/concepts/authentication/otp/)
+login does — clicking the link proves control of the mailbox just as well.
+
+See [Email → Recipes](/docs/email/recipes/) for a minimal React
+sign-in-page example using `@cratebase/react`'s `useMagicLinkCallback`.

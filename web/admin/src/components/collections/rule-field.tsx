@@ -8,6 +8,15 @@ interface RuleFieldProps {
   label: string;
   value: string | null;
   onChange: (value: string | null) => void;
+  /** Overrides for the three segmented-control options and their helper
+   * text below — the defaults ("Admins"/"Public"/"Custom", API-rule
+   * wording) fit a collection API rule; a non-rule reuse of this same
+   * `null`/`""`/expression shape (e.g. `_emailTriggers.condition`, where
+   * `null` means "always fires" rather than "superusers only") can pass
+   * its own wording instead. */
+  nullOption?: { label: string; description: string };
+  publicOption?: { label: string; description: string };
+  customLabel?: string;
 }
 
 type RuleMode = "admin" | "public" | "custom";
@@ -95,7 +104,14 @@ function SyntaxHelp() {
 /** One API rule (list/view/create/update/delete). `null` = superusers
  * only, `""` = public, anything else = a filter expression evaluated
  * against the caller/record. */
-export function RuleField({ label, value, onChange }: RuleFieldProps) {
+export function RuleField({
+  label,
+  value,
+  onChange,
+  nullOption = { label: "Admins", description: "Only superusers can do this." },
+  publicOption = { label: "Public", description: "Anyone, including anonymous callers, can do this." },
+  customLabel = "Custom",
+}: RuleFieldProps) {
   const mode = modeOf(value);
 
   function setMode(next: string) {
@@ -121,9 +137,9 @@ export function RuleField({ label, value, onChange }: RuleFieldProps) {
             if (next) setMode(next);
           }}
         >
-          <ToggleGroupItem value="admin">Admins</ToggleGroupItem>
-          <ToggleGroupItem value="public">Public</ToggleGroupItem>
-          <ToggleGroupItem value="custom">Custom</ToggleGroupItem>
+          <ToggleGroupItem value="admin">{nullOption.label}</ToggleGroupItem>
+          <ToggleGroupItem value="public">{publicOption.label}</ToggleGroupItem>
+          <ToggleGroupItem value="custom">{customLabel}</ToggleGroupItem>
         </ToggleGroup>
       </div>
       {mode === "custom" ? (
@@ -140,7 +156,7 @@ export function RuleField({ label, value, onChange }: RuleFieldProps) {
         </div>
       ) : (
         <p className="text-xs text-muted-foreground">
-          {mode === "admin" ? "Only superusers can do this." : "Anyone, including anonymous callers, can do this."}
+          {mode === "admin" ? nullOption.description : publicOption.description}
         </p>
       )}
     </div>

@@ -1,0 +1,64 @@
+---
+title: "Mails"
+description: "POST /api/mails/send (superuser/API key, or sendRule-gated) and /api/mails/preview (superuser/API key only)."
+sidebar:
+  order: 25
+---
+
+See [Email](/docs/email/overview/) for the template store, resolution
+order, and SDK/JS-hook wrappers around these two endpoints.
+
+### `POST /mails/send`
+
+A superuser or [API key](/docs/concepts/authentication/api-keys/) (which
+always resolves to a superuser identity) may send anything:
+
+```json
+{
+  "to": "user@example.com",
+  "template": "welcome",
+  "data": { "user": { "name": "Ada" } },
+  "locale": "fr",
+  "cc": ["ops@example.com"],
+  "replyTo": "support@example.com"
+}
+```
+
+`to`/`cc`/`bcc` each accept a bare address, `{ "address", "name" }`, or
+an array of either. Either `template` (resolved through
+[`_emailTemplates`](/docs/email/templates/)) or `subject` plus `html`/
+`text` must be given — mixing both is fine (`template` wins). `to` +
+`cc` + `bcc` together may not exceed 50 recipients (`400` past that, and
+for any malformed address).
+
+**Any other caller** — an authenticated non-superuser record, or an
+anonymous one — may also call this, but only with `to` + `template`
+(+ `data`/`locale`); `subject`/`html`/`text`/`from`/`cc`/`bcc`/`replyTo`
+are all refused outright as a `403`, and `to` may not exceed 5
+addresses. It's allowed only when `template` resolves to an
+`_emailTemplates` row whose `sendRule` is non-`null` and evaluates
+`true` for *every* `to` address — see
+[Templates → sendRule](/docs/email/templates/#sendrule-who-else-can-send-this)
+for the rule language and context. A denial is a `403` that never
+reveals whether `template` exists, has no `sendRule`, or the rule itself
+rejected the call.
+
+```json
+{ "id": "abc123", "status": "sent", "error": null }
+```
+
+`status` is `"sent"`, `"failed"` (with `error` set), or `"queued"` when
+`settings.queue.enabled` — see [Sending → Delivery](/docs/email/sending/#delivery)
+for the inline-vs-queued contract, and [Mail log](/docs/email/mail-log/)
+for `id`'s corresponding `_mailLog` row.
+
+### `POST /mails/preview`
+
+Superuser/API key only — a dashboard/tooling affordance, never subject
+to `sendRule`. Same body shape as `send` minus
+`to`/`cc`/`bcc`/`from`/`replyTo` (all ignored if present) — renders
+without sending or logging anything.
+
+```json
+{ "subject": "Welcome to Acme!", "html": "<!DOCTYPE html>...", "text": "Hi Ada, ..." }
+```

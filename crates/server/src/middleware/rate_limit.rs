@@ -335,6 +335,15 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             }
             return tags;
         }
+        // `POST /api/mails/send` — not under `/api/collections/...`, so
+        // it needs its own branch rather than falling into the
+        // `collection`/`action` shape below.
+        Some("mails") => {
+            if segments.next() == Some("send") {
+                tags.push("mails:send".into());
+            }
+            return tags;
+        }
         _ => return tags,
     }
     let (Some(collection), Some(action)) = (segments.next(), segments.next()) else {
@@ -373,7 +382,11 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
                 _ => {}
             }
         }
-        "auth-with-password" | "auth-with-oauth2" | "auth-refresh" | "auth-with-otp" => {
+        "auth-with-password"
+        | "auth-with-oauth2"
+        | "auth-refresh"
+        | "auth-with-otp"
+        | "auth-with-magic-link" => {
             push("auth");
             push(&lower_camel(action));
         }
@@ -386,6 +399,7 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             push("authWithOauth2");
         }
         "request-otp"
+        | "request-magic-link"
         | "request-password-reset"
         | "confirm-password-reset"
         | "request-verification"
@@ -470,6 +484,22 @@ pub async fn rate_limit(State(app): State<App>, req: Request, next: Next) -> Res
     let mut tags = tags_for(&app, &parts.method, &path);
     if let Some(extra) = parts.extensions.get::<RouteTags>() {
         tags.extend(extra.0.iter().cloned());
+    }
+    // `mails:send` (added by `tags_for` above) covers every caller,
+    // superuser and API key included, at a ceiling sized for a fan-out
+    // send. A non-superuser/non-API-key caller (`crate::routes::mails`'s
+    // `sendRule` gate — see that module's doc) can additionally be
+    // targeted by its own, tighter `mails:send:user` rule, since that
+    // caller shape is the one `sendRule` newly opens the endpoint to and
+    // is worth capping independently of the general ceiling. It goes at
+    // the *front* of `tags`, not the back: [`Compiled::find`] stops at
+    // the first tag with a matching rule, so the more specific rule must
+    // be checked before the general one, the opposite order from the
+    // `*:action`-then-`collection:action` pairs `tags_for` itself
+    // builds (there, the wildcard is deliberately tried first — see that
+    // function's doc).
+    if tags.iter().any(|t| t == "mails:send") && auth.as_ref().is_some_and(|a| !a.is_superuser) {
+        tags.insert(0, "mails:send:user".into());
     }
 
     let client_id = match &auth {

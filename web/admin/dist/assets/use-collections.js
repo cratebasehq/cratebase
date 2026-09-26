@@ -1,1 +1,1 @@
-import{l as e,rt as t}from"./switch.js";function n(){return t({queryKey:[`collections`],queryFn:async()=>(await e.admin.collections.list()).items})}export{n as t};
+import{l as e,ot as t}from"./switch.js";function n(){return t({queryKey:[`collections`],queryFn:async()=>(await e.admin.collections.list()).items})}export{n as t};

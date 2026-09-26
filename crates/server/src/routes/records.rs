@@ -510,7 +510,8 @@ pub(crate) async fn create_record(
     if collection.is_view() {
         return Err(ApiError::bad_request(UNSUPPORTED_TYPE));
     }
-    let body = read_body(&app, &collection, request).await?;
+    let mut body = read_body(&app, &collection, request).await?;
+    normalize_email_template_send_rule(&collection, &mut body.data);
     let info = info.with_body(body.data.clone());
     let ctx = info.to_context();
 
@@ -624,7 +625,8 @@ pub(crate) async fn update_record(
     if collection.is_view() {
         return Err(ApiError::bad_request(UNSUPPORTED_TYPE));
     }
-    let body = read_body(&app, &collection, request).await?;
+    let mut body = read_body(&app, &collection, request).await?;
+    normalize_email_template_send_rule(&collection, &mut body.data);
     let info = info.with_body(body.data.clone());
     let ctx = info.to_context();
 
@@ -1431,6 +1433,55 @@ async fn read_body(
     }
 }
 
+/// `_emailTemplates.sendRule` is a `Json`-kind column specifically so
+/// `NULL` and `""` stay distinct (superuser-only vs "anyone" — see
+/// `cratebase_core::Collection::default_system_collections`'s comment on
+/// the field), but callers write and read it as an ordinary nullable
+/// string — `null`, `""`, or a filter-rule expression — never as
+/// JSON-encoded text themselves. Getting a plain string to round-trip
+/// through a `Json`-kind column here needs two layers of JSON-string
+/// encoding, not one or zero, because of how the generic `Json`-field
+/// write path treats a submitted string:
+///
+/// 1. `cratebase_db::validate::coerce_record` (`cratebase_db::validate::
+///    coerce_changed`) runs *before* validation and, for every
+///    `Json`-kind field, unconditionally tries to JSON-parse a submitted
+///    string and — if it parses — replaces the field with the parsed
+///    result. This exists so a client that can only send text (a
+///    multipart form field) can still submit a JSON object/array; the
+///    cost is that it also silently strips one layer of "this string
+///    happens to be valid JSON" from *any* submission, string or not.
+/// 2. `cratebase_db::validate::json` then requires the field's value, if
+///    it is *still* a string at that point, to itself be valid JSON on
+///    its own (matching PocketBase's `json.Valid`) — a plain filter
+///    expression like `status = "paid"` is not, and is rejected as
+///    `validation_invalid_json`.
+///
+/// A plain rule string submitted as-is never survives both: step 1
+/// leaves it untouched (it isn't valid JSON), then step 2 rejects it for
+/// exactly that reason. JSON-encoding it once has the same fate: step 1
+/// *does* parse a once-encoded string successfully and unwraps it back to
+/// the plain rule text, which step 2 then rejects the same way. Encoding
+/// it **twice** is what survives: step 1 unwraps one layer, landing on
+/// the once-encoded text, which step 2 accepts because that text is
+/// itself valid JSON; `cratebase_db::records::column_value` then stores
+/// that once-encoded text verbatim, and
+/// `cratebase_db::records::decode_column` unwraps that one remaining
+/// layer on the next read — so `decode_send_rule` sees exactly the
+/// string that was submitted, and `""` stays distinct from `null`
+/// (`serde_json::to_string("")` is `"\"\""`, never empty text, so it
+/// never collides with `decode_column`'s "empty text means unset" case).
+fn normalize_email_template_send_rule(collection: &Collection, data: &mut Map<String, Value>) {
+    if collection.name != "_emailTemplates" {
+        return;
+    }
+    if let Some(Value::String(s)) = data.get("sendRule").cloned() {
+        let once = serde_json::to_string(&s).unwrap_or_default();
+        let twice = serde_json::to_string(&once).unwrap_or_default();
+        data.insert("sendRule".into(), Value::String(twice));
+    }
+}
+
 /// A read failure. `NotFound` is PocketBase's plain 404; a rejected
 /// `sort`/`filter` surfaces as [`DbError::Filter`] and must become the
 /// *generic* 400 with an empty `data` (KNOWN_DIVERGENCES §18).
@@ -1496,6 +1547,59 @@ mod tests {
         assert!(truthy(&Value::String("true".into())));
         assert!(!truthy(&Value::String("yes".into())));
         assert!(!truthy(&Value::Null));
+    }
+
+    #[test]
+    fn normalize_email_template_send_rule_double_encodes_any_submitted_string() {
+        let templates = Collection::new("_emailTemplates", cratebase_core::CollectionType::Base);
+        let other = Collection::new("posts", cratebase_core::CollectionType::Base);
+
+        // The round trip a real write goes through: normalize, then the
+        // same `coerce_changed` step `cratebase_db::validate::
+        // coerce_record` runs before validation (it strips exactly one
+        // layer of "this string is valid JSON"), then what
+        // `cratebase_db::validate::json` actually inspects.
+        let coerce_then_validate = |value: &Value| -> Value {
+            match value {
+                Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| value.clone()),
+                other => other.clone(),
+            }
+        };
+
+        for rule in ["", "status = \"paid\"", "@request.auth.id != ''"] {
+            let mut data = Map::new();
+            data.insert("sendRule".into(), Value::String(rule.into()));
+            normalize_email_template_send_rule(&templates, &mut data);
+            let post_coerce = coerce_then_validate(&data["sendRule"]);
+            // What `validate::json` sees must itself be valid JSON...
+            let Value::String(s) = &post_coerce else {
+                panic!("expected a string, got {post_coerce:?}");
+            };
+            assert!(
+                serde_json::from_str::<Value>(s).is_ok(),
+                "rule {rule:?} would fail validate::json: {s:?}"
+            );
+            // ...and decoding it the same way `decode_column`/
+            // `decode_send_rule` would must recover the original rule.
+            let Ok(Value::String(decoded)) = serde_json::from_str::<Value>(s) else {
+                panic!("post-coerce value {s:?} did not decode to a string");
+            };
+            assert_eq!(decoded, rule);
+        }
+
+        let mut data = Map::new();
+        data.insert("sendRule".into(), Value::Null);
+        normalize_email_template_send_rule(&templates, &mut data);
+        assert_eq!(data["sendRule"], Value::Null, "null is left alone");
+
+        let mut data = Map::new();
+        data.insert("sendRule".into(), Value::String(String::new()));
+        normalize_email_template_send_rule(&other, &mut data);
+        assert_eq!(
+            data["sendRule"],
+            Value::String(String::new()),
+            "only _emailTemplates is special-cased"
+        );
     }
 }
 

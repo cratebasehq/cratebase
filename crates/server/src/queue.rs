@@ -353,37 +353,54 @@ async fn enqueue(
     if body.queue.trim().is_empty() {
         return Err(ApiError::bad_request("queue must not be empty."));
     }
-    let Some(collection) = app.db().collections.get_by_name(COLLECTION) else {
-        return Err(ApiError::internal(
-            "the queue plugin's collection is missing; is settings.queue.enabled set?",
-        ));
-    };
     let run_after = match body.run_after.as_deref() {
         Some(s) if !s.is_empty() => DateTime::parse(s)
             .ok_or_else(|| ApiError::bad_request("runAfter is not a valid date."))?,
         _ => DateTime::now(),
     };
     let max_attempts = body.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS).max(1);
-
-    let mut record = Record::new(collection);
-    record.set("queue", Value::String(body.queue.clone()));
-    record.set("payload", body.payload);
-    record.set("status", Value::String(STATUS_PENDING.to_string()));
-    record.set("attempts", serde_json::json!(0));
-    record.set("maxAttempts", serde_json::json!(max_attempts));
-    record.set("runAfter", Value::String(run_after.to_pb_string()));
-
-    cratebase_db::records::create(app.db(), &app.db().collections, &mut record)
+    let id = enqueue_job(&app, &body.queue, body.payload, max_attempts, run_after)
         .await
-        .map_err(AppError::from)
         .map_err(ApiError)?;
 
     Ok(Json(EnqueueResponse {
-        id: record.id().to_string(),
+        id,
         queue: body.queue,
         status: STATUS_PENDING.to_string(),
         run_after: run_after.to_pb_string(),
     }))
+}
+
+/// Inserts one `_queue_jobs` row, `status: "pending"`, `attempts: 0` —
+/// the Rust-callable equivalent of `POST /api/plugins/queue/enqueue`
+/// above (which now just validates its body and calls this), for
+/// server-internal callers like `crate::mails`'s send pipeline that want
+/// durable, retrying delivery without going through HTTP. Returns the
+/// new row's id.
+pub async fn enqueue_job(
+    app: &App,
+    queue: &str,
+    payload: Value,
+    max_attempts: i64,
+    run_after: DateTime,
+) -> Result<String, AppError> {
+    let Some(collection) = app.db().collections.get_by_name(COLLECTION) else {
+        return Err(AppError::internal(
+            "the queue plugin's collection is missing; is settings.queue.enabled set?",
+        ));
+    };
+    let mut record = Record::new(collection);
+    record.set("queue", Value::String(queue.to_string()));
+    record.set("payload", payload);
+    record.set("status", Value::String(STATUS_PENDING.to_string()));
+    record.set("attempts", serde_json::json!(0));
+    record.set("maxAttempts", serde_json::json!(max_attempts.max(1)));
+    record.set("runAfter", Value::String(run_after.to_pb_string()));
+
+    cratebase_db::records::create(app.db(), &app.db().collections, &mut record)
+        .await
+        .map_err(AppError::from)?;
+    Ok(record.id().to_string())
 }
 
 /// One claimed row, enough to run its handler and write the outcome back.

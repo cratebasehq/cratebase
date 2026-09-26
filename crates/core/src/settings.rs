@@ -18,6 +18,14 @@ pub struct Meta {
     pub sender_address: String,
     pub hide_controls: bool,
     pub accent_color: String,
+    /// Optional logo shown at the top of the shared email base layout
+    /// (`cratebase_mailer::template::render_layout`). Empty means no
+    /// logo image.
+    #[serde(rename = "logoUrl")]
+    pub logo_url: String,
+    /// Optional brand color for the base layout's button/accent styling.
+    /// Empty falls back to the layout's own default (`#16161a`).
+    pub brand_color: String,
 }
 
 impl Default for Meta {
@@ -27,6 +35,8 @@ impl Default for Meta {
             app_url: "http://localhost:8090".into(),
             sender_name: "Support".into(),
             sender_address: "support@example.com".into(),
+            logo_url: String::new(),
+            brand_color: String::new(),
             hide_controls: false,
             accent_color: "#1055c9".into(),
         }
@@ -254,6 +264,29 @@ impl Default for RateLimits {
                     duration: 1,
                     max_requests: 3,
                 },
+                // `POST /api/mails/send` (`crate::routes::mails` in the
+                // server crate): every caller, superuser/API-key
+                // included, still worth a dedicated ceiling since a
+                // single call can fan out to up to 50 recipients.
+                RateLimitRule {
+                    label: "mails:send".into(),
+                    audience: String::new(),
+                    duration: 60,
+                    max_requests: 20,
+                },
+                // A non-superuser/non-API-key caller — the shape
+                // `_emailTemplates.sendRule` newly opens this endpoint
+                // to (see that field's doc comment) — is capped again,
+                // tighter and per-caller (`@auth`, so it keys on the
+                // record id, not a shared IP): a compromised or abusive
+                // account can at most send a handful of mails a minute
+                // even with a permissive `sendRule`.
+                RateLimitRule {
+                    label: "mails:send:user".into(),
+                    audience: "@auth".into(),
+                    duration: 60,
+                    max_requests: 10,
+                },
                 RateLimitRule {
                     label: "/api/".into(),
                     audience: String::new(),
@@ -304,6 +337,11 @@ pub struct Logs {
     pub log_ip: bool,
     pub log_auth_id: bool,
     pub max_data_size: i64,
+    /// Retention for `_mailLog` rows (`crate::routes::mails`'s send log),
+    /// pruned by the same `0 */6 * * *` cron cadence as `_logs` — see
+    /// `App::sync_default_crons`'s `JOB_LOGS_CLEANUP`/mail-log job pair.
+    /// `<= 0` disables cleanup, same convention as `max_days`.
+    pub mail_log_max_days: i64,
 }
 
 impl Default for Logs {
@@ -314,6 +352,7 @@ impl Default for Logs {
             log_ip: true,
             log_auth_id: false,
             max_data_size: 0,
+            mail_log_max_days: 30,
         }
     }
 }
