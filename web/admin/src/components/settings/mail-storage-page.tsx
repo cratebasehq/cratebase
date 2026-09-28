@@ -130,8 +130,8 @@ export function MailStoragePage() {
             <AlertDescription>
               Every email sent while SMTP is disabled lands in memory instead, including verification /
               password-reset / OTP links.{" "}
-              <Link to="/settings/mail-inbox" className="inline-flex items-center gap-1">
-                Open Mail inbox <ArrowRight className="size-3.5" />
+              <Link to="/settings/email" search={{ tab: "dev-inbox" }} className="inline-flex items-center gap-1">
+                Open Dev inbox <ArrowRight className="size-3.5" />
               </Link>
             </AlertDescription>
           </Alert>

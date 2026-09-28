@@ -10,6 +10,7 @@ import { userFields } from "@/lib/field-types";
 import { useCollections } from "@/hooks/use-collections";
 import { useConnectionStatus } from "@/components/layout/connection-status";
 import { useShellActions } from "@/components/layout/app-shell";
+import { OnboardingChecklist } from "@/components/dashboard/onboarding-checklist";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -193,6 +194,8 @@ export function DashboardHome() {
           New collection
         </Button>
       </header>
+
+      <OnboardingChecklist collections={collections} />
 
       <section className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <StatTile

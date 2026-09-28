@@ -121,6 +121,18 @@ function CheckboxOption({
   );
 }
 
+/** ISO string → `<input type="datetime-local">`'s local, zoneless format.
+ * Mirrors `record-field-input.tsx`'s own (unexported) helper of the same
+ * name — small enough that duplicating it beats exporting across a
+ * components/records → components/collections boundary. */
+function toDatetimeLocal(value: unknown): string {
+  if (typeof value !== "string" || !value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** True when the field's type has anything to configure at all — a `bool`
  * has no options, so it gets no disclosure arrow. */
 function hasOptions(type: FieldSchema["type"]): boolean {
@@ -156,6 +168,7 @@ function optionsSummary(field: FieldSchema, collections: CollectionModel[]): str
       const target = collections.find((c) => c.id === field.collectionId);
       parts.push(target ? `→ ${target.name}` : "no target");
       if (isMultiValue(field)) parts.push(`up to ${field.maxSelect}`);
+      if (field.cascadeDelete) parts.push("cascade delete");
       break;
     }
     case "file": {
@@ -163,6 +176,7 @@ function optionsSummary(field: FieldSchema, collections: CollectionModel[]): str
       parts.push(mimes.length > 0 ? mimes.slice(0, 2).join(", ") : "any type");
       if (field.maxSize) parts.push(`≤ ${Math.round(Number(field.maxSize) / 1024)} KB`);
       if (isMultiValue(field)) parts.push(`up to ${field.maxSelect}`);
+      if (field.protected) parts.push("protected");
       break;
     }
     case "autodate":
@@ -324,7 +338,7 @@ export function SchemaFieldRow({
         </p>
       ) : null}
 
-      {open && (field.type === "text" || field.type === "editor" || field.type === "password") ? (
+      {open && (field.type === "text" || field.type === "password") ? (
         <OptionGroup title="Length & format" error={optionsError}>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <OptionField label="Min length" help="Minimum character count. Leave blank for no minimum.">
@@ -350,6 +364,62 @@ export function SchemaFieldRow({
                 className="h-control-md font-mono text-sm"
               />
             </OptionField>
+            {field.type === "text" ? (
+              <>
+                <OptionField
+                  label="Autogenerate pattern"
+                  className="sm:col-span-2"
+                  help="A regex used to fill this field automatically when a create request omits it, e.g. a slug or short id. Leave blank to require a value from the caller."
+                >
+                  <Input
+                    type="text"
+                    value={(field.autogeneratePattern as string | undefined) ?? ""}
+                    onChange={(e) => patch({ autogeneratePattern: e.target.value || undefined })}
+                    placeholder="e.g. [a-z0-9]{15}"
+                    className="h-control-md font-mono text-sm"
+                  />
+                </OptionField>
+                <div className="flex items-end pb-5">
+                  <CheckboxOption
+                    checked={(field.primaryKey as boolean | undefined) ?? false}
+                    onChange={(primaryKey) => patch({ primaryKey })}
+                    label="Primary key — replaces the auto-generated id column"
+                  />
+                </div>
+              </>
+            ) : (
+              <OptionField label="Hash cost" help="Bcrypt work factor. Leave blank (0) for the server's default.">
+                <NumberInput
+                  value={field.cost as number | undefined}
+                  onChange={(cost) => patch({ cost })}
+                  placeholder="Default"
+                />
+              </OptionField>
+            )}
+          </div>
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "editor" ? (
+        <OptionGroup title="Content" error={optionsError}>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <OptionField label="Max size (bytes)" help="Reject content larger than this. Leave blank for no limit.">
+              <NumberInput
+                value={field.maxSize as number | undefined}
+                onChange={(maxSize) => patch({ maxSize })}
+                placeholder="No limit"
+              />
+            </OptionField>
+            <div className="flex items-end pb-5">
+              <CheckboxOption
+                // Wire key is `convertURLs` (capital URL) — an explicit
+                // serde rename on `FieldKind::Editor::convert_urls`, not
+                // the variant's own camelCase default.
+                checked={(field.convertURLs as boolean | undefined) ?? false}
+                onChange={(convertURLs) => patch({ convertURLs })}
+                label="Convert bare URLs in the content into links"
+              />
+            </div>
           </div>
         </OptionGroup>
       ) : null}
@@ -434,14 +504,28 @@ export function SchemaFieldRow({
             <div className="flex flex-col gap-3">
               <CheckboxOption checked={multiple} onChange={toggleMultiple} label="Allow multiple related records" />
               {multiple ? (
-                <OptionField label="Max related records" help="Cap how many records can be related at once.">
-                  <NumberInput
-                    value={field.maxSelect as number | undefined}
-                    onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
-                    placeholder="e.g. 3"
-                  />
-                </OptionField>
+                <>
+                  <OptionField label="Max related records" help="Cap how many records can be related at once.">
+                    <NumberInput
+                      value={field.maxSelect as number | undefined}
+                      onChange={(maxSelect) => patch({ maxSelect: maxSelect ?? 2 })}
+                      placeholder="e.g. 3"
+                    />
+                  </OptionField>
+                  <OptionField label="Min related records" help="Require at least this many. Leave blank for no minimum.">
+                    <NumberInput
+                      value={(field.minSelect as number | undefined) || undefined}
+                      onChange={(minSelect) => patch({ minSelect })}
+                      placeholder="No minimum"
+                    />
+                  </OptionField>
+                </>
               ) : null}
+              <CheckboxOption
+                checked={(field.cascadeDelete as boolean | undefined) ?? false}
+                onChange={(cascadeDelete) => patch({ cascadeDelete })}
+                label="Cascade delete — deleting the related record deletes this one too"
+              />
             </div>
           </div>
         </OptionGroup>
@@ -478,6 +562,20 @@ export function SchemaFieldRow({
                   />
                 </OptionField>
               ) : null}
+            </div>
+            <TagInput
+              label="Thumbnail sizes"
+              value={(field.thumbs as string[] | undefined) ?? []}
+              onChange={(thumbs) => patch({ thumbs })}
+              placeholder="e.g. 100x100"
+              hint='WxH (crop), WxHt (top), WxHb (bottom), Wx0 or 0xH (proportional). Image files only.'
+            />
+            <div className="flex items-end pb-5">
+              <CheckboxOption
+                checked={(field.protected as boolean | undefined) ?? false}
+                onChange={(protected_) => patch({ protected: protected_ })}
+                label="Protected — requires a short-lived file token to download"
+              />
             </div>
           </div>
         </OptionGroup>
@@ -568,23 +666,78 @@ export function SchemaFieldRow({
         </OptionGroup>
       ) : null}
 
-      {open &&
-      (field.type === "email" ||
-        field.type === "url" ||
-        field.type === "date" ||
-        field.type === "json" ||
-        field.type === "geoPoint") ? (
-        <OptionGroup title="Options" error={optionsError}>
+      {open && (field.type === "email" || field.type === "url") ? (
+        <OptionGroup title="Domain restrictions" error={optionsError}>
           <p className="text-2xs leading-snug text-muted-foreground">
             {field.type === "email"
-              ? "Validated as an email address. Domain allow/deny lists are set through the API."
-              : field.type === "url"
-                ? "Validated as an absolute URL. Domain allow/deny lists are set through the API."
-                : field.type === "date"
-                  ? "Stored as a UTC timestamp. Filter it with the date macros — @now, @todayStart, @monthStart."
-                  : field.type === "json"
-                    ? "Stored as JSON. Filterable with :length and :each; not sortable."
-                    : "Stored as { lon, lat } in decimal degrees. Longitude in [-180, 180], latitude in [-90, 90]."}
+              ? "Validated as an email address."
+              : "Validated as an absolute URL."}{" "}
+            Set at most one of the two lists below.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <TagInput
+              label="Only allow domains"
+              value={(field.onlyDomains as string[] | undefined) ?? []}
+              onChange={(onlyDomains) => patch({ onlyDomains })}
+              placeholder="e.g. example.com"
+              hint="Leave empty to allow any domain"
+            />
+            <TagInput
+              label="Except domains"
+              value={(field.exceptDomains as string[] | undefined) ?? []}
+              onChange={(exceptDomains) => patch({ exceptDomains })}
+              placeholder="e.g. spam.example.com"
+              hint="Rejected even if not covered by an allow list"
+            />
+          </div>
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "date" ? (
+        <OptionGroup title="Range" error={optionsError}>
+          <p className="text-2xs leading-snug text-muted-foreground">
+            Stored as a UTC timestamp. Filter it with the date macros — @now, @todayStart, @monthStart.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <OptionField label="Min" help="Reject dates before this. Leave blank for no minimum.">
+              <Input
+                type="datetime-local"
+                value={toDatetimeLocal(field.min)}
+                onChange={(e) => patch({ min: e.target.value ? new Date(e.target.value).toISOString() : "" })}
+                className="h-control-md text-sm"
+              />
+            </OptionField>
+            <OptionField label="Max" help="Reject dates after this. Leave blank for no maximum.">
+              <Input
+                type="datetime-local"
+                value={toDatetimeLocal(field.max)}
+                onChange={(e) => patch({ max: e.target.value ? new Date(e.target.value).toISOString() : "" })}
+                className="h-control-md text-sm"
+              />
+            </OptionField>
+          </div>
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "json" ? (
+        <OptionGroup title="Options" error={optionsError}>
+          <p className="text-2xs leading-snug text-muted-foreground">
+            Stored as JSON. Filterable with :length and :each; not sortable.
+          </p>
+          <OptionField label="Max size (bytes)" help="Reject values whose serialized JSON is larger than this. Leave blank for no limit.">
+            <NumberInput
+              value={field.maxSize as number | undefined}
+              onChange={(maxSize) => patch({ maxSize })}
+              placeholder="No limit"
+            />
+          </OptionField>
+        </OptionGroup>
+      ) : null}
+
+      {open && field.type === "geoPoint" ? (
+        <OptionGroup title="Options" error={optionsError}>
+          <p className="text-2xs leading-snug text-muted-foreground">
+            Stored as {"{ lon, lat }"} in decimal degrees. Longitude in [-180, 180], latitude in [-90, 90].
           </p>
         </OptionGroup>
       ) : null}

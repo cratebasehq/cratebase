@@ -477,7 +477,7 @@ export function EmailTemplateEditorPage() {
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-page py-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon-sm" asChild>
-            <Link to="/settings/email-templates">
+            <Link to="/settings/email" search={{ tab: "templates" }}>
               <ArrowLeft className="size-4" />
             </Link>
           </Button>
@@ -789,7 +789,11 @@ export function EmailTemplateEditorPage() {
                   </Button>
                 </div>
                 {devMailAvailable ? (
-                  <Link to="/settings/mail-inbox" className="text-xs text-muted-foreground hover:underline">
+                  <Link
+                    to="/settings/email"
+                    search={{ tab: "dev-inbox" }}
+                    className="text-xs text-muted-foreground hover:underline"
+                  >
                     No real SMTP configured — test sends land in the dev mail inbox →
                   </Link>
                 ) : null}

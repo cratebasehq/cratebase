@@ -12,6 +12,33 @@ first real tagged release.
 
 ### Added
 
+- **Settings navigation consolidated to 7 tabbed groups** (`web/admin/src/lib/settings-nav.ts`
+  and the `routes/settings-*.tsx`/`components/settings/*-settings-page.tsx` files): the ~24-item
+  settings sidebar is now Application, Email, Auth & security, Database, Automation,
+  Integrations, and Logs, each a single page with tabs addressed by a `?tab=` URL search param.
+  Every old top-level route (`/settings/superusers`, `/settings/mail-log`, ...) redirects to its
+  new group + tab, preserving its own filters. The command palette still jumps directly to any
+  individual tab.
+- **Collection auth options gap-fill** (`components/collections/auth-options-editor.tsx`,
+  `lib/collection-form-value.ts`): sign-in and manage rules, `identityFields` as a real
+  multi-select (email and/or username), login alerts, magic-link sign-in, OAuth2 mapped fields,
+  per-collection verification/reset-password/confirm-email-change templates, and a write-only
+  "regenerate secret" action per token kind (never displays a stored secret).
+- **Field editor gap-fill** (`components/collections/schema-field-row.tsx`): text
+  `autogeneratePattern`/`primaryKey`, the editor field's own max-size/convert-URLs panel
+  (previously misrendered with the text field's min/max/pattern controls, which the server
+  ignores for `editor` fields), email/URL `onlyDomains`/`exceptDomains`, date `min`/`max`, JSON
+  `maxSize`, file `thumbs`/`protected`, relation `cascadeDelete`/`minSelect`, and password `cost`.
+- **App-wide settings gap-fill**: `meta.accentColor`/`hideControls` and the batch API's
+  `maxBodySize` now have UI in Application → Modules; Teams/Queue/ZIP export module toggles
+  (Queue and ZIP export note that they need a restart; Teams applies immediately); Request logs
+  gained `minLevel`, `maxDataSize`, and mail-log retention (`mailLogMaxDays`); Backups gained a
+  "Scheduled backups" section for the cron expression and `cronMaxKeep`, neither of which had
+  any dashboard UI before.
+- **Onboarding checklist** on the dashboard home (`components/dashboard/onboarding-checklist.tsx`):
+  a dismissible "Getting started" card computed from existing settings/collections APIs —
+  app identity, branding, mail delivery + a sent test email, an auth collection's sign-in
+  method, backups scheduled, rate limiting, and optional S3 storage.
 - **10 new OAuth2 presets, generic OIDC, TOTP 2FA, and linked-account
   management** (`crates/auth/src/{oauth2,oidc,totp}.rs`,
   `crates/server/src/routes/{auth,oidc,totp,oauth2_flow}.rs`):

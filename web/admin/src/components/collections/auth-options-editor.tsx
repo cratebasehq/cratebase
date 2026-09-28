@@ -1,19 +1,31 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Check, Copy, ExternalLink, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { Check, Copy, ExternalLink, KeyRound, Plus, Trash2, TriangleAlert } from "lucide-react";
 import {
   emptyOAuth2Provider,
   isGenericOidcProvider,
   isJwtClientSecretProvider,
   KNOWN_PRESET_NAMES,
+  type AuthEmailTemplateValue,
   type AuthOptionsValue,
   type AuthProviderValue,
 } from "@/lib/collection-form-value";
 import { useSettings } from "@/hooks/use-settings";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { RuleField } from "@/components/collections/rule-field";
 import { Switch } from "@/components/ui/switch";
 
 /** A labeled control with help text underneath — the same shape
@@ -453,6 +465,112 @@ function ProviderRow({
   );
 }
 
+/** Subject + HTML body for one of this collection's own auth emails —
+ * embedded directly on the collection (`cratebase_core::collection::
+ * EmailTemplate`), distinct from the app-wide `_emailTemplates` collection
+ * the Templates tab under Settings → Email edits with a visual editor.
+ * There's no override-vs-link choice to make here: these auth flows
+ * (verify/reset/magic link/login alert) always send this embedded
+ * template, so editing it here — plain subject/body fields, not the rich
+ * editor — is the only way to change their copy. */
+function EmailTemplateFields({
+  value,
+  onChange,
+  placeholders,
+}: {
+  value: AuthEmailTemplateValue;
+  onChange: (next: AuthEmailTemplateValue) => void;
+  placeholders: string;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <OptionField label="Subject">
+        <Input
+          value={value.subject}
+          onChange={(e) => onChange({ ...value, subject: e.target.value })}
+          className="h-control-md text-sm"
+        />
+      </OptionField>
+      <OptionField label="Body (HTML)" help={`Placeholders: ${placeholders}`}>
+        <textarea
+          value={value.body}
+          onChange={(e) => onChange({ ...value, body: e.target.value })}
+          rows={5}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-2xs"
+        />
+      </OptionField>
+    </div>
+  );
+}
+
+/** A token kind's duration plus a one-way "regenerate secret" action. The
+ * server never returns a stored secret (there's nothing to show), so this
+ * is only ever a write: checking the box and saving mints a fresh random
+ * secret, which invalidates every token of that kind issued so far since
+ * its signature no longer matches. Confirmed with a dialog because it logs
+ * out every session at once — the same blast radius as changing every
+ * collection member's password. */
+function TokenDurationField({
+  label,
+  duration,
+  onDurationChange,
+  regenerate,
+  onRegenerateChange,
+}: {
+  label: string;
+  duration: number;
+  onDurationChange: (duration: number) => void;
+  regenerate: boolean;
+  onRegenerateChange: (regenerate: boolean) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <DurationField label={label} value={duration} onChange={onDurationChange} />
+      {regenerate ? (
+        <div className="flex items-center gap-1.5 rounded-md bg-warning/[0.08] px-2 py-1 text-2xs text-warning">
+          <KeyRound className="size-3 shrink-0" />
+          Will regenerate on save — every existing {label.toLowerCase()} stops working.
+          <button type="button" className="ml-auto underline underline-offset-2" onClick={() => onRegenerateChange(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          className="w-fit text-2xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+        >
+          Regenerate secret…
+        </button>
+      )}
+      <AlertDialog open={confirming} onOpenChange={setConfirming}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Regenerate the {label.toLowerCase()} secret?</AlertDialogTitle>
+            <AlertDialogDescription>
+              A new random signing secret is generated when you save. Every {label.toLowerCase()} issued before that
+              point stops verifying immediately — anyone relying on one (an active session, an in-flight password
+              reset link, ...) is signed out or has to start over.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                onRegenerateChange(true);
+                setConfirming(false);
+              }}
+            >
+              Regenerate on save
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 /**
  * Everything `cratebase_core::collection::AuthOptions` adds to an auth
  * collection beyond its fields and API rules: how a superuser signs
@@ -500,6 +618,23 @@ export function AuthOptionsEditor({
         </span>
       </div>
 
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <RuleField
+          label="Sign-in rule"
+          value={value.authRule}
+          onChange={(authRule) => patch({ authRule })}
+          publicOption={{ label: "Public", description: "Anyone matching the identity fields can attempt to authenticate." }}
+          nullOption={{ label: "Admins", description: "Only superusers can authenticate as this collection." }}
+        />
+        <RuleField
+          label="Manage rule"
+          value={value.manageRule}
+          onChange={(manageRule) => patch({ manageRule })}
+          nullOption={{ label: "Admins", description: "Only superusers can list/impersonate/change other records here without their password." }}
+          publicOption={{ label: "Public", description: "Anyone matching this rule can list, impersonate, or change other records here." }}
+        />
+      </div>
+
       <ToggleField
         checked={value.passwordAuthEnabled}
         onChange={(passwordAuthEnabled) => patch({ passwordAuthEnabled })}
@@ -536,6 +671,49 @@ export function AuthOptionsEditor({
                 collectionName={collectionName}
               />
             ))}
+          </div>
+        ) : null}
+        {value.oauth2Enabled ? (
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+            <span className="text-xs font-medium text-foreground/80">Mapped fields</span>
+            <p className="text-2xs leading-snug text-muted-foreground">
+              Which field on this collection each provider's profile info is copied into on first sign-in. Leave a
+              field blank to skip copying it.
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <OptionField label="External id field" help="Stores the provider's own user id. Leave blank to not record it.">
+                <Input
+                  value={value.oauth2MappedFields.id}
+                  onChange={(e) => patch({ oauth2MappedFields: { ...value.oauth2MappedFields, id: e.target.value } })}
+                  placeholder="e.g. externalId"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+              <OptionField label="Name field">
+                <Input
+                  value={value.oauth2MappedFields.name}
+                  onChange={(e) => patch({ oauth2MappedFields: { ...value.oauth2MappedFields, name: e.target.value } })}
+                  placeholder="name"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+              <OptionField label="Username field">
+                <Input
+                  value={value.oauth2MappedFields.username}
+                  onChange={(e) => patch({ oauth2MappedFields: { ...value.oauth2MappedFields, username: e.target.value } })}
+                  placeholder="username"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+              <OptionField label="Avatar URL field">
+                <Input
+                  value={value.oauth2MappedFields.avatarURL}
+                  onChange={(e) => patch({ oauth2MappedFields: { ...value.oauth2MappedFields, avatarURL: e.target.value } })}
+                  placeholder="avatar"
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+            </div>
           </div>
         ) : null}
       </div>
@@ -587,32 +765,140 @@ export function AuthOptionsEditor({
         </div>
       </div>
 
+      <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+        <ToggleField
+          checked={value.magicLinkEnabled}
+          onChange={(magicLinkEnabled) => patch({ magicLinkEnabled })}
+          label="Magic link sign-in"
+          help="Sign in with a single-use link emailed to the identity field, instead of a password or code."
+        />
+        {value.magicLinkEnabled ? (
+          <>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <DurationField
+                label="Link validity"
+                value={value.magicLinkDuration}
+                onChange={(magicLinkDuration) => patch({ magicLinkDuration })}
+              />
+              <OptionField
+                label="URL template"
+                help="Built when the request doesn't supply an allow-listed redirectUrl. Must include {TOKEN}."
+              >
+                <Input
+                  value={value.magicLinkUrlTemplate}
+                  onChange={(e) => patch({ magicLinkUrlTemplate: e.target.value })}
+                  className="h-control-md font-mono text-sm"
+                />
+              </OptionField>
+            </div>
+            <EmailTemplateFields
+              value={value.magicLinkTemplate}
+              onChange={(magicLinkTemplate) => patch({ magicLinkTemplate })}
+              placeholders="{APP_NAME}, {MAGIC_LINK}"
+            />
+          </>
+        ) : null}
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+        <ToggleField
+          checked={value.authAlertEnabled}
+          onChange={(authAlertEnabled) => patch({ authAlertEnabled })}
+          label="Login alerts"
+          help="Email the identity field when a sign-in is detected from a new location."
+        />
+        {value.authAlertEnabled ? (
+          <EmailTemplateFields
+            value={value.authAlertTemplate}
+            onChange={(authAlertTemplate) => patch({ authAlertTemplate })}
+            placeholders="{APP_NAME}, {ALERT_INFO}"
+          />
+        ) : null}
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm font-medium text-foreground">Auth emails</span>
+          <span className="text-xs text-muted-foreground">
+            The verification, password-reset, and email-change-confirmation emails this collection sends. These are
+            separate from the app-wide templates under Settings → Email → Templates, which cover everything sent
+            through <code className="font-mono">POST /api/mails/send</code> and <code className="font-mono">
+            _emailTriggers</code> instead.
+          </span>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border p-3">
+            <span className="text-xs font-medium text-foreground/80">Verification</span>
+            <EmailTemplateFields
+              value={value.verificationTemplate}
+              onChange={(verificationTemplate) => patch({ verificationTemplate })}
+              placeholders="{APP_NAME}, {APP_URL}, {TOKEN}"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border p-3">
+            <span className="text-xs font-medium text-foreground/80">Password reset</span>
+            <EmailTemplateFields
+              value={value.resetPasswordTemplate}
+              onChange={(resetPasswordTemplate) => patch({ resetPasswordTemplate })}
+              placeholders="{APP_NAME}, {APP_URL}, {TOKEN}"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border p-3">
+            <span className="text-xs font-medium text-foreground/80">Confirm email change</span>
+            <EmailTemplateFields
+              value={value.confirmEmailChangeTemplate}
+              onChange={(confirmEmailChangeTemplate) => patch({ confirmEmailChangeTemplate })}
+              placeholders="{APP_NAME}, {APP_URL}, {TOKEN}"
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="flex flex-col gap-3">
         <div className="flex flex-col">
           <span className="text-sm font-medium text-foreground">Token durations</span>
           <span className="text-xs text-muted-foreground">
             How long each kind of token this collection issues stays valid. Shortening one doesn't affect tokens
-            already handed out — it only changes what gets minted next.
+            already handed out — it only changes what gets minted next. Regenerating a secret is immediate and
+            invalidates every token of that kind already handed out.
           </span>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <DurationField label="Auth token" value={value.authTokenDuration} onChange={(authTokenDuration) => patch({ authTokenDuration })} />
-          <DurationField
+          <TokenDurationField
+            label="Auth token"
+            duration={value.authTokenDuration}
+            onDurationChange={(authTokenDuration) => patch({ authTokenDuration })}
+            regenerate={value.regenerateAuthTokenSecret}
+            onRegenerateChange={(regenerateAuthTokenSecret) => patch({ regenerateAuthTokenSecret })}
+          />
+          <TokenDurationField
             label="Password reset token"
-            value={value.passwordResetTokenDuration}
-            onChange={(passwordResetTokenDuration) => patch({ passwordResetTokenDuration })}
+            duration={value.passwordResetTokenDuration}
+            onDurationChange={(passwordResetTokenDuration) => patch({ passwordResetTokenDuration })}
+            regenerate={value.regeneratePasswordResetTokenSecret}
+            onRegenerateChange={(regeneratePasswordResetTokenSecret) => patch({ regeneratePasswordResetTokenSecret })}
           />
-          <DurationField
+          <TokenDurationField
             label="Email change token"
-            value={value.emailChangeTokenDuration}
-            onChange={(emailChangeTokenDuration) => patch({ emailChangeTokenDuration })}
+            duration={value.emailChangeTokenDuration}
+            onDurationChange={(emailChangeTokenDuration) => patch({ emailChangeTokenDuration })}
+            regenerate={value.regenerateEmailChangeTokenSecret}
+            onRegenerateChange={(regenerateEmailChangeTokenSecret) => patch({ regenerateEmailChangeTokenSecret })}
           />
-          <DurationField
+          <TokenDurationField
             label="Verification token"
-            value={value.verificationTokenDuration}
-            onChange={(verificationTokenDuration) => patch({ verificationTokenDuration })}
+            duration={value.verificationTokenDuration}
+            onDurationChange={(verificationTokenDuration) => patch({ verificationTokenDuration })}
+            regenerate={value.regenerateVerificationTokenSecret}
+            onRegenerateChange={(regenerateVerificationTokenSecret) => patch({ regenerateVerificationTokenSecret })}
           />
-          <DurationField label="File token" value={value.fileTokenDuration} onChange={(fileTokenDuration) => patch({ fileTokenDuration })} />
+          <TokenDurationField
+            label="File token"
+            duration={value.fileTokenDuration}
+            onDurationChange={(fileTokenDuration) => patch({ fileTokenDuration })}
+            regenerate={value.regenerateFileTokenSecret}
+            onRegenerateChange={(regenerateFileTokenSecret) => patch({ regenerateFileTokenSecret })}
+          />
         </div>
       </div>
     </section>

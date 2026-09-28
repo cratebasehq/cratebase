@@ -1,9 +1,10 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Archive, Download, RotateCcw, Trash2, Upload } from "lucide-react";
 import { cb, checkBackupCapability, describeFailure, superuserAuth } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
+import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,8 +20,32 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { SettingsPage } from "@/components/settings/settings-form";
+import {
+  NumberSetting,
+  SettingRow,
+  SettingsPage,
+  SettingsSaveBar,
+  SettingsSection,
+  TextSetting,
+} from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+
+/** The slice of settings this page owns. */
+type ScheduleDraft = Pick<ServerSettings["backups"], "cron" | "cronMaxKeep">;
+
+function scheduleDraftOf(settings: ServerSettings): ScheduleDraft {
+  return { cron: settings.backups.cron, cronMaxKeep: settings.backups.cronMaxKeep };
+}
+
+/** A loose sanity check, not a real cron parser — 5 whitespace-separated
+ * fields, same shape `_cron_jobs.schedule` and every other cron field in
+ * this dashboard expects. Empty is valid (means "no scheduled backups"). */
+function validateCron(cron: string): string | null {
+  if (!cron.trim()) return null;
+  const fields = cron.trim().split(/\s+/);
+  if (fields.length !== 5) return "A cron schedule needs 5 fields: minute hour day month weekday";
+  return null;
+}
 
 /** As the server returns it — PocketBase names the file `key` and its
  * timestamp `modified`, not `name`/`created`. */
@@ -87,6 +112,37 @@ export function BackupsPage() {
   const [deleting, setDeleting] = useState<BackupInfo | null>(null);
   const [restoring, setRestoring] = useState<BackupInfo | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { data: settings } = useSettings();
+  const saveSchedule = useSettingsMutation();
+  const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
+  const [scheduleSeedKey, setScheduleSeedKey] = useState<ServerSettings | undefined>(settings);
+  if (settings && scheduleSeedKey !== settings) {
+    setScheduleSeedKey(settings);
+    setScheduleDraft((d) => (d === null ? scheduleDraftOf(settings) : d));
+  }
+  const scheduleDirty = scheduleDraft && settings ? JSON.stringify(scheduleDraft) !== JSON.stringify(scheduleDraftOf(settings)) : false;
+  const scheduleErrors = useMemo(() => {
+    if (!scheduleDraft) return [];
+    const errors: string[] = [];
+    const cronError = validateCron(scheduleDraft.cron);
+    if (cronError) errors.push(cronError);
+    if (scheduleDraft.cronMaxKeep < 0) errors.push("Backups to keep can't be negative");
+    return errors;
+  }, [scheduleDraft]);
+  function submitSchedule() {
+    if (!scheduleDraft || scheduleErrors.length > 0) return;
+    saveSchedule.mutate(
+      { backups: { ...settings?.backups, ...scheduleDraft } },
+      {
+        onSuccess: () => toast.success("Backup schedule saved"),
+        onError: (error) => {
+          const failure = describeFailure(error);
+          toast.error(failure.title, { description: failure.detail || failure.serverMessage || undefined });
+        },
+      },
+    );
+  }
 
   const { data: backups, isLoading } = useQuery({
     queryKey: ["backups"],
@@ -341,6 +397,50 @@ export function BackupsPage() {
           ) : null}
         </TableBody>
       </Table>
+
+      {scheduleDraft ? (
+        <SettingsSection
+          title="Scheduled backups"
+          description="Run a backup automatically on a cron schedule, and cap how many scheduled backups to keep."
+        >
+          <SettingRow
+            label="Cron schedule"
+            htmlFor="backups-cron"
+            help="Standard 5-field cron (minute hour day month weekday), UTC. Leave blank to disable scheduled backups."
+          >
+            <TextSetting
+              id="backups-cron"
+              value={scheduleDraft.cron}
+              onChange={(cron) => setScheduleDraft((d) => (d ? { ...d, cron } : d))}
+              placeholder="0 3 * * * (daily at 03:00 UTC)"
+              mono
+            />
+          </SettingRow>
+          <SettingRow
+            label="Keep at most"
+            htmlFor="backups-cron-max-keep"
+            help="Oldest scheduled backups beyond this count are deleted automatically. Manually created and uploaded backups aren't counted or touched."
+          >
+            <NumberSetting
+              id="backups-cron-max-keep"
+              min={0}
+              value={scheduleDraft.cronMaxKeep}
+              onChange={(cronMaxKeep) => setScheduleDraft((d) => (d ? { ...d, cronMaxKeep } : d))}
+              suffix="backups"
+            />
+          </SettingRow>
+        </SettingsSection>
+      ) : null}
+
+      {scheduleDraft ? (
+        <SettingsSaveBar
+          dirty={scheduleDirty}
+          pending={saveSchedule.isPending}
+          errors={scheduleErrors}
+          onSave={submitSchedule}
+          onReset={() => settings && setScheduleDraft(scheduleDraftOf(settings))}
+        />
+      ) : null}
 
       <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <AlertDialogContent>

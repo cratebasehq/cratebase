@@ -1,10 +1,13 @@
-import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
 
+/** Old top-level route, kept only to redirect a bookmarked/shared link to
+ * where this page now lives — the "rpc" tab of the consolidated
+ * settings group at `/settings/database`. */
 export const settingsRpcRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/rpc",
-  // Lazy for the same reason as the SQL console: CodeMirror + its SQL
-  // language package are heavy, and this tab is opened rarely.
-  component: lazyRouteComponent(() => import("@/components/settings/rpc-functions-page"), "RpcFunctionsPage"),
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/database", search: { tab: "rpc" } });
+  },
 });

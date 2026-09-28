@@ -1,4 +1,4 @@
-import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
 
 export type AuditLogSearch = {
@@ -8,6 +8,9 @@ export type AuditLogSearch = {
   to?: string;
 };
 
+/** Old top-level route, kept only to redirect a bookmarked/shared link
+ * (filters and all) to the "Audit log" tab of the consolidated Logs
+ * settings group. */
 export const settingsAuditRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/audit",
@@ -17,5 +20,7 @@ export const settingsAuditRoute = createRoute({
     from: typeof search.from === "string" && search.from.length > 0 ? search.from : undefined,
     to: typeof search.to === "string" && search.to.length > 0 ? search.to : undefined,
   }),
-  component: lazyRouteComponent(() => import("@/components/settings/audit-log-page"), "AuditLogPage"),
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: "/settings/logs", search: { tab: "audit", ...search } });
+  },
 });

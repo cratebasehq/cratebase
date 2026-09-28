@@ -1,1 +1,0 @@
-import{ct as e,l as t}from"./switch.js";function n(){return e({queryKey:[`collections`],queryFn:async()=>(await t.admin.collections.list()).items})}export{n as t};

@@ -7,8 +7,18 @@ import { dashboardIndexRoute } from "@/routes/dashboard-index";
 import { collectionRoute } from "@/routes/collection";
 import { settingsRoute } from "@/routes/settings";
 import { settingsIndexRoute } from "@/routes/settings-index";
-import { settingsLogsRoute } from "@/routes/settings-logs";
+// The 7 consolidated settings groups — each a tabbed page (`?tab=`).
 import { settingsApplicationRoute } from "@/routes/settings-application";
+import { settingsEmailRoute } from "@/routes/settings-email";
+import { settingsAuthRoute } from "@/routes/settings-auth";
+import { settingsDatabaseRoute } from "@/routes/settings-database";
+import { settingsAutomationRoute } from "@/routes/settings-automation";
+import { settingsIntegrationsRoute } from "@/routes/settings-integrations";
+import { settingsLogsRoute } from "@/routes/settings-logs";
+// The email template editor stays a standalone full-page route.
+import { settingsEmailTemplateEditorRoute } from "@/routes/settings-email-template-editor";
+// Old top-level routes, kept only as redirects to a group + tab above —
+// see each file's own doc comment.
 import { settingsMailRoute } from "@/routes/settings-mail";
 import { settingsMailInboxRoute } from "@/routes/settings-mail-inbox";
 import { settingsSuperusersRoute } from "@/routes/settings-superusers";
@@ -22,7 +32,6 @@ import { settingsRpcRoute } from "@/routes/settings-rpc";
 import { settingsFileManagerRoute } from "@/routes/settings-file-manager";
 import { settingsWebhooksRoute } from "@/routes/settings-webhooks";
 import { settingsEmailTemplatesRoute } from "@/routes/settings-email-templates";
-import { settingsEmailTemplateEditorRoute } from "@/routes/settings-email-template-editor";
 import { settingsEmailTriggersRoute } from "@/routes/settings-email-triggers";
 import { settingsMailLogRoute } from "@/routes/settings-mail-log";
 import { settingsLlmRoute } from "@/routes/settings-llm";
@@ -40,21 +49,27 @@ const routeTree = rootRoute.addChildren([
     settingsRoute.addChildren([
       settingsIndexRoute,
       settingsApplicationRoute,
+      settingsEmailRoute,
+      settingsAuthRoute,
+      settingsDatabaseRoute,
+      settingsAutomationRoute,
+      settingsIntegrationsRoute,
+      settingsLogsRoute,
+      settingsEmailTemplateEditorRoute,
+      // Redirect-only stubs for every pre-consolidation URL.
       settingsMailRoute,
       settingsMailInboxRoute,
       settingsSuperusersRoute,
       settingsSessionsRoute,
-      settingsLogsRoute,
       settingsBackupsRoute,
-      settingsNetworkRoute,
       settingsCronRoute,
-      settingsRpcRoute,
+      settingsNetworkRoute,
       settingsSqlConsoleRoute,
       settingsExtensionsRoute,
+      settingsRpcRoute,
       settingsFileManagerRoute,
       settingsWebhooksRoute,
       settingsEmailTemplatesRoute,
-      settingsEmailTemplateEditorRoute,
       settingsEmailTriggersRoute,
       settingsMailLogRoute,
       settingsLlmRoute,

@@ -56,7 +56,7 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
-        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityField) : {}),
+        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityFields) : {}),
       }),
     onSuccess: async (created) => {
       await queryClient.invalidateQueries({ queryKey: ["collections"] });

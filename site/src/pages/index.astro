@@ -21,7 +21,8 @@ const benchmarkRows = [
 const features: [string, string, string][] = [
   ["Dynamic collections", "Define fields through the API/dashboard; a real SQL table is created and migrated for you.", "POST /api/collections"],
   ["API rules", "list/view/create/update/delete access, enforced in SQL, not application code you have to trust.", "listRule, viewRule, ..."],
-  ["Auth", "Password, sessions, OTP, MFA, OAuth2 (Google, GitHub, or a custom provider), superuser impersonation, new-location login alerts.", "POST .../auth-with-password"],
+  ["Auth", "Password, magic link, OTP, TOTP 2FA, OAuth2 with built-in presets (Google, Apple, Microsoft, Discord, GitHub, ...) or a generic OIDC issuer, superuser impersonation, new-location login alerts.", "POST .../auth-with-password"],
+  ["Email", "Templates with a visual editor, a send API any client can call under a per-template sendRule, and record-event triggers — plus every auth email (verify, reset, magic link) through the same layout.", "cb.mails.send(...)"],
   ["Realtime", "Subscribe to a collection or a single record over SSE; create/update/delete events as they happen — cross-node via LISTEN/NOTIFY on Postgres.", "GET /api/realtime"],
   ["Files", "Local disk or any S3-compatible bucket, plus thumbnails and protected-file access tokens.", "?thumb=100x100"],
   ["Batch", "Several record writes in one HTTP round trip and one SQL transaction.", "POST /api/batch"],
@@ -37,6 +38,7 @@ const features: [string, string, string][] = [
   ["Admin dashboard", "A SQL console, logs, an append-only audit log, backups, and a dev mail inbox that catches outgoing mail before a real provider is wired up.", "/_/"],
   ["Metrics", "Prometheus exposition, unauthenticated and outside /api by design.", "GET /metrics"],
   ["SQLite or Postgres", "Same API, same filter syntax, same rules either way — Postgres backups shell out to the real pg_dump/pg_restore.", "DATABASE_URL=postgres://..."],
+  ["Database extensions & RPC", "Enable Postgres extensions (PostGIS, pgvector, pg_trgm) from the dashboard; a custom SQL RPC is a named, rule-gated endpoint, no server redeploy — PostGIS-accelerated nearest-store-style geo queries included.", "cb.rpc(name, params)"],
 ];
 
 const examples: [string, string, string][] = [

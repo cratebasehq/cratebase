@@ -421,7 +421,7 @@ function CollectionPage() {
         <Alert className="mx-page mt-3 shrink-0">
           <AlertTitle>Managed in Settings › {managingItem.label}</AlertTitle>
           <AlertDescription>
-            <Link to={managingItem.to} className="inline-flex items-center gap-1">
+            <Link to={managingItem.to} search={{ tab: managingItem.value } as never} className="inline-flex items-center gap-1">
               Go to {managingItem.label} <ArrowRight className="size-3.5" />
             </Link>
           </AlertDescription>
@@ -538,7 +538,7 @@ function CollectionPage() {
                   </Button>
                 ) : managingItem ? (
                   <Button size="sm" className="gap-1.5" asChild>
-                    <Link to={managingItem.to}>
+                    <Link to={managingItem.to} search={{ tab: managingItem.value } as never}>
                       Go to {managingItem.label}
                       <ArrowRight className="size-3.5" />
                     </Link>

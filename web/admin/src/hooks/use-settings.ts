@@ -26,7 +26,16 @@ export interface ServerSettings {
      * to the layout's own default accent. */
     brandColor: string;
   };
-  logs: { maxDays: number; minLevel: number; logIP: boolean; logAuthId: boolean; maxDataSize: number };
+  logs: {
+    maxDays: number;
+    minLevel: number;
+    logIP: boolean;
+    logAuthId: boolean;
+    maxDataSize: number;
+    /** Retention for `_mailLog` rows, pruned on the same cadence as
+     * `_logs`. `<= 0` disables cleanup, same convention as `maxDays`. */
+    mailLogMaxDays: number;
+  };
   batch: { enabled: boolean; maxRequests: number; timeout: number; maxBodySize: number };
   smtp: {
     enabled: boolean;
@@ -75,6 +84,9 @@ export interface ServerSettings {
    * off by default, no dashboard page of its own yet. Enable with
    * `PATCH /api/settings { "queue": { "enabled": true } }`. */
   queue: { enabled: boolean };
+  /** Toggle-gated built-in ZIP-export plugin (`crates/server/src/zip_export.rs`):
+   * same shape as `queue`, off by default. */
+  zipExport: { enabled: boolean };
   push: {
     vapid: { enabled: boolean; publicKey: string; subject: string; privateKey?: string };
     fcm: { enabled: boolean; serviceAccountJson?: string };
@@ -95,26 +107,6 @@ export interface ServerSettings {
       targetField: string;
     }[];
   };
-}
-
-/** Settings-gated nav visibility, additive to `lib/settings-nav.ts`'s
- * static registry: a toggle-gated built-in module's page (currently
- * `/settings/llm` and `/settings/mail-inbox`) is hidden from the sidebar
- * and command palette until its flag is on, even though the route itself
- * still exists.
- *
- * `/settings/mail-inbox`'s flag isn't part of `ServerSettings` — it's
- * derived server state (`GET /api/health`'s `data.devMailInbox`, see
- * `useDevMailInboxAvailable`), not persisted config — so it comes in
- * through its own optional parameter instead of `settings`. */
-export function isSettingsItemVisible(
-  to: string,
-  settings: ServerSettings | undefined,
-  devMailInboxAvailable?: boolean,
-): boolean {
-  if (to === "/settings/llm") return Boolean(settings?.llm.enabled);
-  if (to === "/settings/mail-inbox") return devMailInboxAvailable === true;
-  return true;
 }
 
 /** Whether the mailer is running the zero-config `Log` backend right now

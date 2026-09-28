@@ -1,21 +1,43 @@
 ---
 title: "Settings pages"
-description: "Application, Mail, Network, Superusers, Backups, Logs, Cron jobs, and more."
+description: "7 grouped settings pages — Application, Email, Auth & security, Database, Automation, Integrations, Logs — each a tabbed page."
 ---
 
-The Settings area covers instance-wide configuration: **Application**
-(general settings), **Mail & storage**, **Network** (rate limits with a
-collection-name autocomplete, trusted proxy, superuser IP allow-list),
-**Superusers**, **API keys**, **Backups**, **Logs**, **Audit log**,
-**Cron jobs**, **Webhooks**, **Push**, **LLM**, **MCP**, an in-dashboard
-**SQL console**, a **File manager**, **Functions** (a read-only view of
-registered `pb_hooks` routes), and **Analytics**.
+The Settings sidebar has 7 entries. Each is one page with tabs (the tab
+lives in the URL, e.g. `/_/#/settings/email?tab=templates`, so a tab is
+bookmarkable and shareable) rather than its own sidebar row — a page or
+two per topic used to each get a row of its own, which grew past what a
+sidebar should hold.
 
-**Mail inbox** sits right next to **Mail & storage**, but only shows up
-in the sidebar while no real transport is configured (`smtp.enabled:
-false`, the default). It lists every email the zero-config `Log` backend
-has "sent" — newest first — and a detail pane renders the HTML body in a
-sandboxed iframe (no scripts, links open in a new tab) alongside a plain
-text view, so a verification link, password-reset link, or OTP code is
-one click away with no mail server to set up. **Mail & storage** links
-over to it whenever it's available.
+- **Application** — **General** (name, public URL, sender identity),
+  **Branding** (logo, brand color, accent color), **Modules** (the batch
+  API, and the Teams/Queue/ZIP export toggles — Teams applies
+  immediately, Queue and ZIP export need a restart).
+- **Email** — **Delivery** (SMTP or the zero-config `Log` backend, plus
+  S3-compatible file storage), **Templates** (the visual/HTML editor,
+  opened as its own full page from this tab), **Triggers**
+  (`_emailTriggers`), **Mail log** (`_mailLog`, every send attempt), and
+  **Dev inbox** — only shown while no real transport is configured
+  (`smtp.enabled: false`); it lists every email the `Log` backend has
+  "sent," newest first, with a detail pane rendering the HTML body in a
+  sandboxed iframe alongside a plain-text view.
+- **Auth & security** — **Superusers**, **Sessions** (`_sessions`, every
+  live bearer/cookie token across every auth collection), **API keys**,
+  **Network** (rate limits with a collection-name autocomplete, trusted
+  proxy, superuser IP allow-list).
+- **Database** — **SQL console**, **Extensions** (Postgres-only:
+  PostGIS, pgvector, pg_trgm, ...), **RPC functions** (`_rpc`), **Backups**
+  (including the cron schedule and how many scheduled backups to keep),
+  **File manager**.
+- **Automation** — **Cron jobs** (`_cron_jobs`), **Webhooks**
+  (`_webhooks`), **Functions** (a read-only view of registered
+  `pb_hooks` routes).
+- **Integrations** — **Push** (`_push_subscriptions`), **LLM** (only
+  shown once `llm.enabled` is on), **MCP**.
+- **Logs** — **Request logs** (with an hourly-volume chart and retention/
+  minimum-level/data-size settings), **Audit log** (`_audit_log`,
+  append-only).
+
+Every old direct link (`/settings/superusers`, `/settings/mail-log`, a
+bookmarked `/settings/audit?action=...`, ...) still works — it redirects
+to the new group and tab, filters and all.

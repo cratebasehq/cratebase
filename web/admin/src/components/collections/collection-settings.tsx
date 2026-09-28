@@ -123,7 +123,7 @@ export function CollectionSettings({
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
-        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityField) : {}),
+        ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityFields) : {}),
       }),
     onSuccess: async (saved) => {
       setBaseline(saved);

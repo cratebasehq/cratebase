@@ -1,4 +1,4 @@
-import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
 
 export type MailLogSearch = {
@@ -7,6 +7,9 @@ export type MailLogSearch = {
   template?: string;
 };
 
+/** Old top-level route, kept only to redirect a bookmarked/shared link
+ * (filters and all) to the "Mail log" tab of the consolidated Email
+ * settings group. */
 export const settingsMailLogRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/mail-log",
@@ -16,5 +19,7 @@ export const settingsMailLogRoute = createRoute({
       search.status === "sent" || search.status === "failed" || search.status === "queued" ? search.status : undefined,
     template: typeof search.template === "string" && search.template.length > 0 ? search.template : undefined,
   }),
-  component: lazyRouteComponent(() => import("@/components/settings/mail-log-page"), "MailLogPage"),
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: "/settings/email", search: { tab: "mail-log", ...search } });
+  },
 });

@@ -98,7 +98,9 @@ export function McpPage() {
             <KeyRound className="size-3.5 shrink-0" />
             Connecting requires a bearer token.
             <Button variant="link" size="sm" className="h-auto p-0" asChild>
-              <Link to="/settings/api-keys">Create an API key for this →</Link>
+              <Link to="/settings/auth" search={{ tab: "api-keys" }}>
+                Create an API key for this →
+              </Link>
             </Button>
           </div>
         </CardContent>

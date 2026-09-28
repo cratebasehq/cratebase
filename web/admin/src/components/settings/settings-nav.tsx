@@ -1,6 +1,5 @@
 import { Link } from "@tanstack/react-router";
 import { SETTINGS_GROUPS } from "@/lib/settings-nav";
-import { isSettingsItemVisible, useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -12,41 +11,31 @@ import {
 
 /**
  * Replaces the Collections/System groups in the app sidebar while the
- * route is under `/settings` — the six grouped sections from
- * `SETTINGS_GROUPS`, rendered with the same primitives `CollectionItem`
- * already uses in `app-sidebar.tsx`, so icon-rail collapse and tooltips
- * come free instead of needing a second nav implementation.
+ * route is under `/settings` — one entry per `SETTINGS_GROUPS` group (≤7,
+ * the owner's ask for a lean settings sidebar), each a tabbed page rather
+ * than its own route. Every group always has at least one always-visible
+ * tab, so unlike the old per-page list this never needs to hide a whole
+ * row — a toggle-gated tab (LLM, dev inbox) just doesn't show up inside
+ * its group's own `TabsList` until enabled.
  */
 export function SettingsNav({ pathname }: { pathname: string }) {
-  const { data: settings } = useSettings();
-  const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
   return (
-    <>
-      {SETTINGS_GROUPS.map((group) => {
-        const items = group.items.filter((item) =>
-          isSettingsItemVisible(item.to, settings, devMailInboxAvailable),
-        );
-        if (items.length === 0) return null;
-        return (
-          <SidebarGroup key={group.label}>
-            <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {items.map(({ to, label, icon: Icon }) => (
-                  <SidebarMenuItem key={to}>
-                    <SidebarMenuButton asChild isActive={pathname === to} tooltip={label}>
-                      <Link to={to}>
-                        <Icon />
-                        <span>{label}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        );
-      })}
-    </>
+    <SidebarGroup>
+      <SidebarGroupLabel>Settings</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {SETTINGS_GROUPS.map(({ to, label, icon: Icon }) => (
+            <SidebarMenuItem key={to}>
+              <SidebarMenuButton asChild isActive={pathname === to || pathname.startsWith(`${to}/`)} tooltip={label}>
+                <Link to={to}>
+                  <Icon />
+                  <span>{label}</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
   );
 }

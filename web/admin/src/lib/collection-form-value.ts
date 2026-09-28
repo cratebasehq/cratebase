@@ -15,24 +15,59 @@ export type AuthProviderValue = Omit<OAuth2Provider, "logo" | "extra" | "pkce"> 
   extra: Record<string, string>;
 };
 
+/** One `subject`/`body` email template pair, embedded directly on the
+ * collection (not the global `_emailTemplates` collection — these are
+ * `cratebase_core::collection::EmailTemplate`, sent by the auth flow
+ * itself, e.g. `POST /api/collections/:c/request-verification`). */
+export interface AuthEmailTemplateValue {
+  subject: string;
+  body: string;
+}
+
 /** `crates/core/src/collection.rs::AuthOptions`, flattened into the form's
  * own field names. Every duration is in seconds, matching the wire. Only
  * present when `type === "auth"` — a base collection has none of this. */
 export interface AuthOptionsValue {
+  /** `null` = superusers only, `""` = public, anything else = a filter
+   * expression — same three-state shape `RuleField` already renders for
+   * the collection's list/view/create/update/delete rules. */
+  authRule: string | null;
+  manageRule: string | null;
   passwordAuthEnabled: boolean;
   oauth2Enabled: boolean;
   oauth2Providers: AuthProviderValue[];
+  oauth2MappedFields: { id: string; name: string; username: string; avatarURL: string };
   mfaEnabled: boolean;
   mfaDuration: number;
   mfaRule: string;
   otpEnabled: boolean;
   otpDuration: number;
   otpLength: number;
+  authAlertEnabled: boolean;
+  authAlertTemplate: AuthEmailTemplateValue;
+  magicLinkEnabled: boolean;
+  magicLinkDuration: number;
+  magicLinkUrlTemplate: string;
+  magicLinkTemplate: AuthEmailTemplateValue;
+  verificationTemplate: AuthEmailTemplateValue;
+  resetPasswordTemplate: AuthEmailTemplateValue;
+  confirmEmailChangeTemplate: AuthEmailTemplateValue;
   authTokenDuration: number;
   passwordResetTokenDuration: number;
   emailChangeTokenDuration: number;
   verificationTokenDuration: number;
   fileTokenDuration: number;
+  /** Write-only: checking one of these and saving sends a freshly
+   * generated random secret for that token kind, which invalidates every
+   * token of that kind issued so far (its signature no longer matches).
+   * The server never returns a stored secret, so there's nothing to show
+   * here beyond "regenerate" — see `SecretSetting`'s doc comment for the
+   * same pattern in app-wide settings. */
+  regenerateAuthTokenSecret: boolean;
+  regeneratePasswordResetTokenSecret: boolean;
+  regenerateEmailChangeTokenSecret: boolean;
+  regenerateVerificationTokenSecret: boolean;
+  regenerateFileTokenSecret: boolean;
 }
 
 /** The editable shape of a collection, as the schema editor holds it —
@@ -41,7 +76,11 @@ export interface AuthOptionsValue {
 export interface CollectionFormValue {
   name: string;
   type: "base" | "auth";
-  identityField: string;
+  /** `passwordAuth.identityFields` — one or more of `email`/`username`
+   * that a caller may sign in with. Kept as an array all the way through
+   * (rather than collapsing to one) so a collection can require both, or
+   * offer either. */
+  identityFields: string[];
   schema: FieldSchema[];
   /** Raw `CREATE INDEX` statements, exactly as the collection stores them. */
   indexes: string[];
@@ -185,26 +224,72 @@ export function isGenericOidcProvider(extra: Record<string, string>): boolean {
   return Boolean(extra.issuer?.trim());
 }
 
+const DEFAULT_AUTH_ALERT_TEMPLATE: AuthEmailTemplateValue = {
+  subject: "Login from a new location",
+  body: "<p>Hello,</p>\n<p>We noticed a login to your {APP_NAME} account from a new location:</p>\n<p><em>{ALERT_INFO}</em></p>\n<p><strong>If this wasn't you, you should immediately change your {APP_NAME} account password to revoke access from all other locations.</strong></p>\n<p>If this was you, you may disregard this email.</p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>",
+};
+const DEFAULT_MAGIC_LINK_TEMPLATE: AuthEmailTemplateValue = {
+  subject: "Sign in to {APP_NAME}",
+  body: '<p>Hello,</p>\n<p>Click on the button below to sign in to {APP_NAME}.</p>\n<p>\n  <a class="btn" href="{MAGIC_LINK}" target="_blank" rel="noopener">Sign in</a>\n</p>\n<p><i>If you didn\'t ask to sign in, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>',
+};
+const DEFAULT_VERIFICATION_TEMPLATE: AuthEmailTemplateValue = {
+  subject: "Verify your {APP_NAME} email",
+  body: '<p>Hello,</p>\n<p>Thank you for joining us at {APP_NAME}.</p>\n<p>Click on the button below to verify your email address.</p>\n<p>\n  <a class="btn" href="{APP_URL}/_/#/auth/confirm-verification/{TOKEN}" target="_blank" rel="noopener">Verify</a>\n</p>\n<p><i>If you didn\'t recently register, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>',
+};
+const DEFAULT_RESET_PASSWORD_TEMPLATE: AuthEmailTemplateValue = {
+  subject: "Reset your {APP_NAME} password",
+  body: '<p>Hello,</p>\n<p>Click on the button below to reset your password.</p>\n<p>\n  <a class="btn" href="{APP_URL}/_/#/auth/confirm-password-reset/{TOKEN}" target="_blank" rel="noopener">Reset password</a>\n</p>\n<p><i>If you didn\'t ask to reset your password, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>',
+};
+const DEFAULT_CONFIRM_EMAIL_CHANGE_TEMPLATE: AuthEmailTemplateValue = {
+  subject: "Confirm your {APP_NAME} new email address",
+  body: '<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class="btn" href="{APP_URL}/_/#/auth/confirm-email-change/{TOKEN}" target="_blank" rel="noopener">Confirm new email</a>\n</p>\n<p><i>If you didn\'t ask to change your email address, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {APP_NAME} team\n</p>',
+};
+
 /** Mirrors `cratebase_core::collection::AuthOptions::default()` — the
  * values a freshly created auth collection gets on the server, so a new
  * collection's form starts already agreeing with what create() will send. */
 export function defaultAuthOptions(): AuthOptionsValue {
   return {
+    authRule: "",
+    manageRule: null,
     passwordAuthEnabled: true,
     oauth2Enabled: false,
     oauth2Providers: [],
+    oauth2MappedFields: { id: "", name: "name", username: "", avatarURL: "avatar" },
     mfaEnabled: false,
     mfaDuration: 600,
     mfaRule: "",
     otpEnabled: false,
     otpDuration: 180,
     otpLength: 8,
+    authAlertEnabled: true,
+    authAlertTemplate: DEFAULT_AUTH_ALERT_TEMPLATE,
+    magicLinkEnabled: false,
+    magicLinkDuration: 900,
+    magicLinkUrlTemplate: "{APP_URL}/auth/magic-link?token={TOKEN}",
+    magicLinkTemplate: DEFAULT_MAGIC_LINK_TEMPLATE,
+    verificationTemplate: DEFAULT_VERIFICATION_TEMPLATE,
+    resetPasswordTemplate: DEFAULT_RESET_PASSWORD_TEMPLATE,
+    confirmEmailChangeTemplate: DEFAULT_CONFIRM_EMAIL_CHANGE_TEMPLATE,
     authTokenDuration: 432_000,
     passwordResetTokenDuration: 1800,
     emailChangeTokenDuration: 1800,
     verificationTokenDuration: 86_400,
     fileTokenDuration: 180,
+    regenerateAuthTokenSecret: false,
+    regeneratePasswordResetTokenSecret: false,
+    regenerateEmailChangeTokenSecret: false,
+    regenerateVerificationTokenSecret: false,
+    regenerateFileTokenSecret: false,
   };
+}
+
+/** A random, URL-safe token-signing secret suffix, generated client-side
+ * only when "regenerate" is checked — the server never hands one back, so
+ * there's nothing to read and re-send, only a fresh one to mint. */
+export function randomTokenSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** Options errors, folded into the same list `collectionFormErrors`
@@ -244,6 +329,15 @@ export function validateAuthOptions(auth: AuthOptionsValue): string[] {
   if (auth.mfaEnabled && auth.mfaDuration < 1) errors.push("MFA duration must be at least 1 second");
   if (auth.otpEnabled && auth.otpDuration < 1) errors.push("OTP duration must be at least 1 second");
   if (auth.otpEnabled && auth.otpLength < 4) errors.push("OTP length must be at least 4 digits");
+  if (auth.magicLinkEnabled && auth.magicLinkDuration < 1) {
+    errors.push("Magic link duration must be at least 1 second");
+  }
+  if (auth.magicLinkEnabled && !auth.magicLinkUrlTemplate.trim()) {
+    errors.push("Magic link URL template is required while magic links are enabled");
+  }
+  if (auth.magicLinkEnabled && auth.magicLinkUrlTemplate.trim() && !auth.magicLinkUrlTemplate.includes("{TOKEN}")) {
+    errors.push("Magic link URL template must include {TOKEN}");
+  }
   for (const [label, duration] of [
     ["Auth token", auth.authTokenDuration],
     ["Password reset token", auth.passwordResetTokenDuration],
@@ -260,7 +354,7 @@ export function emptyCollectionForm(type: "base" | "auth" = "base"): CollectionF
   return {
     name: "",
     type,
-    identityField: "email",
+    identityFields: ["email"],
     schema: [],
     indexes: [],
     listRule: null,
@@ -272,11 +366,19 @@ export function emptyCollectionForm(type: "base" | "auth" = "base"): CollectionF
   };
 }
 
+function templateOf(t: { subject: string; body: string } | undefined, fallback: AuthEmailTemplateValue): AuthEmailTemplateValue {
+  return t ? { subject: t.subject, body: t.body } : fallback;
+}
+
 export function collectionToFormValue(collection: CollectionModel): CollectionFormValue {
+  const identityFields =
+    collection.type === "auth" && collection.passwordAuth?.identityFields?.length
+      ? [...collection.passwordAuth.identityFields]
+      : ["email"];
   return {
     name: collection.name,
     type: collection.type === "auth" ? "auth" : "base",
-    identityField: (collection.type === "auth" ? collection.passwordAuth?.identityFields?.[0] : undefined) ?? "email",
+    identityFields,
     schema: userFields(collection),
     indexes: [...(collection.indexes ?? [])],
     listRule: collection.listRule ?? null,
@@ -287,6 +389,8 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
     auth:
       collection.type === "auth"
         ? {
+            authRule: collection.authRule ?? "",
+            manageRule: collection.manageRule ?? null,
             passwordAuthEnabled: collection.passwordAuth?.enabled ?? true,
             oauth2Enabled: collection.oauth2?.enabled ?? false,
             oauth2Providers: (collection.oauth2?.providers ?? []).map((p) => ({
@@ -305,17 +409,40 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
                 Object.entries(p.extra ?? {}).map(([k, v]) => [k, v == null ? "" : String(v)]),
               ),
             })),
+            oauth2MappedFields: {
+              id: collection.oauth2?.mappedFields?.id ?? "",
+              name: collection.oauth2?.mappedFields?.name ?? "name",
+              username: collection.oauth2?.mappedFields?.username ?? "",
+              avatarURL: collection.oauth2?.mappedFields?.avatarURL ?? "avatar",
+            },
             mfaEnabled: collection.mfa?.enabled ?? false,
             mfaDuration: collection.mfa?.duration ?? 600,
             mfaRule: collection.mfa?.rule ?? "",
             otpEnabled: collection.otp?.enabled ?? false,
             otpDuration: collection.otp?.duration ?? 180,
             otpLength: collection.otp?.length ?? 8,
+            authAlertEnabled: collection.authAlert?.enabled ?? true,
+            authAlertTemplate: templateOf(collection.authAlert?.emailTemplate, DEFAULT_AUTH_ALERT_TEMPLATE),
+            magicLinkEnabled: collection.magicLink?.enabled ?? false,
+            magicLinkDuration: collection.magicLink?.duration ?? 900,
+            magicLinkUrlTemplate: collection.magicLink?.urlTemplate ?? "{APP_URL}/auth/magic-link?token={TOKEN}",
+            magicLinkTemplate: templateOf(collection.magicLink?.emailTemplate, DEFAULT_MAGIC_LINK_TEMPLATE),
+            verificationTemplate: templateOf(collection.verificationTemplate, DEFAULT_VERIFICATION_TEMPLATE),
+            resetPasswordTemplate: templateOf(collection.resetPasswordTemplate, DEFAULT_RESET_PASSWORD_TEMPLATE),
+            confirmEmailChangeTemplate: templateOf(
+              collection.confirmEmailChangeTemplate,
+              DEFAULT_CONFIRM_EMAIL_CHANGE_TEMPLATE,
+            ),
             authTokenDuration: collection.authToken?.duration ?? 432_000,
             passwordResetTokenDuration: collection.passwordResetToken?.duration ?? 1800,
             emailChangeTokenDuration: collection.emailChangeToken?.duration ?? 1800,
             verificationTokenDuration: collection.verificationToken?.duration ?? 86_400,
             fileTokenDuration: collection.fileToken?.duration ?? 180,
+            regenerateAuthTokenSecret: false,
+            regeneratePasswordResetTokenSecret: false,
+            regenerateEmailChangeTokenSecret: false,
+            regenerateVerificationTokenSecret: false,
+            regenerateFileTokenSecret: false,
           }
         : null,
   };
@@ -330,13 +457,18 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
  * none today, but the intent is the same reason `passwordAuth` is already
  * resent in full above this function).
  */
-export function authOptionsPayload(auth: AuthOptionsValue, identityField: string): Record<string, unknown> {
+export function authOptionsPayload(auth: AuthOptionsValue, identityFields: string[]): Record<string, unknown> {
+  function tokenPayload(duration: number, regenerate: boolean): Record<string, unknown> {
+    return regenerate ? { duration, secret: randomTokenSecret() } : { duration };
+  }
   return {
+    authRule: auth.authRule,
+    manageRule: auth.manageRule,
     // Both mutations previously sent `passwordAuth: { identityFields }`
     // on its own — folded in here so there's exactly one `passwordAuth`
     // key in the outgoing object. Two separate spreads of the same
     // top-level key would have the second silently clobber the first.
-    passwordAuth: { enabled: auth.passwordAuthEnabled, identityFields: [identityField] },
+    passwordAuth: { enabled: auth.passwordAuthEnabled, identityFields },
     oauth2: {
       enabled: auth.oauth2Enabled,
       providers: auth.oauth2Providers.map((p) => ({
@@ -350,13 +482,24 @@ export function authOptionsPayload(auth: AuthOptionsValue, identityField: string
         extra: p.extra,
         ...(p.pkce === null ? {} : { pkce: p.pkce }),
       })),
+      mappedFields: auth.oauth2MappedFields,
     },
     mfa: { enabled: auth.mfaEnabled, duration: auth.mfaDuration, rule: auth.mfaRule },
     otp: { enabled: auth.otpEnabled, duration: auth.otpDuration, length: auth.otpLength },
-    authToken: { duration: auth.authTokenDuration },
-    passwordResetToken: { duration: auth.passwordResetTokenDuration },
-    emailChangeToken: { duration: auth.emailChangeTokenDuration },
-    verificationToken: { duration: auth.verificationTokenDuration },
-    fileToken: { duration: auth.fileTokenDuration },
+    authAlert: { enabled: auth.authAlertEnabled, emailTemplate: auth.authAlertTemplate },
+    magicLink: {
+      enabled: auth.magicLinkEnabled,
+      duration: auth.magicLinkDuration,
+      urlTemplate: auth.magicLinkUrlTemplate,
+      emailTemplate: auth.magicLinkTemplate,
+    },
+    verificationTemplate: auth.verificationTemplate,
+    resetPasswordTemplate: auth.resetPasswordTemplate,
+    confirmEmailChangeTemplate: auth.confirmEmailChangeTemplate,
+    authToken: tokenPayload(auth.authTokenDuration, auth.regenerateAuthTokenSecret),
+    passwordResetToken: tokenPayload(auth.passwordResetTokenDuration, auth.regeneratePasswordResetTokenSecret),
+    emailChangeToken: tokenPayload(auth.emailChangeTokenDuration, auth.regenerateEmailChangeTokenSecret),
+    verificationToken: tokenPayload(auth.verificationTokenDuration, auth.regenerateVerificationTokenSecret),
+    fileToken: tokenPayload(auth.fileTokenDuration, auth.regenerateFileTokenSecret),
   };
 }
