@@ -230,6 +230,18 @@ impl Runner {
             Box::new(|db| Box::pin(refresh_default_email_templates_up(db))),
             Box::new(|db| Box::pin(refresh_default_email_templates_down(db))),
         ));
+        // `_pendingUploads` follows the same story as `_totps`/`_rpc`
+        // above: added to `default_system_collections()` after
+        // `REFRESH_EMAIL_TEMPLATES` shipped, so an existing database
+        // needs this follow-up migration to retroactively get the table.
+        // A fresh database already has it and this migration is a no-op
+        // there. Named `19_...`: the next core migration number after
+        // `REFRESH_EMAIL_TEMPLATES` (`18_...`).
+        r.register(Migration::new(
+            ADD_PENDING_UPLOADS,
+            Box::new(|db| Box::pin(add_pending_uploads_up(db))),
+            Box::new(|db| Box::pin(add_pending_uploads_down(db))),
+        ));
         r
     }
 
@@ -1184,6 +1196,30 @@ async fn refresh_default_email_templates_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_PENDING_UPLOADS: &str = "19_add_pending_uploads.rs";
+
+/// See `_pendingUploads`'s doc comment on
+/// [`cratebase_core::Collection::default_system_collections`] for what
+/// the table is for.
+async fn add_pending_uploads_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_pendingUploads").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_pendingUploads")
+        .expect("_pendingUploads is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_pending_uploads_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_pendingUploads").is_some() {
+        db.collections.delete(&*db.engine, "_pendingUploads").await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1700,5 +1736,17 @@ mod tests {
         add_email_triggers_up(&db).await.unwrap();
         add_email_triggers_down(&db).await.unwrap();
         assert!(db.collections.get_by_name("_emailTriggers").is_none());
+    }
+
+    #[tokio::test]
+    async fn add_pending_uploads_up_is_idempotent() {
+        let db = fresh().await;
+        assert!(db.collections.get_by_name("_pendingUploads").is_none());
+        add_pending_uploads_up(&db).await.unwrap();
+        assert!(db.collections.get_by_name("_pendingUploads").is_some());
+        // Re-running is a no-op, not an error.
+        add_pending_uploads_up(&db).await.unwrap();
+        add_pending_uploads_down(&db).await.unwrap();
+        assert!(db.collections.get_by_name("_pendingUploads").is_none());
     }
 }

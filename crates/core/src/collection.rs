@@ -1615,6 +1615,61 @@ impl Collection {
         let pos = email_assets.fields.len() - 2;
         email_assets.fields.insert(pos, ea_file);
 
+        // Presigned direct-upload claim tickets (`POST /api/files/presign`
+        // in the server crate): one row per outstanding upload, superuser-
+        // only end to end like `_sessions`/`_bans` above — a client never
+        // reads this collection directly, only through the presign
+        // endpoint (which returns the raw token once, never stored) and
+        // the ordinary record create/update path (which consumes a token
+        // it's handed in a file field's value). `tokenHash` is
+        // `sha256(token)`, same convention as `_sessions`/`_magicLinks`.
+        // `recordRef` is blank for a presign ahead of a *create* (the
+        // record doesn't exist yet); `status` moves from `"pending"` to
+        // `"consumed"` the moment a create/update call claims it, so a
+        // reused token is rejected rather than silently attaching the
+        // same upload twice. `expiresAt` rows past due are removed by the
+        // storage cleanup cron (`crate::routes::files`, server crate).
+        let mut pending_uploads = Collection::new("_pendingUploads", CollectionType::Base);
+        pending_uploads.system = true;
+        let mut pu_record_ref = text("recordRef");
+        pu_record_ref.required = false;
+        let mut pu_token_hash = text("tokenHash");
+        pu_token_hash.hidden = true;
+        let mut pu_size = Field::new("size", FieldKind::default_for(FieldType::Number));
+        pu_size.system = true;
+        let mut pu_status = text("status");
+        pu_status.system = true;
+        let mut pu_expires_at = Field::new(
+            "expiresAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        pu_expires_at.system = true;
+        pu_expires_at.required = true;
+        let pos = pending_uploads.fields.len() - 2;
+        pending_uploads.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("field"),
+                pu_record_ref,
+                text("filename"),
+                text("key"),
+                pu_size,
+                text("mime"),
+                pu_token_hash,
+                pu_status,
+                pu_expires_at,
+            ],
+        );
+        pending_uploads.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_pendingUploads_tokenHash` ON `_pendingUploads` (tokenHash)"
+                .into(),
+            "CREATE INDEX `idx_pendingUploads_expiresAt` ON `_pendingUploads` (expiresAt)".into(),
+        ];
+
         vec![
             external,
             mfas,
@@ -1637,6 +1692,7 @@ impl Collection {
             mail_log,
             email_triggers,
             email_assets,
+            pending_uploads,
         ]
     }
 }
