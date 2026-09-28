@@ -362,7 +362,7 @@ mod tests {
         // the legacy path never produces one.
         assert!(resolved.text.is_some());
         assert!(resolved.html.contains("tok"));
-        assert_eq!(resolved.subject, "Verify your Acme email");
+        assert_eq!(resolved.subject, "Verify your email for Acme");
     }
 
     #[tokio::test]
