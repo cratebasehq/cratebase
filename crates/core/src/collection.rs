@@ -483,6 +483,14 @@ impl Collection {
         self.name == crate::RPC_COLLECTION
     }
 
+    pub fn is_notifications(&self) -> bool {
+        self.name == crate::NOTIFICATIONS_COLLECTION
+    }
+
+    pub fn is_channels(&self) -> bool {
+        self.name == crate::CHANNELS_COLLECTION
+    }
+
     /// A JSON-Schema / OpenAI-function-calling-shaped description of this
     /// collection's writable, non-system fields:
     /// `{name, description, parameters: {type: "object",
@@ -1293,7 +1301,7 @@ impl Collection {
         push_subscriptions.list_rule = owner_rule.clone();
         push_subscriptions.view_rule = owner_rule.clone();
         push_subscriptions.create_rule = owner_rule.clone();
-        push_subscriptions.delete_rule = owner_rule;
+        push_subscriptions.delete_rule = owner_rule.clone();
         let mut ps_token = text("token");
         ps_token.hidden = true;
         let mut ps_enabled = Field::new("enabled", FieldKind::Bool {});
@@ -1584,6 +1592,107 @@ impl Collection {
         let pos = email_assets.fields.len() - 2;
         email_assets.fields.insert(pos, ea_file);
 
+        // In-app notifications (`crate::notify` in the server crate; see
+        // `POST /api/notifications/send`, `$notify.send`,
+        // `GET /api/notifications/unread-count`,
+        // `POST /api/notifications/read-all`). `recipient` is stored as
+        // the same `collectionRef`/`recordRef` pair as
+        // `_push_subscriptions`/`_sessions`/... above, since a
+        // notification can go to a record in *any* auth collection, not
+        // just `users` — `owner_rule` (already `recordRef =
+        // @request.auth.id && collectionRef = @request.auth.collectionId`)
+        // is exactly "this is my own notification" for that shape. Only
+        // the recipient may list/view/update/delete their own rows; the
+        // *only* field they may ever change through the generic records
+        // API is `readAt` — a rule can filter which rows are visible, but
+        // not which fields of an allowed row may change, so that
+        // restriction is enforced in
+        // `crates/server/src/routes/records.rs`'s `update_record`
+        // instead (see `Collection::is_notifications`). `type`/`title`/
+        // `body` describe the notification; `data` is arbitrary JSON the
+        // client can act on; `link` is an optional deep link; `readAt` is
+        // `null` until the recipient marks it read. Creation stays
+        // superuser/API-key only (`create_rule` stays `None`): the only
+        // intended writer is the server's own `$notify.send`/
+        // `POST /api/notifications/send` pipeline, never a rule-driven
+        // client path.
+        let mut notifications = Collection::new("_notifications", CollectionType::Base);
+        notifications.system = true;
+        notifications.list_rule = owner_rule.clone();
+        notifications.view_rule = owner_rule.clone();
+        notifications.update_rule = owner_rule.clone();
+        notifications.delete_rule = owner_rule.clone();
+        let mut n_data = Field::new("data", FieldKind::Json { max_size: 0 });
+        n_data.required = false;
+        let mut n_link = Field::new(
+            "link",
+            FieldKind::Url {
+                except_domains: vec![],
+                only_domains: vec![],
+            },
+        );
+        n_link.required = false;
+        let mut n_read_at = Field::new(
+            "readAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        n_read_at.required = false;
+        let pos = notifications.fields.len() - 2;
+        notifications.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                text("type"),
+                text("title"),
+                text("body"),
+                n_data,
+                n_link,
+                n_read_at,
+            ],
+        );
+        // One composite index covers both `GET /api/notifications/unread-count`
+        // (`WHERE collectionRef = ? AND recordRef = ? AND readAt IS NULL`,
+        // a prefix of this index) and paginated list/retention queries
+        // that also sort or filter on `created` — see the task brief's
+        // "unread counts and pagination are index-backed" requirement.
+        notifications.indexes = vec![
+            "CREATE INDEX `idx_notifications_recipient` ON `_notifications` (collectionRef, recordRef, readAt, created)".into(),
+        ];
+
+        // Realtime channel configuration (`crate::realtime`'s channel/
+        // presence support, `crate::routes::realtime_channels`). A row's
+        // `name` is either an exact channel name or a prefix pattern
+        // ending in `*` (`"room:*"` matches `"room:42"`, with the
+        // matched suffix exposed to `subscribeRule`/`publishRule` as
+        // `@request.data.suffix`; the full channel name is always
+        // `@request.data.channel`). No matching row at all means the
+        // channel is disabled — the secure default — never "public": an
+        // operator must explicitly configure a channel (or a covering
+        // prefix) before any client may subscribe to or publish on it.
+        // `subscribeRule`/`publishRule` are `Json`-kind fields for the
+        // same reason `_emailTemplates.sendRule` is (see its own comment
+        // above): `null` means superuser/API-key only, `""` means
+        // anyone, and anything else is a filter-rule expression
+        // evaluated per caller. Superuser-only CRUD end to end (an
+        // operator-configured integration point, the same trust tier as
+        // `_webhooks`/`_emailTriggers`).
+        let mut channels = Collection::new("_channels", CollectionType::Base);
+        channels.system = true;
+        let mut ch_subscribe_rule = Field::new("subscribeRule", FieldKind::Json { max_size: 0 });
+        ch_subscribe_rule.required = false;
+        let mut ch_publish_rule = Field::new("publishRule", FieldKind::Json { max_size: 0 });
+        ch_publish_rule.required = false;
+        let pos = channels.fields.len() - 2;
+        channels
+            .fields
+            .splice(pos..pos, [text("name"), ch_subscribe_rule, ch_publish_rule]);
+        channels.indexes =
+            vec!["CREATE UNIQUE INDEX `idx_channels_name` ON `_channels` (name)".into()];
+
         vec![
             external,
             mfas,
@@ -1606,6 +1715,8 @@ impl Collection {
             mail_log,
             email_triggers,
             email_assets,
+            notifications,
+            channels,
         ]
     }
 }
@@ -1773,6 +1884,8 @@ mod tests {
                 crate::ids::collection_id("base", "_mailLog").as_str(),
                 crate::ids::collection_id("base", "_emailTriggers").as_str(),
                 crate::ids::collection_id("base", "_emailAssets").as_str(),
+                crate::ids::collection_id("base", "_notifications").as_str(),
+                crate::ids::collection_id("base", "_channels").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

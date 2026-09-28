@@ -230,6 +230,19 @@ impl Runner {
             Box::new(|db| Box::pin(refresh_default_email_templates_up(db))),
             Box::new(|db| Box::pin(refresh_default_email_templates_down(db))),
         ));
+        // `_notifications`/`_channels` follow the same story as every
+        // migration above: added to `default_system_collections()` after
+        // `REFRESH_EMAIL_TEMPLATES` shipped, so an existing database
+        // needs this follow-up migration to retroactively get both
+        // tables. A fresh database already has them and this migration
+        // is a no-op there. Also seeds the `notification` `_emailTemplates`
+        // row `$notify.send`'s email channel renders through — see
+        // `add_notifications_and_channels_up`'s doc.
+        r.register(Migration::new(
+            ADD_NOTIFICATIONS_AND_CHANNELS,
+            Box::new(|db| Box::pin(add_notifications_and_channels_up(db))),
+            Box::new(|db| Box::pin(add_notifications_and_channels_down(db))),
+        ));
         r
     }
 
@@ -1022,6 +1035,19 @@ fn seed_email_templates() -> Vec<SeedTemplate> {
             ),
             description: "Example template, not wired to any built-in flow. Send it with $mails.send({ to, template: \"welcome\", data: { user: { name } } }) or POST /api/mails/send.",
         },
+        SeedTemplate {
+            key: "notification",
+            name: "Notification email",
+            subject: "{{title}}".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("{{title}}"),
+                body_p("{{body}}"),
+                cta_button("View", "{{link}}"),
+                muted_p("You're receiving this because of a notification sent to your {{appName}} account."),
+            ),
+            description: "Renders the email channel of $notify.send/POST /api/notifications/send when the call doesn't pass raw subject/html — data is { title, body, link } (link empty when the notification has none). Customize freely; {{link}}'s button is harmless with an empty href.",
+        },
     ]
 }
 
@@ -1184,6 +1210,42 @@ async fn refresh_default_email_templates_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_NOTIFICATIONS_AND_CHANNELS: &str = "20_add_notifications_and_channels.rs";
+
+/// Adds `_notifications`/`_channels` (see `default_system_collections`'s
+/// doc comments on both) to a database that predates them, and seeds the
+/// `notification` `_emailTemplates` row `$notify.send`'s email channel
+/// renders through when a caller doesn't pass raw `subject`/`html`. A
+/// fresh database already has all three (`seed_email_templates` already
+/// includes the `notification` key) and every step here is a no-op
+/// there; an existing database needs each added individually, same story
+/// as every migration above.
+async fn add_notifications_and_channels_up(db: &Db) -> DbResult<()> {
+    for name in ["_notifications", "_channels"] {
+        if db.collections.get_by_name(name).is_some() {
+            continue;
+        }
+        let collection = Collection::default_system_collections()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} is a default system collection"));
+        db.collections.insert(&*db.engine, &collection).await?;
+    }
+    seed_default_email_templates(db).await
+}
+
+/// Drops `_notifications`/`_channels` (added by the `up` side above).
+/// The seeded `notification` `_emailTemplates` row is not reverted, same
+/// reasoning as `refresh_default_email_templates_down`.
+async fn add_notifications_and_channels_down(db: &Db) -> DbResult<()> {
+    for name in ["_notifications", "_channels"] {
+        if db.collections.get_by_name(name).is_some() {
+            db.collections.delete(&*db.engine, name).await?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1223,6 +1285,7 @@ mod tests {
                 ADD_RPC.to_string(),
                 ADD_TOTPS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
+                ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
             ]
         );
         assert_eq!(
@@ -1250,6 +1313,8 @@ mod tests {
         assert!(db.collections.get("_emailTriggers").is_some());
         assert!(db.collections.get("_totps").is_some());
         assert!(db.collections.get("_emailAssets").is_some());
+        assert!(db.collections.get("_notifications").is_some());
+        assert!(db.collections.get("_channels").is_some());
         assert!(db
             .collections
             .get("_emailTemplates")
@@ -1296,10 +1361,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 18).await.unwrap();
+        let reverted = Runner::core().down(&db, 19).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
                 ADD_TOTPS.to_string(),
                 ADD_RPC.to_string(),
