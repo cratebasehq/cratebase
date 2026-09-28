@@ -259,6 +259,74 @@ export async function previewMail(sender: Sender, options: PreviewMailOptions): 
   return sender.send<PreviewMailResult>("/api/mails/preview", { method: "POST", body: options });
 }
 
+/** A `_notifications` row (`crates/core/src/collection.rs`'s
+ * `default_system_collections` comment on `notifications`), as returned
+ * by `cb.notifications.list()`/`.markRead()`/a realtime subscription. */
+export interface NotificationRecord extends RecordModel {
+  type: string;
+  title: string;
+  body: string;
+  data: unknown;
+  link: string;
+  /** Empty string until the recipient marks this notification read. */
+  readAt: string;
+}
+
+export type NotificationChannel = "inapp" | "email" | "push";
+
+export interface SendNotificationOptions {
+  /** One recipient record id, or several. */
+  to: string | string[];
+  /** The recipient auth collection; defaults to `"users"`. */
+  collection?: string;
+  type: string;
+  title: string;
+  body: string;
+  data?: unknown;
+  link?: string;
+  /** Defaults to every channel (`["inapp", "email", "push"]`). */
+  channels?: NotificationChannel[];
+}
+
+export interface SendNotificationResult {
+  sent: number;
+  recipients: string[];
+}
+
+/** `cb.notifications.send(...)` — `POST /api/notifications/send`,
+ * superuser/API-key only (an operator/integration action that can target
+ * *any* record, same trust tier as `cb.push` — see
+ * `crate::routes::notifications`'s module doc). Fans the notification out
+ * across `options.channels` (in-app row + realtime, email via the
+ * `notification` template, push via `_push_subscriptions`) — see
+ * `crate::notify` (server crate) for the full per-channel contract. The
+ * same pipeline runs server-side as `$notify.send` in a JS hook. */
+export async function sendNotification(
+  sender: Sender,
+  options: SendNotificationOptions,
+): Promise<SendNotificationResult> {
+  return sender.send<SendNotificationResult>("/api/notifications/send", { method: "POST", body: options });
+}
+
+/** `cb.notifications.unreadCount()` — `GET /api/notifications/unread-count`,
+ * a cheap index-backed `COUNT(*)` scoped to the caller's own recipient
+ * rows (any authenticated record, not superuser-only). */
+export async function unreadNotificationCount(sender: Sender): Promise<number> {
+  const res = await sender.send<{ count: number }>("/api/notifications/unread-count");
+  return res.count;
+}
+
+export interface MarkAllNotificationsReadResult {
+  updated: number;
+}
+
+/** `cb.notifications.markAllRead()` — `POST /api/notifications/read-all`:
+ * marks every one of the caller's own unread notifications read in one
+ * call, rather than a `readAt` update per row. */
+export async function markAllNotificationsRead(sender: Sender): Promise<MarkAllNotificationsReadResult> {
+  return sender.send<MarkAllNotificationsReadResult>("/api/notifications/read-all", { method: "POST" });
+}
+
 /** Reads a magic-link token out of the current page's URL (or an
  * explicitly-passed one), matching the default
  * `authOptions.magicLink.urlTemplate` (`.../auth/magic-link?token=...`).

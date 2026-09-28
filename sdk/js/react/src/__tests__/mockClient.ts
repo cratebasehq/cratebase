@@ -3,10 +3,11 @@
  * hook in this package only ever calls a handful of methods
  * (`collection(name).{list,fullList,one,create,update,delete,subscribe}`,
  * `auth.{record,token,isValid,isSuperuser,onChange,signIn,signOut}`,
- * `presence.track`), so a fake that implements exactly that surface, with
- * an in-memory store and a synchronous fake pub/sub the test can drive
- * directly (`emit`), is both simpler and faster than spinning up the real
- * client against a real or mocked HTTP transport. */
+ * `presence.track`, `notifications.{list,unreadCount,markRead,
+ * markAllRead,subscribe}`), so a fake that implements exactly that
+ * surface, with an in-memory store and a synchronous fake pub/sub the
+ * test can drive directly (`emit`), is both simpler and faster than
+ * spinning up the real client against a real or mocked HTTP transport. */
 
 import type { RecordModel } from "@cratebase/client";
 
@@ -217,15 +218,32 @@ export function createFakeClient(collections: Record<string, FakeCollection<any>
 
   const presenceHandles: FakePresenceHandle[] = [];
 
+  const getCollection = (name: string): FakeCollection<any> => {
+    let c = collectionMap.get(name);
+    if (!c) {
+      c = createFakeCollection([]);
+      collectionMap.set(name, c);
+    }
+    return c;
+  };
+
   return {
     auth,
-    collection(name: string): FakeCollection<any> {
-      let c = collectionMap.get(name);
-      if (!c) {
-        c = createFakeCollection([]);
-        collectionMap.set(name, c);
-      }
-      return c;
+    collection: getCollection,
+    notifications: {
+      list: (options: any = {}) => getCollection("_notifications").list(options),
+      fullList: (options: any = {}) => getCollection("_notifications").fullList(options),
+      async unreadCount() {
+        const rows = await getCollection("_notifications").fullList();
+        return rows.filter((r: any) => !r.readAt).length;
+      },
+      markRead: (id: string) => getCollection("_notifications").update(id, { readAt: new Date().toISOString() }),
+      async markAllRead() {
+        const unread = (await getCollection("_notifications").fullList()).filter((r: any) => !r.readAt);
+        for (const r of unread) await getCollection("_notifications").update(r.id, { readAt: new Date().toISOString() });
+        return { updated: unread.length };
+      },
+      subscribe: (handler: any, topic = "*") => getCollection("_notifications").subscribe(topic, handler),
     },
     presence: {
       async track(_collectionName: string, data: Record<string, unknown> & { id?: string }): Promise<FakePresenceHandle> {

@@ -58,6 +58,13 @@ export type {
 export type { NearestToOptions, RpcRow } from "./cratebase-only.js";
 export type { ChatMessage, ChatOptions, ChatResult, ToolSchema, EnqueueOptions, EnqueuedJob, PresenceOptions, Presence, Sender } from "./cratebase-only.js";
 export type { MailRecipient, MailAddress, SendMailOptions, SendMailResult, PreviewMailOptions, PreviewMailResult } from "./cratebase-only.js";
+export type {
+  NotificationRecord,
+  NotificationChannel,
+  SendNotificationOptions,
+  SendNotificationResult,
+  MarkAllNotificationsReadResult,
+} from "./cratebase-only.js";
 export { getMagicLinkTokenFromUrl } from "./cratebase-only.js";
 
 export interface CreateClientOptions {
@@ -107,6 +114,11 @@ export class CratebaseClient<
   private readonly authCollection: string;
   private readonly collections: Map<string, CollectionService<Record<string, unknown>>> = new Map();
   private readonly authNamespaces: Map<string, AuthNamespace> = new Map();
+  /** Backs `notifications.{list,markRead,subscribe}` below — a dedicated
+   * instance (rather than going through the untyped `collection(name)`
+   * cache) so those calls come back typed as
+   * `cratebaseOnly.NotificationRecord`. */
+  private readonly notificationsCollection: CollectionService<cratebaseOnly.NotificationRecord>;
 
   constructor(baseUrl: string, options: CreateClientOptions = {}) {
     this.transport = new Transport(baseUrl, {
@@ -120,6 +132,12 @@ export class CratebaseClient<
     this.files = new FilesService(this.transport, () => this.authHeaderFor(this.authCollection));
     this.admin = new AdminNamespace(this.transport, () => this.authHeaderFor(this.authCollection));
     this.authCollection = options.authCollection ?? "users";
+    this.notificationsCollection = new CollectionService(
+      this.transport,
+      () => this.authHeaderFor(this.authCollection),
+      this.realtime,
+      "_notifications",
+    );
 
     const rootStore = options.authStore ?? defaultAuthStore();
     this.authNamespaces.set(this.authCollection, this.buildAuth(this.authCollection, rootStore));
@@ -198,6 +216,31 @@ export class CratebaseClient<
   readonly presence = {
     track: (collectionName: string, data: Record<string, unknown> & { id?: string }, options: cratebaseOnly.PresenceOptions = {}) =>
       cratebaseOnly.trackPresence(this.collection(collectionName) as unknown as Parameters<typeof cratebaseOnly.trackPresence>[0], data, options),
+  };
+
+  /** In-app notifications (`_notifications`): `list`/`markRead`/
+   * `subscribe` are the ordinary records API against that collection
+   * (`owner_rule` already scopes it to "my own"); `unreadCount`/
+   * `markAllRead`/`send` are the three Cratebase-only endpoints
+   * `crate::routes::notifications` adds because they don't fit that shape
+   * — see each one's own doc comment in `cratebase-only.ts`. */
+  readonly notifications = {
+    list: (options?: Parameters<CollectionService<cratebaseOnly.NotificationRecord>["list"]>[0]) =>
+      this.notificationsCollection.list(options),
+    fullList: (options?: Parameters<CollectionService<cratebaseOnly.NotificationRecord>["fullList"]>[0]) =>
+      this.notificationsCollection.fullList(options),
+    unreadCount: () => cratebaseOnly.unreadNotificationCount(this),
+    markRead: (id: string) => this.notificationsCollection.update(id, { readAt: new Date().toISOString() }),
+    markAllRead: () => cratebaseOnly.markAllNotificationsRead(this),
+    /** `handler` fires for every create/update/delete on any of the
+     * caller's own notifications — pass a specific id instead of `"*"` to
+     * scope it to one row. */
+    subscribe: (
+      handler: (event: { action: "create" | "update" | "delete"; record: cratebaseOnly.NotificationRecord }) => void,
+      topic = "*",
+    ) => this.notificationsCollection.subscribe(topic, handler),
+    /** Superuser/API-key only — see `sendNotification`'s doc comment. */
+    send: (options: cratebaseOnly.SendNotificationOptions) => cratebaseOnly.sendNotification(this, options),
   };
 }
 

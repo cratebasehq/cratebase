@@ -45,4 +45,7 @@ export type { SubscriptionEvent } from "./useSubscription.js";
 export { usePresence } from "./usePresence.js";
 export type { UsePresenceOptions, UsePresenceResult } from "./usePresence.js";
 
+export { useNotifications } from "./useNotifications.js";
+export type { UseNotificationsOptions, UseNotificationsResult } from "./useNotifications.js";
+
 export { createCratebaseHooks } from "./createHooks.js";
