@@ -540,7 +540,7 @@ async fn upsert_and_list_email_template_tool() {
         &app,
         Some(&token),
         "upsert_email_template",
-        json!({ "key": "mcp-test", "subject": "Hi", "html": "<p>hi</p>" }),
+        json!({ "key": "mcp-test", "name": "MCP test", "subject": "Hi", "html": "<p>hi</p>" }),
     )
     .await;
     assert_eq!(result["isError"], false, "{result:?}");
