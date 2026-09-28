@@ -481,6 +481,7 @@ pub async fn sync(
         for (_, sql) in &next_indexes {
             ex.execute(sql, &[]).await?;
         }
+        sync_search_index(ex, backend, None, next).await?;
         return Ok(());
     };
 
@@ -565,6 +566,195 @@ pub async fn sync(
     for (_, sql) in &next_indexes {
         ex.execute(sql, &[]).await?;
     }
+    sync_search_index(ex, backend, Some(prev), next).await?;
+    Ok(())
+}
+
+/// Bring the full-text search index in line with `next.searchable_fields()`
+/// — a SQLite FTS5 external-content shadow table + sync triggers, or a
+/// Postgres generated `tsvector` column + GIN index. A no-op (no queries
+/// at all) unless the searchable field set, the collection name, or
+/// (Postgres only) `searchLanguage` actually changed, so an unrelated
+/// schema edit never pays the cost of rebuilding a large table's index.
+async fn sync_search_index(
+    ex: &dyn Executor,
+    backend: Backend,
+    previous: Option<&Collection>,
+    next: &Collection,
+) -> DbResult<()> {
+    let prev_names: Vec<&str> = previous
+        .map(|p| p.searchable_fields().map(|f| f.name.as_str()).collect())
+        .unwrap_or_default();
+    let next_names: Vec<&str> = next.searchable_fields().map(|f| f.name.as_str()).collect();
+    let prev_table = previous.map(|p| p.name.as_str());
+    let prev_lang = previous.map(|p| p.search_language_or_default());
+    let unchanged = prev_table == Some(next.name.as_str())
+        && prev_names == next_names
+        && (backend == Backend::Sqlite || prev_lang == Some(next.search_language_or_default()));
+    if unchanged {
+        return Ok(());
+    }
+    match backend {
+        Backend::Sqlite => sync_sqlite_fts(ex, prev_table, &next.name, &next_names).await,
+        Backend::Postgres => {
+            sync_postgres_tsvector(ex, &next.name, &next_names, next.search_language_or_default())
+                .await
+        }
+    }
+}
+
+/// The FTS5 shadow table name for a collection, unquoted.
+fn fts_table_name(collection: &str) -> String {
+    format!("{collection}_fts")
+}
+
+async fn drop_sqlite_fts(ex: &dyn Executor, collection: &str) -> DbResult<()> {
+    for suffix in ["ai", "ad", "au"] {
+        ex.execute(
+            &format!(
+                "DROP TRIGGER IF EXISTS {}",
+                ident(&format!("{collection}_fts_{suffix}"))?
+            ),
+            &[],
+        )
+        .await?;
+    }
+    ex.execute(
+        &format!(
+            "DROP TABLE IF EXISTS {}",
+            ident(&fts_table_name(collection))?
+        ),
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Drop-and-recreate the FTS5 external-content table and its three sync
+/// triggers (SQLite has no way to `ALTER` a virtual table's column list).
+/// `prev_table` is the collection's *previous* name (for cleanup) when it
+/// existed and had a search index; `None` means "nothing to drop" — the
+/// caller ([`sync_search_index`]) already determined a rebuild is needed.
+async fn sync_sqlite_fts(
+    ex: &dyn Executor,
+    prev_table: Option<&str>,
+    table: &str,
+    fields: &[&str],
+) -> DbResult<()> {
+    if let Some(prev) = prev_table {
+        drop_sqlite_fts(ex, prev).await?;
+    }
+    if fields.is_empty() {
+        return Ok(());
+    }
+    for f in fields {
+        ident(f)?;
+    }
+    let quoted_table = ident(table)?;
+    let fts = ident(&fts_table_name(table))?;
+    let cols = fields
+        .iter()
+        .map(|f| ident(f))
+        .collect::<DbResult<Vec<_>>>()?
+        .join(", ");
+    ex.execute(
+        &format!(
+            "CREATE VIRTUAL TABLE {fts} USING fts5({cols}, content={quoted_table}, content_rowid='rowid')"
+        ),
+        &[],
+    )
+    .await?;
+    // A freshly created external-content table starts empty regardless of
+    // how many rows the content table already has (a field just turned
+    // `searchable`, or this collection was just renamed) — FTS5's
+    // 'rebuild' command populates it from the content table's current
+    // rows. Harmless (and cheap) on a genuinely empty table too.
+    ex.execute(&format!("INSERT INTO {fts}({fts}) VALUES('rebuild')"), &[])
+        .await?;
+
+    let new_vals = fields
+        .iter()
+        .map(|f| format!("new.{}", ident(f).unwrap()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let old_vals = fields
+        .iter()
+        .map(|f| format!("old.{}", ident(f).unwrap()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ai = ident(&format!("{table}_fts_ai"))?;
+    let ad = ident(&format!("{table}_fts_ad"))?;
+    let au = ident(&format!("{table}_fts_au"))?;
+    ex.execute(
+        &format!(
+            "CREATE TRIGGER {ai} AFTER INSERT ON {quoted_table} BEGIN \
+             INSERT INTO {fts}(rowid, {cols}) VALUES (new.rowid, {new_vals}); END"
+        ),
+        &[],
+    )
+    .await?;
+    ex.execute(
+        &format!(
+            "CREATE TRIGGER {ad} AFTER DELETE ON {quoted_table} BEGIN \
+             INSERT INTO {fts}({fts}, rowid, {cols}) VALUES('delete', old.rowid, {old_vals}); END"
+        ),
+        &[],
+    )
+    .await?;
+    ex.execute(
+        &format!(
+            "CREATE TRIGGER {au} AFTER UPDATE ON {quoted_table} BEGIN \
+             INSERT INTO {fts}({fts}, rowid, {cols}) VALUES('delete', old.rowid, {old_vals}); \
+             INSERT INTO {fts}(rowid, {cols}) VALUES (new.rowid, {new_vals}); END"
+        ),
+        &[],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Drop-and-recreate the generated `tsvector` column + GIN index: a
+/// generated column's expression can't be `ALTER`ed in place, and
+/// dropping it also drops the GIN index built on it (no separate
+/// statement needed). A no-op (beyond the drop) when `fields` is empty.
+async fn sync_postgres_tsvector(
+    ex: &dyn Executor,
+    table: &str,
+    fields: &[&str],
+    lang: &str,
+) -> DbResult<()> {
+    let quoted_table = ident(table)?;
+    ex.execute(
+        &format!("ALTER TABLE {quoted_table} DROP COLUMN IF EXISTS \"_search\""),
+        &[],
+    )
+    .await?;
+    if fields.is_empty() {
+        return Ok(());
+    }
+    for f in fields {
+        ident(f)?;
+    }
+    let lang = cratebase_core::known_ts_config(lang);
+    let expr = fields
+        .iter()
+        .map(|f| format!("coalesce({}, '')", ident(f).unwrap()))
+        .collect::<Vec<_>>()
+        .join(" || ' ' || ");
+    ex.execute(
+        &format!(
+            "ALTER TABLE {quoted_table} ADD COLUMN \"_search\" tsvector \
+             GENERATED ALWAYS AS (to_tsvector('{lang}', {expr})) STORED"
+        ),
+        &[],
+    )
+    .await?;
+    let idx = ident(&format!("idx_{table}_search"))?;
+    ex.execute(
+        &format!("CREATE INDEX {idx} ON {quoted_table} USING GIN (\"_search\")"),
+        &[],
+    )
+    .await?;
     Ok(())
 }
 
@@ -579,7 +769,11 @@ fn add_column_sql(backend: Backend, table: &str, field: &Field) -> DbResult<Stri
     ))
 }
 
-/// Drop the table or view behind `collection`.
+/// Drop the table or view behind `collection`, and its FTS5 shadow table
+/// if it has one. Dropping the base table already takes a Postgres
+/// `tsvector` column (and its GIN index) with it — only SQLite's FTS5
+/// table is a separate object that needs its own `DROP TABLE`; running it
+/// unconditionally is `IF EXISTS`-safe on both backends.
 pub async fn drop_object(ex: &dyn Executor, collection: &Collection) -> DbResult<()> {
     let table = ident(&collection.name)?;
     let sql = if collection.is_view() {
@@ -588,6 +782,9 @@ pub async fn drop_object(ex: &dyn Executor, collection: &Collection) -> DbResult
         format!("DROP TABLE IF EXISTS {table}")
     };
     ex.execute(&sql, &[]).await?;
+    if !collection.is_view() {
+        drop_sqlite_fts(ex, &collection.name).await?;
+    }
     Ok(())
 }
 
@@ -772,6 +969,129 @@ mod tests {
         assert!(!e.table_exists("titles").await.unwrap());
         drop_object(&e, &c3).await.unwrap();
         assert!(!e.table_exists("articles").await.unwrap());
+    }
+
+    fn searchable_posts() -> Collection {
+        let mut c = posts();
+        c.fields.iter_mut().find(|f| f.name == "title").unwrap().searchable = true;
+        c
+    }
+
+    #[tokio::test]
+    async fn sqlite_fts_created_on_collection_create_and_stays_in_sync() {
+        let e = SqliteEngine::open_memory().unwrap();
+        let c = searchable_posts();
+        sync(&e, Backend::Sqlite, None, &c).await.unwrap();
+        assert!(e.table_exists("posts_fts").await.unwrap());
+
+        e.execute(
+            "INSERT INTO posts (id, title, views) VALUES ('a', 'hello world', 1)",
+            &[],
+        )
+        .await
+        .unwrap();
+        e.execute(
+            "INSERT INTO posts (id, title, views) VALUES ('b', 'goodbye moon', 2)",
+            &[],
+        )
+        .await
+        .unwrap();
+        let hit = |q: &'static str| {
+            let e = &e;
+            async move {
+                e.query(
+                    &format!(
+                        "SELECT id FROM posts WHERE rowid IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH '{q}')"
+                    ),
+                    &[],
+                )
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(hit("hello").await.len(), 1);
+        assert_eq!(hit("hello").await[0].get_str("id"), Some("a"));
+        assert_eq!(hit("moon").await[0].get_str("id"), Some("b"));
+        assert_eq!(hit("nonexistent").await.len(), 0);
+        // Prefix matching works — FTS5's default tokenizer supports it.
+        assert_eq!(hit("hel*").await.len(), 1);
+
+        // An UPDATE re-indexes.
+        e.execute("UPDATE posts SET title = 'completely different' WHERE id = 'a'", &[])
+            .await
+            .unwrap();
+        assert_eq!(hit("hello").await.len(), 0);
+        assert_eq!(hit("different").await.len(), 1);
+
+        // A DELETE removes it from the index.
+        e.execute("DELETE FROM posts WHERE id = 'b'", &[])
+            .await
+            .unwrap();
+        assert_eq!(hit("moon").await.len(), 0);
+        drop_object(&e, &c).await.unwrap();
+        assert!(!e.table_exists("posts_fts").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn sqlite_fts_rebuilds_when_the_searchable_field_set_changes() {
+        let e = SqliteEngine::open_memory().unwrap();
+        let c1 = posts(); // no searchable fields
+        sync(&e, Backend::Sqlite, None, &c1).await.unwrap();
+        assert!(!e.table_exists("posts_fts").await.unwrap());
+
+        // Turning `searchable` on rebuilds (creates) the shadow table.
+        let c2 = searchable_posts();
+        sync(&e, Backend::Sqlite, Some(&c1), &c2).await.unwrap();
+        assert!(e.table_exists("posts_fts").await.unwrap());
+
+        // An unrelated field change is a no-op for the FTS table (same
+        // searchable set, same name) — exercised implicitly by re-running
+        // sync with identical searchable fields and confirming no error
+        // and the table still there with existing content preserved.
+        e.execute("INSERT INTO posts (id, title) VALUES ('a', 'hello')", &[])
+            .await
+            .unwrap();
+        let mut c3 = c2.clone();
+        c3.fields.iter_mut().find(|f| f.name == "views").unwrap().required = true;
+        sync(&e, Backend::Sqlite, Some(&c2), &c3).await.unwrap();
+        let rows = e
+            .query(
+                "SELECT id FROM posts WHERE rowid IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH 'hello')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "unrelated resync must not drop indexed rows");
+
+        // Turning `searchable` back off drops the shadow table.
+        let mut c4 = c3.clone();
+        c4.fields.iter_mut().find(|f| f.name == "title").unwrap().searchable = false;
+        sync(&e, Backend::Sqlite, Some(&c3), &c4).await.unwrap();
+        assert!(!e.table_exists("posts_fts").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn sqlite_fts_follows_a_collection_rename() {
+        let e = SqliteEngine::open_memory().unwrap();
+        let c1 = searchable_posts();
+        sync(&e, Backend::Sqlite, None, &c1).await.unwrap();
+        e.execute("INSERT INTO posts (id, title) VALUES ('a', 'hello world')", &[])
+            .await
+            .unwrap();
+
+        let mut c2 = c1.clone();
+        c2.name = "articles".into();
+        sync(&e, Backend::Sqlite, Some(&c1), &c2).await.unwrap();
+        assert!(!e.table_exists("posts_fts").await.unwrap());
+        assert!(e.table_exists("articles_fts").await.unwrap());
+        let rows = e
+            .query(
+                "SELECT id FROM articles WHERE rowid IN (SELECT rowid FROM articles_fts WHERE articles_fts MATCH 'hello')",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
     }
 
     #[tokio::test]

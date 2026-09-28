@@ -58,6 +58,12 @@ pub struct ListParams<'a> {
     pub per_page: i64,
     pub sort: Option<&'a str>,
     pub filter: Option<&'a str>,
+    /// `?search=` — index-backed full-text search, AND-ed onto `filter`
+    /// and rule enforcement exactly like an extra `filter=` fragment
+    /// would be (see [`query::search_condition`]). When `sort` is absent,
+    /// this also switches the default ordering from newest-first to
+    /// most-relevant-first ([`query::search_relevance_order_by`]).
+    pub search: Option<&'a str>,
     pub expand: Option<&'a str>,
     /// Skip the `COUNT(*)`; `totalItems`/`totalPages` come back as `-1`,
     /// exactly as PocketBase's `?skipTotal=1`.
@@ -278,14 +284,28 @@ pub async fn list(
         let compiled = cratebase_filter::parse_and_compile(expr, &resolver, query.params().len())?;
         query.push_filter(compiled);
     }
-    let (order_sql, order_params) = query::order_by(&resolver, params.sort, query.params().len())?;
+    let search = params.search.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(q) = search {
+        let compiled = query::search_condition(&resolver, q, query.params().len())?;
+        query.push_filter(compiled);
+    }
+    // `count_sql()` has no `ORDER BY`, so it must only ever see the
+    // WHERE-clause params bound so far — not whatever an `ORDER BY`
+    // (`sort=geoDistance(...)`, or `search=`'s relevance default) binds
+    // next, or the driver rejects the mismatched param count outright.
+    let where_param_count = query.params().len();
+    let sort_given = params.sort.map(str::trim).filter(|s| !s.is_empty());
+    let (order_sql, order_params) = match (sort_given, search) {
+        (None, Some(q)) => query::search_relevance_order_by(&resolver, q, query.params().len()),
+        _ => query::order_by(&resolver, params.sort, query.params().len())?,
+    };
     query.set_order_by(order_sql);
     query.push_order_params(order_params);
 
     let total_items = if params.skip_total {
         -1
     } else {
-        ex.query_scalar(&query.count_sql(), query.params())
+        ex.query_scalar(&query.count_sql(), &query.params()[..where_param_count])
             .await?
             .and_then(|v| v.as_i64())
             .unwrap_or(0)
