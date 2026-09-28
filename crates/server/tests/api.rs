@@ -369,6 +369,7 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
             "llm",
             "logs",
             "meta",
+            "notifications",
             "push",
             "queue",
             "rateLimits",

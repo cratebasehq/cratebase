@@ -1326,7 +1326,13 @@ async fn eval_channel_rule(
 /// codebase), `None` (no matching `_channels` row, or the matched row's
 /// rule field is `null`) denies non-superusers outright, `Some("")`
 /// allows anyone, and `Some(expr)` defers to [`eval_channel_rule`].
-async fn rule_allows(app: &App, rule: &Option<String>, auth: Option<&Auth>, channel: &str, suffix: &str) -> bool {
+async fn rule_allows(
+    app: &App,
+    rule: &Option<String>,
+    auth: Option<&Auth>,
+    channel: &str,
+    suffix: &str,
+) -> bool {
     if auth.is_some_and(|a| a.is_superuser) {
         return true;
     }
@@ -1467,9 +1473,13 @@ async fn presence_track(
         .map(|a| serde_json::json!({ "id": a.id, "collectionName": a.collection_name }))
         .unwrap_or(Value::Null);
     let origin = app.realtime().origin().to_string();
-    let is_new =
-        app.realtime()
-            .presence_upsert(channel, client_id, &origin, state.clone(), auth_snapshot.clone());
+    let is_new = app.realtime().presence_upsert(
+        channel,
+        client_id,
+        &origin,
+        state.clone(),
+        auth_snapshot.clone(),
+    );
     let kind = if is_new {
         "presence.join"
     } else {

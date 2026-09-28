@@ -326,7 +326,12 @@ pub trait HostApi: Send + Sync + 'static {
     /// transaction, so publishing before the write is known to commit
     /// could announce a message for a write that never actually
     /// happened.
-    async fn realtime_publish(&self, channel: String, event: String, data: Value) -> Result<(), AppError>;
+    async fn realtime_publish(
+        &self,
+        channel: String,
+        event: String,
+        data: Value,
+    ) -> Result<(), AppError>;
 
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError>;
 
