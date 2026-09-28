@@ -894,6 +894,216 @@ paths:
             httpOnly cookie; `?cb_mfa=<mfaId>` on a pending MFA
             challenge, or `?cb_error=<code>` on failure
         "400": { $ref: "#/components/responses/Error" }
+    post:
+      summary: >
+        Apple's response_mode=form_post callback — code/state/user as
+        application/x-www-form-urlencoded fields instead of query params
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                state: { type: string }
+                error: { type: string }
+                user:
+                  type: string
+                  description: >
+                    JSON string {"name":{"firstName","lastName"},"email"} —
+                    sent only on the very first authorization of a Service
+                    ID, omitted on every later login
+      responses:
+        "302":
+          description: >
+            Redirect to the original `redirect`, session set in an
+            httpOnly cookie; `?cb_mfa=<mfaId>` on a pending MFA
+            challenge, or `?cb_error=<code>` on failure
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/totp/setup:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Start (or restart) TOTP 2FA setup for the caller's own record
+      description: >
+        Restarting before confirming replaces the pending secret.
+        Refused (400) once TOTP is already confirmed.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string, description: "Base32 TOTP secret" }
+                  uri: { type: string, description: "otpauth:// provisioning URI" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/totp/confirm:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Confirm TOTP setup with a code from the authenticator app
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backupCodes:
+                    type: array
+                    items: { type: string }
+                    description: 10 one-time codes, shown once and never retrievable again
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/totp/disable:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Disable TOTP with a live code, a backup code, or the account password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: { type: string }
+                password: { type: string }
+      responses:
+        "204": { description: No Content }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/totp/backup-codes/regenerate:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Invalidate every existing backup code and issue 10 new ones
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backupCodes:
+                    type: array
+                    items: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/auth-with-totp:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Complete a pending MFA challenge with a TOTP code or a backup code
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfaId, code]
+              properties:
+                mfaId: { type: string, description: "A pending MFA session id from a previous 401 {mfaId} response" }
+                code: { type: string, description: "A live TOTP code, or one of the record's backup codes (consumed on use)" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  record: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/records/{id}/external-auths:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: List a record's linked OAuth2 providers (owner or superuser)
+      responses:
+        "200":
+          description: 'A bare array, not the usual `{items: [...]}` list envelope'
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    created: { type: string }
+                    updated: { type: string }
+                    recordId: { type: string }
+                    collectionId: { type: string }
+                    provider: { type: string }
+                    providerId: { type: string }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /collections/{idOrName}/records/{id}/external-auths/{provider}:
+    parameters:
+      - name: idOrName
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+      - name: provider
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      summary: Unlink a provider (owner or superuser)
+      description: >
+        Refused (400) when unlinking would leave the record with no
+        password, no other linked provider, and both OTP and
+        magic-link login disabled.
+      responses:
+        "204": { description: No Content }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
 
   /files/{collection}/{recordId}/{filename}:
     parameters:
