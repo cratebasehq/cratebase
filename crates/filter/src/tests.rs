@@ -1127,6 +1127,38 @@ fn search_composes_with_and_or_and_explicit_comparison() {
 }
 
 #[test]
+fn search_sanitizes_sqlite_query_text_but_keeps_phrase_and_prefix_syntax() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    // Punctuation that has no meaning in FTS5's query grammar (and could
+    // otherwise trip its parser) is neutralized to spaces; letters,
+    // digits, spaces, `"` (phrases) and `*` (prefix) pass through
+    // untouched.
+    let c = with(r#"search("'; DROP TABLE posts; --")"#, &r);
+    assert_eq!(c.params[0], json!("   drop table posts    "));
+
+    // Also lowercased, so a bare `OR`/`AND`/`NOT` in adversarial input
+    // can't act as an FTS5 boolean operator (see `sanitize_fts5_query`'s
+    // doc comment).
+    let c = with(r#"search("hello' OR '1'='1")"#, &r);
+    assert_eq!(c.params[0], json!("hello  or  1   1"));
+
+    // Prefix matching and an explicit phrase are untouched (beyond
+    // case-folding, which doesn't change their meaning).
+    let c = with(r#"search("hel*")"#, &r);
+    assert_eq!(c.params[0], json!("hel*"));
+    let c = with(r#"search("\"Hello World\"")"#, &r);
+    assert_eq!(c.params[0], json!("\"hello world\""));
+
+    // Postgres path is untouched: `websearch_to_tsquery` is already
+    // designed to parse arbitrary/untrusted input safely, so sanitizing
+    // it further would just mangle legitimate `-word`/quoted-phrase
+    // syntax it understands natively.
+    let pg = TestResolver::postgres("posts").with_searchable("title");
+    let c = with(r#"search("'; DROP TABLE posts; --")"#, &pg);
+    assert_eq!(c.params[1], json!("'; DROP TABLE posts; --"));
+}
+
+#[test]
 fn search_rejects_a_non_literal_argument() {
     let r = TestResolver::sqlite("posts").with_searchable("title");
     assert!(matches!(

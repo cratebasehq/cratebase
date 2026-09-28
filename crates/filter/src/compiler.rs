@@ -534,14 +534,15 @@ impl<'a> Compiler<'a> {
         let sql = match self.dialect {
             Dialect::Sqlite => {
                 let fts = quote(&format!("{}_fts", collection.table_name()));
-                let p = self.push_param(Value::String(query.clone()));
+                let p = self.push_param(Value::String(sanitize_fts5_query(query)));
                 format!(
                     "{table}.\"rowid\" IN (SELECT \"rowid\" FROM {fts} WHERE {fts} MATCH {p})"
                 )
             }
             Dialect::Postgres => {
                 let lang = self.push_param(Value::String(
-                    collection.search_language_or_default().to_string(),
+                    cratebase_core::known_ts_config(collection.search_language_or_default())
+                        .to_string(),
                 ));
                 let p = self.push_param(Value::String(query.clone()));
                 format!("{table}.\"_search\" @@ websearch_to_tsquery({lang}, {p})")
@@ -918,6 +919,54 @@ fn value_term(value: Value, each: bool) -> EvalTerm {
     } else {
         EvalTerm::Scalar(value)
     }
+}
+
+/// Neutralize characters that FTS5's *query grammar* itself (not its
+/// tokenizer) can choke on before they ever reach `MATCH`. Everything
+/// except letters/digits/`_`/space, a literal `"` (phrase quoting) and
+/// `*` (prefix matching) becomes a space — so stray punctuation from
+/// arbitrary user input (`'`, `;`, `=`, `-`, `:`, parens, ...) can never
+/// trip the FTS5 parser or repurpose one of its operators (`AND`/`OR`/
+/// `NOT`/`NEAR`, which only bare *words* can spell, so a literal `OR`
+/// still survives this pass — at worst it changes which rows match, it
+/// can't produce a SQL/FTS5 syntax error). `"` and `*` are deliberately
+/// left alone: they're the two pieces of native FTS5 syntax the brief
+/// asks to keep working (quoted phrases, `term*` prefix search) — which
+/// also means a genuinely unbalanced `"` in the input still surfaces as
+/// an FTS5 syntax error, same as typing it straight into an FTS5 client.
+///
+/// Also lowercased: FTS5 recognizes `AND`/`OR`/`NOT`/`NEAR` as operators
+/// only in that exact case, so arbitrary user text that happens to
+/// contain a bare uppercase `OR`/`AND`/... would otherwise silently
+/// change the query's boolean structure (e.g. turning "no rows should
+/// match this junk" into "matches because one side of an accidental OR
+/// happened to hit") without ever raising an error. Lowercasing is a
+/// no-op for matching itself — FTS5's default tokenizer already folds
+/// case — so this only removes the operator-keyword ambiguity, it
+/// doesn't change what a legitimate query finds.
+///
+/// Used both by [`Compiler::resolve_search`]'s `WHERE` predicate and by
+/// `cratebase_db::query::search_relevance_order_by`'s `ORDER BY` clause
+/// (a raw correlated `bm25()` subquery that never goes through
+/// [`compile`]/[`resolve_search`], so it needs the exact same treatment
+/// applied explicitly) — the two must always agree on what the query
+/// text means, or a search's `WHERE` and its relevance `ORDER BY` could
+/// disagree about which rows match. Postgres's `websearch_to_tsquery` is
+/// untouched by this: it already parses arbitrary/untrusted input safely
+/// by design, so pre-sanitizing it would only mangle syntax it
+/// understands natively (`-word`, quoted phrases, `or`).
+pub fn sanitize_fts5_query(query: &str) -> String {
+    query
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == ' ' || c == '"' || c == '*' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// Compile a parsed filter into a parameterized SQL fragment.

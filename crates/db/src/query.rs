@@ -9,7 +9,7 @@
 //! multiplies the driving row (PocketBase does exactly the same).
 
 use cratebase_core::{codes, Collection, FieldError};
-use cratebase_filter::{CompiledFilter, Dialect, FilterError, Join};
+use cratebase_filter::{CompareOp, CompiledFilter, Dialect, Expr, FilterError, Join, Literal, Operand};
 use serde_json::Value;
 
 use crate::context::CollectionResolver;
@@ -237,6 +237,81 @@ pub fn order_by(
         return Ok((default_order_by(resolver), Vec::new()));
     }
     Ok((parts.join(", "), params))
+}
+
+/// Compile `?search=` into the same boolean predicate a
+/// `search("query")` filter function call would — by constructing that
+/// call's AST directly (`cratebase_filter::Expr`/`Operand`/`Literal` are
+/// all public exactly so a host can do this) and handing it to the same
+/// [`cratebase_filter::compile`] every `filter=` fragment goes through.
+/// The query text never passes back through the filter *parser*, so it
+/// needs no filter-syntax escaping (no quoting/backslashing of `"`, `\`,
+/// `~`, ...) — it lands in the AST as a plain string literal and is
+/// bound as an ordinary SQL parameter from there, identical to a
+/// `search("query")` written by hand in `filter=`. `param_offset` follows
+/// [`Query::push_filter`]'s convention: pass `query.params().len()`.
+pub fn search_condition(
+    resolver: &CollectionResolver<'_>,
+    query_text: &str,
+    param_offset: usize,
+) -> DbResult<CompiledFilter> {
+    let expr = Expr::Compare {
+        left: Operand::Call {
+            name: "search".to_string(),
+            args: vec![Operand::Literal(Literal::Str(query_text.to_string()))],
+        },
+        op: CompareOp::Eq,
+        any_of: false,
+        right: Operand::Literal(Literal::Bool(true)),
+    };
+    Ok(cratebase_filter::compile(&expr, resolver, param_offset)?)
+}
+
+/// Default ordering for `?search=` when no explicit `sort` was given:
+/// most-relevant-first.
+///
+/// SQLite's `bm25()` is not an ordinary scalar function — it must run
+/// inside a query against the FTS5 table itself — so this is a
+/// correlated subquery keyed by the shared `rowid`, not the `rowid IN
+/// (SELECT ...)` form [`search_condition`]'s WHERE predicate uses (that
+/// form has to stay a plain boolean expression so it composes under
+/// `&&`/`||`/negation in the filter language; this one only ever appears
+/// alone, as the whole `ORDER BY`, so it's free to shape itself around
+/// what `bm25()` needs). Lower `bm25` is a *better* match, hence `ASC`.
+///
+/// Postgres orders by `ts_rank` over the same generated `_search` column
+/// and `searchLanguage` the WHERE predicate matched against — higher is
+/// better, hence `DESC`.
+pub fn search_relevance_order_by(
+    resolver: &CollectionResolver<'_>,
+    query_text: &str,
+    param_offset: usize,
+) -> (String, Vec<Sql>) {
+    let root = resolver.root_collection();
+    let table = quote_ident(root.table_name());
+    match cratebase_filter::Resolver::dialect(resolver) {
+        Dialect::Sqlite => {
+            let fts = quote_ident(&format!("{}_fts", root.table_name()));
+            let p = format!("${}", param_offset + 1);
+            (
+                format!(
+                    "(SELECT bm25({fts}) FROM {fts} WHERE {fts}.\"rowid\" = {table}.\"rowid\" AND {fts} MATCH {p}) ASC"
+                ),
+                vec![Sql::Text(cratebase_filter::sanitize_fts5_query(
+                    query_text,
+                ))],
+            )
+        }
+        Dialect::Postgres => {
+            let lang = cratebase_core::known_ts_config(root.search_language_or_default());
+            let lang_p = format!("${}", param_offset + 1);
+            let q_p = format!("${}", param_offset + 2);
+            (
+                format!("ts_rank({table}.\"_search\", websearch_to_tsquery({lang_p}, {q_p})) DESC"),
+                vec![Sql::Text(lang.to_string()), Sql::Text(query_text.to_string())],
+            )
+        }
+    }
 }
 
 /// Split `sort` on commas, except commas nested inside a `geoDistance(...)`
