@@ -1259,6 +1259,7 @@ mod tests {
                 ADD_RPC.to_string(),
                 ADD_TOTPS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
+                ADD_PENDING_UPLOADS.to_string(),
             ]
         );
         assert_eq!(
@@ -1317,6 +1318,7 @@ mod tests {
             "_emailTriggers",
             "_totps",
             "_emailAssets",
+            "_pendingUploads",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
@@ -1332,10 +1334,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 18).await.unwrap();
+        let reverted = Runner::core().down(&db, 19).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_PENDING_UPLOADS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
                 ADD_TOTPS.to_string(),
                 ADD_RPC.to_string(),

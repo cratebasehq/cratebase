@@ -1888,6 +1888,7 @@ mod tests {
                 crate::ids::collection_id("base", "_mailLog").as_str(),
                 crate::ids::collection_id("base", "_emailTriggers").as_str(),
                 crate::ids::collection_id("base", "_emailAssets").as_str(),
+                crate::ids::collection_id("base", "_pendingUploads").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
