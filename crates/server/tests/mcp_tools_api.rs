@@ -66,7 +66,7 @@ async fn memory_app() -> App {
     let app = App::new(Config {
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir.path())
+        ..Config::for_data_dir(dir.path().join("pb_data"))
     });
     std::mem::forget(dir);
     app.bootstrap().await.expect("bootstrap");

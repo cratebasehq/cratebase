@@ -67,7 +67,7 @@ async fn memory_app() -> App {
     let app = App::new(Config {
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir.path())
+        ..Config::for_data_dir(dir.path().join("pb_data"))
     });
     // Leak the tempdir on purpose: the test only needs `app` (and the
     // database file underneath it) to outlive the request.
@@ -482,7 +482,7 @@ fn node_config(url: &str, dir: &std::path::Path) -> Config {
         database_url: url.to_string(),
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir)
+        ..Config::for_data_dir(dir.join("pb_data"))
     }
 }
 

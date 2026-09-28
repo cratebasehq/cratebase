@@ -38,7 +38,7 @@ use crate::routes::common;
 
 async fn test_app() -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let app = App::new(Config::memory(dir.path()));
+    let app = App::new(Config::memory(dir.path().join("pb_data")));
     app.bootstrap().await.expect("bootstrap");
     (app, dir)
 }
