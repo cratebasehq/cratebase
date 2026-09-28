@@ -1036,9 +1036,11 @@ dependencies = [
  "chrono",
  "cratebase-core",
  "futures",
+ "http",
  "object_store",
  "thiserror 1.0.69",
  "tokio",
+ "url",
 ]
 
 [[package]]
