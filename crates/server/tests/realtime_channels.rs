@@ -428,6 +428,55 @@ async fn presence_join_update_and_leave_on_disconnect() {
 }
 
 #[tokio::test]
+async fn channel_stats_is_superuser_only_and_reflects_live_counts() {
+    let node = Node::start().await;
+    node.configure_channel("lobby", "", "").await;
+
+    let resp = node
+        .client
+        .get(node.url("/api/realtime/channels/lobby/stats"))
+        .send()
+        .await
+        .expect("anon stats");
+    assert_eq!(resp.status(), 401, "{:?}", resp.text().await);
+
+    let stats = |resp: reqwest::Response| async move { resp.json::<Value>().await.unwrap() };
+
+    let zero = node
+        .client
+        .get(node.url("/api/realtime/channels/lobby/stats"))
+        .header("authorization", &node.superuser_token)
+        .send()
+        .await
+        .expect("superuser stats");
+    assert_eq!(zero.status(), 200);
+    let zero = stats(zero).await;
+    assert_eq!(zero["subscribers"], 0);
+    assert_eq!(zero["presence"], 0);
+
+    let (client_id, _body, _buf) = node.connect_and_subscribe(None, &["channel:lobby"]).await;
+    node.client
+        .post(node.url("/api/realtime/channels/lobby/presence"))
+        .json(&json!({ "clientId": client_id, "state": {} }))
+        .send()
+        .await
+        .expect("presence track");
+
+    let after = node
+        .client
+        .get(node.url("/api/realtime/channels/lobby/stats"))
+        .header("authorization", &node.superuser_token)
+        .send()
+        .await
+        .expect("superuser stats after subscribe")
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(after["subscribers"], 1);
+    assert_eq!(after["presence"], 1);
+}
+
+#[tokio::test]
 async fn presence_requires_a_live_sse_connection() {
     let node = Node::start().await;
     node.configure_channel("room", "", "").await;

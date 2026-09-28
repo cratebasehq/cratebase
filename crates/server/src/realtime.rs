@@ -383,6 +383,29 @@ impl RealtimeService {
             .collect()
     }
 
+    /// This node's own subscriber/presence counts for one channel — the
+    /// dashboard's "Realtime channels" tab live inspector
+    /// (`GET /api/realtime/channels/{name}/stats`). Node-local only (no
+    /// cross-node aggregation): an operator watching the dashboard is
+    /// typically looking at the node they're connected to, and summing
+    /// every node's counts would need a request fan-out this endpoint
+    /// deliberately doesn't do for a debug/inspector affordance.
+    fn channel_stats(&self, channel: &str) -> (usize, usize) {
+        let subscribers = self
+            .by_collection
+            .read()
+            .get(&format!("channel:{channel}"))
+            .map(HashSet::len)
+            .unwrap_or(0);
+        let presence = self
+            .presence
+            .read()
+            .get(channel)
+            .map(HashMap::len)
+            .unwrap_or(0);
+        (subscribers, presence)
+    }
+
     /// Insert/refresh one channel's presence member. Returns `true` when
     /// this is a brand-new member (a "join"), `false` for a heartbeat/
     /// state update on an already-present one.
@@ -566,6 +589,7 @@ pub fn router() -> Router<App> {
             "/realtime/channels/{name}/presence",
             get(channel_presence_list).post(channel_presence_track),
         )
+        .route("/realtime/channels/{name}/stats", get(channel_stats))
 }
 
 /// `GET /api/realtime` — open the stream and hand back a client id.
@@ -1682,6 +1706,27 @@ async fn channel_presence_list(
         })
         .collect();
     Ok(Json(serde_json::json!({ "members": members })))
+}
+
+/// `GET /api/realtime/channels/{name}/stats` — superuser-only, this
+/// node's own live subscriber/presence counts for one channel (see
+/// `RealtimeService::channel_stats`'s doc comment for why this is
+/// node-local rather than cluster-wide). Doesn't require a matching
+/// `_channels` row: an operator debugging *why* a channel has no
+/// subscribers needs this to work even for a channel that's disabled or
+/// not yet configured.
+async fn channel_stats(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    crate::extract::RequireSuperuser(_): crate::extract::RequireSuperuser,
+) -> ApiResult<impl IntoResponse> {
+    if !is_valid_channel_name(&name) {
+        return Err(ApiError::bad_request("Invalid channel name."));
+    }
+    let (subscribers, presence) = app.realtime().channel_stats(&name);
+    Ok(Json(
+        serde_json::json!({ "subscribers": subscribers, "presence": presence }),
+    ))
 }
 
 #[cfg(test)]
