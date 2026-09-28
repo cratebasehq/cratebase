@@ -87,7 +87,7 @@ async fn fts5_shadow_table_is_created_and_used_by_the_query_planner() {
     query.push_filter(compiled);
     let sql = format!("EXPLAIN QUERY PLAN {}", query.select_sql());
     query.bind_page(1_000_000, 0);
-    let rows = db.query(&sql, query.params()).await.unwrap();
+    let rows = db.query(&sql, &query.all_params()).await.unwrap();
     let plan: String = rows
         .iter()
         .filter_map(|row| row.get_str("detail"))
@@ -100,13 +100,12 @@ async fn fts5_shadow_table_is_created_and_used_by_the_query_planner() {
     );
 }
 
-/// Micro-benchmark: `search()` (FTS5-backed) vs a `~` (`LIKE`) scan over
-/// 50k rows, same query. Numbers are printed with `eprintln!` (run with
-/// `--nocapture` to see them) rather than asserted on, since absolute
-/// timings vary by machine — mirrors
-/// `postgres_search.rs::search_vs_like_micro_benchmark_50k_rows`.
-#[tokio::test]
-async fn search_vs_like_micro_benchmark_50k_rows() {
+/// Seeds the 50k-row `posts` table the benchmarks below share: 50,000
+/// "bulk" rows evenly split over 5 templates (so `"garlic"` — a *common*
+/// term — matches ~10,000 of them) plus 3 `"xenolithography"` rows (a
+/// *rare* term), diluted the same way a real large table would dilute an
+/// uncommon search term.
+async fn seeded_50k_posts() -> Db {
     let db = setup().await;
 
     db.execute("BEGIN", &[]).await.unwrap();
@@ -141,6 +140,17 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     }
     db.execute("COMMIT", &[]).await.unwrap();
     db.execute("ANALYZE", &[]).await.unwrap();
+    db
+}
+
+/// Micro-benchmark: `search()` (FTS5-backed) vs a `~` (`LIKE`) scan over
+/// 50k rows, same query. Numbers are printed with `eprintln!` (run with
+/// `--nocapture` to see them) rather than asserted on, since absolute
+/// timings vary by machine — mirrors
+/// `postgres_search.rs::search_vs_like_micro_benchmark_50k_rows`.
+#[tokio::test]
+async fn search_vs_like_micro_benchmark_50k_rows() {
+    let db = seeded_50k_posts().await;
 
     let posts = db.collections.get("posts").unwrap();
     let ctx = superuser();
@@ -164,7 +174,7 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
         let sql1 = q1.select_sql();
         q1.bind_page(1_000_000, 0);
         let started = Instant::now();
-        let rows1 = db.query(&sql1, q1.params()).await.unwrap();
+        let rows1 = db.query(&sql1, &q1.all_params()).await.unwrap();
         search_best = search_best.min(started.elapsed());
         search_rows = rows1.len();
     }
@@ -183,7 +193,7 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
         let sql2 = q2.select_sql();
         q2.bind_page(1_000_000, 0);
         let started = Instant::now();
-        let rows2 = db.query(&sql2, q2.params()).await.unwrap();
+        let rows2 = db.query(&sql2, &q2.all_params()).await.unwrap();
         like_best = like_best.min(started.elapsed());
         like_rows = rows2.len();
     }
@@ -195,5 +205,98 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
         search_best,
         like_best,
         like_best.as_secs_f64() / search_best.as_secs_f64().max(1e-9)
+    );
+}
+
+/// Same 50k rows as the benchmark above, but for a *common* term
+/// ("garlic", ~10,000/50,003 matching rows — the worst case for an
+/// index that's supposed to narrow the scan down, not just skip it
+/// entirely) and for the matching `COUNT`, not just `list` — the two
+/// query shapes a real `?search=` request and its accompanying
+/// `totalItems` both have to run. `search()`'s WHERE fragment is shared
+/// between `Query::select_sql` and `Query::count_sql`, so the same
+/// query-shape fix applies to both automatically; this benchmark is what
+/// proves it rather than assumes it.
+#[tokio::test]
+async fn search_vs_like_micro_benchmark_50k_rows_common_term_and_count() {
+    let db = seeded_50k_posts().await;
+
+    let posts = db.collections.get("posts").unwrap();
+    let ctx = superuser();
+    const RUNS: u32 = 5;
+
+    async fn bench_list(
+        db: &Db,
+        posts: &Arc<Collection>,
+        ctx: &RequestContext,
+        expr: &str,
+        expect_rows: usize,
+    ) -> std::time::Duration {
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let r = resolver(posts, &db.collections, ctx);
+            let compiled = cratebase_filter::parse_and_compile(expr, &r, 0).unwrap();
+            let mut q = cratebase_db::query::Query::new(posts);
+            q.push_filter(compiled);
+            let sql = q.select_sql();
+            q.bind_page(1_000_000, 0);
+            let started = Instant::now();
+            let rows = db.query(&sql, &q.all_params()).await.unwrap();
+            best = best.min(started.elapsed());
+            assert_eq!(rows.len(), expect_rows, "{expr}");
+        }
+        best
+    }
+
+    async fn bench_count(
+        db: &Db,
+        posts: &Arc<Collection>,
+        ctx: &RequestContext,
+        expr: &str,
+        expect_count: i64,
+    ) -> std::time::Duration {
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let r = resolver(posts, &db.collections, ctx);
+            let compiled = cratebase_filter::parse_and_compile(expr, &r, 0).unwrap();
+            let mut q = cratebase_db::query::Query::new(posts);
+            q.push_filter(compiled);
+            let sql = q.count_sql();
+            let started = Instant::now();
+            let count = db
+                .query_scalar(&sql, q.params())
+                .await
+                .unwrap()
+                .and_then(|v| v.as_i64());
+            best = best.min(started.elapsed());
+            assert_eq!(count, Some(expect_count), "{expr}");
+        }
+        best
+    }
+
+    let search_list = bench_list(&db, &posts, &ctx, "search(\"garlic\")", 10_000).await;
+    let like_list = bench_list(&db, &posts, &ctx, "title ~ \"garlic\"", 10_000).await;
+    let search_count = bench_count(&db, &posts, &ctx, "search(\"garlic\")", 10_000).await;
+    let like_count = bench_count(&db, &posts, &ctx, "title ~ \"garlic\"", 10_000).await;
+
+    eprintln!(
+        "search_vs_like_micro_benchmark_50k_rows_common_term_and_count (sqlite, common term \
+         \"garlic\", best of {RUNS}): list search()={search_list:?} ~ (LIKE)={like_list:?} \
+         ({:.1}x) | count search()={search_count:?} ~ (LIKE)={like_count:?} ({:.1}x)",
+        like_list.as_secs_f64() / search_list.as_secs_f64().max(1e-9),
+        like_count.as_secs_f64() / search_count.as_secs_f64().max(1e-9),
+    );
+
+    // The rare term's `COUNT` too, for a full list-and-count comparison at
+    // both ends of the selectivity range (the "list" side of the rare term
+    // is already covered by `search_vs_like_micro_benchmark_50k_rows`
+    // above).
+    let search_count_rare = bench_count(&db, &posts, &ctx, "search(\"xenolithography\")", 3).await;
+    let like_count_rare = bench_count(&db, &posts, &ctx, "title ~ \"xenolithography\"", 3).await;
+    eprintln!(
+        "search_vs_like_micro_benchmark_50k_rows_common_term_and_count (sqlite, rare term \
+         \"xenolithography\", best of {RUNS}): count search()={search_count_rare:?} ~ \
+         (LIKE)={like_count_rare:?} ({:.1}x)",
+        like_count_rare.as_secs_f64() / search_count_rare.as_secs_f64().max(1e-9),
     );
 }

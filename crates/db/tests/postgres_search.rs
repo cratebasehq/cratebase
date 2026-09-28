@@ -178,7 +178,7 @@ async fn tsvector_column_and_gin_index_are_created_and_used_by_the_planner() {
             query.select_sql()
         };
         query.bind_page(1_000_000, 0);
-        db.query(&sql, query.params()).await.unwrap()
+        db.query(&sql, &query.all_params()).await.unwrap()
     }
 
     let rows = run(&db, &posts, &r, true).await;
@@ -337,7 +337,7 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     let sql1 = q1.select_sql();
     q1.bind_page(1_000_000, 0);
     let started = Instant::now();
-    let rows1 = db.query(&sql1, q1.params()).await.unwrap();
+    let rows1 = db.query(&sql1, &q1.all_params()).await.unwrap();
     let search_elapsed = started.elapsed();
     assert_eq!(rows1.len(), 3);
 
@@ -350,7 +350,7 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     let sql2 = q2.select_sql();
     q2.bind_page(1_000_000, 0);
     let started = Instant::now();
-    let rows2 = db.query(&sql2, q2.params()).await.unwrap();
+    let rows2 = db.query(&sql2, &q2.all_params()).await.unwrap();
     let like_elapsed = started.elapsed();
     assert_eq!(rows2.len(), 3);
 

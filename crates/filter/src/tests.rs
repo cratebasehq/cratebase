@@ -1085,9 +1085,9 @@ fn search_bare_predicate_compiles_to_fts_match_on_sqlite() {
     let c = with(r#"search("hello world")"#, &r);
     assert_eq!(
         c.sql,
-        "\"posts\".\"rowid\" IN (SELECT \"rowid\" FROM \"posts_fts\" WHERE \"posts_fts\" MATCH $1) = $2"
+        "\"posts\".\"rowid\" IN (SELECT \"rowid\" FROM \"posts_fts\" WHERE \"posts_fts\" MATCH $1)"
     );
-    assert_eq!(c.params, vec![json!("hello world"), json!(true)]);
+    assert_eq!(c.params, vec![json!("hello world")]);
 }
 
 #[test]
@@ -1101,9 +1101,9 @@ fn search_bare_predicate_compiles_to_tsquery_on_postgres() {
     // binding it runs into a Postgres parameter-type-inference gotcha.
     assert_eq!(
         c.sql,
-        "\"posts\".\"_search\" @@ websearch_to_tsquery('english', $1) = $2"
+        "\"posts\".\"_search\" @@ websearch_to_tsquery('english', $1)"
     );
-    assert_eq!(c.params, vec![json!("hello world"), json!(true)]);
+    assert_eq!(c.params, vec![json!("hello world")]);
 }
 
 #[test]
@@ -1122,12 +1122,20 @@ fn search_composes_with_and_or_and_explicit_comparison() {
     let r = TestResolver::sqlite("posts").with_searchable("title");
     // Combined with an ordinary comparison via `&&`.
     let c = with(r#"search("hello") && published = true"#, &r);
-    assert!(c.sql.contains("MATCH $1) = $2"));
-    assert!(c.sql.contains("\"posts\".\"published\" = $3"));
-    // An explicit comparison against the call still works (no bare-predicate
-    // sugar kicks in because an operator follows).
+    assert!(c.sql.contains("MATCH $1)"));
+    assert!(!c.sql.contains("MATCH $1) = "), "{}", c.sql);
+    assert!(c.sql.contains("\"posts\".\"published\" = $2"));
+    // An explicit comparison against the call still works — `= false`
+    // negates the predicate directly rather than binding a redundant
+    // `false` parameter (same query-shape fix as the bare-predicate
+    // case above; see `compile_compare`'s `search(...)`-vs-bool-literal
+    // special case).
     let c = with(r#"search("hello") = false"#, &r);
-    assert_eq!(c.params, vec![json!("hello"), json!(false)]);
+    assert_eq!(
+        c.sql,
+        "NOT (\"posts\".\"rowid\" IN (SELECT \"rowid\" FROM \"posts_fts\" WHERE \"posts_fts\" MATCH $1))"
+    );
+    assert_eq!(c.params, vec![json!("hello")]);
 }
 
 #[test]

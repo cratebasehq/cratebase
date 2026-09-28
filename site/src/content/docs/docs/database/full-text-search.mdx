@@ -89,31 +89,46 @@ it.
 ### SQLite (FTS5)
 
 `EXPLAIN QUERY PLAN` over a `search()` predicate shows the plan reaching into the FTS5 shadow table
-(`{table}_fts`) rather than a full scan of the base table's text columns:
+(`{table}_fts`) *and* using it to drive the base table scan by `rowid`, rather than a full scan of
+the base table's text columns:
 
 ```
-SCAN posts
-LIST SUBQUERY 1
+SEARCH posts USING INTEGER PRIMARY KEY (rowid=?)
 SCAN posts_fts VIRTUAL TABLE INDEX 0:M1
 ```
 
 A 50k-row micro-benchmark (`crates/db/tests/sqlite_search_explain.rs`, best-of-5) comparing this
-against a portable `~` (`LIKE`) scan over the same column, on the machine these docs were built on:
+against a portable `~` (`LIKE`) scan over the same column, on the machine these docs were built on —
+for a rare term (3 matching rows out of 50,003) and a common one (~10,000 matching rows), both as a
+`list` query and as the matching `COUNT`:
 
 ```
-search() = 27ms   ~ (LIKE) = 13ms   (LIKE ~2x faster)
+rare term ("xenolithography", 3 rows):
+  list:  search() = 0.41ms   ~ (LIKE) = 12.55ms   (search() ~31x faster)
+  count: search() = 0.39ms   ~ (LIKE) = 12.63ms   (search() ~32x faster)
+
+common term ("garlic", ~10,000 rows):
+  list:  search() = 25.85ms  ~ (LIKE) = 27.12ms   (about even)
+  count: search() = 11.31ms  ~ (LIKE) = 13.72ms   (search() ~1.2x faster)
 ```
 
-This is the opposite of Postgres's GIN-backed result below — see
-[Not supported](#not-supported) for why this isn't tuned toward a particular expected outcome. The
-`rowid IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)` predicate SQLite's planner
-generates for `search()` still has to evaluate a subquery result against every row in the driving
-table's scan (`SCAN posts` above) for this query shape, rather than the base table itself being
-efficiently probed by the FTS index — at 50k narrow, in-memory rows, that overhead outweighs a plain
-substring scan's simplicity. `search()` is still correct and still the only way to get relevance
-ranking, prefix matching, and phrase queries on SQLite; whether it's *faster* than `~` at your own
-scale and hardware is worth checking with `EXPLAIN QUERY PLAN` and your own data rather than
-assumed from either number above.
+`search()` clearly wins for the rare, specific queries a search box is actually for — the case that
+matters, since a term matching a fifth of the table isn't a realistic search query. It's roughly
+even for a term that unrealistically matches a large fraction of the table: once thousands of full
+rows have to be fetched either way, the win from *finding* the matching rowids stops mattering next
+to the cost of reading that many rows, whichever plan gets you there. `search()` is still correct
+and still the only way to get relevance ranking, prefix matching, and phrase queries on SQLite;
+these numbers are what this repo's own benchmark measures on its own machine, not a guarantee for
+yours — check with `EXPLAIN QUERY PLAN` and your own data at your own scale.
+
+Getting there requires the query's `WHERE` clause to hand SQLite's planner the FTS5 semi-join
+(`rowid IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)`) as its own top-level boolean
+expression: wrapped in an extra `(...) = $n` equality against a *bound* parameter — which is what a
+naive compilation of `search("q") = true` produces — the planner can no longer prove the comparison
+redundant at plan time and falls back to a full `SCAN posts` re-testing subquery membership for
+every row (a `LIST SUBQUERY` probe), the shape this page used to document as the SQLite result being
+slower than `~`. `search()`'s compiled SQL avoids that wrapper (folding `search(...) = true`/`!=
+false` to the bare predicate, and their negations to `NOT (...)`) so the semi-join stays flattenable.
 
 ### Postgres (GIN)
 
@@ -121,7 +136,7 @@ At the same 50k rows, the same benchmark (`crates/db/tests/postgres_search.rs`) 
 GIN index is built for:
 
 ```
-search() = 2.8ms   ~ (ILIKE) = 29ms   (search() ~10x faster)
+search() = 3.1ms   ~ (ILIKE) = 29.6ms   (search() ~9.5x faster)
 ```
 
 `EXPLAIN` at this table size still shows the planner honestly choosing a `Seq Scan` over the GIN

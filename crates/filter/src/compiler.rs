@@ -746,6 +746,42 @@ impl<'a> Compiler<'a> {
         let mut l = self.resolve_operand(left, !any_of)?;
         let mut r = self.resolve_operand(right, !any_of)?;
 
+        // `search("q") = true`/`!= false` (and their `false`/`!=`
+        // opposites) — including the parser's own bare-predicate sugar,
+        // which desugars a standalone `search("q")` into exactly this
+        // `Compare` node — fold away the `= $n` wrapper instead of
+        // routing it through the generic boolean-vs-value comparison
+        // below, which binds the literal as a *parameter* and leaves
+        // `resolve_search`'s own boolean SQL nested one level down: e.g.
+        // SQLite's `"t"."rowid" IN (SELECT "rowid" FROM "t_fts" WHERE
+        // "t_fts" MATCH $1)` needs to be the `WHERE` clause's own
+        // top-level boolean expression for the planner to recognize it as
+        // a flattenable semi-join and drive the scan by `rowid`
+        // (`SEARCH t USING INTEGER PRIMARY KEY (rowid=?)`); wrapped in an
+        // opaque `(...) = $2` comparison against a parameter whose value
+        // is unknown at plan time, it can't prove the comparison
+        // redundant and falls back to scanning every row of the base
+        // table, re-running the subquery's membership test per row (a
+        // `LIST SUBQUERY` probe under a full `SCAN t`) — see
+        // `crates/db/tests/sqlite_search_explain.rs`'s micro-benchmark.
+        // Postgres's planner already performs this exact simplification
+        // itself, so this is a no-op there beyond one fewer bound
+        // parameter.
+        if !any_of {
+            if let (Operand::Call { name, .. }, Operand::Literal(Literal::Bool(want))) =
+                (left, right)
+            {
+                if name == "search" {
+                    let Term::Scalar { sql, .. } = &l else {
+                        unreachable!("resolve_search always returns Term::Scalar")
+                    };
+                    let sql = sql.clone();
+                    let truthy = (op == CompareOp::Eq) == *want;
+                    return Ok(if truthy { sql } else { format!("NOT ({sql})") });
+                }
+            }
+        }
+
         // `:lower` on one side lowercases bound strings on the other.
         if has_modifier(left, Modifier::Lower) {
             if let Term::Value { value, .. } = &mut r {
