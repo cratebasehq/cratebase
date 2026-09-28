@@ -105,7 +105,7 @@ export async function checkBackupCapability(): Promise<boolean> {
 /** `GET /api/health`, authenticated — whether the mailer is currently
  * running the zero-config `Log` backend (no SMTP configured), which is
  * exactly when `/api/dev/mails` answers instead of 404ing. Drives the
- * "Mail inbox" settings page's visibility and Mail & storage's hint. */
+ * "Dev inbox" settings tab's visibility and the Delivery tab's hint. */
 export async function checkDevMailInboxAvailable(): Promise<boolean> {
   const res = await cb.send<{ data?: { devMailInbox?: boolean } }>("/api/health");
   return res.data?.devMailInbox === true;

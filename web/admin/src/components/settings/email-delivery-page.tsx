@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowRight, Inbox, Send, TestTube } from "lucide-react";
+import { ArrowRight, Inbox, Send } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { cb, describeFailure } from "@/lib/api";
 import { useDevMailInboxAvailable, useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
@@ -22,13 +22,11 @@ import {
   ToggleSetting,
 } from "@/components/settings/settings-form";
 
-type Draft = Pick<ServerSettings, "smtp" | "s3" | "storage">;
+type Draft = Pick<ServerSettings, "smtp">;
 
 function draftOf(settings: ServerSettings): Draft {
   return {
     smtp: { ...settings.smtp, password: "" },
-    s3: { ...settings.s3, secret: "" },
-    storage: { ...settings.storage },
   };
 }
 
@@ -37,9 +35,7 @@ function draftOf(settings: ServerSettings): Draft {
 function payloadOf(draft: Draft) {
   const smtp: Record<string, unknown> = { ...draft.smtp };
   if (!draft.smtp.password) delete smtp.password;
-  const s3: Record<string, unknown> = { ...draft.s3 };
-  if (!draft.s3.secret) delete s3.secret;
-  return { smtp, s3, storage: draft.storage };
+  return { smtp };
 }
 
 function validate(draft: Draft): string[] {
@@ -48,16 +44,15 @@ function validate(draft: Draft): string[] {
     if (!draft.smtp.host.trim()) errors.push("SMTP needs a host");
     if (draft.smtp.port < 1 || draft.smtp.port > 65535) errors.push("SMTP port must be between 1 and 65535");
   }
-  if (draft.s3.enabled) {
-    if (!draft.s3.bucket.trim()) errors.push("S3 needs a bucket");
-    if (!draft.s3.endpoint.trim()) errors.push("S3 needs an endpoint");
-  }
-  if (draft.storage.maxTransformDimension < 0) errors.push("Max transform dimension can't be negative");
-  if (draft.storage.userQuotaBytes < 0) errors.push("Storage quota can't be negative");
   return errors;
 }
 
-export function MailStoragePage() {
+/** `Email → Delivery`: SMTP for outgoing mail. S3-compatible file storage
+ * and the image-transform/quota limits that used to live in this same
+ * "Delivery" tab moved to `Application → Storage` — they're a storage
+ * concern, not an email one, and being tucked in here made them easy to
+ * miss (see `ApplicationPage`). */
+export function EmailDeliveryPage() {
   const { data: settings, isPending } = useSettings();
   const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
   const save = useSettingsMutation();
@@ -81,21 +76,11 @@ export function MailStoragePage() {
     },
   });
 
-  const testS3 = useMutation({
-    mutationFn: (which: "storage" | "backups") => cb.admin.settings.testS3(which),
-    onSuccess: () => toast.success("S3 reachable", { description: "The bucket answered." }),
-    onError: (error) => {
-      const failure = describeFailure(error);
-      toast.error("S3 test failed", { description: failure.serverMessage || failure.detail });
-    },
-  });
-
   const errors = useMemo(() => (draft ? validate(draft) : []), [draft]);
 
   if (isPending || !draft || !settings) {
     return (
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-page">
-        <Skeleton className="h-64 w-full" />
         <Skeleton className="h-64 w-full" />
       </div>
     );
@@ -106,8 +91,8 @@ export function MailStoragePage() {
     save.mutate(payloadOf(draft), {
       onSuccess: () => {
         toast.success("Settings saved");
-        // Secrets were consumed; clear the boxes so they read as "stored".
-        setDraft((d) => (d ? { ...d, smtp: { ...d.smtp, password: "" }, s3: { ...d.s3, secret: "" } } : d));
+        // The secret was consumed; clear the box so it reads as "stored".
+        setDraft((d) => (d ? { ...d, smtp: { ...d.smtp, password: "" } } : d));
       },
       onError: (error) => {
         const failure = describeFailure(error);
@@ -215,135 +200,6 @@ export function MailStoragePage() {
               Send test
             </Button>
           </div>
-        </SettingRow>
-      </SettingsSection>
-
-      <SettingsSection
-        title="File storage"
-        description="Where uploaded files live. Off keeps them on the server's own disk under the data directory."
-        action={
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-control-sm shrink-0 gap-1.5"
-            disabled={testS3.isPending}
-            onClick={() => testS3.mutate("storage")}
-          >
-            {testS3.isPending ? <Spinner /> : <TestTube className="size-3.5" />}
-            Test connection
-          </Button>
-        }
-      >
-        <SettingRow label="Use S3" htmlFor="s3-enabled">
-          <ToggleSetting
-            id="s3-enabled"
-            checked={draft.s3.enabled}
-            onChange={(enabled) => setDraft({ ...draft, s3: { ...draft.s3, enabled } })}
-            label={draft.s3.enabled ? "Uploads go to S3" : "Uploads stay on local disk"}
-          />
-        </SettingRow>
-        <SettingRow label="Bucket" htmlFor="s3-bucket">
-          <TextSetting
-            id="s3-bucket"
-            value={draft.s3.bucket}
-            onChange={(bucket) => setDraft({ ...draft, s3: { ...draft.s3, bucket } })}
-            mono
-          />
-        </SettingRow>
-        <SettingRow label="Region" htmlFor="s3-region">
-          <TextSetting
-            id="s3-region"
-            value={draft.s3.region}
-            onChange={(region) => setDraft({ ...draft, s3: { ...draft.s3, region } })}
-            placeholder="us-east-1"
-            mono
-          />
-        </SettingRow>
-        <SettingRow label="Endpoint" htmlFor="s3-endpoint" help="Any S3-compatible endpoint — R2, MinIO, Spaces.">
-          <TextSetting
-            id="s3-endpoint"
-            value={draft.s3.endpoint}
-            onChange={(endpoint) => setDraft({ ...draft, s3: { ...draft.s3, endpoint } })}
-            placeholder="https://s3.amazonaws.com"
-            mono
-          />
-        </SettingRow>
-        <SettingRow label="Access key" htmlFor="s3-key">
-          <TextSetting
-            id="s3-key"
-            value={draft.s3.accessKey}
-            onChange={(accessKey) => setDraft({ ...draft, s3: { ...draft.s3, accessKey } })}
-            mono
-          />
-        </SettingRow>
-        <SettingRow label="Secret" htmlFor="s3-secret" help="Never sent back. Leave blank to keep the stored one.">
-          <SecretSetting
-            id="s3-secret"
-            value={draft.s3.secret ?? ""}
-            onChange={(secret) => setDraft({ ...draft, s3: { ...draft.s3, secret } })}
-            storedHint="•••••••• (unchanged)"
-          />
-        </SettingRow>
-        <SettingRow
-          label="Path-style URLs"
-          htmlFor="s3-path"
-          help="Needed by MinIO and some self-hosted gateways that don't support virtual-hosted buckets."
-        >
-          <ToggleSetting
-            id="s3-path"
-            checked={draft.s3.forcePathStyle}
-            onChange={(forcePathStyle) => setDraft({ ...draft, s3: { ...draft.s3, forcePathStyle } })}
-            label={draft.s3.forcePathStyle ? "bucket in the path" : "bucket in the hostname"}
-          />
-        </SettingRow>
-      </SettingsSection>
-
-      <SettingsSection
-        title="Storage limits"
-        description="Image transforms and the per-user storage quota — both apply whether files live on local disk or S3."
-      >
-        <SettingRow
-          label="Image transforms"
-          htmlFor="storage-transforms-enabled"
-          help="Whether ?w=/?h=/?fit=/?format=/?q= are honored on the files route. ?thumb= is unaffected either way."
-        >
-          <ToggleSetting
-            id="storage-transforms-enabled"
-            checked={draft.storage.imageTransformsEnabled}
-            onChange={(imageTransformsEnabled) =>
-              setDraft({ ...draft, storage: { ...draft.storage, imageTransformsEnabled } })
-            }
-            label={draft.storage.imageTransformsEnabled ? "Transforms enabled" : "Transforms disabled"}
-          />
-        </SettingRow>
-        <SettingRow
-          label="Max transform dimension"
-          htmlFor="storage-max-dimension"
-          help="The largest ?w=/?h= a non-superuser request may ask for, in pixels. 0 means no limit."
-        >
-          <NumberSetting
-            id="storage-max-dimension"
-            min={0}
-            suffix="px (0 = no limit)"
-            value={draft.storage.maxTransformDimension}
-            onChange={(maxTransformDimension) =>
-              setDraft({ ...draft, storage: { ...draft.storage, maxTransformDimension } })
-            }
-          />
-        </SettingRow>
-        <SettingRow
-          label="Per-user storage quota"
-          htmlFor="storage-quota"
-          help="Caps the total bytes a single auth record may store across every collection with an ownerField set (see that collection's settings). 0 disables the quota."
-        >
-          <NumberSetting
-            id="storage-quota"
-            min={0}
-            suffix="bytes (0 = unlimited)"
-            value={draft.storage.userQuotaBytes}
-            onChange={(userQuotaBytes) => setDraft({ ...draft, storage: { ...draft.storage, userQuotaBytes } })}
-          />
         </SettingRow>
       </SettingsSection>
 

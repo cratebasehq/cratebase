@@ -46,13 +46,17 @@ replaces the layout's default `#16161a` button/accent color.
 `smtp.enabled: false` — the default, and every fresh local install —
 doesn't mean mail goes nowhere: the `Log` backend keeps the last 100
 emails it "sends" in memory, browsable superuser-only at
-`GET /api/dev/mails` and in the dashboard's **Mail inbox** page (next to
-**Mail & storage**), including the raw HTML and any verification /
-password-reset / OTP token link. It stops the moment `smtp.enabled` is
-`true` — `/api/dev/mails` then 404s outright — so real outgoing mail is
-never captured there.
+`GET /api/dev/mails` and in the dashboard's **Dev inbox** tab (next to
+**Delivery**, both under Email), including the raw HTML and any
+verification / password-reset / OTP token link. It stops the moment
+`smtp.enabled` is `true` — `/api/dev/mails` then 404s outright — so real
+outgoing mail is never captured there.
 
 ## `s3` (file storage)
+
+Configured from the dashboard's **Application → Storage** tab, not
+Email — file storage isn't an email concern, even though it shares a
+settings object with `smtp` at the API level.
 
 | Key | Default |
 | --- | --- |

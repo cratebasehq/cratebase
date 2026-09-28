@@ -12,18 +12,19 @@ sidebar should hold.
 - **Application** — **General** (name, public URL, sender identity),
   **Branding** (logo, brand color, accent color), **Modules** (the batch
   API, and the Teams/Queue/ZIP export toggles — Teams applies
-  immediately, Queue and ZIP export need a restart).
-- **Email** — **Delivery** (SMTP or the zero-config `Log` backend, plus
-  S3-compatible file storage and its own **Storage limits** section —
+  immediately, Queue and ZIP export need a restart), **Storage**
+  (S3-compatible file storage, plus its own **Storage limits** section —
   the image-transforms toggle/max dimension and the per-user storage
-  quota, see [Files](/docs/concepts/files/#storage-quota)), **Templates**
-  (the visual/HTML editor,
-  opened as its own full page from this tab), **Triggers**
-  (`_emailTriggers`), **Mail log** (`_mailLog`, every send attempt), and
-  **Dev inbox** — only shown while no real transport is configured
-  (`smtp.enabled: false`); it lists every email the `Log` backend has
-  "sent," newest first, with a detail pane rendering the HTML body in a
-  sandboxed iframe alongside a plain-text view.
+  quota, see [Files](/docs/concepts/files/#storage-quota)). Storage isn't
+  an email concern, so it lives here rather than under Email → Delivery.
+- **Email** — **Delivery** (SMTP or the zero-config `Log` backend),
+  **Templates** (the visual/HTML editor, opened as its own full page from
+  this tab), **Triggers** (`_emailTriggers`), **Mail log** (`_mailLog`,
+  every send attempt), and **Dev inbox** — only shown while no real
+  transport is configured (`smtp.enabled: false`); it lists every email
+  the `Log` backend has "sent," newest first, with a detail pane
+  rendering the HTML body in a sandboxed iframe alongside a plain-text
+  view.
 - **Auth & security** — **Superusers**, **Sessions** (`_sessions`, every
   live bearer/cookie token across every auth collection), **API keys**,
   **Network** (rate limits with a collection-name autocomplete, trusted

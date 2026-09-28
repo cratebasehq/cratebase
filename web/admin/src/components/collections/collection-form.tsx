@@ -363,7 +363,7 @@ export function CollectionForm({
         <div className="flex flex-col">
           <span className="text-sm font-medium text-foreground">Storage quota</span>
           <span className="text-xs text-muted-foreground">
-            Only relevant if a per-user quota is set in Settings → Email → Delivery → File storage.
+            Only relevant if a per-user quota is set in Settings → Application → Storage.
           </span>
         </div>
         <OptionField
