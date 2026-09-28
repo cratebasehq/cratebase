@@ -65,7 +65,7 @@ pub fn router() -> Router<App> {
         )
         .route(
             "/collections/{collection}/oauth2/{provider}/callback",
-            get(callback),
+            get(callback).post(callback_form_post),
         )
 }
 
@@ -227,6 +227,77 @@ async fn callback(
     ApiQuery(q): ApiQuery<CallbackQuery>,
     info: RequestInfo,
 ) -> ApiResult<Response> {
+    callback_common(app, name, provider, parts, peer, info, q.code, q.state, q.error, None).await
+}
+
+/// Apple's `response_mode=form_post` callback: it `POST`s `code`/`state`
+/// (and, only on the very first authorization of a Service ID, `user` —
+/// see [`cratebase_auth::parse_apple_first_login_name`]) as
+/// `application/x-www-form-urlencoded` fields instead of `GET` query
+/// parameters. Every other preset here uses [`callback`]'s plain `GET`;
+/// this exists purely because Apple requires `form_post` whenever a
+/// `scope` is requested (see `provider_auth_url`'s Apple special case).
+async fn callback_form_post(
+    State(app): State<App>,
+    Path((name, provider)): Path<(String, String)>,
+    parts: axum::http::request::Parts,
+    peer: crate::middleware::client_ip::PeerAddr,
+    info: RequestInfo,
+    axum::extract::Form(form): axum::extract::Form<AppleCallbackForm>,
+) -> ApiResult<Response> {
+    let first_login_name = form
+        .user
+        .as_deref()
+        .map(cratebase_auth::parse_apple_first_login_name)
+        .filter(|n| !n.is_empty());
+    callback_common(
+        app,
+        name,
+        provider,
+        parts,
+        peer,
+        info,
+        form.code,
+        form.state,
+        form.error,
+        first_login_name,
+    )
+    .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AppleCallbackForm {
+    #[serde(default)]
+    code: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    error: String,
+    /// `{"name":{"firstName":"...","lastName":"..."},"email":"..."}` as a
+    /// JSON string — only sent once, ever, per Service ID + Apple ID
+    /// pair.
+    #[serde(default)]
+    user: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn callback_common(
+    app: App,
+    name: String,
+    provider: String,
+    parts: axum::http::request::Parts,
+    peer: crate::middleware::client_ip::PeerAddr,
+    info: RequestInfo,
+    code: String,
+    state: String,
+    error: String,
+    // Apple's one-time `user.name`, from `callback_form_post` — folded
+    // into `createData.name` so a brand-new record's name is filled in
+    // on this, its only chance (see `complete_oauth2`'s
+    // `create_oauth2_record`, which only ever *fills* a blank field from
+    // the provider, never overwrites one `createData` already set).
+    first_login_name: Option<String>,
+) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
     let cfg = app.config();
 
@@ -241,7 +312,7 @@ async fn callback(
     let claims = cratebase_auth::verify(&raw_state_token, &key)
         .map_err(|_| ApiError::bad_request("Invalid or expired OAuth2 state."))?;
     if claims.token_type != TokenType::Custom(STATE_TOKEN_TYPE.into())
-        || claims.id != q.state
+        || claims.id != state
         || claims.collection_id != collection.id
     {
         return Err(ApiError::bad_request("Invalid or expired OAuth2 state."));
@@ -268,12 +339,12 @@ async fn callback(
         response
     };
 
-    if !q.error.is_empty() {
-        let r = Redirect::to(&append_query(&redirect, "cb_error", &q.error)).into_response();
+    if !error.is_empty() {
+        let r = Redirect::to(&append_query(&redirect, "cb_error", &error)).into_response();
         return Ok(clear_state(r));
     }
 
-    let create_data: Map<String, Value> = if create_data_b64.is_empty() {
+    let mut create_data: Map<String, Value> = if create_data_b64.is_empty() {
         Map::new()
     } else {
         URL_SAFE_NO_PAD
@@ -283,13 +354,16 @@ async fn callback(
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default()
     };
+    if let Some(name) = first_login_name {
+        create_data.entry("name".to_string()).or_insert(Value::String(name));
+    }
     let redirect_uri = callback_url(&app.settings().meta.app_url, &name, &provider);
 
     let outcome = complete_oauth2(
         &app,
         &collection,
         &provider,
-        &q.code,
+        &code,
         &code_verifier,
         &redirect_uri,
         create_data,
