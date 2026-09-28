@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { History, ShieldAlert } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
-import { settingsAuditRoute } from "@/routes/settings-audit";
+import { settingsLogsRoute } from "@/routes/settings-logs";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -75,8 +75,8 @@ function actorLabel(entry: AuditLogEntry): string {
  * update and delete, even from a superuser, so there is nothing to edit
  * here, just something to search. */
 export function AuditLogPage() {
-  const urlSearch = settingsAuditRoute.useSearch();
-  const navigate = settingsAuditRoute.useNavigate();
+  const urlSearch = settingsLogsRoute.useSearch();
+  const navigate = settingsLogsRoute.useNavigate();
   const page = urlSearch.page ?? 1;
   const action = urlSearch.action ?? "";
   const from = urlSearch.from ?? "";

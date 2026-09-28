@@ -5,7 +5,7 @@ import { ArrowRight, Inbox, Trash2 } from "lucide-react";
 import { cb, describeFailure } from "@/lib/api";
 import { useDevMailInboxAvailable } from "@/hooks/use-settings";
 import { settingsItemFor } from "@/lib/settings-nav";
-import { settingsMailInboxRoute } from "@/routes/settings-mail-inbox";
+import { settingsEmailRoute } from "@/routes/settings-email";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -65,8 +65,8 @@ const LIST_QUERY_KEY = ["dev-mail-inbox", "list"] as const;
  * SMTP was turned on shows an explanation instead of a raw 404.
  */
 export function MailInboxPage() {
-  const search = settingsMailInboxRoute.useSearch();
-  const navigate = settingsMailInboxRoute.useNavigate();
+  const search = settingsEmailRoute.useSearch();
+  const navigate = settingsEmailRoute.useNavigate();
   const queryClient = useQueryClient();
   const { data: available, isPending: availabilityPending } = useDevMailInboxAvailable();
 
@@ -91,7 +91,7 @@ export function MailInboxPage() {
     onSuccess: () => {
       toast.success("Inbox cleared");
       void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
-      void navigate({ search: {} });
+      void navigate({ search: (prev) => ({ tab: prev.tab }) });
     },
     onError: (error) => {
       const failure = describeFailure(error);
@@ -119,8 +119,8 @@ export function MailInboxPage() {
           <AlertDescription>
             This only holds mail while the server has no real transport configured. SMTP is set up, so outgoing
             mail actually goes out — there's nothing to capture here.{" "}
-            <Link to="/settings/mail-storage" className="inline-flex items-center gap-1">
-              Go to Mail & storage <ArrowRight className="size-3.5" />
+            <Link to="/settings/email" search={{ tab: "delivery" }} className="inline-flex items-center gap-1">
+              Go to Delivery <ArrowRight className="size-3.5" />
             </Link>
           </AlertDescription>
         </Alert>
@@ -162,7 +162,7 @@ export function MailInboxPage() {
                   key={mail.id}
                   data-state={mail.id === search.id ? "selected" : undefined}
                   className="cursor-pointer"
-                  onClick={() => void navigate({ search: { id: mail.id } })}
+                  onClick={() => void navigate({ search: (prev) => ({ ...prev, id: mail.id }) })}
                 >
                   <TableCell className="max-w-[220px] truncate" title={mail.subject}>
                     <div className="truncate font-medium">{mail.subject || "(no subject)"}</div>

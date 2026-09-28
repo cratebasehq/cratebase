@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { MailWarning } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
-import { settingsMailLogRoute, type MailLogSearch } from "@/routes/settings-mail-log";
+import { settingsEmailRoute, type EmailSearch } from "@/routes/settings-email";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -56,8 +56,8 @@ function formatAddresses(to: MailAddress[]): string {
  * resolves means the durable queue worker hasn't picked it up yet.
  */
 export function MailLogPage() {
-  const search = settingsMailLogRoute.useSearch();
-  const navigate = settingsMailLogRoute.useNavigate();
+  const search = settingsEmailRoute.useSearch();
+  const navigate = settingsEmailRoute.useNavigate();
   const page = search.page ?? 1;
   const status = search.status ?? "";
   const template = search.template ?? "";
@@ -79,7 +79,7 @@ export function MailLogPage() {
     placeholderData: (previous) => previous,
   });
 
-  function updateSearch(patch: Partial<Omit<MailLogSearch, "page">>) {
+  function updateSearch(patch: Partial<Omit<EmailSearch, "page" | "tab">>) {
     void navigate({
       search: (prev) => ({ ...prev, page: undefined, ...patch }),
       replace: true,
@@ -99,7 +99,7 @@ export function MailLogPage() {
           <Select
             value={status || "all"}
             onValueChange={(next) =>
-              updateSearch({ status: next === "all" ? undefined : (next as MailLogSearch["status"]) })
+              updateSearch({ status: next === "all" ? undefined : (next as EmailSearch["status"]) })
             }
           >
             <SelectTrigger id="mail-log-status-filter" className="w-40">

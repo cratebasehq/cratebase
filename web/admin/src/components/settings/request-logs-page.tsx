@@ -213,7 +213,10 @@ export function RequestLogsPage() {
 
   function submitFilter(e: React.FormEvent) {
     e.preventDefault();
-    void navigate({ search: { page: undefined, filter: filterInput.trim() || undefined }, replace: true });
+    void navigate({
+      search: (prev) => ({ tab: prev.tab, page: undefined, filter: filterInput.trim() || undefined }),
+      replace: true,
+    });
   }
 
   const item = settingsItemFor("/settings/logs")!;

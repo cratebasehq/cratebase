@@ -13,8 +13,8 @@ import {
   CommandShortcut,
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
-import { isSettingsItemVisible, useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
-import { SETTINGS_GROUPS } from "@/lib/settings-nav";
+import { useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
+import { isSettingsTabVisible, SETTINGS_TAB_TARGETS } from "@/lib/settings-nav";
 
 interface AppCommandPaletteProps {
   collections: CollectionModel[];
@@ -25,22 +25,18 @@ interface AppCommandPaletteProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-/** Every settings item, tagged with its group label for the palette's
- * `CommandShortcut` — the single source of truth is `SETTINGS_GROUPS`
- * (`lib/settings-nav.ts`), also consumed by the sidebar and breadcrumbs. */
-const SETTINGS_TARGETS = SETTINGS_GROUPS.flatMap((group) =>
-  group.items.map((item) => ({ ...item, group: group.label })),
-);
-
 /** Global ⌘K palette: jump to any collection or trigger top-level actions
- * without leaving the keyboard. */
+ * without leaving the keyboard. Every settings *tab* is still its own
+ * jump target here (`SETTINGS_TAB_TARGETS`, `lib/settings-nav.ts`) even
+ * though the sidebar only shows the 7 group pages — ⌘K → "webhooks"
+ * still lands directly on Automation's Webhooks tab. */
 export function AppCommandPalette({ collections, onNewCollection, open, onOpenChange }: AppCommandPaletteProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const navigate = useNavigate();
   const { data: settings } = useSettings();
   const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
-  const settingsTargets = SETTINGS_TARGETS.filter((item) =>
-    isSettingsItemVisible(item.to, settings, devMailInboxAvailable),
+  const settingsTargets = SETTINGS_TAB_TARGETS.filter((tab) =>
+    isSettingsTabVisible(tab.legacyPath, settings, devMailInboxAvailable),
   );
 
   const isOpen = open ?? internalOpen;
@@ -100,19 +96,22 @@ export function AppCommandPalette({ collections, onNewCollection, open, onOpenCh
           </CommandGroup>
 
           <CommandGroup heading="Settings">
-            {settingsTargets.map(({ to, label, group, icon: Icon }) => (
+            {settingsTargets.map(({ to, value, label, groupLabel, groupIcon: Icon }) => (
               <CommandItem
-                key={to}
-                value={`${label} ${group} settings`}
+                key={`${to}?tab=${value}`}
+                value={`${label} ${groupLabel} settings`}
                 onSelect={() =>
                   run(() => {
-                    void navigate({ to });
+                    // `to`/`value` are picked at runtime from the flattened
+                    // settings-tab registry, not a single literal route —
+                    // TanStack's route tree can't narrow that statically.
+                    void navigate({ to, search: { tab: value } } as never);
                   })
                 }
               >
                 <Icon />
                 {label}
-                <CommandShortcut>{group}</CommandShortcut>
+                <CommandShortcut>{groupLabel}</CommandShortcut>
               </CommandItem>
             ))}
           </CommandGroup>

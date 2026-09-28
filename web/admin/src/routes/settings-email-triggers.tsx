@@ -1,8 +1,13 @@
-import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
 
+/** Old top-level route, kept only to redirect a bookmarked/shared link to
+ * where this page now lives — the "triggers" tab of the consolidated
+ * settings group at `/settings/email`. */
 export const settingsEmailTriggersRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/email-triggers",
-  component: lazyRouteComponent(() => import("@/components/settings/email-triggers-page"), "EmailTriggersPage"),
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/email", search: { tab: "triggers" } });
+  },
 });

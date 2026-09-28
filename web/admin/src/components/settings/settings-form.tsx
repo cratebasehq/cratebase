@@ -1,10 +1,12 @@
 import type { ReactNode } from "react";
 import { AlertCircle, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { SettingsGroup } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 /**
  * The one page anatomy every settings screen shares: a title and
@@ -212,6 +214,58 @@ export function SecretSetting({
         autoComplete="new-password"
         className="h-control-md"
       />
+    </div>
+  );
+}
+
+/**
+ * The shell every consolidated settings group page shares: a title/
+ * description drawn from `SETTINGS_GROUPS`, a `TabsList` of whichever
+ * tabs are currently visible, and — via `TabsContent`'s default
+ * unmount-when-inactive behavior — exactly one tab's page component
+ * actually mounted at a time. `tab` is expected to already be resolved to
+ * a real (visible) tab value by the caller; an unknown or now-hidden
+ * value falls back to the first visible tab rather than rendering blank.
+ */
+export function SettingsTabsPage({
+  group,
+  tabs,
+  tab,
+  onTabChange,
+}: {
+  group: Pick<SettingsGroup, "label" | "description">;
+  /** The tabs to render, in order — already filtered to whichever are
+   * currently visible (a toggle-gated tab like LLM/dev-inbox is left out
+   * entirely by the caller rather than shown disabled). */
+  tabs: { value: string; label: string; content: ReactNode }[];
+  tab: string;
+  onTabChange: (value: string) => void;
+}) {
+  const active = tabs.some((t) => t.value === tab) ? tab : (tabs[0]?.value ?? tab);
+  return (
+    // No page padding here: every tab's own content is one of the
+    // existing settings page components, each already wrapping itself in
+    // `SettingsPage` (which owns `p-page`) — adding it again here would
+    // double the whitespace around whichever tab is showing.
+    <div className="flex h-full flex-col">
+      <div className="flex flex-col gap-0.5 px-page pt-page">
+        <h1 className="text-base font-medium tracking-tight">{group.label}</h1>
+        <p className="max-w-measure text-sm text-muted-foreground">{group.description}</p>
+      </div>
+      <Tabs value={active} onValueChange={onTabChange} className="min-h-0 flex-1">
+        <TabsList className="mx-page mt-3">
+          {tabs.map((t) => (
+            <TabsTrigger key={t.value} value={t.value}>
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {tabs.map((t) => (
+          <TabsContent key={t.value} value={t.value} className="mt-0">
+            {t.content}
+          </TabsContent>
+        ))}
+      </Tabs>
     </div>
   );
 }
