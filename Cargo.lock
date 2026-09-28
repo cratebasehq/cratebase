@@ -899,6 +899,7 @@ dependencies = [
  "cratebase-auth",
  "cratebase-core",
  "cratebase-filter",
+ "cratebase-mailer",
  "deadpool-postgres",
  "futures",
  "indexmap",

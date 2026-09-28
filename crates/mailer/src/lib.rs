@@ -21,7 +21,8 @@ pub use error::{MailerError, MailerResult};
 pub use message::{format_address, Address, Message};
 pub use mustache::{html_to_text, render_mustache};
 pub use template::{
-    escape_html, render_email_template, render_layout, render_template, TemplateDoc, DEFAULT_LAYOUT,
+    cta_button, escape_html, info_box, otp_code_block, render_email_template, render_layout,
+    render_template, TemplateDoc, DEFAULT_LAYOUT,
 };
 
 use std::sync::Arc;

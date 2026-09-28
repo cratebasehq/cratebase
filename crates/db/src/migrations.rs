@@ -16,6 +16,7 @@ use chrono::Utc;
 use futures::future::BoxFuture;
 
 use cratebase_core::{Collection, Field, FieldKind};
+use cratebase_mailer::{cta_button, info_box, otp_code_block};
 
 use crate::db::Db;
 use crate::engine::{Executor, Sql};
@@ -220,6 +221,14 @@ impl Runner {
             ADD_TOTPS,
             Box::new(|db| Box::pin(add_totps_up(db))),
             Box::new(|db| Box::pin(add_totps_down(db))),
+        ));
+        // Adds `_emailAssets` (same story as `_rpc` above) and refreshes
+        // every untouched `_emailTemplates` seed row to the redesigned
+        // copy/layout — see `refresh_default_email_templates_up`'s doc.
+        r.register(Migration::new(
+            REFRESH_EMAIL_TEMPLATES,
+            Box::new(|db| Box::pin(refresh_default_email_templates_up(db))),
+            Box::new(|db| Box::pin(refresh_default_email_templates_down(db))),
         ));
         r
     }
@@ -875,75 +884,199 @@ async fn add_email_triggers_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
-/// One `_emailTemplates` seed row: `{{var}}`-syntax content matching the
-/// wording of the corresponding built-in `{PLACEHOLDER}` template in
-/// `cratebase_core::collection` (see that module's
-/// `*_template_default()` functions), so an admin who opens this row in
-/// the dashboard sees the email they already know, in the new editable
-/// form — not a divergent rewrite. Rendered via
+/// One `_emailTemplates` seed row. `subject`/`html` are owned `String`s
+/// (built from [`cratebase_mailer::template`]'s `cta_button`/
+/// `otp_code_block`/`info_box` helpers, see [`seed_email_templates`])
+/// rather than `&'static str` literals, unlike [`OldSeedTemplate`] —
+/// `key`/`name`/`description` stay plain metadata literals. Rendered via
 /// `cratebase_mailer::template::render_email_template`, never the legacy
 /// `render_template`.
 struct SeedTemplate {
     key: &'static str,
     name: &'static str,
-    subject: &'static str,
-    html: &'static str,
+    subject: String,
+    html: String,
     description: &'static str,
 }
 
-const SEED_EMAIL_TEMPLATES: &[SeedTemplate] = &[
-    SeedTemplate {
+/// A small heading matching [`cratebase_mailer::template::render_layout`]'s
+/// `.cb-heading` dark-mode override.
+fn heading(text: &str) -> String {
+    format!(
+        r#"<h1 class="cb-heading" style="margin:0 0 16px;font-size:22px;line-height:28px;font-weight:700;color:#111827;">{text}</h1>"#
+    )
+}
+
+/// An ordinary body paragraph — plain `<p>`, since the layout's own
+/// `.cb-text` wrapper already sets the base color/size every seed
+/// template's content sits inside.
+fn body_p(text: &str) -> String {
+    format!(r#"<p style="margin:0 0 16px;line-height:24px;">{text}</p>"#)
+}
+
+/// A de-emphasized closing note (the "didn't request this?" line),
+/// matching `.cb-muted`.
+fn muted_p(text: &str) -> String {
+    format!(
+        r#"<p class="cb-muted" style="margin:24px 0 0;font-size:13px;line-height:20px;color:#8a8a90;">{text}</p>"#
+    )
+}
+
+/// The seven default `_emailTemplates` rows: the five auth templates,
+/// magic-link, and a `welcome` example — Linear/Vercel/Stripe-style
+/// copy (short, direct, one clear action) over
+/// [`cratebase_mailer::template::render_layout`]'s centered card, with
+/// a bulletproof [`cta_button`] for every call to action and
+/// [`otp_code_block`]/[`info_box`] for the two templates that need
+/// something other than a button.
+fn seed_email_templates() -> Vec<SeedTemplate> {
+    vec![
+        SeedTemplate {
+            key: "auth.verification",
+            name: "Verification email",
+            subject: "Verify your email for {{appName}}".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("Verify your email"),
+                body_p("Welcome to {{appName}}. Click the button below to verify your email address and get started."),
+                cta_button("Verify email", "{{appUrl}}/_/#/auth/confirm-verification/{{token}}"),
+                muted_p("If you didn't create an account with {{appName}}, you can safely ignore this email."),
+            ),
+            description: "Editable copy of the built-in email-verification template. A collection's own authOptions.verificationTemplate, if customized away from its default, still takes priority over this row.",
+        },
+        SeedTemplate {
+            key: "auth.passwordReset",
+            name: "Password reset email",
+            subject: "Reset your {{appName}} password".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("Reset your password"),
+                body_p("We received a request to reset the password for your {{appName}} account. Click the button below to choose a new one."),
+                cta_button("Reset password", "{{appUrl}}/_/#/auth/confirm-password-reset/{{token}}"),
+                muted_p("This link will expire soon. If you didn't request a password reset, your password won't change — you can safely ignore this email."),
+            ),
+            description: "Editable copy of the built-in password-reset template. A collection's own authOptions.resetPasswordTemplate, if customized away from its default, still takes priority over this row.",
+        },
+        SeedTemplate {
+            key: "auth.emailChange",
+            name: "Confirm new email address",
+            subject: "Confirm your {{appName}} new email address".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("Confirm your new email"),
+                body_p("Click the button below to confirm this is your new email address for {{appName}}."),
+                cta_button("Confirm new email", "{{appUrl}}/_/#/auth/confirm-email-change/{{token}}"),
+                muted_p("If you didn't request this change, you can safely ignore this email — your address won't change until confirmed."),
+            ),
+            description: "Editable copy of the built-in email-change confirmation template. A collection's own authOptions.confirmEmailChangeTemplate, if customized away from its default, still takes priority over this row.",
+        },
+        SeedTemplate {
+            key: "auth.otp",
+            name: "One-time password",
+            subject: "Your {{appName}} verification code".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("Your verification code"),
+                body_p("Enter this code to continue signing in to {{appName}}."),
+                otp_code_block("{{otp}}"),
+                muted_p("This code will expire shortly. If you didn't request it, you can safely ignore this email."),
+            ),
+            description: "Editable copy of the built-in OTP template. A collection's own authOptions.otp.emailTemplate, if customized away from its default, still takes priority over this row.",
+        },
+        SeedTemplate {
+            key: "auth.loginAlert",
+            name: "New-location login alert",
+            subject: "New sign-in to your {{appName}} account".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("New sign-in detected"),
+                body_p("We noticed a new sign-in to your {{appName}} account:"),
+                info_box("{{alertInfo}}"),
+                body_p("<strong>If this was you, no action is needed.</strong> If you don't recognize this activity, we recommend changing your password right away."),
+            ),
+            description: "Editable copy of the built-in new-location login alert. A collection's own authOptions.authAlert.emailTemplate, if customized away from its default, still takes priority over this row.",
+        },
+        SeedTemplate {
+            key: "auth.magic-link",
+            name: "Magic link sign-in",
+            subject: "Your sign-in link for {{appName}}".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("Sign in to {{appName}}"),
+                body_p("Click the button below to sign in — no password needed."),
+                cta_button("Sign in", "{{magicLink}}"),
+                muted_p("This link will expire shortly and can only be used once. If you didn't request it, you can safely ignore this email."),
+            ),
+            description: "Editable copy of the built-in magic-link sign-in template. A collection's own authOptions.magicLink.emailTemplate, if customized away from its default, still takes priority over this row.",
+        },
+        SeedTemplate {
+            key: "welcome",
+            name: "Welcome email",
+            subject: "Welcome to {{appName}}".into(),
+            html: format!(
+                "{}{}{}{}",
+                heading("Welcome, {{user.name}}"),
+                body_p("We're glad you're here. {{appName}} is ready whenever you are — click below to get started."),
+                cta_button("Get started", "{{appUrl}}"),
+                muted_p("Questions? Just reply to this email — we're happy to help."),
+            ),
+            description: "Example template, not wired to any built-in flow. Send it with $mails.send({ to, template: \"welcome\", data: { user: { name } } }) or POST /api/mails/send.",
+        },
+    ]
+}
+
+/// [`SeedTemplate`], but for [`OLD_SEED_EMAIL_TEMPLATES`] — the exact
+/// content `add_email_platform_up` (`13_add_email_platform.rs`)
+/// originally inserted, frozen forever. Only `key`/`subject`/`html`
+/// (never `name`/`description`, which
+/// `refresh_default_email_templates_up` never compares against) matter
+/// here, since this exists purely to detect "this row is still exactly
+/// what we first seeded".
+struct OldSeedTemplate {
+    key: &'static str,
+    subject: &'static str,
+    html: &'static str,
+}
+
+const OLD_SEED_EMAIL_TEMPLATES: &[OldSeedTemplate] = &[
+    OldSeedTemplate {
         key: "auth.verification",
-        name: "Verification email",
         subject: "Verify your {{appName}} email",
         html: "<p>Hello,</p>\n<p>Thank you for joining us at {{appName}}.</p>\n<p>Click on the button below to verify your email address.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}/_/#/auth/confirm-verification/{{token}}\" target=\"_blank\" rel=\"noopener\">Verify</a>\n</p>\n<p><i>If you didn't recently register, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Editable copy of the built-in email-verification template. A collection's own authOptions.verificationTemplate, if customized away from its default, still takes priority over this row.",
     },
-    SeedTemplate {
+    OldSeedTemplate {
         key: "auth.passwordReset",
-        name: "Password reset email",
         subject: "Reset your {{appName}} password",
         html: "<p>Hello,</p>\n<p>Click on the button below to reset your password.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}/_/#/auth/confirm-password-reset/{{token}}\" target=\"_blank\" rel=\"noopener\">Reset password</a>\n</p>\n<p><i>If you didn't ask to reset your password, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Editable copy of the built-in password-reset template. A collection's own authOptions.resetPasswordTemplate, if customized away from its default, still takes priority over this row.",
     },
-    SeedTemplate {
+    OldSeedTemplate {
         key: "auth.emailChange",
-        name: "Confirm new email address",
         subject: "Confirm your {{appName}} new email address",
         html: "<p>Hello,</p>\n<p>Click on the button below to confirm your new email address.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}/_/#/auth/confirm-email-change/{{token}}\" target=\"_blank\" rel=\"noopener\">Confirm new email</a>\n</p>\n<p><i>If you didn't ask to change your email address, please ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Editable copy of the built-in email-change confirmation template. A collection's own authOptions.confirmEmailChangeTemplate, if customized away from its default, still takes priority over this row.",
     },
-    SeedTemplate {
+    OldSeedTemplate {
         key: "auth.otp",
-        name: "One-time password",
         subject: "OTP for {{appName}}",
         html: "<p>Hello,</p>\n<p>Your one-time password is: <strong>{{otp}}</strong></p>\n<p><i>If you didn't ask for the one-time password, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Editable copy of the built-in OTP template. A collection's own authOptions.otp.emailTemplate, if customized away from its default, still takes priority over this row.",
     },
-    SeedTemplate {
+    OldSeedTemplate {
         key: "auth.loginAlert",
-        name: "New-location login alert",
         subject: "Login from a new location",
         html: "<p>Hello,</p>\n<p>We noticed a login to your {{appName}} account from a new location:</p>\n<p><em>{{alertInfo}}</em></p>\n<p><strong>If this wasn't you, you should immediately change your {{appName}} account password to revoke access from all other locations.</strong></p>\n<p>If this was you, you may disregard this email.</p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Editable copy of the built-in new-location login alert. A collection's own authOptions.authAlert.emailTemplate, if customized away from its default, still takes priority over this row.",
     },
-    SeedTemplate {
+    OldSeedTemplate {
         key: "auth.magic-link",
-        name: "Magic link sign-in",
         subject: "Sign in to {{appName}}",
         html: "<p>Hello,</p>\n<p>Click on the button below to sign in to {{appName}}.</p>\n<p>\n  <a class=\"btn\" href=\"{{magicLink}}\" target=\"_blank\" rel=\"noopener\">Sign in</a>\n</p>\n<p><i>If you didn't ask to sign in, you can ignore this email.</i></p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Editable copy of the built-in magic-link sign-in template. A collection's own authOptions.magicLink.emailTemplate, if customized away from its default, still takes priority over this row.",
     },
-    SeedTemplate {
+    OldSeedTemplate {
         key: "welcome",
-        name: "Welcome email",
         subject: "Welcome to {{appName}}!",
         html: "<p>Hi {{user.name}},</p>\n<p>Welcome to {{appName}} — we're glad to have you.</p>\n<p>\n  <a class=\"btn\" href=\"{{appUrl}}\" target=\"_blank\" rel=\"noopener\">Get started</a>\n</p>\n<p>\n  Thanks,<br/>\n  {{appName}} team\n</p>",
-        description: "Example template, not wired to any built-in flow. Send it with $mails.send({ to, template: \"welcome\", data: { user: { name } } }) or POST /api/mails/send.",
     },
 ];
 
-/// Inserts [`SEED_EMAIL_TEMPLATES`] into `_emailTemplates`, skipping any
+/// Inserts [`seed_email_templates`] into `_emailTemplates`, skipping any
 /// `key` that already has a `locale: ""` row — so re-running this
 /// (safe, since the migration ledger only calls it once, but `seed::run`
 /// or a hand-written script could call it again) never clobbers an
@@ -952,7 +1085,7 @@ async fn seed_default_email_templates(db: &Db) -> DbResult<()> {
     let Some(collection) = db.collections.get_by_name("_emailTemplates") else {
         return Ok(());
     };
-    for tpl in SEED_EMAIL_TEMPLATES {
+    for tpl in seed_email_templates() {
         let exists = db
             .query_scalar(
                 r#"SELECT 1 FROM "_emailTemplates" WHERE "key" = $1 AND "locale" = ''"#,
@@ -966,11 +1099,8 @@ async fn seed_default_email_templates(db: &Db) -> DbResult<()> {
         let mut record = cratebase_core::Record::new(collection.clone());
         record.set("key", serde_json::Value::String(tpl.key.to_string()));
         record.set("name", serde_json::Value::String(tpl.name.to_string()));
-        record.set(
-            "subject",
-            serde_json::Value::String(tpl.subject.to_string()),
-        );
-        record.set("html", serde_json::Value::String(tpl.html.to_string()));
+        record.set("subject", serde_json::Value::String(tpl.subject));
+        record.set("html", serde_json::Value::String(tpl.html));
         record.set("text", serde_json::Value::String(String::new()));
         record.set("locale", serde_json::Value::String(String::new()));
         record.set("layout", serde_json::Value::Bool(true));
@@ -979,6 +1109,76 @@ async fn seed_default_email_templates(db: &Db) -> DbResult<()> {
             serde_json::Value::String(tpl.description.to_string()),
         );
         crate::records::create(db, &db.collections, &mut record).await?;
+    }
+    Ok(())
+}
+
+pub const REFRESH_EMAIL_TEMPLATES: &str = "18_refresh_default_email_templates.rs";
+
+/// Adds `_emailAssets` (see `default_system_collections`'s doc comment
+/// on it) and refreshes every `_emailTemplates` seed row whose
+/// `subject`+`html` still exactly match [`OLD_SEED_EMAIL_TEMPLATES`] —
+/// i.e. an admin never edited it — to [`seed_email_templates`]'s new
+/// copy and layout. A row that differs at all from its old snapshot
+/// (whether because an admin customized it, or because a previous run
+/// of this very migration already refreshed it) is left alone; this
+/// makes the migration idempotent as well as safe to run on a database
+/// with real edits in it.
+async fn refresh_default_email_templates_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_emailAssets").is_none() {
+        let collection = Collection::default_system_collections()
+            .into_iter()
+            .find(|c| c.name == "_emailAssets")
+            .expect("_emailAssets is a default system collection");
+        db.collections.insert(&*db.engine, &collection).await?;
+    }
+
+    let Some(collection) = db.collections.get_by_name("_emailTemplates") else {
+        return Ok(());
+    };
+    for tpl in seed_email_templates() {
+        let Some(old) = OLD_SEED_EMAIL_TEMPLATES.iter().find(|o| o.key == tpl.key) else {
+            continue;
+        };
+        let Some(id) = db
+            .query_scalar(
+                r#"SELECT "id" FROM "_emailTemplates" WHERE "key" = $1 AND "locale" = ''"#,
+                &[Sql::Text(tpl.key.to_string())],
+            )
+            .await?
+            .and_then(|v| v.as_str().map(str::to_string))
+        else {
+            // No seeded row for this key at all (e.g. an admin deleted
+            // it) — this migration only refreshes existing rows, never
+            // re-inserts one `seed_default_email_templates` itself
+            // wouldn't.
+            continue;
+        };
+        let mut record = crate::records::find_by_id_raw(db, &collection, &id).await?;
+        let unchanged = record.get("subject").and_then(serde_json::Value::as_str) == Some(old.subject)
+            && record.get("html").and_then(serde_json::Value::as_str) == Some(old.html);
+        if !unchanged {
+            continue;
+        }
+        record.set("subject", serde_json::Value::String(tpl.subject));
+        record.set("html", serde_json::Value::String(tpl.html));
+        record.set(
+            "description",
+            serde_json::Value::String(tpl.description.to_string()),
+        );
+        crate::records::update(db, &db.collections, &mut record).await?;
+    }
+    Ok(())
+}
+
+/// Best-effort: drops `_emailAssets` (added by the `up` side above).
+/// Refreshed template content is not reverted — this migration never
+/// records which rows it touched, and rewinding wording that may
+/// already have been sent/seen is not a meaningful "down" the way a
+/// schema change is.
+async fn refresh_default_email_templates_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_emailAssets").is_some() {
+        db.collections.delete(&*db.engine, "_emailAssets").await?;
     }
     Ok(())
 }
@@ -1021,6 +1221,7 @@ mod tests {
                 ADD_EMAIL_TRIGGERS.to_string(),
                 ADD_RPC.to_string(),
                 ADD_TOTPS.to_string(),
+                REFRESH_EMAIL_TEMPLATES.to_string(),
             ]
         );
         assert_eq!(
@@ -1047,6 +1248,7 @@ mod tests {
         assert!(db.collections.get("_magicLinks").is_some());
         assert!(db.collections.get("_emailTriggers").is_some());
         assert!(db.collections.get("_totps").is_some());
+        assert!(db.collections.get("_emailAssets").is_some());
         assert!(db
             .collections
             .get("_emailTemplates")
@@ -1077,6 +1279,7 @@ mod tests {
             "_magicLinks",
             "_emailTriggers",
             "_totps",
+            "_emailAssets",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
@@ -1087,15 +1290,16 @@ mod tests {
             .unwrap()
             .and_then(|v| v.as_i64())
             .unwrap_or(-1);
-        assert_eq!(seeded, SEED_EMAIL_TEMPLATES.len() as i64);
+        assert_eq!(seeded, seed_email_templates().len() as i64);
         // Second run is a no-op.
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 17).await.unwrap();
+        let reverted = Runner::core().down(&db, 18).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                REFRESH_EMAIL_TEMPLATES.to_string(),
                 ADD_TOTPS.to_string(),
                 ADD_RPC.to_string(),
                 ADD_EMAIL_TRIGGERS.to_string(),
@@ -1118,6 +1322,85 @@ mod tests {
         assert!(db.collections.is_empty());
         assert!(!db.engine.table_exists("users").await.unwrap());
         assert!(!is_applied(&db, INIT_SYSTEM).await.unwrap());
+    }
+
+    /// Reads one `_emailTemplates` row's `html` by key, for the refresh
+    /// migration tests below.
+    async fn html_for(db: &Db, key: &str) -> String {
+        db.query_scalar(
+            r#"SELECT "html" FROM "_emailTemplates" WHERE "key" = $1"#,
+            &[Sql::Text(key.to_string())],
+        )
+        .await
+        .unwrap()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn refresh_default_email_templates_updates_rows_unchanged_since_the_old_seed() {
+        let db = fresh().await;
+        Runner::core().up(&db).await.unwrap();
+        // Roll the row back to the exact content `13_add_email_platform.rs`
+        // used to seed, simulating a database that bootstrapped before
+        // this migration existed.
+        let old = OLD_SEED_EMAIL_TEMPLATES
+            .iter()
+            .find(|o| o.key == "auth.verification")
+            .unwrap();
+        db.execute(
+            r#"UPDATE "_emailTemplates" SET "subject" = $1, "html" = $2 WHERE "key" = 'auth.verification'"#,
+            &[
+                Sql::Text(old.subject.to_string()),
+                Sql::Text(old.html.to_string()),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(html_for(&db, "auth.verification").await, old.html);
+
+        refresh_default_email_templates_up(&db).await.unwrap();
+
+        let html = html_for(&db, "auth.verification").await;
+        assert!(html.contains("Verify your email"), "new heading: {html}");
+        assert!(
+            !html.contains("Thank you for joining us"),
+            "old copy replaced: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_default_email_templates_skips_rows_an_admin_customized() {
+        let db = fresh().await;
+        Runner::core().up(&db).await.unwrap();
+        db.execute(
+            r#"UPDATE "_emailTemplates" SET "html" = $1 WHERE "key" = 'auth.verification'"#,
+            &[Sql::Text("<p>My custom copy</p>".into())],
+        )
+        .await
+        .unwrap();
+
+        refresh_default_email_templates_up(&db).await.unwrap();
+
+        assert_eq!(
+            html_for(&db, "auth.verification").await,
+            "<p>My custom copy</p>",
+            "an edited row is left exactly as the admin left it"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_default_email_templates_is_a_no_op_on_a_fresh_database() {
+        // `seed_default_email_templates` (`ADD_EMAIL_PLATFORM`) already
+        // inserts `seed_email_templates()`'s new copy directly, so on a
+        // fresh bootstrap the refresh migration that runs right after it
+        // has nothing to do — every row already looks nothing like
+        // `OLD_SEED_EMAIL_TEMPLATES`.
+        let db = fresh().await;
+        Runner::core().up(&db).await.unwrap();
+        let before = html_for(&db, "welcome").await;
+        refresh_default_email_templates_up(&db).await.unwrap();
+        assert_eq!(html_for(&db, "welcome").await, before);
     }
 
     #[tokio::test]
