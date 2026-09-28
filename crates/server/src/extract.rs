@@ -421,6 +421,11 @@ pub struct RequestInfo {
     /// `default`, `realtime`, `protectedFile`, `oauth2` or `batch`.
     pub context: String,
     pub auth: Option<Auth>,
+    /// `App::postgis_available()` at extraction time — threaded onto
+    /// [`cratebase_db::context::RequestContext`] by [`to_context`](RequestInfo::to_context)
+    /// so `CollectionResolver::postgis_geo_index` can see it without
+    /// `crates/db` ever depending on the server crate's `App`.
+    pub postgis_available: bool,
 }
 
 /// PocketBase's default request context.
@@ -448,6 +453,7 @@ impl RequestInfo {
             method: self.method.clone(),
             context: self.context.clone(),
             superuser: false,
+            postgis_available: self.postgis_available,
         }
     }
 
@@ -483,6 +489,7 @@ where
             body: Map::new(),
             context: CONTEXT_DEFAULT.to_string(),
             auth,
+            postgis_available: app.postgis_available(),
         })
     }
 }

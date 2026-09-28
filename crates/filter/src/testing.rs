@@ -173,6 +173,12 @@ pub struct TestResolver {
     pub method: String,
     pub context: String,
     pub now: DateTime<Utc>,
+    /// Field name → the `geography` SQL expression [`Resolver::postgis_geo_index`]
+    /// should hand back for it, simulating a host that has PostGIS
+    /// installed and an index for that field. Empty by default (every
+    /// [`TestResolver`] behaves like a host with no PostGIS acceleration
+    /// unless a test opts in with [`TestResolver::with_postgis_index`]).
+    pub postgis_index: std::collections::HashMap<String, String>,
 }
 
 impl TestResolver {
@@ -198,7 +204,15 @@ impl TestResolver {
             context: "default".into(),
             now: Utc.with_ymd_and_hms(2026, 9, 3, 12, 44, 6).unwrap()
                 + chrono::Duration::milliseconds(146),
+            postgis_index: std::collections::HashMap::new(),
         }
+    }
+
+    /// Simulate a host with PostGIS installed and a GiST index on
+    /// `field`: `Resolver::postgis_geo_index(field)` will return `geog`.
+    pub fn with_postgis_index(mut self, field: &str, geog: impl Into<String>) -> Self {
+        self.postgis_index.insert(field.to_string(), geog.into());
+        self
     }
 
     pub fn sqlite(root: &str) -> Self {
@@ -293,5 +307,9 @@ impl Resolver for TestResolver {
 
     fn now(&self) -> DateTime<Utc> {
         self.now
+    }
+
+    fn postgis_geo_index(&self, field: &str) -> Option<String> {
+        self.postgis_index.get(field).cloned()
     }
 }

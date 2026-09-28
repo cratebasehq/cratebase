@@ -386,6 +386,16 @@ declare const $app: {
    * syntax `findRecordsByFilter`'s `filter` uses.
    */
   rawQuery(sql: string, params?: { [key: string]: any }): Array<{ [column: string]: any }>;
+  /**
+   * Write-capable counterpart of `rawQuery`: runs any statement —
+   * `CREATE EXTENSION`, `INSERT`/`UPDATE`/`DELETE`, arbitrary DDL — and
+   * returns the number of rows it reports affected (`0` for a statement
+   * that doesn't report one, e.g. `CREATE EXTENSION`). `{:name}`
+   * placeholders bind the same way `rawQuery`'s do. Typical use: versioning
+   * a Postgres extension from a migration, e.g.
+   * `$app.db().exec("CREATE EXTENSION IF NOT EXISTS postgis")`.
+   */
+  db(): { exec(sql: string, params?: { [key: string]: any }): number };
   save(model: Record | Collection): void;
   saveNoValidate(model: Record | Collection): void;
   delete(model: Record | Collection): void;

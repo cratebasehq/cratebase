@@ -190,3 +190,32 @@ await pb.collection("posts").create(formData);
 
 The SDK detects `FormData` and switches transport automatically — you
 don't need to set `Content-Type` yourself.
+
+### Custom SQL RPC and Postgres extensions
+
+For a query a `filter`/`sort` genuinely can't express (a `GROUP BY`
+report, a PostGIS nearest-store lookup, a `pg_trgm` fuzzy search), save a
+named SQL definition to the `_rpc` collection — superuser only, same
+tier as a collection schema edit — and call it from the SDK:
+
+```javascript
+const { items } = await cb.rpc("nearest_stores", { lon: -122.42, lat: 37.77, radiusKm: 5 });
+```
+
+`_rpc.sql` uses `:name`-style placeholders declared in `_rpc.params`
+(`{name, type, required, default}`); every value is bound as a real
+driver parameter, never string-interpolated. `_rpc.rule` (evaluated
+against `@request.auth`/`@request.body`, i.e. the call's own params)
+decides who may call it: `null` = superuser only (the default),
+`""` = anyone, otherwise a normal filter expression. `readOnly` defaults
+`true` and is enforced by the database itself, not just a text check.
+Prefer a **view collection** instead when the result is naturally a list
+of records a client will further `filter`/`sort`/paginate — RPC is for
+when the parameters shape the query itself, or the result isn't
+record-shaped at all.
+
+A Postgres extension (`postgis`, `pgvector`, `pg_trgm`, ...) is enabled
+via `POST /api/db/extensions/{name}` (superuser only, Postgres only) or
+the dashboard's Settings → Database extensions page; version it from a
+migration with `$app.db().exec("CREATE EXTENSION IF NOT EXISTS postgis")`.
+See `site/src/content/docs/docs/database/` for the full guides.

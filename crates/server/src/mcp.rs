@@ -380,7 +380,7 @@ async fn call_tool(app: &App, auth: Option<Auth>, params: Value) -> Result<Value
 /// HTTP request carries, tagged with the `mcp` context (mirrors
 /// `routes::batch`'s `"batch"` and `routes::files`'s `"protectedFile"`)
 /// so a rule can distinguish an MCP-originated write if it needs to.
-fn mcp_request_info(auth: Option<Auth>, method: &str, path: String) -> RequestInfo {
+fn mcp_request_info(app: &App, auth: Option<Auth>, method: &str, path: String) -> RequestInfo {
     RequestInfo {
         method: method.to_string(),
         path,
@@ -389,6 +389,7 @@ fn mcp_request_info(auth: Option<Auth>, method: &str, path: String) -> RequestIn
         body: Map::new(),
         context: "mcp".to_string(),
         auth,
+        postgis_available: app.postgis_available(),
     }
 }
 
@@ -423,6 +424,7 @@ async fn call_list(
         nearest_limit: None,
     };
     let info = mcp_request_info(
+        app,
         auth,
         "GET",
         format!("/api/collections/{collection}/records"),
@@ -456,6 +458,7 @@ async fn call_get(
         fields: None,
     };
     let info = mcp_request_info(
+        app,
         auth,
         "GET",
         format!("/api/collections/{collection}/records/{id}"),
@@ -477,7 +480,7 @@ async fn call_create(
     args: Map<String, Value>,
 ) -> Result<Value, ApiError> {
     let path = format!("/api/collections/{collection}/records");
-    let info = mcp_request_info(auth, "POST", path.clone());
+    let info = mcp_request_info(app, auth, "POST", path.clone());
     let request = json_request(axum::http::Method::POST, path, &Value::Object(args));
     let Json(value) = create_record(
         State(app.clone()),
@@ -505,7 +508,7 @@ async fn call_update(
             ))
         })?;
     let path = format!("/api/collections/{collection}/records/{id}");
-    let info = mcp_request_info(auth, "PATCH", path.clone());
+    let info = mcp_request_info(app, auth, "PATCH", path.clone());
     let request = json_request(axum::http::Method::PATCH, path, &Value::Object(args));
     let Json(value) = update_record(
         State(app.clone()),
@@ -532,6 +535,7 @@ async fn call_delete(
         })?
         .to_string();
     let info = mcp_request_info(
+        app,
         auth,
         "DELETE",
         format!("/api/collections/{collection}/records/{id}"),

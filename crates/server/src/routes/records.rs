@@ -549,6 +549,10 @@ pub(crate) async fn create_record(
     }
 
     let mut input = body.data.clone();
+    if collection.is_rpc() {
+        crate::rpc::apply_create_defaults(&mut input);
+        crate::rpc::normalize_rule_field(&mut input);
+    }
     common::apply_number_modifiers(None, &mut input, &collection);
     validate::apply_modifiers(None, &mut input, &collection);
     let mut record = records::from_body(collection.clone(), &input);
@@ -677,6 +681,9 @@ pub(crate) async fn update_record(
         .map_err(|e| ApiError(e.into()))?;
 
     let mut input = body.data.clone();
+    if collection.is_rpc() {
+        crate::rpc::normalize_rule_field(&mut input);
+    }
     common::apply_number_modifiers(Some(&previous), &mut input, &collection);
     validate::apply_modifiers(Some(&previous), &mut input, &collection);
     let mut record = previous.clone();

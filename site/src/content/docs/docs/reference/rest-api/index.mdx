@@ -69,6 +69,8 @@ including why a rule-denied record and a nonexistent one are both a
 | [File manager](/docs/reference/rest-api/file-manager/) | Raw object-store browsing |
 | [Utils](/docs/reference/rest-api/utils/) | Avatar and QR code generation |
 | [Metrics](/docs/reference/rest-api/metrics/) | Prometheus exposition |
+| [Database extensions](/docs/reference/rest-api/db-extensions/) | List/enable/disable Postgres extensions |
+| [RPC](/docs/reference/rest-api/rpc/) | Call a custom-SQL RPC definition |
 
 Several system collections have **no dedicated REST surface** at all —
 they're reached through the generic Records API
@@ -79,8 +81,10 @@ that collection's own rules: `_webhooks` (outgoing webhook config),
 (append-only action history), and `_push_subscriptions` (registered push
 targets). `_cron_jobs` and `_api_keys` are listed read-only through
 [`GET /crons`](/docs/reference/rest-api/crons/) and created through
-[`POST /api-keys`](/docs/reference/rest-api/api-keys/) respectively, but
-otherwise managed the same generic way.
+[`POST /api-keys`](/docs/reference/rest-api/api-keys/) respectively, and
+`_rpc` (custom SQL RPC definitions) is managed the same generic way too
+— but additionally gets its own call surface,
+[`POST /rpc/{name}`](/docs/reference/rest-api/rpc/).
 
 ## Shared schemas
 

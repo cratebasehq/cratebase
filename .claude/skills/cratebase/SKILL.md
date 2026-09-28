@@ -23,6 +23,12 @@ that's wire-compatible with PocketBase's official SDKs.
    in application code.
 4. Everything else (JS hooks, cron, realtime, file storage) hangs off
    collections/records — there's no separate backend-logic layer.
+5. For a query `filter`/`sort` can't express, there's custom SQL RPC
+   (`_rpc` collection + `POST /api/rpc/{name}`, named parameters, its own
+   `rule`) and, on Postgres, extension management
+   (`/api/db/extensions`) so `postgis`/`pgvector`/`pg_trgm` are one API
+   call away — see `references/collections-and-sdk.md`'s "Custom SQL RPC
+   and Postgres extensions" section.
 
 If you're working inside the `cratebase` repo itself, `llms.txt` and
 `openapi.yaml` at the repo root go further (full endpoint list, source

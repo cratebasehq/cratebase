@@ -52,6 +52,12 @@ pub const SUPERUSERS_COLLECTION: &str = "_superusers";
 /// could schedule `UPDATE _superusers SET role='owner' ...` and wait
 /// for the next tick, defeating the owner/admin split entirely).
 pub const CRON_JOBS_COLLECTION: &str = "_cron_jobs";
+/// Name of the custom-SQL-RPC system collection (`POST /api/rpc/{name}`,
+/// `crates/server/src/rpc.rs`). Superuser-only end to end, same trust
+/// tier as `_cron_jobs`: an RPC definition's `sql` is arbitrary SQL,
+/// gated at *call* time by its own `rule`, not by a rule on this
+/// collection.
+pub const RPC_COLLECTION: &str = "_rpc";
 /// PocketBase's literal id for the built-in `users` collection.
 pub const USERS_COLLECTION_ID: &str = "_pb_users_auth_";
 

@@ -632,9 +632,14 @@
     isBootstrapped: () => true,
     isDev: () => false,
     dataDir: () => "",
-    db: () => {
-      throw new InternalServerError("raw database access ($app.db()) is not available in this runtime");
-    },
+    // A small subset of PocketBase's `$app.db()` query-builder: just the
+    // one write-capable escape hatch (`exec`) this runtime needs for
+    // versioning things a filter/record write can't express — an
+    // extension, a bespoke index, ... — from a migration or hook. See
+    // `rawQuery` just above for the read-only sibling.
+    db: () => ({
+      exec: (sql, params) => hostCall("dbExec", String(sql), params || {}),
+    }),
     newBackupsFilesystem: () => {
       throw new InternalServerError("$app.newBackupsFilesystem is not available in this runtime");
     },

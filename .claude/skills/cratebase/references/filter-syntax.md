@@ -152,13 +152,25 @@ wouldn't be enough.
 ## Function calls
 
 Currently one built-in: `geoDistance(lonA, latA, lonB, latB)`, returning
-distance for comparison against a threshold:
+kilometers for comparison against a threshold:
 
 ```text
 geoDistance(loc.lon, loc.lat, @request.query.lon, @request.query.lat) <= 5
 ```
 
-(`crates/filter/src/ast.rs:93-95`, `crates/filter/src/tests.rs:1037-1040`)
+The same call works in `sort` for a nearest/farthest-first order:
+`sort=geoDistance(loc.lon, loc.lat, -122.42, 37.77)` (nearest first),
+`sort=-geoDistance(...)` (farthest first) — it compiles to the exact SQL
+a filter over the identical call would. On Postgres, once the `postgis`
+extension is installed (`POST /api/db/extensions/postgis`), both the
+radius filter and the nearest sort automatically compile against a
+GiST-indexed geography expression (`ST_DWithin`/KNN `<->`) instead of
+the portable haversine calculation used everywhere else — same syntax,
+faster plan, no code change needed on either side.
+
+(`crates/filter/src/ast.rs:93-95`, `crates/filter/src/tests.rs:1037-1040`,
+`crates/filter/src/compiler.rs`'s `try_accelerated_geo_radius`/
+`try_accelerated_geo_knn`)
 
 ## Worked examples
 

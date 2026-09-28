@@ -80,4 +80,24 @@ pub trait Resolver: Send + Sync {
     fn now(&self) -> chrono::DateTime<chrono::Utc> {
         chrono::Utc::now()
     }
+
+    /// The `geography` SQL expression to compare/order by for a
+    /// root-level `geoPoint` field named `field`, when — and only when —
+    /// doing so would actually be faster: `dialect() == Dialect::Postgres`,
+    /// the `postgis` extension is installed, `field` really is a
+    /// `geoPoint` field on [`root`](Resolver::root), and a matching GiST
+    /// expression index exists (see `crates/server/src/geo.rs`, which
+    /// creates it idempotently on collection sync). `None` — the default,
+    /// and every existing [`Resolver`] gets it for free — means "compile
+    /// `geoDistance(...)` the portable way", the haversine calculation
+    /// [`crate::compiler`]'s module doc describes; hosts that can answer
+    /// this (`cratebase_db::context::CollectionResolver`) override it so
+    /// a `geoDistance(field.lon, field.lat, x, y) < r` radius filter
+    /// compiles to `ST_DWithin` and a `sort=geoDistance(...)` to a `<->`
+    /// KNN order instead — both index-backed, and, for the filter case,
+    /// only when the comparison is `<`/`<=` (the shape an index can
+    /// actually help with).
+    fn postgis_geo_index(&self, _field: &str) -> Option<String> {
+        None
+    }
 }

@@ -227,6 +227,10 @@ pub(crate) fn dispatch(
             let rows = state.block_on(host.raw_query(&a.str(0), a.map(1)))?;
             Ok(Value::Array(rows.into_iter().map(Value::Object).collect()))
         }
+        "dbExec" => {
+            let affected = state.block_on(host.db_exec(&a.str(0), a.map(1)))?;
+            Ok(Value::from(affected))
+        }
         "saveRecord" => {
             let r: RecordRef = a.parse(0, "record")?;
             let rec = record_from_ref(state, &host, &r)?;

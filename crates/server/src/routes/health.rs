@@ -5,9 +5,10 @@
 //! reproduced deliberately (spec §2, and `tests/conformance/health.test.ts`).
 //!
 //! `data` is empty for anyone but a superuser; a superuser additionally
-//! gets `canBackup`, the resolved `realIP` and `possibleProxyHeader`, the
+//! gets `canBackup`, the resolved `realIP` and `possibleProxyHeader` (the
 //! last being a hint that a proxy header is present that
-//! `settings.trustedProxy.headers` does not trust.
+//! `settings.trustedProxy.headers` does not trust), `devMailInbox` and
+//! `isPostgres`.
 //!
 //! Liveness alone (the process is up) is not enough to call the API
 //! "healthy" — a database that has gone away leaves every other route
@@ -88,6 +89,10 @@ async fn health(
             "devMailInbox".into(),
             json!(app.mailer().dev_mailbox().is_some()),
         );
+        // Lets the dashboard hide/adapt Postgres-only surfaces (the
+        // Database extensions settings page, most notably) without
+        // probing one of their endpoints just to find out it 404s.
+        data.insert("isPostgres".into(), json!(app.db().backend.is_postgres()));
     }
     (
         StatusCode::OK,
@@ -168,6 +173,29 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["data"]["devMailInbox"], serde_json::json!(false));
+    }
+
+    /// `isPostgres` — the dashboard's Database extensions settings page
+    /// reads this to hide itself on SQLite rather than probing
+    /// `/api/db/extensions` just to find out it 404s.
+    #[tokio::test]
+    async fn superuser_sees_is_postgres_false_on_sqlite() {
+        let (app, _dir) = test_app().await;
+        let token = superuser_token(&app).await;
+        let router = crate::routes::api_router(&app).with_state(app.clone());
+
+        let response = router
+            .oneshot(
+                Request::get("/health")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["data"]["isPostgres"], serde_json::json!(false));
     }
 
     #[tokio::test]

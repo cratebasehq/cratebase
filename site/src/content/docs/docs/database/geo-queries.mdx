@@ -1,0 +1,71 @@
+---
+title: "Geo queries"
+description: "Radius filters and nearest-first sorts on a geoPoint field, with automatic PostGIS acceleration."
+---
+
+A `geoPoint` field stores `{ lon, lat }`. The `geoDistance(lonA, latA, lonB, latB)` filter function
+(see [Filter language](/docs/reference/filter-language/)) turns that into two things: a **radius
+filter** and a **nearest-first sort** — both work identically on SQLite and Postgres, and both get
+faster automatically when PostGIS is installed.
+
+## Radius filter
+
+```txt
+filter=geoDistance(loc.lon, loc.lat, -122.42, 37.77) < 10
+```
+
+Records within 10 kilometers of `(-122.42, 37.77)`. `geoDistance` returns **kilometers**.
+
+## Nearest-first sort
+
+```txt
+sort=geoDistance(loc.lon, loc.lat, -122.42, 37.77)
+```
+
+Nearest first; `sort=-geoDistance(...)` for farthest first. This compiles through the exact same
+path a filter's `geoDistance(...)` does, so a radius filter and a nearest sort over the same call
+always agree on distance — combine them for "nearest N within R km":
+
+```txt
+filter=geoDistance(loc.lon, loc.lat, -122.42, 37.77) < 10
+&sort=geoDistance(loc.lon, loc.lat, -122.42, 37.77)
+&perPage=20
+```
+
+## Without PostGIS: portable haversine
+
+By default (SQLite always; Postgres without the `postgis` extension) `geoDistance` compiles to a
+haversine great-circle calculation — no index, evaluated per row. Correct everywhere, but a full
+scan: fine for a dataset that fits comfortably in memory, not for "nearest coffee shop" over
+millions of rows.
+
+## With PostGIS: index-accelerated
+
+Once [PostGIS is installed](/docs/database/extensions/) on a Postgres database, Cratebase
+automatically:
+
+1. Creates a GiST expression index on every `geoPoint` field
+   (`ST_MakePoint(lon, lat)::geography`) the moment the field exists — this hooks into normal
+   collection schema sync, so it happens whether the field was added from the dashboard, the API,
+   or a migration, and is idempotent (safe to run again, e.g. after a schema re-push).
+2. Compiles a radius filter (`geoDistance(...) < r`) to `ST_DWithin(geography, point, r * 1000)`,
+   which the planner can satisfy with the GiST index instead of a full scan.
+3. Compiles a nearest-first sort to a KNN `<->` order, which the same index also accelerates —
+   "give me the nearest 20" no longer means "compute the distance for every row, then sort".
+
+Nothing about the `filter`/`sort` syntax changes — the same query just gets a different (much
+faster, index-backed) plan. Results match the portable haversine path within a small tolerance:
+PostGIS's `geography` distance is a more accurate spheroidal calculation than haversine's spherical
+approximation, so the two aren't bit-for-bit identical, but they agree to well within a few meters
+at typical radii.
+
+### Verifying the index is used
+
+```txt
+EXPLAIN ANALYZE SELECT * FROM stores
+WHERE geoDistance(loc.lon, loc.lat, -122.42, 37.77) < 10;
+```
+
+against the [SQL console](/docs/dashboard/) should show an `Index Scan`/`Bitmap Index Scan` on the
+`geoPoint` field's GiST index, not a `Seq Scan`, once the table has enough rows for the planner to
+prefer it.
