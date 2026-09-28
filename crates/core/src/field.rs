@@ -54,6 +54,16 @@ impl FieldType {
         }
     }
 
+    /// Whether `searchable: true` is meaningful on a field of this type
+    /// (text-shaped types only — the ones a full-text index can actually
+    /// tokenize).
+    pub fn supports_search(self) -> bool {
+        matches!(
+            self,
+            FieldType::Text | FieldType::Editor | FieldType::Email | FieldType::Url
+        )
+    }
+
     pub fn all() -> &'static [FieldType] {
         &[
             FieldType::Text,
@@ -448,6 +458,13 @@ pub struct Field {
     pub required: bool,
     #[serde(default)]
     pub help: String,
+    /// Whether this field is indexed for full-text search (`?search=`,
+    /// the `search()` filter predicate). Only meaningful on
+    /// `text`/`editor`/`email`/`url` fields — see
+    /// [`FieldType::supports_search`]; ignored (and rejected at
+    /// validation time) on every other type.
+    #[serde(default)]
+    pub searchable: bool,
     #[serde(flatten)]
     pub kind: FieldKind,
 }
@@ -463,6 +480,7 @@ impl Field {
             presentable: false,
             required: false,
             help: String::new(),
+            searchable: false,
             kind,
         }
     }
@@ -504,6 +522,15 @@ impl Field {
             | FieldKind::Relation { max_select, .. } => Some(*max_select),
             _ => None,
         }
+    }
+
+    /// Whether this field actually participates in the collection's
+    /// full-text index: `searchable` is set *and* the field's type
+    /// supports it (the latter is also enforced at validation time, but
+    /// checked again here so a stale/hand-edited schema can't silently
+    /// index a type it shouldn't).
+    pub fn is_searchable(&self) -> bool {
+        self.searchable && self.field_type().supports_search()
     }
 
     pub fn is_primary_key(&self) -> bool {
