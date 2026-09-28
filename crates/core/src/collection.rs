@@ -1549,6 +1549,41 @@ impl Collection {
             "CREATE INDEX `idx_emailTriggers_collection` ON `_emailTriggers` (collection)".into(),
         ];
 
+        // Backing store for images uploaded through the dashboard's
+        // email-template visual editor (`@react-email/editor`'s
+        // image-upload plugin) — created via the ordinary generic
+        // records multipart-create path
+        // (`crate::routes::records`/`POST /api/collections/_emailAssets/
+        // records`), which the default `None` create/update/delete
+        // rules below already restrict to a superuser or API key, same
+        // as every other system collection here. `file` is deliberately
+        // *not* `protected`: `crates/server/src/routes/files.rs`
+        // downloads an unprotected file regardless of the owning
+        // collection's `viewRule`, which is exactly what an emailed
+        // `<img src>` needs — the recipient's mail client has no
+        // superuser session to present.
+        let mut email_assets = Collection::new("_emailAssets", CollectionType::Base);
+        email_assets.system = true;
+        let mut ea_file = Field::new(
+            "file",
+            FieldKind::File {
+                max_select: 1,
+                max_size: 8 * 1024 * 1024,
+                mime_types: vec![
+                    "image/jpeg".into(),
+                    "image/png".into(),
+                    "image/gif".into(),
+                    "image/webp".into(),
+                    "image/svg+xml".into(),
+                ],
+                thumbs: vec![],
+                protected: false,
+            },
+        );
+        ea_file.required = true;
+        let pos = email_assets.fields.len() - 2;
+        email_assets.fields.insert(pos, ea_file);
+
         vec![
             external,
             mfas,
@@ -1570,6 +1605,7 @@ impl Collection {
             email_templates,
             mail_log,
             email_triggers,
+            email_assets,
         ]
     }
 }
@@ -1736,6 +1772,7 @@ mod tests {
                 crate::ids::collection_id("base", "_emailTemplates").as_str(),
                 crate::ids::collection_id("base", "_mailLog").as_str(),
                 crate::ids::collection_id("base", "_emailTriggers").as_str(),
+                crate::ids::collection_id("base", "_emailAssets").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
