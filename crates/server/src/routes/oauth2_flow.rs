@@ -227,7 +227,10 @@ async fn callback(
     ApiQuery(q): ApiQuery<CallbackQuery>,
     info: RequestInfo,
 ) -> ApiResult<Response> {
-    callback_common(app, name, provider, parts, peer, info, q.code, q.state, q.error, None).await
+    callback_common(
+        app, name, provider, parts, peer, info, q.code, q.state, q.error, None,
+    )
+    .await
 }
 
 /// Apple's `response_mode=form_post` callback: it `POST`s `code`/`state`
@@ -355,7 +358,9 @@ async fn callback_common(
             .unwrap_or_default()
     };
     if let Some(name) = first_login_name {
-        create_data.entry("name".to_string()).or_insert(Value::String(name));
+        create_data
+            .entry("name".to_string())
+            .or_insert(Value::String(name));
     }
     let redirect_uri = callback_url(&app.settings().meta.app_url, &name, &provider);
 

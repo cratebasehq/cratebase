@@ -154,7 +154,9 @@ impl Harness {
 #[tokio::test]
 async fn owner_can_list_their_own_linked_accounts() {
     let h = Harness::new().await;
-    let id = h.create_user("jo@example.com", Some("hunter2hunter2")).await;
+    let id = h
+        .create_user("jo@example.com", Some("hunter2hunter2"))
+        .await;
     h.link_provider(&id, "google", "google-sub-1").await;
     h.link_provider(&id, "github", "12345").await;
     let token = h.token_for(&id).await;
@@ -170,7 +172,10 @@ async fn owner_can_list_their_own_linked_accounts() {
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let items = body.as_array().expect("bare array response");
     assert_eq!(items.len(), 2);
-    let providers: Vec<&str> = items.iter().map(|i| i["provider"].as_str().unwrap()).collect();
+    let providers: Vec<&str> = items
+        .iter()
+        .map(|i| i["provider"].as_str().unwrap())
+        .collect();
     assert!(providers.contains(&"google"));
     assert!(providers.contains(&"github"));
 }
@@ -178,9 +183,13 @@ async fn owner_can_list_their_own_linked_accounts() {
 #[tokio::test]
 async fn another_records_own_account_cannot_list_someone_elses() {
     let h = Harness::new().await;
-    let victim = h.create_user("victim@example.com", Some("hunter2hunter2")).await;
+    let victim = h
+        .create_user("victim@example.com", Some("hunter2hunter2"))
+        .await;
     h.link_provider(&victim, "google", "google-sub-1").await;
-    let attacker = h.create_user("attacker@example.com", Some("hunter2hunter2")).await;
+    let attacker = h
+        .create_user("attacker@example.com", Some("hunter2hunter2"))
+        .await;
     let attacker_token = h.token_for(&attacker).await;
 
     let (status, _) = h
@@ -197,7 +206,9 @@ async fn another_records_own_account_cannot_list_someone_elses() {
 #[tokio::test]
 async fn a_superuser_can_list_and_unlink_anyones_linked_accounts() {
     let h = Harness::new().await;
-    let id = h.create_user("jo@example.com", Some("hunter2hunter2")).await;
+    let id = h
+        .create_user("jo@example.com", Some("hunter2hunter2"))
+        .await;
     h.link_provider(&id, "google", "google-sub-1").await;
 
     let (status, body) = h
@@ -225,7 +236,9 @@ async fn a_superuser_can_list_and_unlink_anyones_linked_accounts() {
 #[tokio::test]
 async fn unlinking_is_allowed_when_the_record_has_a_password() {
     let h = Harness::new().await;
-    let id = h.create_user("jo@example.com", Some("hunter2hunter2")).await;
+    let id = h
+        .create_user("jo@example.com", Some("hunter2hunter2"))
+        .await;
     h.link_provider(&id, "google", "google-sub-1").await;
     let token = h.token_for(&id).await;
 

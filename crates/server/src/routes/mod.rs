@@ -36,6 +36,7 @@ pub mod settings;
 pub mod setup;
 pub mod sql_console;
 pub mod tool_schema;
+pub mod totp;
 pub mod typegen;
 pub mod utils;
 
@@ -62,6 +63,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(records::router())
         .merge(auth::router())
         .merge(oauth2_flow::router())
+        .merge(totp::router())
         .merge(session::router())
         .merge(files::router())
         .merge(crate::realtime::router())

@@ -41,9 +41,9 @@ pub fn verify_id_token(id_token: &str, jwks: &[u8], checks: &IdTokenChecks) -> A
     let kid = header
         .kid
         .ok_or_else(|| AuthError::InvalidOAuth2Response("id_token: missing kid".into()))?;
-    let jwk = jwk_set
-        .find(&kid)
-        .ok_or_else(|| AuthError::InvalidOAuth2Response("id_token: unknown kid (rotated key?)".into()))?;
+    let jwk = jwk_set.find(&kid).ok_or_else(|| {
+        AuthError::InvalidOAuth2Response("id_token: unknown kid (rotated key?)".into())
+    })?;
     let alg = jwk
         .common
         .key_algorithm

@@ -631,10 +631,17 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
             HookKind::RecordAuthWithMagicLinkRequest => {
                 bind!(on_record_auth_with_magic_link_request)
             }
+            HookKind::RecordAuthWithTOTPRequest => bind!(on_record_auth_with_totp_request),
             HookKind::RecordAuthRefreshRequest => bind!(on_record_auth_refresh_request),
             HookKind::RecordRequestOTPRequest => bind!(on_record_request_otp_request),
             HookKind::RecordRequestMagicLinkRequest => {
                 bind!(on_record_request_magic_link_request)
+            }
+            HookKind::RecordListExternalAuthsRequest => {
+                bind!(on_record_list_external_auths_request)
+            }
+            HookKind::RecordUnlinkExternalAuthRequest => {
+                bind!(on_record_unlink_external_auth_request)
             }
             HookKind::RecordRequestPasswordResetRequest => {
                 bind!(on_record_request_password_reset_request)

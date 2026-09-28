@@ -791,7 +791,8 @@ impl Collection {
         let mut t_backup_codes = Field::new("backupCodes", FieldKind::Json { max_size: 0 });
         t_backup_codes.required = false;
         t_backup_codes.hidden = true;
-        let mut t_last_used_step = Field::new("lastUsedStep", FieldKind::default_for(FieldType::Number));
+        let mut t_last_used_step =
+            Field::new("lastUsedStep", FieldKind::default_for(FieldType::Number));
         t_last_used_step.system = true;
         t_last_used_step.required = false;
         let pos = totps.fields.len() - 2;

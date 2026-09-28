@@ -142,8 +142,7 @@ impl KnownProvider {
             Self::Discord => "https://discord.com/api/users/@me".to_string(),
             Self::GitLab => format!("{}/api/v4/user", Self::gitlab_base(extra)),
             Self::Facebook => {
-                "https://graph.facebook.com/me?fields=id,name,email,picture.type(large)"
-                    .to_string()
+                "https://graph.facebook.com/me?fields=id,name,email,picture.type(large)".to_string()
             }
             Self::Twitter => {
                 "https://api.twitter.com/2/users/me?user.fields=profile_image_url".to_string()
@@ -463,7 +462,11 @@ pub fn parse_apple_id_token_claims(claims_json: &[u8]) -> AuthResult<OAuth2User>
         id: claims.sub,
         name: String::new(),
         username: String::new(),
-        email: if verified { claims.email } else { String::new() },
+        email: if verified {
+            claims.email
+        } else {
+            String::new()
+        },
         avatar_url: String::new(),
     })
 }
@@ -487,7 +490,11 @@ pub fn parse_apple_first_login_name(user_field: &str) -> String {
         .and_then(|n| n.get("lastName"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    [first, last].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ")
+    [first, last]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Deserialize)]
@@ -509,7 +516,10 @@ struct MicrosoftUser {
 pub fn parse_microsoft_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
     let user: MicrosoftUser = serde_json::from_slice(body)
         .map_err(|e| AuthError::InvalidOAuth2Response(format!("microsoft userinfo: {e}")))?;
-    let email = user.mail.filter(|m| !m.is_empty()).unwrap_or(user.user_principal_name);
+    let email = user
+        .mail
+        .filter(|m| !m.is_empty())
+        .unwrap_or(user.user_principal_name);
     Ok(OAuth2User {
         id: user.id,
         name: user.display_name,
@@ -547,7 +557,11 @@ pub fn parse_discord_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
         id: user.id,
         name: user.global_name.unwrap_or_default(),
         username: user.username,
-        email: if user.verified { user.email.unwrap_or_default() } else { String::new() },
+        email: if user.verified {
+            user.email.unwrap_or_default()
+        } else {
+            String::new()
+        },
         avatar_url,
     })
 }
@@ -578,7 +592,11 @@ pub fn parse_gitlab_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
         id: user.id.to_string(),
         name: user.name,
         username: user.username,
-        email: if confirmed { user.email.unwrap_or_default() } else { String::new() },
+        email: if confirmed {
+            user.email.unwrap_or_default()
+        } else {
+            String::new()
+        },
         avatar_url: user.avatar_url,
     })
 }
@@ -732,11 +750,10 @@ struct TwitchUser {
 pub fn parse_twitch_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
     let wrapper: TwitchUserWrapper = serde_json::from_slice(body)
         .map_err(|e| AuthError::InvalidOAuth2Response(format!("twitch userinfo: {e}")))?;
-    let user = wrapper
-        .data
-        .into_iter()
-        .next()
-        .ok_or_else(|| AuthError::InvalidOAuth2Response("twitch userinfo: empty data".into()))?;
+    let user =
+        wrapper.data.into_iter().next().ok_or_else(|| {
+            AuthError::InvalidOAuth2Response("twitch userinfo: empty data".into())
+        })?;
     Ok(OAuth2User {
         id: user.id,
         name: user.display_name,
@@ -773,7 +790,12 @@ pub fn parse_spotify_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
         name: user.display_name.unwrap_or_default(),
         username: String::new(),
         email: user.email.unwrap_or_default(),
-        avatar_url: user.images.into_iter().next().map(|i| i.url).unwrap_or_default(),
+        avatar_url: user
+            .images
+            .into_iter()
+            .next()
+            .map(|i| i.url)
+            .unwrap_or_default(),
     })
 }
 
@@ -838,7 +860,10 @@ mod tests {
             Some(KnownProvider::GitHub)
         );
         assert_eq!(KnownProvider::from_name("Google"), None);
-        assert_eq!(KnownProvider::from_name("gitlab"), Some(KnownProvider::GitLab));
+        assert_eq!(
+            KnownProvider::from_name("gitlab"),
+            Some(KnownProvider::GitLab)
+        );
         assert_eq!(KnownProvider::from_name("not-a-provider"), None);
     }
 
@@ -1071,7 +1096,10 @@ mod tests {
             .auth_url(&extra)
             .contains("/common/"));
         let mut tenant = Map::new();
-        tenant.insert("tenant".into(), Value::String("contoso.onmicrosoft.com".into()));
+        tenant.insert(
+            "tenant".into(),
+            Value::String("contoso.onmicrosoft.com".into()),
+        );
         assert!(KnownProvider::Microsoft
             .auth_url(&tenant)
             .contains("/contoso.onmicrosoft.com/"));
@@ -1206,7 +1234,8 @@ OF/2NxApJCzGCEDdfSp6VQO30hyhRANCAAQRWz+jn65BtOMvdyHKcvjBeBSDZH2r\n\
 
     #[test]
     fn discord_never_attributes_an_unverified_email() {
-        let body = br#"{"id":"123","username":"jo","email":"spoofed@example.com","verified":false}"#;
+        let body =
+            br#"{"id":"123","username":"jo","email":"spoofed@example.com","verified":false}"#;
         let user = parse_discord_userinfo(body).unwrap();
         assert_eq!(user.email, "");
     }
@@ -1217,7 +1246,8 @@ OF/2NxApJCzGCEDdfSp6VQO30hyhRANCAAQRWz+jn65BtOMvdyHKcvjBeBSDZH2r\n\
         let user = parse_gitlab_userinfo(body).unwrap();
         assert_eq!(user.email, "jo@example.com");
 
-        let body = br#"{"id":1,"username":"jo","name":"Jo","email":"jo@example.com","confirmed_at":null}"#;
+        let body =
+            br#"{"id":1,"username":"jo","name":"Jo","email":"jo@example.com","confirmed_at":null}"#;
         let user = parse_gitlab_userinfo(body).unwrap();
         assert_eq!(user.email, "");
     }

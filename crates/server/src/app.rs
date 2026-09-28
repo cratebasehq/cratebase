@@ -792,12 +792,24 @@ impl App {
                 let app = app.clone();
                 async move {
                     for collection in app.db().collections.all().all.iter() {
-                        if !collection.is_auth() || !collection.auth.mfa.enabled {
+                        if !collection.is_auth() {
                             continue;
                         }
+                        // A pending `_mfas` row can now exist even when
+                        // `authOptions.mfa` itself is off, if it's a
+                        // per-record TOTP challenge (see
+                        // `routes::auth::mfa_gate`) — so this no longer
+                        // skips a collection just because collection-level
+                        // MFA isn't enabled. Ten minutes is a generous
+                        // window for that case; `mfa.duration` still wins
+                        // when it's configured and longer.
+                        let ttl = if collection.auth.mfa.enabled {
+                            collection.auth.mfa.duration.max(600)
+                        } else {
+                            600
+                        };
                         let cutoff = cratebase_core::DateTime::from_utc(
-                            chrono::Utc::now()
-                                - chrono::Duration::seconds(collection.auth.mfa.duration.max(1)),
+                            chrono::Utc::now() - chrono::Duration::seconds(ttl),
                         );
                         let sql = r#"DELETE FROM "_mfas" WHERE "collectionRef" = $1 AND "created" < $2"#;
                         if let Err(e) = app

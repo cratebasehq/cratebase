@@ -479,7 +479,12 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
     let providers = if auth.oauth2.enabled {
         let client = oauth2_client();
         let mut out = Vec::new();
-        for p in auth.oauth2.providers.iter().filter(|p| oauth2_provider_ready(p)) {
+        for p in auth
+            .oauth2
+            .providers
+            .iter()
+            .filter(|p| oauth2_provider_ready(p))
+        {
             out.push(oauth2_provider_info(client, p).await);
         }
         out
@@ -535,7 +540,11 @@ pub(crate) fn oidc_issuer(config: &cratebase_core::OAuth2Provider) -> Option<&st
 }
 
 fn non_empty_extra<'a>(config: &'a cratebase_core::OAuth2Provider, key: &str) -> Option<&'a str> {
-    config.extra.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+    config
+        .extra
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 /// Whether a provider entry has enough config to attempt a login.
@@ -547,7 +556,9 @@ fn oauth2_provider_ready(config: &cratebase_core::OAuth2Provider) -> bool {
     if config.client_id.is_empty() {
         return false;
     }
-    if cratebase_auth::KnownProvider::from_name(&config.name) == Some(cratebase_auth::KnownProvider::Apple) {
+    if cratebase_auth::KnownProvider::from_name(&config.name)
+        == Some(cratebase_auth::KnownProvider::Apple)
+    {
         non_empty_extra(config, "teamId").is_some()
             && non_empty_extra(config, "keyId").is_some()
             && non_empty_extra(config, "privateKey").is_some()
@@ -617,7 +628,8 @@ pub(crate) async fn provider_auth_url(
     if !scope.is_empty() {
         url.query_pairs_mut().append_pair("scope", &scope);
         if known == Some(cratebase_auth::KnownProvider::Apple) {
-            url.query_pairs_mut().append_pair("response_mode", "form_post");
+            url.query_pairs_mut()
+                .append_pair("response_mode", "form_post");
         }
     }
     if !code_challenge.is_empty() {
@@ -679,7 +691,7 @@ async fn oauth2_provider_info(
 /// record}` plus whatever `extra` fields the caller wants merged in
 /// (`auth-with-oauth2`'s `meta`).
 #[allow(clippy::too_many_arguments)]
-async fn respond_with_token(
+pub(crate) async fn respond_with_token(
     app: &App,
     collection: &Arc<Collection>,
     record: Record,
@@ -2029,13 +2041,9 @@ async fn fetch_oidc_user(
         audience: &config.client_id,
         nonce: None,
     };
-    let claims = crate::routes::oidc::verify_id_token_cached(
-        client,
-        &discovery.jwks_uri,
-        id_token,
-        &checks,
-    )
-    .await?;
+    let claims =
+        crate::routes::oidc::verify_id_token_cached(client, &discovery.jwks_uri, id_token, &checks)
+            .await?;
     let claims_json = serde_json::to_vec(&claims).unwrap_or_default();
     let user = cratebase_auth::parse_generic_userinfo(&claims_json)
         .map_err(|_| ApiError::bad_request("Invalid OIDC identity token."))?;
@@ -2113,12 +2121,16 @@ pub(crate) async fn complete_oauth2(
     } else if let Some(d) = &discovery {
         d.token_endpoint.clone()
     } else {
-        known.map(|k| k.token_url(&config.extra)).unwrap_or_default()
+        known
+            .map(|k| k.token_url(&config.extra))
+            .unwrap_or_default()
     };
     let user_info_url = if !config.user_info_url.is_empty() {
         config.user_info_url.clone()
     } else {
-        known.map(|k| k.user_info_url(&config.extra)).unwrap_or_default()
+        known
+            .map(|k| k.user_info_url(&config.extra))
+            .unwrap_or_default()
     };
 
     // Apple's "client_secret" is minted per request from `extra.teamId`/
@@ -2314,9 +2326,17 @@ async fn list_external_auths(
     State(app): State<App>,
     Path((name, id)): Path<(String, String)>,
     auth: Auth,
+    info: RequestInfo,
 ) -> ApiResult<Json<Value>> {
     let collection = common::auth_collection_of(&app, &name)?;
     require_owner_or_superuser(&auth, &collection, &id)?;
+    let target = records::find_by_id_raw(app.db(), &collection, &id)
+        .await
+        .map_err(|_| ApiError::not_found("The record does not exist."))?;
+    fire_request_hook(&app, &collection, &info, Some(target), |h| {
+        &h.on_record_list_external_auths_request
+    })
+    .await?;
 
     let rows = app
         .db()
@@ -2357,6 +2377,7 @@ async fn unlink_external_auth(
     State(app): State<App>,
     Path((name, id, provider)): Path<(String, String, String)>,
     auth: Auth,
+    info: RequestInfo,
 ) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
     require_owner_or_superuser(&auth, &collection, &id)?;
@@ -2364,6 +2385,10 @@ async fn unlink_external_auth(
     let record = records::find_by_id_raw(app.db(), &collection, &id)
         .await
         .map_err(|_| ApiError::not_found("The record does not exist."))?;
+    fire_request_hook(&app, &collection, &info, Some(record.clone()), |h| {
+        &h.on_record_unlink_external_auth_request
+    })
+    .await?;
 
     let other_providers = app
         .db()
@@ -2396,7 +2421,11 @@ async fn unlink_external_auth(
         .execute(
             r#"DELETE FROM "_externalAuths"
                WHERE "collectionRef" = $1 AND "recordRef" = $2 AND "provider" = $3"#,
-            &[Sql::Text(collection.id.clone()), Sql::Text(id), Sql::Text(provider)],
+            &[
+                Sql::Text(collection.id.clone()),
+                Sql::Text(id),
+                Sql::Text(provider),
+            ],
         )
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
@@ -2665,7 +2694,7 @@ pub(crate) enum MfaGate {
 /// A `401 {"mfaId": "..."}` — deliberately not PocketBase's usual error
 /// envelope (no `status`/`message`/`data`), so the SDK's generic error
 /// handling can't mistake it for an ordinary failure.
-fn mfa_pending_response(mfa_id: String) -> Response {
+pub(crate) fn mfa_pending_response(mfa_id: String) -> Response {
     (StatusCode::UNAUTHORIZED, Json(json!({ "mfaId": mfa_id }))).into_response()
 }
 
@@ -2679,31 +2708,41 @@ fn mfa_pending_response(mfa_id: String) -> Response {
 ///   exact record, completed with a *different* method than the one
 ///   that just succeeded. Consumed (deleted) on success, so a session
 ///   cannot be replayed.
-async fn mfa_gate(
+pub(crate) async fn mfa_gate(
     app: &App,
     collection: &Arc<Collection>,
     record: &Record,
     method: &str,
     mfa_id: Option<&str>,
 ) -> ApiResult<MfaGate> {
-    if !collection.auth.mfa.enabled {
-        return Ok(MfaGate::Passed);
-    }
-    let rule = collection.auth.mfa.rule.trim();
-    let required = if rule.is_empty() {
-        true
+    // Two independent ways a login can need a second factor: the
+    // collection's own `authOptions.mfa` (unchanged from before TOTP
+    // existed), or this *specific* record having confirmed TOTP — a
+    // consumer app can leave collection-level MFA off entirely and still
+    // have individual users opt into TOTP (see
+    // `crate::routes::totp::totp_confirmed_for`). Either one alone is
+    // enough to require a second factor; neither disables the other.
+    let collection_requires_mfa = if !collection.auth.mfa.enabled {
+        false
     } else {
-        common::record_matches_rule(
-            app.db(),
-            &app.db().collections,
-            &cratebase_db::context::RequestContext::default(),
-            collection,
-            &Some(collection.auth.mfa.rule.clone()),
-            record.id(),
-        )
-        .await
-        .map_err(|e| ApiError(e.into()))?
+        let rule = collection.auth.mfa.rule.trim();
+        if rule.is_empty() {
+            true
+        } else {
+            common::record_matches_rule(
+                app.db(),
+                &app.db().collections,
+                &cratebase_db::context::RequestContext::default(),
+                collection,
+                &Some(collection.auth.mfa.rule.clone()),
+                record.id(),
+            )
+            .await
+            .map_err(|e| ApiError(e.into()))?
+        }
     };
+    let required = collection_requires_mfa
+        || crate::routes::totp::totp_confirmed_for(app, &collection.id, record.id()).await?;
     if !required {
         return Ok(MfaGate::Passed);
     }

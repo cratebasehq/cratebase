@@ -183,7 +183,9 @@ pub fn generate_backup_codes(count: usize) -> Vec<String> {
         .map(|_| {
             let group = |rng: &mut rand::rngs::ThreadRng| -> String {
                 (0..5)
-                    .map(|_| BACKUP_CODE_ALPHABET[rng.gen_range(0..BACKUP_CODE_ALPHABET.len())] as char)
+                    .map(|_| {
+                        BACKUP_CODE_ALPHABET[rng.gen_range(0..BACKUP_CODE_ALPHABET.len())] as char
+                    })
                     .collect()
             };
             format!("{}-{}", group(&mut rng), group(&mut rng))
@@ -211,7 +213,9 @@ mod tests {
         for len in [0, 1, 4, 5, 9, 20, 32] {
             let bytes: Vec<u8> = (0..len as u8).collect();
             let encoded = base32_encode(&bytes);
-            assert!(encoded.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
+            assert!(encoded
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
             assert_eq!(base32_decode(&encoded).unwrap(), bytes, "len={len}");
         }
     }
@@ -277,7 +281,10 @@ mod tests {
         let secret = generate_secret();
         let now = 1_700_000_000;
         let code = totp_at(&secret, now).unwrap();
-        assert_eq!(verify(&secret, &code, now, 0).unwrap(), Some(step_for(now) as i64));
+        assert_eq!(
+            verify(&secret, &code, now, 0).unwrap(),
+            Some(step_for(now) as i64)
+        );
         assert_eq!(verify(&secret, "000000", now, 0).unwrap(), None);
     }
 

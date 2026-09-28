@@ -52,7 +52,11 @@ static JWKS_CACHE: LazyLock<Mutex<HashMap<String, CacheEntry<Vec<u8>>>>> =
 /// appended, matching how every real-world issuer publishes it.
 pub async fn discover(client: &reqwest::Client, issuer: &str) -> ApiResult<OidcDiscovery> {
     let issuer = issuer.trim_end_matches('/').to_string();
-    if let Some(entry) = DISCOVERY_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(&issuer) {
+    if let Some(entry) = DISCOVERY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&issuer)
+    {
         if entry.at.elapsed() < CACHE_TTL {
             return Ok(entry.value.clone());
         }
@@ -72,13 +76,16 @@ pub async fn discover(client: &reqwest::Client, issuer: &str) -> ApiResult<OidcD
         .json()
         .await
         .map_err(|_| ApiError::bad_request("Invalid OIDC discovery document."))?;
-    DISCOVERY_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(
-        issuer,
-        CacheEntry {
-            at: Instant::now(),
-            value: doc.clone(),
-        },
-    );
+    DISCOVERY_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            issuer,
+            CacheEntry {
+                at: Instant::now(),
+                value: doc.clone(),
+            },
+        );
     Ok(doc)
 }
 
@@ -90,7 +97,11 @@ pub async fn fetch_jwks(
     force_refresh: bool,
 ) -> ApiResult<Vec<u8>> {
     if !force_refresh {
-        if let Some(entry) = JWKS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).get(jwks_uri) {
+        if let Some(entry) = JWKS_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(jwks_uri)
+        {
             if entry.at.elapsed() < CACHE_TTL {
                 return Ok(entry.value.clone());
             }
@@ -102,7 +113,9 @@ pub async fn fetch_jwks(
         .await
         .map_err(|_| ApiError::bad_request("Failed to fetch the provider's JWKS."))?;
     if !res.status().is_success() {
-        return Err(ApiError::bad_request("Failed to fetch the provider's JWKS."));
+        return Err(ApiError::bad_request(
+            "Failed to fetch the provider's JWKS.",
+        ));
     }
     let body = res.bytes().await.unwrap_or_default().to_vec();
     JWKS_CACHE.lock().unwrap_or_else(|e| e.into_inner()).insert(
