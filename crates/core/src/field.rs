@@ -716,13 +716,16 @@ mod tests {
 
     #[test]
     fn searchable_flat_option_round_trips_and_defaults_to_false() {
-        let mut f = Field::new("title", FieldKind::Text {
-            min: 0,
-            max: 0,
-            pattern: String::new(),
-            autogenerate_pattern: String::new(),
-            primary_key: false,
-        });
+        let mut f = Field::new(
+            "title",
+            FieldKind::Text {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                autogenerate_pattern: String::new(),
+                primary_key: false,
+            },
+        );
         assert!(!f.searchable);
         assert!(!f.is_searchable());
         f.searchable = true;
@@ -751,7 +754,14 @@ mod tests {
 
         // `is_searchable()` refuses to trust a stray `searchable: true`
         // on a type that can't support it.
-        let mut f = Field::new("count", FieldKind::Number { min: None, max: None, only_int: false });
+        let mut f = Field::new(
+            "count",
+            FieldKind::Number {
+                min: None,
+                max: None,
+                only_int: false,
+            },
+        );
         f.searchable = true;
         assert!(!f.is_searchable());
     }

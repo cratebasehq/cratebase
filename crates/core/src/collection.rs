@@ -364,6 +364,15 @@ pub struct Collection {
     /// collection save.
     #[serde(default)]
     pub search_language: Option<String>,
+    /// The relation field (pointing at an auth collection) that names a
+    /// record's owner, for the `storage.userQuotaBytes` per-user storage
+    /// quota (`crates/server/src/quota.rs`) — quota usage is the sum of
+    /// every file field's stored size across this collection's records
+    /// whose `ownerField` equals the uploading auth record's id. `None`
+    /// (the default) means this collection never counts toward or is
+    /// gated by the quota, whatever `userQuotaBytes` is set to.
+    #[serde(default)]
+    pub owner_field: Option<String>,
     /// Auth collections only.
     #[serde(flatten)]
     pub auth: AuthOptions,
@@ -387,6 +396,7 @@ impl Default for Collection {
             updated: DateTime::default(),
             view_query: String::new(),
             search_language: None,
+            owner_field: None,
             auth: AuthOptions::default(),
         }
     }
@@ -599,6 +609,7 @@ impl Collection {
         m.insert("updated".into(), json!(self.updated));
         m.insert("system".into(), json!(self.system));
         m.insert("searchLanguage".into(), json!(self.search_language));
+        m.insert("ownerField".into(), json!(self.owner_field));
         match self.collection_type {
             CollectionType::View => {
                 m.insert("viewQuery".into(), json!(self.view_query));
@@ -1727,6 +1738,20 @@ mod tests {
         assert_eq!(v["searchLanguage"], "english");
         let back: Collection = serde_json::from_value(v).unwrap();
         assert_eq!(back.search_language.as_deref(), Some("english"));
+    }
+
+    #[test]
+    fn owner_field_defaults_to_none_and_round_trips() {
+        let mut c = Collection::new("photos", CollectionType::Base);
+        assert!(c.owner_field.is_none());
+        c.owner_field = Some("owner".into());
+        let v = c.to_json();
+        assert_eq!(v["ownerField"], "owner");
+        let back: Collection = serde_json::from_value(v).unwrap();
+        assert_eq!(back.owner_field.as_deref(), Some("owner"));
+
+        let v2 = Collection::new("posts", CollectionType::Base).to_json();
+        assert!(v2["ownerField"].is_null());
     }
 
     #[test]

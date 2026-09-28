@@ -158,7 +158,10 @@ async fn presign_upload_and_claim_round_trips() {
     let record_id = presigned["recordId"].as_str().unwrap().to_string();
     let upload_url = presigned["uploadUrl"].as_str().unwrap().to_string();
     assert!(token.starts_with("CBUP_"), "{token}");
-    assert!(upload_url.starts_with("/api/files/presign-upload/"), "{upload_url}");
+    assert!(
+        upload_url.starts_with("/api/files/presign-upload/"),
+        "{upload_url}"
+    );
 
     // Upload straight to the local-storage fallback URL, no auth header:
     // the token itself is the bearer, same trust model as an S3 signature.
@@ -186,7 +189,9 @@ async fn presign_upload_and_claim_round_trips() {
     assert!(stored.starts_with("notes_"), "{stored}");
 
     let url = format!("/api/files/{collection_id}/{record_id}/{stored}");
-    let response = harness.raw(Request::get(&url).body(Body::empty()).unwrap()).await;
+    let response = harness
+        .raw(Request::get(&url).body(Body::empty()).unwrap())
+        .await;
     assert_eq!(response.status(), 200);
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     assert_eq!(&bytes[..], b"hello world");
@@ -290,7 +295,11 @@ async fn presign_token_reuse_is_rejected() {
     let record_id = presigned["recordId"].as_str().unwrap().to_string();
     let upload_url = presigned["uploadUrl"].as_str().unwrap().to_string();
     harness
-        .raw(Request::put(&upload_url).body(Body::from("hello world")).unwrap())
+        .raw(
+            Request::put(&upload_url)
+                .body(Body::from("hello world"))
+                .unwrap(),
+        )
         .await;
 
     let (status, first) = harness
@@ -337,7 +346,11 @@ async fn presign_expiry_is_enforced() {
     harness.expire_token(&token).await;
 
     let response = harness
-        .raw(Request::put(&upload_url).body(Body::from("hello world")).unwrap())
+        .raw(
+            Request::put(&upload_url)
+                .body(Body::from("hello world"))
+                .unwrap(),
+        )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
@@ -376,7 +389,11 @@ async fn sweep_removes_expired_pending_tickets_but_not_consumed_ones() {
     let token1 = presigned1["token"].as_str().unwrap().to_string();
     let upload_url1 = presigned1["uploadUrl"].as_str().unwrap().to_string();
     harness
-        .raw(Request::put(&upload_url1).body(Body::from("hello")).unwrap())
+        .raw(
+            Request::put(&upload_url1)
+                .body(Body::from("hello"))
+                .unwrap(),
+        )
         .await;
     harness.expire_token(&token1).await;
 
@@ -396,7 +413,11 @@ async fn sweep_removes_expired_pending_tickets_but_not_consumed_ones() {
     let record_id2 = presigned2["recordId"].as_str().unwrap().to_string();
     let upload_url2 = presigned2["uploadUrl"].as_str().unwrap().to_string();
     harness
-        .raw(Request::put(&upload_url2).body(Body::from("hello world")).unwrap())
+        .raw(
+            Request::put(&upload_url2)
+                .body(Body::from("hello world"))
+                .unwrap(),
+        )
         .await;
     let (status, created) = harness
         .admin(
@@ -429,7 +450,9 @@ async fn sweep_removes_expired_pending_tickets_but_not_consumed_ones() {
         created["id"].as_str().unwrap(),
         stored
     );
-    let response = harness.raw(Request::get(&url).body(Body::empty()).unwrap()).await;
+    let response = harness
+        .raw(Request::get(&url).body(Body::empty()).unwrap())
+        .await;
     assert_eq!(response.status(), 200);
 }
 

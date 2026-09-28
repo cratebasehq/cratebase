@@ -51,8 +51,7 @@ use crate::routes::common;
 /// have claimed it in a create/update call.
 pub const TTL_SECONDS: i64 = 30 * 60;
 
-const TOKEN_ALPHABET: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const TOKEN_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const TOKEN_RANDOM_LEN: usize = 32;
 /// Uppercase and never produced by [`common::stored_file_name`] (always
 /// lowercase), so a file field's string value is unambiguous.
@@ -114,7 +113,11 @@ pub struct PresignResponse {
 /// [`rules::check_rule_against_row`] wants — `record.data()` minus the
 /// `IndexMap`/`serde_json::Map` type difference.
 fn row_map(record: &cratebase_core::Record) -> Map<String, Value> {
-    record.data().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    record
+        .data()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 /// Core logic behind `POST /api/files/presign`, split out so it takes

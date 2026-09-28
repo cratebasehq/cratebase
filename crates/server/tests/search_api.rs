@@ -135,7 +135,12 @@ async fn search_query_param_matches_and_ranks_by_relevance() {
         .await;
 
     let (status, page) = harness
-        .as_user("GET", "/api/collections/posts/records?search=treasure", None, None)
+        .as_user(
+            "GET",
+            "/api/collections/posts/records?search=treasure",
+            None,
+            None,
+        )
         .await;
     assert_eq!(status, 200, "{page}");
     assert_eq!(page["totalItems"], 2);
@@ -171,7 +176,12 @@ async fn search_composes_with_filter_and_the_list_rule() {
     // asking (no auth check in the rule itself here, just a data
     // filter) — the search still only ever sees that row.
     let (status, page) = harness
-        .as_user("GET", "/api/collections/posts/records?search=treasure", None, None)
+        .as_user(
+            "GET",
+            "/api/collections/posts/records?search=treasure",
+            None,
+            None,
+        )
         .await;
     assert_eq!(status, 200, "{page}");
     assert_eq!(page["totalItems"], 1);
@@ -245,7 +255,12 @@ async fn search_on_a_collection_with_no_searchable_fields_is_a_clean_400() {
         }))
         .await;
     let (status, body) = harness
-        .as_user("GET", "/api/collections/plain/records?search=anything", None, None)
+        .as_user(
+            "GET",
+            "/api/collections/plain/records?search=anything",
+            None,
+            None,
+        )
         .await;
     assert_eq!(status, 400, "{body}");
 }

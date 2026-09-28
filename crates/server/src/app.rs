@@ -915,14 +915,13 @@ impl App {
             });
 
         let app = self.clone();
-        let _ = self.inner.cron.add(
-            cron::JOB_PENDING_UPLOADS_SWEEP,
-            "0 * * * *",
-            move || {
+        let _ = self
+            .inner
+            .cron
+            .add(cron::JOB_PENDING_UPLOADS_SWEEP, "0 * * * *", move || {
                 let app = app.clone();
                 async move { crate::presign::sweep_expired(&app).await }
-            },
-        );
+            });
 
         let app = self.clone();
         let _ = self
