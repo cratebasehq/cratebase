@@ -261,6 +261,35 @@ first real tagged release.
   sees the parameters its own placeholders need. Found and fixed while
   building the `search_nearby` MCP tool above, whose happy path exercises
   exactly this shape.
+- **`$mails.send` deadlocked when called from `onRecordAfterCreateSuccess`/
+  `onRecordAfterUpdateSuccess`** — exactly the pattern the docs recommend
+  ("send a welcome email after signup"). Those hooks' `e.app` is a `TxApp`
+  bound to the write's still-open transaction; `$mails.send` wrote its
+  `_mailLog` row through the plain connection pool, which contends for the
+  single SQLite writer connection that transaction already holds — the
+  same task waiting forever on a lock only itself could release.
+  `_emailTriggers` and `_webhooks` had the same transaction-vs-plain-pool
+  mismatch in their reactive dispatch, minus the deadlock (they already
+  bypassed the open transaction), but could still fire for a write that
+  later rolled back. All three now queue their DB write and delivery/
+  network I/O behind a new `TxApp::after_commit` (`crates/server/src/
+  app.rs`), which runs the queued work, detached, only once the
+  triggering transaction actually commits, and drops it unrun on
+  rollback — so `$mails.send` (and `_emailTriggers`/webhook dispatch) from
+  an after-success hook never deadlocks, never contends for the writer
+  lock, and never sends for a write that didn't happen.
+- **A flaky `routes::functions` test** (`missing_hooks_dir_returns_empty_lists`)
+  — and, more importantly, every other test built the same way — passed a
+  bare `tempfile::tempdir()` root straight to `Config::memory`/
+  `Config::for_data_dir`. `Config`'s `hooks_dir`/`migrations_dir` are
+  *siblings* of the data dir (`<data_dir>/../pb_hooks`), so a `data_dir`
+  that *is* the tempdir root resolves those siblings one level up, outside
+  the tempdir entirely — into the real, shared OS temp directory, where
+  they collide with every other test (and every other run) computing the
+  same path. Fixed at the root: every affected test now nests the data
+  dir under the tempdir (`dir.path().join("pb_data")`), so `pb_hooks`/
+  `pb_migrations` land inside the tempdir like everything else the test
+  creates, instead of leaking into `/tmp`.
 
 ## 0.3.0 — 2026-09-25
 
