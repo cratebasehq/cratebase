@@ -31,7 +31,7 @@ const TOKEN: &str = "test-install-token-0123456789";
 fn memory_config(dir: &std::path::Path) -> Config {
     Config {
         setup_token: Some(TOKEN.to_string()),
-        ..Config::memory(dir)
+        ..Config::memory(dir.join("pb_data"))
     }
 }
 
@@ -283,7 +283,7 @@ async fn concurrent_setup_calls_create_exactly_one_superuser_on_postgres() {
         log_requests: false,
         secret: "test-secret-0123456789".into(),
         setup_token: Some(TOKEN.to_string()),
-        ..Config::for_data_dir(dir.path())
+        ..Config::for_data_dir(dir.path().join("pb_data"))
     });
     app.bootstrap().await.expect("bootstrap");
 

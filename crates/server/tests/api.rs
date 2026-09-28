@@ -38,7 +38,7 @@ impl Harness {
     /// test can register hooks and plugins that boot with it.
     async fn with(tweak: impl FnOnce(&App)) -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path()));
+        let app = App::new(Config::memory(dir.path().join("pb_data")));
         tweak(&app);
         app.bootstrap().await.expect("bootstrap");
         let id = app
@@ -686,7 +686,7 @@ async fn the_auto_backup_job_follows_the_settings() {
 async fn backups_create_list_download_and_delete() {
     let dir = tempfile::tempdir().unwrap();
     // A real file-backed database, so there is something to snapshot.
-    let mut config = Config::for_data_dir(dir.path());
+    let mut config = Config::for_data_dir(dir.path().join("pb_data"));
     config.secret = "test-secret-0123456789".into();
     let app = App::new(config);
     app.bootstrap().await.unwrap();
@@ -924,7 +924,7 @@ async fn backups_create_list_download_and_delete() {
     )
     .await;
     assert_eq!(status, 200);
-    assert!(dir.path().join("data.db").exists());
+    assert!(dir.path().join("pb_data").join("data.db").exists());
 
     app.terminate(false).await;
 }
@@ -1110,7 +1110,7 @@ async fn a_spoofed_forwarded_header_cannot_dodge_the_rate_limit() {
 #[tokio::test]
 async fn the_superuser_cli_path_creates_a_usable_account() {
     let dir = tempfile::tempdir().unwrap();
-    let app = App::new(Config::memory(dir.path()));
+    let app = App::new(Config::memory(dir.path().join("pb_data")));
     app.bootstrap().await.unwrap();
 
     let id = app

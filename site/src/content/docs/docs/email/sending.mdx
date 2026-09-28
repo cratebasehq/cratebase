@@ -70,6 +70,20 @@ onRecordAfterCreateSuccess((e) => {
 }, "users");
 ```
 
+Called from a record-write hook like this — `onRecordAfterCreateSuccess`/
+`onRecordAfterUpdateSuccess`/`onRecordValidate`/etc., where `e.app`'s
+writes still join the triggering write's own transaction — `$mails.send`
+detects that and defers its `_mailLog` write and the actual delivery
+until that transaction commits: the call still validates its input and
+returns `{ id, status: "queued" }` immediately, but the mail only ever
+goes out (and only ever gets logged) once the record write it was called
+from actually succeeds. A hook that throws afterwards and rolls back the
+write also cancels the send — nothing is delivered for a record that was
+never really created. Outside of a hook (a route, a `cronAdd` job, `POST
+/api/mails/send`) there is no open transaction to defer past, so the call
+behaves exactly like the REST/SDK examples above: it logs and delivers (or
+enqueues) inline and returns the real outcome.
+
 ## Delivery
 
 If `settings.queue.enabled`, a send enqueues onto the durable job queue

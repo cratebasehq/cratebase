@@ -122,18 +122,16 @@ function notifyAssignment(e, assigneeId) {
     // `e.app`, not `$app`, is what makes this transactional.
     e.app.save(notification);
 
-    // Deliberately `$app.newMailClient().send(...)`, not `$mails.send(...)`,
-    // here: this hook runs inside the card write's *own* still-open
-    // transaction (`e.app`, see the comment on `e.app.save(notification)`
-    // just above) — `$mails.send` writes its own `_mailLog` row through
-    // the ordinary connection pool before delivering, which would try to
-    // grab the single SQLite writer this transaction is still holding and
-    // deadlock (live-verified building this example: card creation with
-    // an assignee hung until timeout). `$mails.send` is the one to prefer
-    // whenever there's no open transaction to worry about — see the cron
-    // job below, which uses it.
-    const mail = $app.newMailClient();
-    mail.send({
+    // `$mails.send`, same as the cron job below: this hook runs inside
+    // the card write's *own* still-open transaction (`e.app`, see the
+    // comment on `e.app.save(notification)` just above), but `$mails.send`
+    // detects that and defers its `_mailLog` write and the actual
+    // delivery until the transaction commits (`crates/server/src/
+    // app.rs`'s `TxApp::after_commit`), instead of contending for the
+    // single SQLite writer connection that transaction is still holding.
+    // A card that never actually commits (a later handler on this same
+    // event throws) never sends the mail either.
+    $mails.send({
       to: [{ address: assignee.getString("email"), name: assignee.getString("name") }],
       subject: 'You were assigned: ' + e.record.getString("title"),
       text:
@@ -211,14 +209,15 @@ cronAdd(OVERDUE_CRON_ID, OVERDUE_CRON_EXPR, () => {
       });
       $app.save(notification);
 
-      // `$mails.send` (not `$app.newMailClient().send`, see the comment
-      // on the assignment hook above): a `cronAdd` callback has no open
-      // record-write transaction to deadlock against, so this is exactly
-      // where to reach for the real pipeline — `_mailLog`, the send
-      // queue when enabled, and a real `_emailTemplates` template
-      // (`card-overdue`, seeded in seed.json, editable from the
-      // dashboard's Settings → Email templates with no redeploy) instead
-      // of a hand-built subject/html string.
+      // `$mails.send`, same as the assignment hook above, and for the
+      // same reason (the real pipeline: `_mailLog`, the send queue when
+      // enabled). A `cronAdd` callback has no open record-write
+      // transaction at all, so there's nothing here to defer — this one
+      // uses a real `_emailTemplates` template (`card-overdue`, seeded in
+      // seed.json, editable from the dashboard's Settings → Email
+      // templates with no redeploy) instead of a hand-built subject/html
+      // string, which the assignment hook could do too but doesn't need
+      // to for this example.
       $mails.send({
         to: [{ address: assignee.getString("email"), name: assignee.getString("name") }],
         template: "card-overdue",

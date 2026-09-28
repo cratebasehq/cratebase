@@ -11,10 +11,15 @@ for custom HTTP endpoints, both backed by an embedded QuickJS runtime
 file define its own cron jobs alongside the dashboard's SQL-based [cron
 jobs](/docs/extending/cron-jobs/). A hook's own `$app.save`/`$app.delete`
 inside a record-write-path hook joins that write's own transaction, so a
-hook that aborts rolls the triggering write back too. No `pb_hooks/`
-directory, or an empty one, is a complete no-op outside `--dev` (see
-below). `GET /api/functions` gives a read-only view of what's currently
-registered.
+hook that aborts rolls the triggering write back too. [`$mails.send`](/docs/email/sending/)
+called from the same kind of hook (e.g. `onRecordAfterCreateSuccess`) is
+transaction-aware too, but the other way around: rather than joining the
+open transaction, it defers its `_mailLog` write and the actual delivery
+until that transaction commits, so the send neither blocks on nor
+competes with it, and never happens at all if the write rolls back. No
+`pb_hooks/` directory, or an empty one, is a complete no-op outside
+`--dev` (see below). `GET /api/functions` gives a read-only view of what's
+currently registered.
 
 **No restart-to-reload, but only in `--dev`/`CB_DEV=true`.** A dev
 server started with `--dev` always runs the JS runtime, even against an

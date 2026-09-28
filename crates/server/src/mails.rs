@@ -235,6 +235,22 @@ pub struct SendOutcome {
 /// Validates, renders, logs and delivers `input` — see the module doc for
 /// the delivery/log-status contract.
 pub async fn send(app: &App, input: SendInput) -> Result<SendOutcome, AppError> {
+    let template = input.template.clone();
+    let message = prepare(app, input).await?;
+    finish(app, None, message, template.as_deref()).await
+}
+
+/// Validates and renders `input` into a ready-to-send [`Message`] —
+/// everything `send` does *before* it touches `_mailLog` or attempts
+/// delivery. Split out so a caller running inside an open transaction
+/// (`jsvm_host::mails_send`, when `e.app` is a [`crate::app::TxApp`]) can
+/// surface a validation/template error synchronously — this part only
+/// ever reads (template lookup is a `SELECT`, harmless under an open
+/// transaction: SQLite readers don't contend for the writer lock a
+/// transaction holds) — while deferring the actual write and delivery in
+/// [`finish`] to after the transaction commits. See the module doc and
+/// [`crate::app::TxApp::after_commit`].
+pub(crate) async fn prepare(app: &App, input: SendInput) -> Result<Message, AppError> {
     validate(&input, true)?;
     let rendered = render(app, &input).await?;
 
@@ -256,8 +272,22 @@ pub async fn send(app: &App, input: SendInput) -> Result<SendOutcome, AppError> 
     if let Some(reply_to) = input.reply_to.as_ref().filter(|r| !r.is_empty()) {
         message.headers.push(("Reply-To".into(), reply_to.clone()));
     }
+    Ok(message)
+}
 
-    let log_id = create_log_row(app, &message, input.template.as_deref()).await?;
+/// Logs and delivers an already-[`prepare`]d `message` — see the module
+/// doc for the delivery/log-status contract. `id`, when given, becomes
+/// the `_mailLog` row's id instead of a freshly generated one, so a
+/// caller that already handed the id back to its own caller (again,
+/// `jsvm_host::mails_send`'s deferred path) gets a row that actually
+/// matches it once this runs.
+pub(crate) async fn finish(
+    app: &App,
+    id: Option<String>,
+    message: Message,
+    template: Option<&str>,
+) -> Result<SendOutcome, AppError> {
+    let log_id = create_log_row(app, id, &message, template).await?;
 
     if app.settings().queue.enabled {
         let payload = json!({ "logId": log_id, "message": message });
@@ -293,9 +323,12 @@ pub async fn send(app: &App, input: SendInput) -> Result<SendOutcome, AppError> 
 }
 
 /// Inserts a `_mailLog` row, `status: "queued"`, before any delivery is
-/// attempted. Returns the new row's id.
+/// attempted. Returns the new row's id — the freshly generated one,
+/// unless `id` was given (see [`finish`], whose deferred caller already
+/// handed this id back to its own caller before this ever runs).
 pub(crate) async fn create_log_row(
     app: &App,
+    id: Option<String>,
     message: &Message,
     template: Option<&str>,
 ) -> Result<String, AppError> {
@@ -308,6 +341,9 @@ pub(crate) async fn create_log_row(
         .map(|(address, name)| json!({ "address": address, "name": name }))
         .collect();
     let mut record = Record::new(collection);
+    if let Some(id) = id {
+        record.set_id(id);
+    }
     record.set("to", Value::Array(to));
     record.set("subject", Value::String(message.subject.clone()));
     record.set(

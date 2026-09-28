@@ -112,7 +112,7 @@ async fn migrated_user_gets_full_session_lifecycle_and_ban_enforcement() {
     //    `Config::memory` it writes an actual sqlite file, matching a
     //    real `--dir` run.
     let cb_dir = tempfile::tempdir().unwrap();
-    let app = App::new(Config::for_data_dir(cb_dir.path()));
+    let app = App::new(Config::for_data_dir(cb_dir.path().join("pb_data")));
     app.bootstrap().await.expect("bootstrap");
 
     // `_sessions`/`_bans` exist immediately after bootstrap, before the

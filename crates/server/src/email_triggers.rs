@@ -59,6 +59,20 @@
 //! Everything else that goes wrong (a database error loading triggers, a
 //! malformed `condition`) is a `tracing::warn!` with no `_mailLog` row,
 //! since no send was ever attempted.
+//!
+//! # Why dispatch waits for the triggering write's commit
+//!
+//! The reactive hooks below are ordinary `on_record_after_*_success`
+//! handlers, which means `e.app` is a [`crate::app::TxApp`] bound to the
+//! *triggering* write's own transaction — still open when the handler
+//! runs (see `crate::mails`'s module doc for the mechanism this shares
+//! with `$mails.send`, and `crate::webhooks` for the same fix applied
+//! there). [`dispatch_after_success`] therefore never touches the
+//! database inline: it queues the actual lookup-and-send behind
+//! [`crate::app::TxApp::after_commit`], so (1) looking up `_emailTriggers`
+//! or writing a `_mailLog` row can never contend for the writer lock that
+//! transaction is still holding, and (2) a trigger never fires for a
+//! write that ends up rolling back.
 
 use serde_json::{Map, Value};
 
@@ -78,33 +92,33 @@ const EVENTS: [&str; 3] = ["create", "update", "delete"];
 /// [`crate::app::App::bootstrap`].
 pub fn bind_hooks(app: &App) {
     for event in EVENTS {
-        let a = app.clone();
         let hook = match event {
             "create" => &app.hooks().on_record_after_create_success,
             "update" => &app.hooks().on_record_after_update_success,
             _ => &app.hooks().on_record_after_delete_success,
         };
         hook.bind(Handler::new(move |e: &mut RecordEvent| {
-            dispatch_after_success(&a, event, e);
+            dispatch_after_success(event, e);
             e.next()
         }));
     }
 }
 
-/// Snapshot what the hook needs from `e` and spawn the rest of the work
-/// — see the module doc's "Failure handling"/fire-and-forget reasoning.
-fn dispatch_after_success(app: &App, event: &str, e: &RecordEvent) {
+/// Snapshot what the hook needs from `e` and queue the rest of the work
+/// behind the triggering write's own commit — see the module doc's "Why
+/// dispatch waits for the triggering write's commit".
+fn dispatch_after_success(event: &str, e: &RecordEvent) {
     if e.collection.name == COLLECTION || e.collection.id == COLLECTION {
         return;
     }
-    let app = app.clone();
+    let app = e.app.app().clone();
     let event = event.to_string();
     let collection_name = e.collection.name.clone();
     let collection_id = e.collection.id.clone();
     let record_json = e.record.to_json(Default::default());
-    tokio::spawn(async move {
+    e.app.after_commit(Box::pin(async move {
         dispatch(app, event, collection_name, collection_id, record_json).await;
-    });
+    }));
 }
 
 /// Load every enabled `_emailTriggers` row targeting `collection_name`/
@@ -269,7 +283,7 @@ async fn log_trigger_failure(app: &App, template: &str, error: &str) {
         cc: vec![],
         bcc: vec![],
     };
-    match mails::create_log_row(app, &message, Some(template)).await {
+    match mails::create_log_row(app, None, &message, Some(template)).await {
         Ok(log_id) => {
             mails::update_log_status(app, &log_id, mails::STATUS_FAILED, Some(error)).await;
         }
@@ -287,7 +301,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path()));
+        let app = App::new(Config::memory(dir.path().join("pb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }

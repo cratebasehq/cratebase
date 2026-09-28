@@ -26,7 +26,7 @@ fn node_config(url: &str, dir: &std::path::Path) -> Config {
         database_url: url.to_string(),
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir)
+        ..Config::for_data_dir(dir.join("pb_data"))
     }
 }
 
@@ -88,7 +88,7 @@ async fn extensions_are_postgres_only_on_sqlite() {
         database_url: "sqlite::memory:".into(),
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir.path())
+        ..Config::for_data_dir(dir.path().join("pb_data"))
     });
     app.bootstrap().await.expect("bootstrap");
     let token = owner_token(&app).await;
