@@ -59,7 +59,7 @@ const BAD_PAYLOAD: &str = "Failed to load the submitted data due to invalid form
 /// `cratebase_auth::apple_client_secret`) is exactly as sensitive as a
 /// `clientSecret`, just stored in `extra` instead because Apple has no
 /// static client secret at all.
-fn redact_oauth2_secrets(mut value: Value) -> Value {
+pub(crate) fn redact_oauth2_secrets(mut value: Value) -> Value {
     if let Some(providers) = value
         .get_mut("oauth2")
         .and_then(|o| o.get_mut("providers"))

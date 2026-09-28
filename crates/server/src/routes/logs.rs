@@ -35,17 +35,19 @@ pub fn router() -> Router<App> {
         .route("/logs/{id}", get(view))
 }
 
+/// `pub(crate)` so the MCP `query_logs` tool (`crate::mcp`) can build one
+/// directly and call [`list`] rather than reimplementing pagination/sort.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ListQuery {
+pub(crate) struct ListQuery {
     #[serde(default)]
-    page: Option<i64>,
+    pub(crate) page: Option<i64>,
     #[serde(default)]
-    per_page: Option<i64>,
+    pub(crate) per_page: Option<i64>,
     #[serde(default)]
-    filter: Option<String>,
+    pub(crate) filter: Option<String>,
     #[serde(default)]
-    sort: Option<String>,
+    pub(crate) sort: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -56,7 +58,7 @@ struct StatsQuery {
     hours: Option<i64>,
 }
 
-async fn list(
+pub(crate) async fn list(
     State(app): State<App>,
     _su: RequireSuperuser,
     ApiQuery(query): ApiQuery<ListQuery>,
