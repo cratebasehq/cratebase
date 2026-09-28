@@ -9,6 +9,7 @@ repository.workspace = true
 cratebase-core.workspace = true
 cratebase-filter.workspace = true
 cratebase-auth.workspace = true
+cratebase-mailer.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

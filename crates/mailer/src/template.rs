@@ -321,6 +321,21 @@ pub fn otp_code_block(otp_placeholder: &str) -> String {
     )
 }
 
+/// A boxed callout for a short piece of context that should stand out
+/// from the surrounding paragraph copy without being as loud as
+/// [`otp_code_block`] — used by the login-alert seed template for
+/// `{{alertInfo}}` (device/location/time). `inner_html` is inserted
+/// raw (it is caller-built content, typically itself a
+/// `render_mustache`d value or a literal `{{path}}` token — escaping
+/// happens once, at whichever layer actually holds the real string).
+pub fn info_box(inner_html: &str) -> String {
+    format!(
+        r#"<div class="cb-box" style="background:#f4f4f5;border-radius:10px;padding:16px 20px;margin:20px 0;">
+  <p class="cb-box-text" style="margin:0;font-size:14px;line-height:22px;color:#3f3f46;">{inner_html}</p>
+</div>"#
+    )
+}
+
 /// One `_emailTemplates` row's renderable content: `{{var}}`-style
 /// (dotted paths, HTML-escaped by default, `{{{raw}}}` for unescaped),
 /// distinct from the legacy `{PLACEHOLDER}` syntax [`render_template`]
@@ -683,6 +698,27 @@ mod tests {
             text.contains("https://acme.test/confirm/abc123"),
             "plain-text alternative keeps the real URL via the fallback paragraph"
         );
+    }
+
+    #[test]
+    fn info_box_wraps_content_in_a_dark_mode_aware_box() {
+        let html = info_box("{{alertInfo}}");
+        assert!(html.contains("cb-box"));
+        assert!(html.contains("{{alertInfo}}"));
+    }
+
+    #[test]
+    fn info_box_round_trips_through_render_email_template() {
+        let html_body = info_box("{{alertInfo}}");
+        let doc = TemplateDoc {
+            subject: "S",
+            html: &html_body,
+            text: "",
+            layout: false,
+        };
+        let data = serde_json::json!({ "alertInfo": "Chrome on macOS, San Francisco" });
+        let (_, html, _) = render_email_template(&doc, &data, &Meta::default());
+        assert!(html.contains("Chrome on macOS, San Francisco"));
     }
 
     #[test]
