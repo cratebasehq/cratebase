@@ -527,6 +527,15 @@ declare const $notify: {
   send(options: NotifySendOptions): NotifySendResult;
 };
 
+declare const $realtime: {
+  /** Broadcast `{event, data}` to every current subscriber of
+   * `channel:<channel>`, local and cross-node alike. The channel's
+   * `_channels` row (`publishRule`) gates this exactly as it would an
+   * HTTP `POST /api/realtime/channels/{name}/publish` — no matching row,
+   * or a rule that rejects the call, throws. */
+  publish(channel: string, event: string, data?: unknown): void;
+};
+
 declare const $filesystem: {
   fileFromPath(path: string, name?: string): FileMarker;
   fileFromBytes(bytes: number[] | Uint8Array | string, name?: string): FileMarker;
