@@ -30,6 +30,10 @@ pub type JobFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send
 pub const JOB_DB_OPTIMIZE: &str = "__pbDBOptimize__";
 pub const JOB_MFA_CLEANUP: &str = "__pbMFACleanup__";
 pub const JOB_OTP_CLEANUP: &str = "__pbOTPCleanup__";
+/// Purges `_totps` rows still `pending` (never confirmed) an hour after
+/// `.../totp/setup` created them — a confirmed row is never touched by
+/// this job, only an abandoned setup attempt.
+pub const JOB_TOTP_CLEANUP: &str = "__cbTOTPCleanup__";
 pub const JOB_LOGS_CLEANUP: &str = "__pbLogsCleanup__";
 /// The scheduled backup. Unlike the four above it is only registered once
 /// `settings.backups.cron` is non-empty, so `GET /api/crons` lists it only

@@ -853,6 +853,31 @@ impl App {
         let _ = self
             .inner
             .cron
+            .add(cron::JOB_TOTP_CLEANUP, "0 * * * *", move || {
+                let app = app.clone();
+                async move {
+                    // A pending (unconfirmed) TOTP setup abandoned for
+                    // over an hour is dead weight, not a live 2FA
+                    // secret — never a *confirmed* row, whose lifetime
+                    // is the record's own.
+                    let cutoff = cratebase_core::DateTime::from_utc(
+                        chrono::Utc::now() - chrono::Duration::hours(1),
+                    );
+                    let sql = r#"DELETE FROM "_totps" WHERE "confirmed" = 0 AND "created" < $1"#;
+                    if let Err(e) = app
+                        .db()
+                        .execute(sql, &[Sql::Text(cutoff.to_pb_string())])
+                        .await
+                    {
+                        tracing::warn!(error = %e, "totp cleanup failed");
+                    }
+                }
+            });
+
+        let app = self.clone();
+        let _ = self
+            .inner
+            .cron
             .add(cron::JOB_LOGS_CLEANUP, "0 */6 * * *", move || {
                 let app = app.clone();
                 async move {
