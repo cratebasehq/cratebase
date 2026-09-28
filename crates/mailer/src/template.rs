@@ -142,35 +142,127 @@ pub fn render_template(template: &EmailTemplate, vars: &[(&str, &str)]) -> (Stri
     (subject, html)
 }
 
-/// [`DEFAULT_LAYOUT`], but with the `.btn` accent color swapped for
-/// `meta.brand_color` (when set) and an optional logo (`meta.logo_url`)
-/// inserted above `content_html`. Used for `_emailTemplates` rows with
+/// Fallback CTA/accent color when `meta.brand_color` is blank — a near-
+/// black neutral that reads fine on both a white and a dark card.
+pub const DEFAULT_BRAND_COLOR: &str = "#171717";
+
+/// Soft page background the branded card sits on (light mode).
+const CARD_PAGE_BG: &str = "#f4f4f5";
+
+/// The world-class, table-based outer shell used for `_emailTemplates`
+/// rows with `layout: true` (via [`render_email_template`]): a
+/// centered ~600px card on a soft page background, a logo or text
+/// wordmark header, a muted footer, mobile padding, and a
+/// `prefers-color-scheme: dark` stylesheet with `!important` overrides
+/// on a handful of `cb-*` classes so per-template content (headings,
+/// body copy, the CTA button's plain-text fallback, boxed info/OTP
+/// blocks — see [`render_email_template`]'s callers in
+/// `crates/db/src/migrations.rs`) stays legible in both themes without
+/// relying on JS or external stylesheets. `{HEADER}`, `{CONTENT}` and
+/// `{FOOTER_APP}` are the only substitution points — every other brace
+/// in this string is literal CSS/VML and is never touched by
+/// `str::replacen`. The five legacy per-collection auth templates keep
+/// using the unbranded [`DEFAULT_LAYOUT`] via [`render_template`] — see
+/// that function's own doc comment for why the two shells coexist.
+const BRANDED_LAYOUT: &str = r#"<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<!--[if mso]>
+<noscript><xml><o:OfficeDocumentSettings><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
+<![endif]-->
+<style>
+  body, table, td, a { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  body { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+  a { text-decoration: none; }
+  @media only screen and (max-width: 620px) {
+    .cb-container { width: 100% !important; }
+    .cb-px { padding-left: 20px !important; padding-right: 20px !important; }
+    .cb-card { border-radius: 0 !important; }
+  }
+  @media (prefers-color-scheme: dark) {
+    .cb-bg { background: #0b0b0c !important; }
+    .cb-card { background: #17171a !important; border-color: #2a2a2e !important; }
+    .cb-text { color: #e4e4e7 !important; }
+    .cb-heading { color: #fafafa !important; }
+    .cb-muted { color: #9a9aa1 !important; }
+    .cb-box { background: #232326 !important; }
+    .cb-box-text { color: #d4d4d8 !important; }
+    .cb-otp-code { color: #f4f4f5 !important; }
+    .cb-fallback-link { color: #c4c4c9 !important; }
+  }
+</style>
+</head>
+<body class="cb-bg" style="margin:0;padding:0;background:{PAGE_BG};">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="cb-bg" style="background:{PAGE_BG};">
+  <tr>
+    <td align="center" style="padding:40px 16px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" class="cb-container" style="width:600px;max-width:600px;">
+        <tr>
+          <td align="center" class="cb-px" style="padding:0 8px 24px;">{HEADER}</td>
+        </tr>
+        <tr>
+          <td class="cb-card cb-px" style="background:#ffffff;border:1px solid #e5e5e7;border-radius:12px;padding:40px;">
+            <div class="cb-text" style="color:#171717;font-size:15px;line-height:24px;">
+{CONTENT}
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" class="cb-px" style="padding:24px 8px 0;">
+            <p class="cb-muted" style="margin:0;color:#8a8a90;font-size:12px;line-height:18px;">{FOOTER_APP} &middot; you're receiving this because you have an account with {FOOTER_APP}.</p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>
+"#;
+
+/// [`BRANDED_LAYOUT`] with `meta`'s logo (or a text wordmark fallback
+/// when no `logo_url` is set) inserted as the header, and the footer's
+/// app name filled in. Used for `_emailTemplates` rows with
 /// `layout: true`; the five legacy per-collection auth templates keep
 /// using the unbranded [`DEFAULT_LAYOUT`] via [`render_template`].
+///
+/// The CTA button's accent color is *not* handled here — it's a
+/// `{{brandColor}}` mustache built-in (see [`render_email_template`])
+/// that per-template content interpolates itself, since not every
+/// template has a button and the layout has no way to know.
 pub fn render_layout(content_html: &str, meta: &Meta) -> String {
-    let accent = meta.brand_color.trim();
-    let layout = if accent.is_empty() {
-        DEFAULT_LAYOUT.to_string()
-    } else {
-        // This exact string appears exactly once in `DEFAULT_LAYOUT`, in
-        // the `.btn` rule — the body's own `color: #16161a;` is left
-        // alone so ordinary text doesn't turn into the brand color.
-        DEFAULT_LAYOUT.replace(
-            "background: #16161a !important;",
-            &format!("background: {accent} !important;"),
-        )
-    };
+    let app_name = meta.app_name.trim();
     let logo_url = meta.logo_url.trim();
-    let logo = if logo_url.is_empty() {
-        String::new()
-    } else {
+    let header = if !logo_url.is_empty() {
         format!(
-            "<p style=\"text-align:center;margin:0 0 20px;\"><img src=\"{}\" alt=\"{}\" style=\"max-height:40px;border:0;\"></p>\n",
+            r#"<img src="{}" alt="{}" height="32" style="display:block;height:32px;width:auto;border:0;outline:none;text-decoration:none;margin:0 auto;">"#,
             escape_html(logo_url),
-            escape_html(&meta.app_name),
+            escape_html(app_name),
         )
+    } else if !app_name.is_empty() {
+        format!(
+            r#"<span class="cb-heading" style="font-size:18px;font-weight:700;color:#111827;letter-spacing:-0.01em;">{}</span>"#,
+            escape_html(app_name),
+        )
+    } else {
+        String::new()
     };
-    layout.replacen("{CONTENT}", &format!("{logo}{content_html}"), 1)
+    let footer_app = escape_html(if app_name.is_empty() {
+        "this app"
+    } else {
+        app_name
+    });
+    BRANDED_LAYOUT
+        .replace("{PAGE_BG}", CARD_PAGE_BG)
+        .replacen("{HEADER}", &header, 1)
+        .replacen("{CONTENT}", content_html, 1)
+        .replace("{FOOTER_APP}", &footer_app)
 }
 
 /// One `_emailTemplates` row's renderable content: `{{var}}`-style
@@ -189,9 +281,13 @@ pub struct TemplateDoc<'a> {
 }
 
 /// Renders a [`TemplateDoc`] against `data`, with `{{appName}}`/
-/// `{{appUrl}}` always available (from `meta`, overriding any same-named
-/// key in `data` — they are built-ins, not caller data). Returns
-/// `(subject, html, text)`.
+/// `{{appUrl}}`/`{{brandColor}}` always available (from `meta`,
+/// overriding any same-named key in `data` — they are built-ins, not
+/// caller data). `{{brandColor}}` is `meta.brand_color` when set, else
+/// [`DEFAULT_BRAND_COLOR`] — per-template content interpolates it
+/// directly (a CTA button, an OTP box) since [`render_layout`] itself
+/// has no per-send knowledge of which content needs an accent color.
+/// Returns `(subject, html, text)`.
 pub fn render_email_template(
     doc: &TemplateDoc,
     data: &Value,
@@ -200,6 +296,16 @@ pub fn render_email_template(
     let mut map = data.as_object().cloned().unwrap_or_default();
     map.insert("appName".into(), Value::String(meta.app_name.clone()));
     map.insert("appUrl".into(), Value::String(meta.app_url.clone()));
+    let brand_color = meta.brand_color.trim();
+    let brand_color = if brand_color.is_empty() {
+        DEFAULT_BRAND_COLOR
+    } else {
+        brand_color
+    };
+    map.insert(
+        "brandColor".into(),
+        Value::String(brand_color.to_string()),
+    );
     let data = Value::Object(map);
 
     // The subject line and the plain-text alternative are not HTML
@@ -276,28 +382,40 @@ mod tests {
     }
 
     #[test]
-    fn render_layout_swaps_brand_color_and_leaves_body_text_color_alone() {
-        let meta = Meta {
-            brand_color: "#ff0000".into(),
-            ..Meta::default()
-        };
-        let html = render_layout("<p>hi</p>", &meta);
-        assert!(html.contains("background: #ff0000 !important;"));
-        assert!(
-            html.contains("color: #16161a;"),
-            "body text color untouched"
-        );
-        assert!(html.contains("<p>hi</p>"));
-    }
-
-    #[test]
-    fn render_layout_with_no_brand_color_is_unchanged() {
+    fn render_layout_is_a_centered_card_on_a_soft_background() {
         let html = render_layout("<p>hi</p>", &Meta::default());
-        assert!(html.contains("background: #16161a !important;"));
+        assert!(html.contains("width=\"600\""), "600px-wide card table");
+        assert!(html.contains("<p>hi</p>"));
+        assert!(html.contains(CARD_PAGE_BG), "soft page background");
+        assert!(html.contains("border-radius:12px"), "rounded card");
+        assert!(!html.contains("{CONTENT}"));
+        assert!(!html.contains("{HEADER}"));
+        assert!(!html.contains("{FOOTER_APP}"));
+        assert!(!html.contains("{PAGE_BG}"));
     }
 
     #[test]
-    fn render_layout_inserts_logo_before_content() {
+    fn render_layout_is_dark_mode_friendly_with_safe_fallbacks() {
+        let html = render_layout("<p>hi</p>", &Meta::default());
+        assert!(html.contains(r#"<meta name="color-scheme" content="light dark">"#));
+        assert!(html.contains("prefers-color-scheme: dark"));
+        // Every dark override is `!important`, so a client without media
+        // query support (classic Outlook) just gets the light styles —
+        // a safe fallback, not a broken one.
+        assert!(html.contains(".cb-card { background: #17171a !important;"));
+        assert!(html.contains(".cb-text { color: #e4e4e7 !important; }"));
+    }
+
+    #[test]
+    fn render_layout_is_responsive_on_mobile() {
+        let html = render_layout("<p>hi</p>", &Meta::default());
+        assert!(html.contains("@media only screen and (max-width: 620px)"));
+        assert!(html.contains(".cb-px { padding-left: 20px !important;"));
+        assert!(html.contains(r#"<meta name="viewport" content="width=device-width, initial-scale=1">"#));
+    }
+
+    #[test]
+    fn render_layout_inserts_logo_before_content_when_set() {
         let meta = Meta {
             logo_url: "https://example.com/logo.png".into(),
             app_name: "Acme".into(),
@@ -308,6 +426,37 @@ mod tests {
         let content_pos = html.find("<p>hi</p>").unwrap();
         assert!(logo_pos < content_pos);
         assert!(html.contains("alt=\"Acme\""));
+    }
+
+    #[test]
+    fn render_layout_falls_back_to_a_text_wordmark_without_a_logo() {
+        let meta = Meta {
+            app_name: "Acme".into(),
+            ..Meta::default()
+        };
+        let html = render_layout("<p>hi</p>", &meta);
+        assert!(!html.contains("<img"), "no logo configured, no <img>");
+        assert!(html.contains(">Acme<"), "app name shown as a text wordmark");
+    }
+
+    #[test]
+    fn render_layout_footer_mentions_the_app_name() {
+        let meta = Meta {
+            app_name: "Acme".into(),
+            ..Meta::default()
+        };
+        let html = render_layout("<p>hi</p>", &meta);
+        assert_eq!(html.matches("Acme").count(), 3, "wordmark + footer x2");
+    }
+
+    #[test]
+    fn render_layout_footer_falls_back_without_an_app_name() {
+        let meta = Meta {
+            app_name: String::new(),
+            ..Meta::default()
+        };
+        let html = render_layout("<p>hi</p>", &meta);
+        assert!(html.contains("this app"));
     }
 
     #[test]
@@ -329,6 +478,32 @@ mod tests {
         assert!(html.contains("Hi &lt;Bob&gt;, visit https://acme.test"));
         assert!(html.starts_with("<!DOCTYPE html>"));
         assert_eq!(text, "Hi <Bob>, visit https://acme.test");
+    }
+
+    #[test]
+    fn render_email_template_exposes_brand_color_builtin() {
+        let doc = TemplateDoc {
+            subject: "S",
+            html: r#"<a style="background:{{brandColor}}">Go</a>"#,
+            text: "",
+            layout: false,
+        };
+        let with_brand = render_email_template(
+            &doc,
+            &serde_json::json!({}),
+            &Meta {
+                brand_color: "#ff9900".into(),
+                ..Meta::default()
+            },
+        );
+        assert!(with_brand.1.contains("background:#ff9900"));
+
+        let (_, without_brand, _) =
+            render_email_template(&doc, &serde_json::json!({}), &Meta::default());
+        assert!(
+            without_brand.contains(DEFAULT_BRAND_COLOR),
+            "falls back to the default accent when meta.brand_color is blank"
+        );
     }
 
     #[test]
