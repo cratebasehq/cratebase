@@ -535,17 +535,27 @@ impl<'a> Compiler<'a> {
             Dialect::Sqlite => {
                 let fts = quote(&format!("{}_fts", collection.table_name()));
                 let p = self.push_param(Value::String(sanitize_fts5_query(query)));
-                format!(
-                    "{table}.\"rowid\" IN (SELECT \"rowid\" FROM {fts} WHERE {fts} MATCH {p})"
-                )
+                format!("{table}.\"rowid\" IN (SELECT \"rowid\" FROM {fts} WHERE {fts} MATCH {p})")
             }
             Dialect::Postgres => {
-                let lang = self.push_param(Value::String(
-                    cratebase_core::known_ts_config(collection.search_language_or_default())
-                        .to_string(),
-                ));
+                // `lang` is a literal, not a bound parameter: it's
+                // already constrained to `known_ts_config`'s fixed
+                // allow-list (no injection surface — see that
+                // function's tests), and binding it as a `$n` parameter
+                // instead runs into a real Postgres gotcha: the server
+                // infers the parameter's *bind* type as `regconfig`
+                // straight from `websearch_to_tsquery`'s signature, and
+                // the driver can't send a plain Rust string as that
+                // type's binary wire format ("incorrect binary data
+                // format in bind parameter") — including with an
+                // explicit `$n::regconfig` cast, which does not change
+                // how the parameter itself was already described.
+                // Interpolating it, like `sync_postgres_tsvector`'s DDL
+                // already does for the same reason, sidesteps the whole
+                // problem.
+                let lang = cratebase_core::known_ts_config(collection.search_language_or_default());
                 let p = self.push_param(Value::String(query.clone()));
-                format!("{table}.\"_search\" @@ websearch_to_tsquery({lang}, {p})")
+                format!("{table}.\"_search\" @@ websearch_to_tsquery('{lang}', {p})")
             }
         };
         Ok(Term::Scalar {

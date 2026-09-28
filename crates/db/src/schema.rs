@@ -597,8 +597,13 @@ async fn sync_search_index(
     match backend {
         Backend::Sqlite => sync_sqlite_fts(ex, prev_table, &next.name, &next_names).await,
         Backend::Postgres => {
-            sync_postgres_tsvector(ex, &next.name, &next_names, next.search_language_or_default())
-                .await
+            sync_postgres_tsvector(
+                ex,
+                &next.name,
+                &next_names,
+                next.search_language_or_default(),
+            )
+            .await
         }
     }
 }
@@ -973,7 +978,11 @@ mod tests {
 
     fn searchable_posts() -> Collection {
         let mut c = posts();
-        c.fields.iter_mut().find(|f| f.name == "title").unwrap().searchable = true;
+        c.fields
+            .iter_mut()
+            .find(|f| f.name == "title")
+            .unwrap()
+            .searchable = true;
         c
     }
 
@@ -1017,9 +1026,12 @@ mod tests {
         assert_eq!(hit("hel*").await.len(), 1);
 
         // An UPDATE re-indexes.
-        e.execute("UPDATE posts SET title = 'completely different' WHERE id = 'a'", &[])
-            .await
-            .unwrap();
+        e.execute(
+            "UPDATE posts SET title = 'completely different' WHERE id = 'a'",
+            &[],
+        )
+        .await
+        .unwrap();
         assert_eq!(hit("hello").await.len(), 0);
         assert_eq!(hit("different").await.len(), 1);
 
@@ -1052,7 +1064,11 @@ mod tests {
             .await
             .unwrap();
         let mut c3 = c2.clone();
-        c3.fields.iter_mut().find(|f| f.name == "views").unwrap().required = true;
+        c3.fields
+            .iter_mut()
+            .find(|f| f.name == "views")
+            .unwrap()
+            .required = true;
         sync(&e, Backend::Sqlite, Some(&c2), &c3).await.unwrap();
         let rows = e
             .query(
@@ -1065,7 +1081,11 @@ mod tests {
 
         // Turning `searchable` back off drops the shadow table.
         let mut c4 = c3.clone();
-        c4.fields.iter_mut().find(|f| f.name == "title").unwrap().searchable = false;
+        c4.fields
+            .iter_mut()
+            .find(|f| f.name == "title")
+            .unwrap()
+            .searchable = false;
         sync(&e, Backend::Sqlite, Some(&c3), &c4).await.unwrap();
         assert!(!e.table_exists("posts_fts").await.unwrap());
     }
@@ -1075,9 +1095,12 @@ mod tests {
         let e = SqliteEngine::open_memory().unwrap();
         let c1 = searchable_posts();
         sync(&e, Backend::Sqlite, None, &c1).await.unwrap();
-        e.execute("INSERT INTO posts (id, title) VALUES ('a', 'hello world')", &[])
-            .await
-            .unwrap();
+        e.execute(
+            "INSERT INTO posts (id, title) VALUES ('a', 'hello world')",
+            &[],
+        )
+        .await
+        .unwrap();
 
         let mut c2 = c1.clone();
         c2.name = "articles".into();

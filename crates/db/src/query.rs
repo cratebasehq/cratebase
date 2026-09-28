@@ -9,7 +9,9 @@
 //! multiplies the driving row (PocketBase does exactly the same).
 
 use cratebase_core::{codes, Collection, FieldError};
-use cratebase_filter::{CompareOp, CompiledFilter, Dialect, Expr, FilterError, Join, Literal, Operand};
+use cratebase_filter::{
+    CompareOp, CompiledFilter, Dialect, Expr, FilterError, Join, Literal, Operand,
+};
 use serde_json::Value;
 
 use crate::context::CollectionResolver;
@@ -303,12 +305,15 @@ pub fn search_relevance_order_by(
             )
         }
         Dialect::Postgres => {
+            // `lang` is interpolated as a literal, not bound as a
+            // parameter — see `cratebase_filter::compiler::resolve_search`'s
+            // doc comment for why binding it hits a real Postgres
+            // parameter-type-inference gotcha with `websearch_to_tsquery`.
             let lang = cratebase_core::known_ts_config(root.search_language_or_default());
-            let lang_p = format!("${}", param_offset + 1);
-            let q_p = format!("${}", param_offset + 2);
+            let q_p = format!("${}", param_offset + 1);
             (
-                format!("ts_rank({table}.\"_search\", websearch_to_tsquery({lang_p}, {q_p})) DESC"),
-                vec![Sql::Text(lang.to_string()), Sql::Text(query_text.to_string())],
+                format!("ts_rank({table}.\"_search\", websearch_to_tsquery('{lang}', {q_p})) DESC"),
+                vec![Sql::Text(query_text.to_string())],
             )
         }
     }

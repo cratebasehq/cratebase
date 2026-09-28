@@ -1215,7 +1215,9 @@ async fn add_pending_uploads_up(db: &Db) -> DbResult<()> {
 
 async fn add_pending_uploads_down(db: &Db) -> DbResult<()> {
     if db.collections.get_by_name("_pendingUploads").is_some() {
-        db.collections.delete(&*db.engine, "_pendingUploads").await?;
+        db.collections
+            .delete(&*db.engine, "_pendingUploads")
+            .await?;
     }
     Ok(())
 }

@@ -1096,21 +1096,25 @@ fn search_bare_predicate_compiles_to_tsquery_on_postgres() {
         .with_searchable("title")
         .with_search_language("english");
     let c = with(r#"search("hello world")"#, &r);
+    // `lang` is a literal (`known_ts_config`'s fixed allow-list), not a
+    // bound parameter — see `resolve_search`'s doc comment for why
+    // binding it runs into a Postgres parameter-type-inference gotcha.
     assert_eq!(
         c.sql,
-        "\"posts\".\"_search\" @@ websearch_to_tsquery($1, $2) = $3"
+        "\"posts\".\"_search\" @@ websearch_to_tsquery('english', $1) = $2"
     );
-    assert_eq!(
-        c.params,
-        vec![json!("english"), json!("hello world"), json!(true)]
-    );
+    assert_eq!(c.params, vec![json!("hello world"), json!(true)]);
 }
 
 #[test]
 fn search_defaults_to_simple_language_on_postgres_without_search_language() {
     let r = TestResolver::postgres("posts").with_searchable("title");
     let c = with(r#"search("x")"#, &r);
-    assert_eq!(c.params[0], json!("simple"));
+    assert!(
+        c.sql.contains("websearch_to_tsquery('simple', "),
+        "{}",
+        c.sql
+    );
 }
 
 #[test]
@@ -1155,7 +1159,7 @@ fn search_sanitizes_sqlite_query_text_but_keeps_phrase_and_prefix_syntax() {
     // syntax it understands natively.
     let pg = TestResolver::postgres("posts").with_searchable("title");
     let c = with(r#"search("'; DROP TABLE posts; --")"#, &pg);
-    assert_eq!(c.params[1], json!("'; DROP TABLE posts; --"));
+    assert_eq!(c.params[0], json!("'; DROP TABLE posts; --"));
 }
 
 #[test]
@@ -1170,10 +1174,7 @@ fn search_rejects_a_non_literal_argument() {
 #[test]
 fn search_rejects_a_collection_with_no_searchable_fields() {
     // "posts" fixture has no searchable field by default.
-    assert!(matches!(
-        err(r#"search("x")"#),
-        FilterError::Unsupported(_)
-    ));
+    assert!(matches!(err(r#"search("x")"#), FilterError::Unsupported(_)));
 }
 
 #[test]
