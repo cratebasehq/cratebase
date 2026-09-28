@@ -2,13 +2,49 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.3.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.4.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
 first real tagged release.
 
 ## [Unreleased]
+
+## 0.4.0 — 2026-09-28
+
+Email, database extensibility, consumer-app auth, and a dashboard where
+every setting is configurable. Highlights:
+
+- **Email platform** — editable templates (`{{var}}`, locales, branded
+  layout) with a visual editor built on React Email Editor, redesigned
+  default emails, `POST /api/mails/send` (callable from a frontend per
+  template via `sendRule`), no-code triggers, a mail log, and magic-link
+  login.
+- **Database** — Postgres extension management, custom SQL RPC
+  (`cb.rpc()`), nearest-first `sort=geoDistance(...)` with automatic
+  PostGIS acceleration.
+- **Auth** — Apple, Microsoft, Discord, GitLab, Facebook, X, LinkedIn,
+  Slack, Twitch and Spotify presets, generic OIDC, linked accounts, TOTP
+  2FA with backup codes.
+- **Dashboard** — settings consolidated into 7 tabbed groups, every
+  setting configurable without the API, an onboarding checklist.
+- **MCP** — runtime tools (`call_rpc`, `send_email`, `search_nearby`) and
+  superuser developer tools (schema, rules, email templates, logs, SQL).
+
+### Upgrading from 0.3.0
+
+- Migrations run automatically (`16_add_rpc`, `17_add_totps`,
+  `18_refresh_default_email_templates`). Seeded email
+  templates you never edited are refreshed to the new design; edited ones
+  are left alone.
+- `$mails.send`, email triggers and webhooks fired from after-success
+  hooks now run **after the write commits** (and never for a write that
+  rolls back) instead of inline.
+- Dashboard settings URLs moved under 7 groups (`/settings/email?tab=…`);
+  old URLs redirect.
+- `@cratebase/client` 0.3.0 / `@cratebase/react` 0.3.0 add `cb.mails`,
+  `cb.rpc`, `cb.auth.magicLink`, `cb.auth.totp`, `cb.auth.accounts` and
+  `useMagicLinkCallback`.
 
 ### Added
 
