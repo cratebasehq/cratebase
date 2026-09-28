@@ -763,6 +763,55 @@ impl Collection {
                 .into(),
         ];
 
+        // TOTP 2FA state: at most one row per `(collectionRef, recordRef)`
+        // pair, created `pending` (unconfirmed) by `.../totp/setup` and
+        // flipped to `confirmed` by `.../totp/confirm` — see
+        // `crate::routes::totp` in the server crate. `secret` is
+        // encrypted with `CB_ENCRYPTION` when set (same `ParamCipher` as
+        // `_params`, applied by the server route rather than at the
+        // storage layer, since only that route ever needs the plaintext
+        // back). `backupCodes` is a JSON array of hashed one-time codes
+        // (SHA-256 hex, like `_otps`/`_magicLinks`'s own codes/tokens) —
+        // an entry is removed from the array the moment it's consumed,
+        // so "already used" needs no separate flag. `lastUsedStep` is
+        // the TOTP replay guard (`cratebase_auth::verify_totp`'s
+        // `last_used_step`): a 30-second step at or before this value is
+        // never accepted again, even if it's still numerically valid.
+        // Mutations only ever go through the dedicated TOTP routes
+        // (same reasoning as `_sessions`/`_bans` above), so
+        // create/update/delete stay superuser-only.
+        let mut totps = Collection::new("_totps", CollectionType::Base);
+        totps.system = true;
+        totps.list_rule = owner_rule.clone();
+        totps.view_rule = owner_rule.clone();
+        let mut t_secret = text("secret");
+        t_secret.hidden = true;
+        let mut t_confirmed = Field::new("confirmed", FieldKind::Bool {});
+        t_confirmed.system = true;
+        let mut t_backup_codes = Field::new("backupCodes", FieldKind::Json { max_size: 0 });
+        t_backup_codes.required = false;
+        t_backup_codes.hidden = true;
+        let mut t_last_used_step =
+            Field::new("lastUsedStep", FieldKind::default_for(FieldType::Number));
+        t_last_used_step.system = true;
+        t_last_used_step.required = false;
+        let pos = totps.fields.len() - 2;
+        totps.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("recordRef"),
+                t_secret,
+                t_confirmed,
+                t_backup_codes,
+                t_last_used_step,
+            ],
+        );
+        totps.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_totps_unique_pairs` ON `_totps` (collectionRef, recordRef)"
+                .into(),
+        ];
+
         // Token store for `authOptions.magicLink` (`crate::routes::auth`'s
         // `request-magic-link`/`auth-with-magic-link` in the server
         // crate), same shape and trust tier as `_otps` immediately above
@@ -1504,6 +1553,7 @@ impl Collection {
             external,
             mfas,
             otps,
+            totps,
             magic_links,
             origins,
             sessions,
@@ -1669,6 +1719,7 @@ mod tests {
                 crate::ids::collection_id("base", "_externalAuths").as_str(),
                 "pbc_2279338944",
                 "pbc_1638494021",
+                crate::ids::collection_id("base", "_totps").as_str(),
                 crate::ids::collection_id("base", "_magicLinks").as_str(),
                 crate::ids::collection_id("base", "_authOrigins").as_str(),
                 crate::ids::collection_id("base", "_sessions").as_str(),

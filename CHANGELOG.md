@@ -12,6 +12,62 @@ first real tagged release.
 
 ### Added
 
+- **10 new OAuth2 presets, generic OIDC, TOTP 2FA, and linked-account
+  management** (`crates/auth/src/{oauth2,oidc,totp}.rs`,
+  `crates/server/src/routes/{auth,oidc,totp,oauth2_flow}.rs`):
+  - Apple, Microsoft (Entra ID), Discord, GitLab (self-hosted `baseUrl`
+    supported), Facebook, X/Twitter, LinkedIn, Slack, Twitch, and
+    Spotify join Google/GitHub as built-in `KnownProvider` presets —
+    endpoints, scopes, PKCE, and userinfo parsing for each, table-driven
+    tested. Apple's client secret is a per-request ES256 JWT signed
+    with the team's private key (`extra.teamId`/`keyId`/`privateKey`,
+    no static secret at all); its identity comes from a JWKS-verified
+    `id_token` (no userinfo endpoint), its authorize URL requires
+    `response_mode=form_post`, and its one-time `user` name field is
+    only ever sent on the very first authorization — the redirect
+    flow's callback now accepts `POST` as well as `GET` for this.
+  - **Generic OIDC**: any provider configured with just `extra.issuer`
+    is discovered via `/.well-known/openid-configuration` (cached, 1h
+    TTL) and verified against the issuer's own JWKS (cached with rotation
+    handling — a forced refresh retry on an unrecognized `kid`).
+  - **Linked accounts**: `GET`/`DELETE
+    .../records/{id}/external-auths[/{provider}]` (PocketBase's
+    `listExternalAuths`/`unlinkExternalAuth` shape, owner-or-superuser),
+    with a check PocketBase doesn't have — unlinking refuses when it
+    would leave the record with no password, no other provider, and
+    OTP/magic-link both disabled. SDK: `cb.auth.accounts.list()`/
+    `.unlink(provider)`, plus `admin.listExternalAuths`/
+    `unlinkExternalAuth` for a superuser acting on another collection.
+  - **TOTP 2FA + backup codes**: `POST .../totp/setup` (returns the
+    `otpauth://` URI + base32 secret), `.../totp/confirm` (enables,
+    returns 10 one-time backup codes shown once), `.../totp/disable`
+    (code or password), `.../totp/backup-codes/regenerate`, and `POST
+    .../auth-with-totp {mfaId, code}` — integrated with the *existing*
+    `_mfas` challenge rather than a second flow: a record with confirmed
+    TOTP requires a second factor on every login independently of
+    `authOptions.mfa`, and a collection using both still has exactly one
+    challenge per login. RFC 6238 (SHA1, 6 digits, 30s, ±1 step) with
+    replay protection (a step already used is rejected even if still
+    numerically valid). New `_totps` system collection
+    (`17_add_totps.rs`), secret encrypted with `CB_ENCRYPTION` when set.
+    SDK: `cb.auth.totp.setup/confirm/disable/regenerateBackupCodes`,
+    `cb.auth.signIn.totp({mfaId, code})`.
+  - Dashboard: the collection auth-settings provider editor gained a
+    preset-name picker, per-preset config fields (Apple's Team ID/Key
+    ID/private key, Microsoft's tenant, GitLab's base URL, a generic
+    OIDC issuer), and hid the raw auth/token/userinfo URL fields for
+    any of them (fixing a pre-existing validation bug that demanded
+    those three URLs even for a built-in preset). The record drawer now
+    shows an auth record's TOTP status (with a superuser "Reset TOTP"
+    button) and its linked OAuth2 providers (with per-provider Unlink).
+  - Docs: dedicated pages for [Apple](/docs/concepts/authentication/apple/),
+    [generic OIDC](/docs/concepts/authentication/oidc/),
+    [linked accounts](/docs/concepts/authentication/linked-accounts/),
+    and [TOTP 2FA](/docs/concepts/authentication/totp/) (including a
+    `qrcode.react` example); a full preset table on the OAuth2 page; a
+    "Cratebase vs better-auth" comparison on the auth overview page
+    naming what's deliberately deferred (passkeys, SMS 2FA, SAML,
+    anonymous auth, organizations/multi-tenancy).
 - **Email platform**: an editable `_emailTemplates` system collection
   (`{{var}}` syntax — dotted paths, HTML-escaped, `{{{raw}}}` for
   unescaped, locale fallback, a shared branded base layout styled by new

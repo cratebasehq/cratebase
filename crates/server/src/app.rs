@@ -792,12 +792,24 @@ impl App {
                 let app = app.clone();
                 async move {
                     for collection in app.db().collections.all().all.iter() {
-                        if !collection.is_auth() || !collection.auth.mfa.enabled {
+                        if !collection.is_auth() {
                             continue;
                         }
+                        // A pending `_mfas` row can now exist even when
+                        // `authOptions.mfa` itself is off, if it's a
+                        // per-record TOTP challenge (see
+                        // `routes::auth::mfa_gate`) — so this no longer
+                        // skips a collection just because collection-level
+                        // MFA isn't enabled. Ten minutes is a generous
+                        // window for that case; `mfa.duration` still wins
+                        // when it's configured and longer.
+                        let ttl = if collection.auth.mfa.enabled {
+                            collection.auth.mfa.duration.max(600)
+                        } else {
+                            600
+                        };
                         let cutoff = cratebase_core::DateTime::from_utc(
-                            chrono::Utc::now()
-                                - chrono::Duration::seconds(collection.auth.mfa.duration.max(1)),
+                            chrono::Utc::now() - chrono::Duration::seconds(ttl),
                         );
                         let sql = r#"DELETE FROM "_mfas" WHERE "collectionRef" = $1 AND "created" < $2"#;
                         if let Err(e) = app
@@ -845,6 +857,31 @@ impl App {
                         {
                             tracing::warn!(error = %e, collection = %collection.name, "otp cleanup failed");
                         }
+                    }
+                }
+            });
+
+        let app = self.clone();
+        let _ = self
+            .inner
+            .cron
+            .add(cron::JOB_TOTP_CLEANUP, "0 * * * *", move || {
+                let app = app.clone();
+                async move {
+                    // A pending (unconfirmed) TOTP setup abandoned for
+                    // over an hour is dead weight, not a live 2FA
+                    // secret — never a *confirmed* row, whose lifetime
+                    // is the record's own.
+                    let cutoff = cratebase_core::DateTime::from_utc(
+                        chrono::Utc::now() - chrono::Duration::hours(1),
+                    );
+                    let sql = r#"DELETE FROM "_totps" WHERE "confirmed" = 0 AND "created" < $1"#;
+                    if let Err(e) = app
+                        .db()
+                        .execute(sql, &[Sql::Text(cutoff.to_pb_string())])
+                        .await
+                    {
+                        tracing::warn!(error = %e, "totp cleanup failed");
                     }
                 }
             });

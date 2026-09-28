@@ -215,6 +215,7 @@ mod tests {
             "_externalAuths",
             "_mfas",
             "_otps",
+            "_totps",
             "_authOrigins",
             "_cron_jobs",
             "_webhooks",

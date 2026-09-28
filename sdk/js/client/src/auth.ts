@@ -33,6 +33,15 @@ export interface SignInMagicLinkOptions {
   mfaId?: string;
 }
 
+export interface SignInTotpOptions {
+  /** The pending `_mfas` session id from a first factor's `401 {mfaId}`
+   * response. */
+  mfaId: string;
+  /** A live 6-digit TOTP code, or one of the account's backup codes
+   * (consumed on use). */
+  code: string;
+}
+
 export interface SignInCodeOptions {
   provider: string;
   code: string;
@@ -56,6 +65,16 @@ export interface AuthMethodsList {
   mfa: { enabled: boolean; duration: number };
   otp: { enabled: boolean; duration: number };
   magicLink: { enabled: boolean; duration: number };
+}
+
+export interface ExternalAuthRow {
+  id: string;
+  created: string;
+  updated: string;
+  recordId: string;
+  collectionId: string;
+  provider: string;
+  providerId: string;
 }
 
 export interface SessionRow {
@@ -184,6 +203,16 @@ export class AuthNamespace {
       const result = await this.transport.send<AuthResult>(
         this.basePath("auth-with-magic-link"),
         { method: "POST", body: { token: options.token, mfaId: options.mfaId } },
+        this.authHeader,
+      );
+      return this.applyAuthResult(result);
+    },
+    /** Completes a pending MFA challenge (any first factor's `401
+     * {mfaId}`) with a TOTP code or a backup code. */
+    totp: async (options: SignInTotpOptions): Promise<AuthResult> => {
+      const result = await this.transport.send<AuthResult>(
+        this.basePath("auth-with-totp"),
+        { method: "POST", body: { mfaId: options.mfaId, code: options.code } },
         this.authHeader,
       );
       return this.applyAuthResult(result);
@@ -350,6 +379,75 @@ export class AuthNamespace {
     },
   };
 
+  /** The signed-in record's own linked OAuth2 providers — thin wrappers
+   * around the dedicated `GET/DELETE .../records/{id}/external-auths[/
+   * {provider}]` endpoints (owner-or-superuser; PocketBase's own
+   * `listExternalAuths`/`unlinkExternalAuth` shape), unlike
+   * {@link externalAuths}'s older generic-`_externalAuths`-collection
+   * version, which needed the record id spelled out and had no
+   * server-side "don't strand the account" check on unlink. */
+  readonly accounts = {
+    list: async (recordId?: string): Promise<ExternalAuthRow[]> => {
+      const id = recordId ?? this.store.record?.id;
+      if (!id) throw new CratebaseError({ status: 0, url: "", response: { message: "Not signed in.", status: 0 } });
+      return this.transport.send<ExternalAuthRow[]>(
+        this.basePath(`records/${encodeURIComponent(id)}/external-auths`),
+        {},
+        this.authHeader,
+      );
+    },
+    unlink: async (provider: string, recordId?: string): Promise<void> => {
+      const id = recordId ?? this.store.record?.id;
+      if (!id) throw new CratebaseError({ status: 0, url: "", response: { message: "Not signed in.", status: 0 } });
+      await this.transport.send(
+        this.basePath(`records/${encodeURIComponent(id)}/external-auths/${encodeURIComponent(provider)}`),
+        { method: "DELETE" },
+        this.authHeader,
+      );
+    },
+  };
+
+  /** TOTP 2FA for the signed-in record. `setup`/`confirm` happen once;
+   * after that the collection's `authOptions.mfa`-style `401 {mfaId}` /
+   * `signIn.totp({mfaId, code})` pair (see {@link signIn}) is how a
+   * login actually completes the second factor. */
+  readonly totp = {
+    /** Starts (or restarts, if never confirmed) setup. Returns the
+     * `otpauth://` URI to render as a QR code and the raw base32
+     * secret for manual entry. */
+    setup: async (): Promise<{ secret: string; uri: string }> => {
+      return this.transport.send(this.basePath("totp/setup"), { method: "POST" }, this.authHeader);
+    },
+    /** Confirms setup with a code from the authenticator app. Returns
+     * 10 one-time backup codes -- shown to the person exactly once,
+     * never retrievable again (only regenerated, invalidating the old
+     * set). */
+    confirm: async (code: string): Promise<{ backupCodes: string[] }> => {
+      return this.transport.send(
+        this.basePath("totp/confirm"),
+        { method: "POST", body: { code } },
+        this.authHeader,
+      );
+    },
+    /** Disables TOTP with either a current code or the account
+     * password. */
+    disable: async (options: { code?: string; password?: string }): Promise<void> => {
+      await this.transport.send(
+        this.basePath("totp/disable"),
+        { method: "POST", body: options },
+        this.authHeader,
+      );
+    },
+    /** Invalidates every existing backup code and issues 10 new ones. */
+    regenerateBackupCodes: async (): Promise<{ backupCodes: string[] }> => {
+      return this.transport.send(
+        this.basePath("totp/backup-codes/regenerate"),
+        { method: "POST" },
+        this.authHeader,
+      );
+    },
+  };
+
   readonly externalAuths = {
     list: async (recordId: string): Promise<RecordModel[]> => {
       const res = await this.transport.send<{ items: RecordModel[] }>(
@@ -410,6 +508,26 @@ export class AuthNamespace {
     unban: async (collection: string, recordId: string): Promise<void> => {
       await this.transport.send(
         this.pathFor(collection, `ban/${encodeURIComponent(recordId)}`),
+        { method: "DELETE" },
+        this.authHeader,
+      );
+    },
+    /** {@link accounts.list}, but for a record in *any* collection —
+     * the superuser-only cross-collection sibling every other `admin.*`
+     * method here already has. */
+    listExternalAuths: async (collection: string, recordId: string): Promise<ExternalAuthRow[]> => {
+      return this.transport.send<ExternalAuthRow[]>(
+        this.pathFor(collection, `records/${encodeURIComponent(recordId)}/external-auths`),
+        {},
+        this.authHeader,
+      );
+    },
+    unlinkExternalAuth: async (collection: string, recordId: string, provider: string): Promise<void> => {
+      await this.transport.send(
+        this.pathFor(
+          collection,
+          `records/${encodeURIComponent(recordId)}/external-auths/${encodeURIComponent(provider)}`,
+        ),
         { method: "DELETE" },
         this.authHeader,
       );

@@ -421,6 +421,7 @@ hook_set! {
     on_record_auth_with_oauth2_request: RecordRequestEvent,
     on_record_auth_with_otp_request: RecordRequestEvent,
     on_record_auth_with_magic_link_request: RecordRequestEvent,
+    on_record_auth_with_totp_request: RecordRequestEvent,
     on_record_auth_refresh_request: RecordRequestEvent,
     on_record_request_password_reset_request: RecordRequestEvent,
     on_record_confirm_password_reset_request: RecordRequestEvent,

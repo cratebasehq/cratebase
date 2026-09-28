@@ -368,7 +368,16 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
     };
     match action {
         "records" => {
-            let has_id = segments.next().is_some();
+            let id = segments.next();
+            // `.../records/{id}/external-auths[/{provider}]` is a
+            // distinct sub-resource, not a record view/update/delete —
+            // give it its own tag instead of falling into the
+            // list/view/create/update/delete bucket below.
+            if id.is_some() && segments.next() == Some("external-auths") {
+                push("externalAuths");
+                return tags;
+            }
+            let has_id = id.is_some();
             match (method, has_id) {
                 // HEAD is served by the same handler as GET (see the
                 // `get()` route registration) and must carry the same
@@ -386,9 +395,33 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
         | "auth-with-oauth2"
         | "auth-refresh"
         | "auth-with-otp"
-        | "auth-with-magic-link" => {
+        | "auth-with-magic-link"
+        | "auth-with-totp" => {
             push("auth");
             push(&lower_camel(action));
+        }
+        // TOTP setup/confirm/disable/backup-codes-regenerate: not a login
+        // attempt themselves, but `confirm`/`disable` both brute-force a
+        // short code exactly like `auth-with-totp` does, so they share
+        // its `*:auth` bucket too, plus their own finer-grained tag.
+        "totp" => {
+            push("auth");
+            // `backup-codes/regenerate` is two segments; every other
+            // sub-action is one. Joining whatever's left with `-` before
+            // `lower_camel` turns either shape into one PocketBase-style
+            // tag: "confirm" -> "totpConfirm", "backup-codes/regenerate"
+            // -> "totpBackupCodesRegenerate".
+            let rest: Vec<&str> = segments.collect();
+            if !rest.is_empty() {
+                let camel = lower_camel(&rest.join("-"));
+                let mut tag = String::from("totp");
+                let mut chars = camel.chars();
+                if let Some(first) = chars.next() {
+                    tag.extend(first.to_uppercase());
+                    tag.push_str(chars.as_str());
+                }
+                push(&tag);
+            }
         }
         // `.../oauth2/{provider}/start` and `.../oauth2/{provider}/callback`
         // (`crate::routes::oauth2_flow`) are the server-driven login
@@ -730,6 +763,68 @@ mod tests {
         );
         assert!(tags_for(&app, &Method::GET, "/api/health").is_empty());
         assert!(tags_for(&app, &Method::GET, "/_/index.html").is_empty());
+    }
+
+    #[tokio::test]
+    async fn totp_and_external_auths_get_the_shared_auth_bucket() {
+        let (app, _dir) = test_app().await;
+        assert_eq!(
+            tags_for(&app, &Method::POST, "/api/collections/users/auth-with-totp"),
+            [
+                "*:auth",
+                "users:auth",
+                "*:authWithTotp",
+                "users:authWithTotp"
+            ]
+        );
+        assert_eq!(
+            tags_for(&app, &Method::POST, "/api/collections/users/totp/confirm"),
+            ["*:auth", "users:auth", "*:totpConfirm", "users:totpConfirm"]
+        );
+        assert_eq!(
+            tags_for(&app, &Method::POST, "/api/collections/users/totp/disable"),
+            ["*:auth", "users:auth", "*:totpDisable", "users:totpDisable"]
+        );
+        assert_eq!(
+            tags_for(&app, &Method::POST, "/api/collections/users/totp/setup"),
+            ["*:auth", "users:auth", "*:totpSetup", "users:totpSetup"]
+        );
+        assert_eq!(
+            tags_for(
+                &app,
+                &Method::POST,
+                "/api/collections/users/totp/backup-codes/regenerate"
+            ),
+            [
+                "*:auth",
+                "users:auth",
+                "*:totpBackupCodesRegenerate",
+                "users:totpBackupCodesRegenerate"
+            ]
+        );
+        assert_eq!(
+            tags_for(
+                &app,
+                &Method::GET,
+                "/api/collections/users/records/abc123/external-auths"
+            ),
+            ["*:externalAuths", "users:externalAuths"]
+        );
+        assert_eq!(
+            tags_for(
+                &app,
+                &Method::DELETE,
+                "/api/collections/users/records/abc123/external-auths/google"
+            ),
+            ["*:externalAuths", "users:externalAuths"]
+        );
+        // A plain record view/delete must still get its own ordinary
+        // tag, not `externalAuths` -- the extra path segment is what
+        // distinguishes them.
+        assert_eq!(
+            tags_for(&app, &Method::GET, "/api/collections/users/records/abc123"),
+            ["*:view", "users:view"]
+        );
     }
 
     #[tokio::test]

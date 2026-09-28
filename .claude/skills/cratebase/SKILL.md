@@ -100,6 +100,18 @@ request — prototype a rule there before pasting it into a `*Rule` field.
   not a dedicated admin route.
 - `file`-typed fields need `multipart/form-data`, not JSON — pass a
   `File`/`FormData` and the SDK switches transport automatically.
+- OAuth2 has 12 built-in presets (google, github, apple, microsoft,
+  discord, gitlab, facebook, twitter, linkedin, slack, twitch, spotify)
+  plus a generic OIDC provider — any name with `extra.issuer` set is
+  discovered from `/.well-known/openid-configuration`, no hand-entered
+  URLs needed. Apple has no static `clientSecret`: it's `extra.teamId`/
+  `keyId`/`privateKey` instead. A record can also enable TOTP 2FA
+  (`cb.auth.totp.setup/confirm/disable/regenerateBackupCodes`,
+  `cb.auth.signIn.totp({mfaId, code})`) independently of a collection's
+  `authOptions.mfa` — either one alone gates a login behind the same
+  `401 {mfaId}` challenge. `cb.auth.accounts.list()/.unlink(provider)`
+  manage a record's linked OAuth2 providers, refusing to unlink the
+  last way it can sign in.
 
 ## Reference files
 

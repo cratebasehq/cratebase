@@ -221,6 +221,49 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     },
   });
 
+  const totpStatus = useQuery({
+    queryKey: ["totp-status", collection.id, record?.id],
+    queryFn: async () => {
+      const list = await cb
+        .collection("_totps")
+        .list({ filter: `collectionRef = "${collection.id}" && recordRef = "${record!.id}"`, perPage: 1 });
+      return (list.items[0] as (RecordModel & { confirmed?: boolean }) | undefined) ?? null;
+    },
+    enabled: isAuth && record !== null,
+    staleTime: 10_000,
+  });
+
+  const resetTotp = useMutation({
+    mutationFn: () => cb.collection("_totps").delete(totpStatus.data!.id),
+    onSuccess: () => {
+      toast.success("TOTP reset", { description: "The next login will not ask for a second factor until they set it up again." });
+      void queryClient.invalidateQueries({ queryKey: ["totp-status", collection.id, record?.id] });
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
+    },
+  });
+
+  const linkedAccounts = useQuery({
+    queryKey: ["linked-accounts", collection.id, record?.id],
+    queryFn: () => superuserAuth.admin.listExternalAuths(collection.name, record!.id),
+    enabled: isAuth && record !== null,
+    staleTime: 10_000,
+  });
+
+  const unlinkAccount = useMutation({
+    mutationFn: (provider: string) => superuserAuth.admin.unlinkExternalAuth(collection.name, record!.id, provider),
+    onSuccess: () => {
+      toast.success("Provider unlinked");
+      void queryClient.invalidateQueries({ queryKey: ["linked-accounts", collection.id, record?.id] });
+    },
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
+    },
+  });
+
   /** Errors as of this keystroke — what gates Save and drives the count. */
   const clientErrors = useMemo(
     () => allErrors(fields, values, identityField, isNew),
@@ -478,6 +521,69 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
                   </div>
                 );
               })}
+
+              {isAuth && record ? (
+                <>
+                  <Separator />
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-foreground/80">Two-factor authentication</span>
+                      <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2">
+                        <span className="text-xs text-muted-foreground">
+                          {totpStatus.isLoading
+                            ? "Checking…"
+                            : totpStatus.data?.confirmed
+                              ? "TOTP is enabled for this account."
+                              : "TOTP is not enabled."}
+                        </span>
+                        {totpStatus.data?.confirmed ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-control-xs gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => resetTotp.mutate()}
+                            disabled={resetTotp.isPending}
+                          >
+                            {resetTotp.isPending ? <Spinner className="size-3.5" /> : null}
+                            Reset TOTP
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-foreground/80">Linked accounts</span>
+                      {linkedAccounts.isLoading ? (
+                        <span className="text-xs text-muted-foreground">Checking…</span>
+                      ) : linkedAccounts.data && linkedAccounts.data.length > 0 ? (
+                        <ul className="flex flex-col gap-1.5">
+                          {linkedAccounts.data.map((row) => (
+                            <li
+                              key={row.id}
+                              className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs"
+                            >
+                              <span className="font-mono">{row.provider}</span>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-control-xs gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                onClick={() => unlinkAccount.mutate(row.provider)}
+                                disabled={unlinkAccount.isPending}
+                              >
+                                Unlink
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">No linked OAuth2 providers.</span>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
 
             <SheetFooter className="flex-row items-center gap-2 border-t border-border">

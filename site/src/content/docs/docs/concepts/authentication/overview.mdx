@@ -32,3 +32,30 @@ forgetting it locally, and `cb.auth.sessions.revoke/revokeOthers/
 revokeAll` end sessions on demand. See
 [Sessions](/docs/concepts/authentication/sessions/) for the full
 revocation model.
+
+## Cratebase vs better-auth
+
+Cratebase's auth surface is scoped to what a **consumer app** needs, not
+every auth pattern a B2B SaaS might reach for eventually. Where
+[better-auth](https://www.better-auth.com/) covers both, this is
+roughly the split:
+
+| | Cratebase | better-auth |
+| --- | --- | --- |
+| Password auth | ✅ | ✅ |
+| Email OTP / magic link | ✅ | ✅ (plugins) |
+| OAuth2 social sign-on | ✅ 12 built-in presets + generic OIDC + custom | ✅ similarly broad |
+| TOTP 2FA + backup codes | ✅ integrated with the existing MFA challenge | ✅ (plugin) |
+| Passkeys / WebAuthn | ❌ deliberately deferred | ✅ (plugin) |
+| SMS 2FA | ❌ deliberately deferred | ✅ (plugin) |
+| SAML / enterprise SSO | ❌ deliberately deferred | ✅ (plugin) |
+| Anonymous auth | ❌ deliberately deferred | ✅ (plugin) |
+| Organizations / multi-tenancy | ❌ deliberately deferred — see [Teams](/docs/concepts/authentication/teams/) for the one primitive Cratebase does ship (app-level workspaces, not admin-dashboard access) | ✅ (plugin) |
+| Impersonation, bans, sessions | ✅ built in | ✅ (plugins) |
+| API keys | ✅ built in | ✅ (plugin) |
+| Storage model | Postgres or SQLite, the same database as your app data — no separate auth service | Any SQL/NoSQL adapter, typically alongside your app's own ORM |
+
+The deferred rows aren't a roadmap promise — they're patterns a
+multi-tenant B2B product needs and a consumer app generally doesn't.
+Cratebase would rather stay small than grow a plugin system to cover
+every one of them.
