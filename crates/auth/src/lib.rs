@@ -15,6 +15,7 @@ mod otp;
 mod password;
 mod pkce;
 mod token;
+mod totp;
 
 pub use error::{AuthError, AuthResult};
 pub use fingerprint::auth_origin_fingerprint;
@@ -34,6 +35,11 @@ pub use password::{
 pub use pkce::{
     code_challenge_s256, code_verifier, random_alphanumeric, random_state, CODE_VERIFIER_LENGTH,
     STATE_LENGTH,
+};
+pub use totp::{
+    base32_decode, generate_backup_codes, generate_secret as generate_totp_secret,
+    normalize_backup_code, otpauth_uri, totp_at, verify as verify_totp, DIGITS as TOTP_DIGITS,
+    PERIOD_SECS as TOTP_PERIOD_SECS,
 };
 pub use token::{
     decode_unverified, new_auth_claims, new_email_change_claims, new_file_claims,
