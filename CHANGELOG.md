@@ -12,6 +12,35 @@ first real tagged release.
 
 ### Added
 
+- **Full-text search** (`?search=` on any collection's records list, and the `search()` filter
+  function usable in any API rule): mark a `text`/`editor`/`email`/`url` field `searchable` from
+  the field editor and the collection accepts full-text queries over it — SQLite's FTS5 virtual
+  table + triggers, or Postgres's generated `tsvector` column + GIN index, kept in sync
+  automatically whenever the searchable field set, the collection name, or (Postgres) the new
+  per-collection `searchLanguage` setting changes. Ranks by relevance (SQLite `bm25`, Postgres
+  `ts_rank`) unless an explicit `sort` is given. See
+  [Database → Full-text search](https://cratebase.dev/docs/database/full-text-search/) for query
+  syntax, relevance semantics, and SQLite-vs-Postgres `EXPLAIN`/benchmark numbers (Postgres's GIN
+  index is ~10x faster than a `~`/LIKE scan at 50k rows in this repo's own benchmark; SQLite's
+  FTS5 predicate is, perhaps counterintuitively, not — documented rather than hidden).
+- **Presigned direct uploads** (`POST /api/files/presign`, `PUT /api/files/presign-upload/{token}`):
+  upload a file straight to storage (S3, signed — or a same-origin route for the local driver)
+  instead of round-tripping its bytes through a multipart create/update, then claim it with a
+  single-use token as the target field's value. `@cratebase/client`'s `cb.files.upload(file, {
+  collection, field })` and `@cratebase/react`'s `useUpload()` hook (progress/pending/error state,
+  `abort()`) wrap the flow. Unclaimed tickets expire after 30 minutes and are swept hourly.
+- **Image transforms** on the files route: `?w=&h=&fit=cover|contain|inside&format=jpeg|png|webp&q=`,
+  independent of and mutually exclusive with the existing `?thumb=`. Gated by the new
+  `settings.storage.imageTransformsEnabled` (default on); a non-superuser request's `w`/`h` is
+  clamped to `settings.storage.maxTransformDimension` (default 4000px) rather than rejected.
+- **Per-user storage quota** (`settings.storage.userQuotaBytes`, default `0`/disabled): caps the
+  bytes an auth record may store via the direct-upload flow above, scoped to whichever
+  collections set the new `ownerField` schema setting (which field names a record's owner).
+  Enforced at presign time with a `400`, before a ticket is minted.
+- Dashboard: a "Searchable" checkbox on text/editor/email/url fields, a "Search language" and
+  "Owner field" picker in collection settings, and a "Storage limits" section (image transforms +
+  quota) under Settings → Email → Delivery → File storage.
+
 - **Settings navigation consolidated to 7 tabbed groups** (`web/admin/src/lib/settings-nav.ts`
   and the `routes/settings-*.tsx`/`components/settings/*-settings-page.tsx` files): the ~24-item
   settings sidebar is now Application, Email, Auth & security, Database, Automation,

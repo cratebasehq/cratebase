@@ -65,6 +65,27 @@ never captured there.
 | `secret` | *(write-only)* |
 | `forcePathStyle` | `false` |
 
+## `storage`
+
+Image transforms and the per-user storage quota — both apply to files on local disk too, not just
+S3, which is why they live in their own section instead of under `s3`.
+
+| Key | Default |
+| --- | --- |
+| `imageTransformsEnabled` | `true` |
+| `maxTransformDimension` | `4000` (`0` = no limit) |
+| `userQuotaBytes` | `0` (disabled) |
+
+`imageTransformsEnabled` gates `?w=`/`?h=`/`?fit=`/`?format=`/`?q=` on the files route (`?thumb=` is
+unaffected either way). `maxTransformDimension` clamps `w`/`h` for a non-superuser request rather
+than rejecting it, capping the set of distinct cached variants a request can generate. See
+[Files → Image transforms](/docs/concepts/files/#image-transforms).
+
+`userQuotaBytes` caps, per auth record, the sum of `size` across every file field of every record
+whose collection has an `ownerField` set (a per-collection schema setting, not here) to that auth
+record. `0` disables enforcement entirely — no collection is ever gated, regardless of
+`ownerField`. See [Files → Storage quota](/docs/concepts/files/#storage-quota).
+
 ## `backups`
 
 | Key | Default |

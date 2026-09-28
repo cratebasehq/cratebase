@@ -175,6 +175,29 @@ specific record id instead when a screen only cares about one record.
 The same `viewRule`/`listRule` filter rules gate which realtime events a
 given client actually receives — realtime is not a bypass of API rules.
 
+### Full-text search
+
+Mark a `text`/`editor`/`email`/`url` field `"searchable": true` and the
+collection's records list accepts `?search=` (or the equivalent
+`search("query")` filter/rule predicate), ANDed onto `filter`, ranked by
+relevance (SQLite FTS5 `bm25`, Postgres GIN `ts_rank`) unless an explicit
+`sort` is given:
+
+```javascript
+await cb.collection("posts").getList(1, 30, { search: "treasure map" });
+```
+
+A collection with no searchable field rejects `search`/`?search=` with a
+`400` — it is not silently ignored. Postgres additionally reads the
+collection's `searchLanguage` (e.g. `"english"`) for stemming; SQLite
+always does plain token/prefix matching (`term*` prefix, `"exact
+phrase"` quoting; no boolean `OR`/`NOT` operators — see
+`site/src/content/docs/docs/database/full-text-search.mdx` for the full
+query grammar and the SQLite-vs-Postgres performance numbers). Both
+index types stay in sync automatically on any schema change that
+touches the searchable field set, the collection name, or
+`searchLanguage` — nothing to run by hand after editing the schema.
+
 ### File uploads
 
 Fields of type `file` must be sent as `multipart/form-data`, not JSON —
@@ -190,6 +213,28 @@ await pb.collection("posts").create(formData);
 
 The SDK detects `FormData` and switches transport automatically — you
 don't need to set `Content-Type` yourself.
+
+For a large file, prefer a **direct upload** instead — the bytes go
+straight to storage rather than through this multipart body:
+
+```javascript
+const upload = await cb.files.upload(file, { collection: "posts", field: "cover" });
+await cb.collection("posts").create({ id: upload.recordId, title: "My post", cover: upload.token });
+```
+
+`upload.recordId` **must** be reused as the new record's own `id` — the
+token is reserved against it. `@cratebase/react`'s `useUpload()` hook
+wraps this with `progress`/`pending`/`error` state. Optionally metered by
+`settings.storage.userQuotaBytes` (per auth record, only for collections
+with `ownerField` set) — exceeding it fails the upload with a `400`
+before any bytes move.
+
+An image file also accepts on-the-fly transforms on download, beyond the
+existing `?thumb=WxH`: `?w=&h=&fit=cover|contain|inside&format=jpeg|png|webp&q=`,
+cached the same way a thumbnail is. Gated by
+`settings.storage.imageTransformsEnabled` (default on); dimensions are
+clamped to `settings.storage.maxTransformDimension` for non-superuser
+requests rather than rejected.
 
 ### Custom SQL RPC and Postgres extensions
 

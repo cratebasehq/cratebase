@@ -239,6 +239,14 @@ paths:
         - name: perPage
           in: query
           schema: { type: integer, default: 30, maximum: 500 }
+        - name: search
+          in: query
+          schema: { type: string }
+          description: >-
+            Full-text search over the collection's `searchable` fields, ANDed onto `filter`.
+            Ranks by relevance (SQLite: bm25; Postgres: ts_rank) unless `sort` is also given, in
+            which case `sort` wins. A collection with no searchable fields rejects this with a
+            400. See Database → Full-text search.
       responses:
         "200":
           description: OK
@@ -254,6 +262,7 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Record" }
+        "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
     post:
       summary: Create a record (JSON, or multipart/form-data when the collection has file fields)
@@ -1120,7 +1129,43 @@ paths:
         required: true
         schema: { type: string }
     get:
-      summary: Download a file (gated by the collection's viewRule)
+      summary: Download a file, or a thumbnail/transform of an image file (gated by the collection's viewRule)
+      parameters:
+        - name: thumb
+          in: query
+          schema: { type: string }
+          description: >-
+            `WxH` (crop), `WxHt`/`WxHb` (crop to top/bottom), `WxHf` (fit, no crop), `0xH` or `Wx0`
+            (proportional). Mutually exclusive with `w`/`h`/`fit`/`format`/`q` below — `thumb` wins
+            if both are given. Generated and cached on first request.
+        - name: w
+          in: query
+          schema: { type: integer }
+          description: Target width for an image transform, independent of `thumb`.
+        - name: h
+          in: query
+          schema: { type: integer }
+        - name: fit
+          in: query
+          schema: { type: string, enum: [cover, contain, inside] }
+          description: >-
+            `cover`/`contain` match CSS `object-fit`; `inside` never upscales a source already
+            smaller than the requested box. See Files → Image transforms.
+        - name: format
+          in: query
+          schema: { type: string, enum: [jpeg, png, webp] }
+        - name: q
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+          description: Quality, 1-100; ignored for lossless formats.
+        - name: download
+          in: query
+          schema: { type: boolean }
+          description: 'Forces `Content-Disposition: attachment`; without it the response is inline.'
+        - name: token
+          in: query
+          schema: { type: string }
+          description: A short-lived token from `POST /files/token`, in place of an `Authorization` header.
       responses:
         "200":
           description: OK
@@ -1128,6 +1173,72 @@ paths:
             application/octet-stream: { schema: { type: string, format: binary } }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+
+  /files/presign:
+    post:
+      summary: Presign a direct upload to a file field
+      description: >-
+        Returns a one-time upload URL (S3, signed — or a same-origin local-driver route) plus a
+        single-use token. PUT the file to `uploadUrl`, then pass `token` as the target field's
+        value in the `create`/`update` call that follows; the server resolves it to the real
+        stored file and verifies the object landed with the right size. See
+        Files → Direct uploads.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [collection, field, filename]
+              properties:
+                collection: { type: string }
+                field: { type: string }
+                filename: { type: string }
+                contentType: { type: string }
+                size: { type: integer, description: File size in bytes, checked against the field's maxSize and, if configured, the caller's storage quota. }
+                recordId:
+                  type: string
+                  description: >-
+                    Set when presigning an update to an existing record's field; omit ahead of a
+                    create — the response's `recordId` must then be sent as the new record's own
+                    `id`.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  recordId: { type: string }
+                  uploadUrl: { type: string }
+                  uploadMethod: { type: string, example: PUT }
+                  filename: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /files/presign-upload/{token}:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        schema: { type: string }
+    put:
+      summary: Local-storage fallback target for a presigned upload
+      description: >-
+        Only used when the storage driver is local disk rather than S3 — the token itself is the
+        bearer (same trust model as an S3 presigned URL's query-string signature), so no separate
+        auth is checked here.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream: { schema: { type: string, format: binary } }
+      responses:
+        "204": { description: Stored }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { description: Unknown, expired, or already-claimed token }
 
   /realtime:
     get:
@@ -2456,6 +2567,11 @@ components:
           enum: [text, editor, number, bool, email, url, date, select, json, relation, file, password]
         required: { type: boolean }
         unique: { type: boolean }
+        searchable:
+          type: boolean
+          description: >-
+            Full-text-indexed — only meaningful (and only settable from the dashboard) on
+            text/editor/email/url fields. See Database → Full-text search.
         options: { type: object, additionalProperties: true }
     CollectionInput:
       type: object
@@ -2471,6 +2587,19 @@ components:
         createRule: { type: string, nullable: true }
         updateRule: { type: string, nullable: true }
         deleteRule: { type: string, nullable: true }
+        searchLanguage:
+          type: string
+          nullable: true
+          description: >-
+            Postgres text-search config for the generated tsvector column when this collection has
+            any searchable field (e.g. "english", "indonesian"); null/absent falls back to
+            "simple". Ignored on SQLite.
+        ownerField:
+          type: string
+          nullable: true
+          description: >-
+            The relation field naming a record's owner, for settings.storage.userQuotaBytes.
+            null/absent means this collection never counts toward or is gated by the quota.
         authOptions: { type: object, additionalProperties: true }
     Collection:
       allOf:

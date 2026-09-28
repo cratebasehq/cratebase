@@ -26,6 +26,7 @@ wire shape.
 | `sort` | `-created` | Comma-separated fields, `-` prefix for descending |
 | `page` | `1` | `0` is coerced to `1` |
 | `perPage` | `30` | Capped at 500 by this endpoint's own validation (1000 server-wide, per `KNOWN_DIVERGENCES.md`) |
+| `search` | — | Full-text query over the collection's `searchable` fields, ANDed onto `filter`. `400` if the collection has none. See [Full-text search](/docs/database/full-text-search/) |
 
 Response:
 

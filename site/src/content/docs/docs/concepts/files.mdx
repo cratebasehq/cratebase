@@ -14,3 +14,85 @@ first request. Files on a `protected` field need a short-lived token
 from `POST /api/files/token` instead of a bearer header, for embedding a
 gated file where an `Authorization` header can't be sent (e.g. an
 `<img src>`).
+
+## Direct uploads
+
+A plain `multipart/form-data` create/update round-trips the file's bytes
+through this server's own request handler. `POST /api/files/presign`
+skips that: it validates the target field's rules (create/update rule,
+`maxSize`, `mimeTypes`) up front, then hands back a one-time upload URL
+— a presigned S3 `PUT` when S3 storage is configured, or a same-origin
+`PUT /api/files/presign-upload/{token}` route for the local driver — plus
+a single-use **token**. The client `PUT`s the file straight to that URL,
+then sends the token as the field's value in the `create`/`update` call
+that follows:
+
+```
+POST /api/files/presign
+{ "collection": "posts", "field": "cover", "filename": "sunset.jpg", "contentType": "image/jpeg", "size": 483920 }
+→ { "token": "CBUP_...", "recordId": "generated-id", "uploadUrl": "...", "uploadMethod": "PUT", "filename": "...", "expiresAt": "..." }
+
+PUT <uploadUrl>              # the raw file bytes
+
+POST /api/collections/posts/records
+{ "id": "generated-id", "title": "Sunset", "cover": "CBUP_..." }
+```
+
+The server resolves the token to the real stored filename and verifies
+the object actually landed in storage with (at least) the declared
+size — a token that was never claimed, or whose object never arrived,
+is refused rather than silently accepted. `recordId` in the presign
+response is only meaningful for a **create**: the token is reserved
+against that id, and the create call must reuse it as the new record's
+own `id`, or the token won't resolve. Presigning ahead of an **update**
+to an existing record instead passes `recordId` in the request. A token
+is single-use: reusing it in a second create/update is refused. Unclaimed
+tickets expire after 30 minutes and are swept (along with any orphaned
+object already uploaded for them) by an hourly cron job. See
+[TypeScript SDK → Files](/docs/sdk/files/#direct-uploads) for
+`cb.files.upload()` and the `useUpload()` React hook.
+
+## Image transforms
+
+Beyond `?thumb=`, an image file also accepts an independent transform:
+`?w=`/`?h=` (target dimensions), `?fit=cover|contain|inside`,
+`?format=jpeg|png|webp`, and `?q=` (1-100, ignored for lossless
+formats) — generated and cached the same way `?thumb=` is
+(`thumbs_{filename}/t_{spec}_{filename}`), and mutually exclusive with
+it (`?thumb=` wins if both are given). `fit=inside` is the one mode
+`?thumb=`'s own grammar has no equivalent for: unlike `contain`, it
+never upscales a source image already smaller than the requested box.
+An independent `format` lets a JPEG upload be re-served as WebP —
+typically 25-35% smaller at the same visual quality — without a second
+upload.
+
+Gated by `settings.storage.imageTransformsEnabled` (default on). A
+non-superuser request's `w`/`h` is clamped to
+`settings.storage.maxTransformDimension` (default 4000px, `0` = no
+limit) rather than rejected — capping the set of distinct cached
+variants a request could otherwise generate by varying the query
+string. Superuser requests bypass the clamp. See
+[Settings object → storage](/docs/reference/settings-object/#storage).
+
+Highlighted excerpts of matched text (à la a search engine's snippet)
+are **not supported** for `?search=` results — see
+[Database → Full-text search](/docs/database/full-text-search/#not-supported)
+for why.
+
+## Storage quota
+
+`settings.storage.userQuotaBytes` (default `0`, disabled) caps, per auth
+record, the total bytes it may have stored — but only through the
+[direct-upload flow above](#direct-uploads), and only for a collection
+that has its `ownerField` schema setting configured (which field on a
+record names its owner's auth-record id — set from that collection's
+dashboard settings, alongside `searchLanguage`). Usage is the sum of
+`size` already recorded on that collection's *consumed* presign tickets
+whose target record's `ownerField` matches the requesting auth record —
+not a live re-scan of storage, and not a count of bytes uploaded through
+an ordinary multipart `create`/`update` (deliberately out of scope, to
+keep this a single indexed query rather than a per-file storage `HEAD`
+or a running counter maintained from every write path). A collection
+with no `ownerField` is never gated, whatever the quota is set to;
+`userQuotaBytes = 0` disables enforcement everywhere. Exceeding it fails
+`POST /api/files/presign` with a `400` before a ticket is even minted.

@@ -14,7 +14,10 @@ sidebar should hold.
   API, and the Teams/Queue/ZIP export toggles — Teams applies
   immediately, Queue and ZIP export need a restart).
 - **Email** — **Delivery** (SMTP or the zero-config `Log` backend, plus
-  S3-compatible file storage), **Templates** (the visual/HTML editor,
+  S3-compatible file storage and its own **Storage limits** section —
+  the image-transforms toggle/max dimension and the per-user storage
+  quota, see [Files](/docs/concepts/files/#storage-quota)), **Templates**
+  (the visual/HTML editor,
   opened as its own full page from this tab), **Triggers**
   (`_emailTriggers`), **Mail log** (`_mailLog`, every send attempt), and
   **Dev inbox** — only shown while no real transport is configured
