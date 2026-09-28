@@ -47,6 +47,7 @@ pub mod mail_templates;
 pub mod mails;
 pub mod mcp;
 pub mod middleware;
+pub mod notify;
 pub mod plugin;
 pub mod plugin_wasm;
 pub mod pocketbase_migrate;

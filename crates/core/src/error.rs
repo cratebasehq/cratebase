@@ -102,6 +102,13 @@ pub enum AppError {
     Forbidden(String),
     #[error("{0}")]
     TooManyRequests(String),
+    /// A `POST /api/realtime/channels/{name}/publish` whose cross-node
+    /// `NOTIFY` payload would be at or over Postgres's 8000-byte limit
+    /// (`cratebase_db::postgres::NOTIFY_PAYLOAD_LIMIT`) — see
+    /// `crate::realtime::publish_channel` in the server crate. Nothing
+    /// else in this codebase currently produces a `413`.
+    #[error("{0}")]
+    PayloadTooLarge(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -116,6 +123,7 @@ impl AppError {
         "The request requires valid record authorization token.";
     pub const DEFAULT_FORBIDDEN: &'static str = "You are not allowed to perform this request.";
     pub const DEFAULT_TOO_MANY: &'static str = "Too Many Requests.";
+    pub const DEFAULT_PAYLOAD_TOO_LARGE: &'static str = "Request payload is too large.";
     pub const DEFAULT_INTERNAL: &'static str =
         "Something went wrong while processing your request.";
 
@@ -157,6 +165,14 @@ impl AppError {
     pub fn too_many_requests() -> Self {
         AppError::TooManyRequests(Self::DEFAULT_TOO_MANY.into())
     }
+    pub fn payload_too_large(msg: impl Into<String>) -> Self {
+        let m: String = msg.into();
+        AppError::PayloadTooLarge(if m.is_empty() {
+            Self::DEFAULT_PAYLOAD_TOO_LARGE.into()
+        } else {
+            m
+        })
+    }
 
     /// A validation error with PocketBase's per-operation message
     /// (`"Failed to create record."`, ...) and per-field details.
@@ -177,6 +193,7 @@ impl AppError {
             AppError::Unauthorized(_) => 401,
             AppError::Forbidden(_) => 403,
             AppError::TooManyRequests(_) => 429,
+            AppError::PayloadTooLarge(_) => 413,
             AppError::Internal(_) => 500,
         }
     }
