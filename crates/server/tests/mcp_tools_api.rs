@@ -122,13 +122,21 @@ async fn tools_call(app: &App, token: Option<&str>, name: &str, arguments: Value
     )
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body:?}");
-    assert!(body.get("error").is_none(), "unexpected protocol error: {body:?}");
+    assert!(
+        body.get("error").is_none(),
+        "unexpected protocol error: {body:?}"
+    );
     body["result"].clone()
 }
 
 /// Same as [`tools_call`] but for a call expected to be refused at the
 /// protocol level (an unknown/hidden tool) — returns the `error` object.
-async fn tools_call_expect_error(app: &App, token: Option<&str>, name: &str, arguments: Value) -> Value {
+async fn tools_call_expect_error(
+    app: &App,
+    token: Option<&str>,
+    name: &str,
+    arguments: Value,
+) -> Value {
     let (status, body) = request(
         app,
         "POST",
@@ -193,7 +201,10 @@ async fn dev_tools_are_hidden_from_tools_list_for_non_superusers() {
         }
         // The three runtime tools are visible to everyone.
         for runtime_tool in ["call_rpc", "send_email", "search_nearby"] {
-            assert!(names.contains(&runtime_tool.to_string()), "{runtime_tool} missing for {token:?}");
+            assert!(
+                names.contains(&runtime_tool.to_string()),
+                "{runtime_tool} missing for {token:?}"
+            );
         }
     }
 }
@@ -204,7 +215,10 @@ async fn dev_tools_are_visible_to_a_superuser() {
     let token = owner_token(&app).await;
     let names = tools_list(&app, Some(&token)).await;
     for dev_tool in DEV_TOOLS {
-        assert!(names.contains(&dev_tool.to_string()), "{dev_tool} missing: {names:?}");
+        assert!(
+            names.contains(&dev_tool.to_string()),
+            "{dev_tool} missing: {names:?}"
+        );
     }
 }
 
@@ -215,7 +229,13 @@ async fn calling_a_dev_tool_as_a_non_superuser_is_refused_like_an_unknown_tool()
 
     let unknown = tools_call_expect_error(&app, None, "totally_made_up_tool", json!({})).await;
     let anon = tools_call_expect_error(&app, None, "get_schema", json!({})).await;
-    let user = tools_call_expect_error(&app, Some(&user_token), "sql_read", json!({"sql": "SELECT 1"})).await;
+    let user = tools_call_expect_error(
+        &app,
+        Some(&user_token),
+        "sql_read",
+        json!({"sql": "SELECT 1"}),
+    )
+    .await;
 
     // Same JSON-RPC error code (`method not found`) either way — nothing
     // distinguishes "doesn't exist" from "exists but you can't see it".
@@ -229,7 +249,10 @@ async fn a_superuser_can_call_a_dev_tool() {
     let token = owner_token(&app).await;
     let result = tools_call(&app, Some(&token), "get_schema", json!({})).await;
     assert_eq!(result["isError"], false, "{result:?}");
-    assert!(result["structuredContent"]["collections"].as_array().unwrap().len() > 0);
+    assert!(!result["structuredContent"]["collections"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 // ----------------------------------------------------------------- call_rpc
@@ -270,7 +293,13 @@ async fn call_rpc_tool_enforces_the_rpc_rule() {
     assert_eq!(result["isError"], true, "{result:?}");
 
     // ...but a superuser can still call it.
-    let result = tools_call(&app, Some(&token), "call_rpc", json!({ "name": "secret_ping" })).await;
+    let result = tools_call(
+        &app,
+        Some(&token),
+        "call_rpc",
+        json!({ "name": "secret_ping" }),
+    )
+    .await;
     assert_eq!(result["isError"], false, "{result:?}");
 }
 
@@ -290,7 +319,10 @@ async fn send_email_tool_enforces_send_rule() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{list:?}");
-    let template_id = list["items"][0]["id"].as_str().expect("welcome template").to_string();
+    let template_id = list["items"][0]["id"]
+        .as_str()
+        .expect("welcome template")
+        .to_string();
 
     // Default (`sendRule: null`): denied for an anonymous MCP caller.
     let result = tools_call(
@@ -331,7 +363,7 @@ async fn send_email_tool_enforces_send_rule() {
 
 async fn seed_places(app: &App, token: &str) {
     let (status, body) = request(
-        &app,
+        app,
         "POST",
         "/api/collections",
         Some(token),
@@ -351,7 +383,7 @@ async fn seed_places(app: &App, token: &str) {
 
     for (label, lon, lat) in [("near", 0.01, 0.01), ("far", 40.0, 40.0)] {
         let (status, body) = request(
-            &app,
+            app,
             "POST",
             "/api/collections/places/records",
             Some(token),
@@ -412,7 +444,11 @@ async fn apply_schema_defaults_dry_run_to_true() {
     assert_eq!(result["isError"], false, "{result:?}");
     assert_eq!(result["structuredContent"]["applied"], false);
     let (status, _) = request(&app, "GET", "/api/collections/widgets", Some(&token), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "widgets should not exist yet");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "widgets should not exist yet"
+    );
 
     // Explicit `dryRun: false` actually writes it.
     let mut with_flag = payload;
@@ -508,7 +544,10 @@ async fn upsert_and_list_email_template_tool() {
     )
     .await;
     assert_eq!(result["isError"], false, "{result:?}");
-    let id = result["structuredContent"]["id"].as_str().unwrap().to_string();
+    let id = result["structuredContent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let result = tools_call(
         &app,
@@ -550,7 +589,13 @@ async fn sql_read_tool_only_accepts_reads() {
     .await;
     assert_eq!(result["isError"], true, "{result:?}");
 
-    let result = tools_call(&app, Some(&token), "sql_read", json!({ "sql": "SELECT 1 AS n" })).await;
+    let result = tools_call(
+        &app,
+        Some(&token),
+        "sql_read",
+        json!({ "sql": "SELECT 1 AS n" }),
+    )
+    .await;
     assert_eq!(result["isError"], false, "{result:?}");
     assert_eq!(result["structuredContent"]["rows"][0]["n"], 1);
 }

@@ -534,8 +534,12 @@ mod tests {
         let mut q = Query::new(&posts);
         // No filter pushed at all — mirrors a public list rule with no
         // `?filter=`.
-        let (order_sql, order_params) =
-            order_by(&r, Some("geoDistance(loc.lon, loc.lat, 1, 2)"), q.params().len()).unwrap();
+        let (order_sql, order_params) = order_by(
+            &r,
+            Some("geoDistance(loc.lon, loc.lat, 1, 2)"),
+            q.params().len(),
+        )
+        .unwrap();
         q.set_order_by(order_sql);
         q.push_order_params(order_params);
 

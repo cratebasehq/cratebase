@@ -667,7 +667,9 @@ async fn call_tool(app: &App, auth: Option<Auth>, params: Value) -> Result<Value
             // so nothing here confirms it does.
             return Err(RpcError::method_not_found(format!("Unknown tool: {name}")));
         }
-        return Ok(tool_result(call_named_tool(app, auth, tool, arguments).await));
+        return Ok(tool_result(
+            call_named_tool(app, auth, tool, arguments).await,
+        ));
     }
 
     let (op, collection) = resolve_tool(app, name)
@@ -841,7 +843,9 @@ async fn call_search_nearby(
     );
     list_args.insert(
         "sort".into(),
-        Value::String(format!("geoDistance({field}.lon, {field}.lat, {lon}, {lat})")),
+        Value::String(format!(
+            "geoDistance({field}.lon, {field}.lat, {lon}, {lat})"
+        )),
     );
     if let Some(limit) = args.get("limit").and_then(Value::as_i64) {
         list_args.insert("perPage".into(), Value::from(limit));
@@ -938,12 +942,8 @@ async fn dev_test_rule(app: &App, args: &Map<String, Value>) -> Result<Value, Ap
         body: row.clone(),
         ..RequestContext::default()
     };
-    let resolver = CollectionResolver::new(
-        collection,
-        &app.db().collections,
-        &ctx,
-        app.db().dialect(),
-    );
+    let resolver =
+        CollectionResolver::new(collection, &app.db().collections, &ctx, app.db().dialect());
     let rule_opt = Some(rule.clone());
     let allowed = rules::check_rule_against_row(app.db(), &resolver, &rule_opt, &row).await?;
     let compiled_sql = cratebase_filter::parse_and_compile(&rule, &resolver, 0)
@@ -968,7 +968,8 @@ async fn dev_query_logs(
         filter: get_arg(args, "filter").map(String::from),
         sort: get_arg(args, "sort").map(String::from),
     };
-    let Json(page) = logs::list(State(app.clone()), RequireSuperuser(auth), ApiQuery(query)).await?;
+    let Json(page) =
+        logs::list(State(app.clone()), RequireSuperuser(auth), ApiQuery(query)).await?;
     serde_json::to_value(page).map_err(|e| ApiError::internal(e.to_string()))
 }
 
