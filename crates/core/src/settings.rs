@@ -287,6 +287,27 @@ impl Default for RateLimits {
                     duration: 60,
                     max_requests: 10,
                 },
+                // `POST /api/realtime/channels/{name}/publish` — a
+                // channel publish fans out to every subscriber, so it
+                // gets its own ceiling rather than sharing the generic
+                // `/api/` bucket below.
+                RateLimitRule {
+                    label: "realtime:publish".into(),
+                    audience: String::new(),
+                    duration: 10,
+                    max_requests: 60,
+                },
+                // `POST /api/realtime/channels/{name}/presence` — a
+                // heartbeat, expected on a steady cadence per connected
+                // client, so this is looser than `realtime:publish` but
+                // still bounded against a client that heartbeats in a
+                // tight loop.
+                RateLimitRule {
+                    label: "realtime:presence".into(),
+                    audience: String::new(),
+                    duration: 10,
+                    max_requests: 120,
+                },
                 RateLimitRule {
                     label: "/api/".into(),
                     audience: String::new(),
@@ -397,6 +418,26 @@ pub struct ZipExport {
     pub enabled: bool,
 }
 
+/// In-app notifications (`_notifications`, `crate::notifications`/
+/// `$notify.send` in the server crate) retention. Pruned by
+/// `App::sync_default_crons`'s `JOB_NOTIFICATIONS_CLEANUP`, same cadence
+/// as `_mailLog`'s retention job. Only *read* notifications
+/// (`readAt IS NOT NULL`) are ever pruned — an unread one is kept
+/// regardless of age, since deleting it would silently "read" it from
+/// the recipient's perspective. `<= 0` disables cleanup, same convention
+/// as `Logs::max_days`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Notifications {
+    pub retention_days: i64,
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Notifications { retention_days: 90 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -413,6 +454,7 @@ pub struct Settings {
     pub teams: Teams,
     pub queue: Queue,
     pub zip_export: ZipExport,
+    pub notifications: Notifications,
     #[serde(rename = "superuserIPs")]
     pub superuser_ips: Vec<String>,
 }
