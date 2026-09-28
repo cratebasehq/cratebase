@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useTheme } from "next-themes";
@@ -179,7 +179,7 @@ function EditorInstanceCapture({
   editorRef,
   onUpdate,
 }: {
-  editorRef: React.MutableRefObject<Editor | null>;
+  editorRef: MutableRefObject<Editor | null>;
   onUpdate: () => void;
 }) {
   const { editor } = useCurrentEditor();
