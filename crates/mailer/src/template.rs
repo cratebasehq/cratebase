@@ -265,6 +265,62 @@ pub fn render_layout(content_html: &str, meta: &Meta) -> String {
         .replace("{FOOTER_APP}", &footer_app)
 }
 
+/// A bulletproof call-to-action button for `_emailTemplates` content:
+/// a VML `roundrect` for Outlook/Word's Word-based rendering engine
+/// (which ignores `border-radius` and padding on an `<a>`), a real
+/// `<a>` for every other client, and a plain-text "copy this link"
+/// fallback paragraph directly underneath so the URL survives even
+/// when a client strips both the button and its `href` (or when the
+/// email is read as plain text — [`html_to_text`] turns that paragraph
+/// into a bare URL line).
+///
+/// `label` and `href` are HTML-escaped; `href` may itself be (and
+/// typically is) a literal `{{path}}`/`{{{path}}}` mustache token — it
+/// is substituted by [`render_mustache`] same as any other content,
+/// since this function only builds the surrounding HTML shell. The
+/// button's fill/text color is always the literal token
+/// `{{brandColor}}`, which [`render_email_template`] always provides
+/// (see that function's doc comment) — this function has no `Meta` of
+/// its own to resolve it against.
+pub fn cta_button(label: &str, href: &str) -> String {
+    const TEMPLATE: &str = r#"<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:28px auto;">
+  <tr>
+    <td style="border-radius:8px;background:{{brandColor}};" bgcolor="{{brandColor}}">
+<!--[if mso]>
+<v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="__HREF__" style="height:44px;v-text-anchor:middle;width:220px;" arcsize="18%" strokecolor="{{brandColor}}" fillcolor="{{brandColor}}">
+<w:anchorlock/>
+<center style="color:#ffffff;font-family:sans-serif;font-size:15px;font-weight:600;">__LABEL__</center>
+</v:roundrect>
+<![endif]-->
+<!--[if !mso]><!-->
+      <a href="__HREF__" target="_blank" rel="noopener" style="display:inline-block;padding:12px 28px;font-size:15px;line-height:20px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">__LABEL__</a>
+<!--<![endif]-->
+    </td>
+  </tr>
+</table>
+<p class="cb-muted" style="margin:0 0 4px;font-size:13px;line-height:20px;color:#8a8a90;text-align:center;">If the button doesn't work, copy and paste this link into your browser:</p>
+<p style="margin:0 0 24px;font-size:13px;line-height:20px;text-align:center;word-break:break-all;"><a href="__HREF__" class="cb-fallback-link" style="color:#52525b;text-decoration:underline;">__HREF__</a></p>"#;
+    TEMPLATE
+        .replace("__LABEL__", &escape_html(label))
+        .replace("__HREF__", &escape_html(href))
+}
+
+/// A boxed, large, letter-spaced monospace one-time-password display —
+/// easy to read at a glance and to select/copy on mobile.
+/// `otp_placeholder` is typically the literal token `{{otp}}`, left for
+/// [`render_mustache`] to substitute; passing a plain string works too
+/// (this function performs no substitution itself, just HTML-escapes
+/// it as ordinary content).
+pub fn otp_code_block(otp_placeholder: &str) -> String {
+    format!(
+        r#"<div class="cb-box" style="background:#f4f4f5;border-radius:10px;padding:20px 12px;text-align:center;margin:24px 0;">
+  <p class="cb-box-text" style="margin:0 0 8px;font-size:13px;line-height:18px;color:#71717a;">Your one-time code</p>
+  <p class="cb-otp-code" style="margin:0;font-family:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;font-size:32px;line-height:1.3;font-weight:700;letter-spacing:10px;color:#111827;">{}</p>
+</div>"#,
+        escape_html(otp_placeholder)
+    )
+}
+
 /// One `_emailTemplates` row's renderable content: `{{var}}`-style
 /// (dotted paths, HTML-escaped by default, `{{{raw}}}` for unescaped),
 /// distinct from the legacy `{PLACEHOLDER}` syntax [`render_template`]
@@ -545,5 +601,102 @@ mod tests {
         assert_eq!(subject, "Verify your Acme email");
         assert!(html.contains("http://localhost:8090/_/#/auth/confirm-verification/tok"));
         assert!(html.contains("Acme team"));
+    }
+
+    #[test]
+    fn cta_button_has_a_vml_fallback_for_outlook() {
+        let html = cta_button("Verify email", "{{appUrl}}/confirm/{{token}}");
+        assert!(html.contains("v:roundrect"), "VML fallback for Outlook");
+        assert!(html.contains("<!--[if mso]>"));
+        assert!(html.contains("<![endif]-->"));
+    }
+
+    #[test]
+    fn cta_button_uses_the_brand_color_token_not_a_hardcoded_color() {
+        let html = cta_button("Go", "https://example.test");
+        assert_eq!(
+            html.matches("{{brandColor}}").count(),
+            4,
+            "td background/bgcolor + VML strokecolor + VML fillcolor"
+        );
+    }
+
+    #[test]
+    fn cta_button_escapes_label_and_href() {
+        let html = cta_button("<b>Go</b>", "https://x.test?a=1&b=2");
+        assert!(!html.contains("<b>Go</b>"));
+        assert!(html.contains("&lt;b&gt;Go&lt;/b&gt;"));
+        assert!(html.contains("https://x.test?a=1&amp;b=2"));
+    }
+
+    #[test]
+    fn cta_button_repeats_the_href_in_a_real_anchor_and_a_plain_text_fallback() {
+        let html = cta_button("Go", "https://example.test/x");
+        // The VML `href`, the real `<a href>`, and the fallback link's
+        // own `href` plus its visible text.
+        assert_eq!(html.matches("https://example.test/x").count(), 4);
+        assert!(html.contains("copy and paste this link"));
+    }
+
+    #[test]
+    fn otp_code_block_is_large_letter_spaced_monospace() {
+        let html = otp_code_block("{{otp}}");
+        assert!(html.contains("{{otp}}"));
+        assert!(html.contains("letter-spacing:10px"));
+        assert!(html.contains("font-size:32px"));
+        assert!(html.contains("monospace"));
+    }
+
+    #[test]
+    fn cta_button_round_trips_through_render_email_template() {
+        // `cta_button`'s literal `{{appUrl}}`/`{{token}}`/`{{brandColor}}`
+        // tokens must be part of `doc.html` itself (not stuffed into
+        // `data` and interpolated a second time) — `render_mustache` is a
+        // single linear pass, so a value substituted in from `data` is
+        // never re-scanned for tokens of its own.
+        let html_body = format!(
+            "<p>Hi</p>{}",
+            cta_button("Verify email", "{{appUrl}}/confirm/{{token}}")
+        );
+        let doc = TemplateDoc {
+            subject: "S",
+            html: &html_body,
+            text: "",
+            layout: false,
+        };
+        let data = serde_json::json!({ "token": "abc123" });
+        let meta = Meta {
+            brand_color: "#ff9900".into(),
+            app_url: "https://acme.test".into(),
+            ..Meta::default()
+        };
+        let (_, html, text) = render_email_template(&doc, &data, &meta);
+        assert!(
+            html.contains("https://acme.test/confirm/abc123"),
+            "appUrl/token substituted inside the button"
+        );
+        assert!(
+            html.contains("background:#ff9900"),
+            "brandColor substituted into the button's own {{{{brandColor}}}} tokens"
+        );
+        assert!(
+            text.contains("https://acme.test/confirm/abc123"),
+            "plain-text alternative keeps the real URL via the fallback paragraph"
+        );
+    }
+
+    #[test]
+    fn otp_code_block_round_trips_through_render_email_template() {
+        let html_body = otp_code_block("{{otp}}");
+        let doc = TemplateDoc {
+            subject: "S",
+            html: &html_body,
+            text: "",
+            layout: false,
+        };
+        let data = serde_json::json!({ "otp": "482913" });
+        let (_, html, _) = render_email_template(&doc, &data, &Meta::default());
+        assert!(html.contains("482913"));
+        assert!(html.contains("letter-spacing:10px"));
     }
 }
