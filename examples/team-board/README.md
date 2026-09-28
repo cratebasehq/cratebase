@@ -104,17 +104,16 @@ cream/terracotta look generated UIs default to:
   in both listings and realtime, because `cards`' rules exclude
   `isQuery = true` rows.
 - **`pb_hooks/team-board.pb.js`**: derives `searchText`, notifies +
-  emails a card's assignee on (re)assignment, and a `cronAdd` job that
-  flags overdue cards once a minute and emails the assignee through
-  `$mails.send` and a real `_emailTemplates` row (`card-overdue`,
-  seeded in `seed.json`, editable from the dashboard's Settings → Email
-  templates with no redeploy) rather than a hand-built subject/html
-  string. The assignment-notification hook deliberately keeps
-  `$app.newMailClient().send(...)` instead — it runs inside the card
-  write's own open transaction, and `$mails.send`'s own `_mailLog` write
-  would deadlock against it (see the hook's own comment); the cron job
-  has no such transaction to worry about, which is why it's the one
-  demonstrating the template pipeline.
+  emails a card's assignee on (re)assignment via `$mails.send` (called
+  from `onRecordAfterCreateSuccess`/`onRecordAfterUpdateSuccess`, still
+  inside the card write's own open transaction — `$mails.send` defers its
+  `_mailLog` write and delivery until that transaction commits, so it
+  never contends with it and never sends for a write that rolls back),
+  and a `cronAdd` job that flags overdue cards once a minute and emails
+  the assignee through `$mails.send` and a real `_emailTemplates` row
+  (`card-overdue`, seeded in `seed.json`, editable from the dashboard's
+  Settings → Email templates with no redeploy) rather than a hand-built
+  subject/html string like the assignment hook uses.
 - **Types**: `cratebase typegen` → `src/cratebase-types.d.ts` (not
   committed — see `.gitignore`), consumed via
   `createCratebaseHooks<Schema>()`. `_teams`/`_team_members` are system
