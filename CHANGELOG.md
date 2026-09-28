@@ -202,6 +202,65 @@ first real tagged release.
   haversine calculation — same syntax, an index-backed plan. The GiST
   index is created idempotently per `geoPoint` field as part of ordinary
   collection schema sync.
+- **MCP: runtime and superuser developer tools** (`crates/server/src/mcp.rs`),
+  on top of the existing per-collection CRUD tools:
+  - **Runtime tools** (visible to any caller, enforced exactly like the
+    HTTP route they restate): `call_rpc` (`name`/`params`, gated by that
+    `_rpc` row's own `rule` — reuses `crate::rpc::call_rpc` verbatim),
+    `send_email` (`template`/`to`/`data`/`locale`, gated by that
+    `_emailTemplates` row's `sendRule` — reuses a newly-extracted
+    `routes::mails::send_mail` shared by `POST /api/mails/send` too, so
+    the two never drift), and `search_nearby` (`collection`/`field`/
+    `lon`/`lat`/`radiusKm`/`limit` — a `geoDistance(...)` filter/sort
+    built for the existing `list_<collection>` tool, so it's enforced by
+    that collection's own `listRule` and gets PostGIS acceleration for
+    free where available).
+  - **Superuser-only developer tools** — absent from `tools/list` and
+    refused by name in `tools/call` for anyone else, so nothing confirms
+    they exist to a caller who can't use them: `get_schema` (every
+    collection's schema, OAuth2 secrets redacted); `apply_schema`
+    (`dryRun` defaults to `true`, reuses `routes::schema::plan_and_apply`);
+    `test_rule` (evaluate a filter-rule expression for a given auth
+    record — or anonymous — and an optional row, returning allow/deny
+    and the compiled SQL when it compiles without a database round
+    trip); `list_email_templates`/`upsert_email_template` and
+    `list_email_triggers`/`upsert_email_trigger` (CRUD on
+    `_emailTemplates`/`_emailTriggers` — an `id` argument updates, its
+    absence creates); `query_logs` (reuses `routes::logs::list`); and
+    `sql_read` (the SQL console's read-only path only — `SELECT`/`WITH`
+    only, row-capped, no write path at all).
+  - Docs: [AI → MCP server](https://cratebase.dev/docs/ai/mcp-server/)
+    documents connecting Claude Code/Claude Desktop with an API key and
+    the full tool reference.
+
+- **Docs sync pass for the email platform, database extensibility, and
+  dashboard overhaul above**: README's feature list and crate map,
+  ARCHITECTURE.md (new "Email platform"/"Database extensibility"
+  sections, an updated auth-model section, a corrected single-node-only
+  claim about realtime — cross-node Postgres realtime already shipped),
+  ROADMAP.md (moved shipped items out of stale descriptions, added an
+  explicit deferred-features list), the REST API index (stale path
+  counts, a missing Mails row), the dashboard tour page (onboarding
+  checklist, the auth-options editor), `.claude/skills/cratebase`
+  (recipes for sending mail via `sendRule` from a frontend, magic-link +
+  TOTP login, an RPC nearest-location query, and `_emailTriggers`), both
+  SDK READMEs (`cb.mails`, `cb.rpc`, `cb.auth.magicLink`/`.totp`/
+  `.accounts`, `useMagicLinkCallback`), and the stale `sms` settings
+  section (dead code, already removed from `crates/core/src/settings.rs`).
+
+### Fixed
+
+- A `sort=geoDistance(...)` with no accompanying `filter` (or, on
+  Postgres, one whose filter bound fewer parameters than the sort did)
+  could 500 instead of returning results: `Query`'s `ORDER BY`/`LIMIT`/
+  `OFFSET` parameters were appended to the same vec `count_sql()` — which
+  has neither clause — was executed against, so the driver rejected the
+  mismatched parameter count outright once there was no `filter` around
+  to happen to absorb it. `crates/db/src/query.rs`'s `Query` now tracks
+  those separately (`Query::all_params()`) so `count_sql()` only ever
+  sees the parameters its own placeholders need. Found and fixed while
+  building the `search_nearby` MCP tool above, whose happy path exercises
+  exactly this shape.
 
 ## 0.3.0 — 2026-09-25
 
