@@ -153,6 +153,19 @@ pub struct SendOutcome {
 }
 
 pub async fn prepare(app: &App, input: NotifySendInput) -> Result<PreparedNotify, AppError> {
+    prepare_with(app, app.db(), input).await
+}
+
+/// [`prepare`], reading the recipient rows through `ex` instead of the
+/// plain pool. `crate::jsvm_host` passes the hook's own open transaction
+/// here: on SQLite a read through a *different* connection while that
+/// transaction holds the writer lock can block until it commits — which
+/// it never will, since the commit is waiting on this very hook.
+pub async fn prepare_with(
+    app: &App,
+    ex: &dyn Executor,
+    input: NotifySendInput,
+) -> Result<PreparedNotify, AppError> {
     validate(&input)?;
     let collection_name = input.collection.clone().unwrap_or_else(|| "users".into());
     let collection = app
@@ -168,7 +181,7 @@ pub async fn prepare(app: &App, input: NotifySendInput) -> Result<PreparedNotify
 
     let mut recipients = Vec::with_capacity(input.to.len());
     for id in &input.to {
-        match records::find_by_id_raw(app.db(), &collection, id).await {
+        match records::find_by_id_raw(ex, &collection, id).await {
             Ok(record) => recipients.push(record),
             Err(_) => {
                 tracing::warn!(id = %id, collection = %collection_name, "$notify.send: recipient not found; skipping");

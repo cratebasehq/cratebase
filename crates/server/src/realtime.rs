@@ -1492,6 +1492,14 @@ async fn broadcast_presence(
     state: &Value,
     auth: &Value,
 ) {
+    // The actual membership change: `presence_track` already upserted a
+    // join/update before calling this, but a `"presence.leave"` has no
+    // earlier write to piggyback on — this is the one place that removes
+    // the local (possibly already-swept, in which case this is a
+    // harmless no-op) entry before telling anyone about it.
+    if kind == "presence.leave" {
+        app.realtime().presence_remove(channel, client_id);
+    }
     if app.db().engine.supports_cross_node() {
         let payload = serde_json::json!({
             "kind": "presence",

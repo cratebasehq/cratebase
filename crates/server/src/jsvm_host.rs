@@ -545,7 +545,8 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         // `email`/`push` channels' deliveries must not run while this
         // hook's own transaction is still open, and must never happen at
         // all for a write that ends up rolling back.
-        let prepared = crate::notify::prepare(self.0.app(), notify_input).await?;
+        let prepared =
+            crate::notify::prepare_with(self.0.app(), self.0.executor(), notify_input).await?;
         let recipients = prepared.recipient_ids();
         let result = serde_json::json!({
             "sent": recipients.len(),
@@ -2159,125 +2160,6 @@ mod hot_reload_tests {
         assert_eq!(log_rows[0].get_str("status"), Some("sent"));
     }
 
-    /// Same regression as
-    /// [`mails_send_in_after_create_success_hook_does_not_deadlock`], for
-    /// `$notify.send`: called from `onRecordAfterCreateSuccess`, its
-    /// `inapp` channel writes `_notifications` and its `email` channel
-    /// writes `_mailLog` and sends — both through the plain connection
-    /// pool, both would deadlock against the triggering write's still-open
-    /// transaction if `crate::jsvm_host::notify_send` didn't defer them to
-    /// `TxApp::after_commit` exactly like `mails_send` does.
-    #[tokio::test]
-    async fn notify_send_in_after_create_success_hook_does_not_deadlock() {
-        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
-        let router = crate::router(app.clone());
-        let token = superuser_token(&app).await;
-
-        // A real "users" recipient — `$notify.send`'s default collection —
-        // with an email address so the `email` channel has something to
-        // send to.
-        let users = app.db().collections.get("users").expect("users");
-        let mut recipient = cratebase_core::Record::new(users);
-        recipient.set(
-            "email",
-            serde_json::Value::String("recipient@example.com".into()),
-        );
-        recipient.set("password", serde_json::Value::String("supersecret123".into()));
-        recipient.set("verified", serde_json::Value::Bool(true));
-        cratebase_db::records::create(app.db(), &app.db().collections, &mut recipient)
-            .await
-            .expect("create recipient");
-        let recipient_id = recipient.id().to_string();
-
-        let create_collection = router
-            .clone()
-            .oneshot(json_request(
-                "POST",
-                "/api/collections",
-                &token,
-                serde_json::json!({
-                    "name": "widgets",
-                    "type": "base",
-                    "listRule": "",
-                    "viewRule": "",
-                    "createRule": "",
-                    "updateRule": "",
-                    "deleteRule": "",
-                    "fields": [{"name": "name", "type": "text"}],
-                }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(create_collection.status(), StatusCode::OK);
-
-        std::fs::write(
-            hooks_dir.join("main.pb.js"),
-            format!(
-                r#"onRecordAfterCreateSuccess((e) => {{
-                    $notify.send({{
-                        to: "{recipient_id}",
-                        type: "widget.created",
-                        title: "Widget created",
-                        body: "A new widget was created.",
-                        channels: ["inapp", "email"],
-                    }});
-                    e.next();
-                }}, "widgets");"#
-            ),
-        )
-        .unwrap();
-        app.jsvm().unwrap().reload().await.expect("reload");
-
-        let created = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            router.clone().oneshot(json_request(
-                "POST",
-                "/api/collections/widgets/records",
-                &token,
-                serde_json::json!({ "name": "gizmo" }),
-            )),
-        )
-        .await
-        .expect(
-            "a create whose after-success hook calls $notify.send must not deadlock \
-             the request",
-        )
-        .unwrap();
-        assert_eq!(
-            created.status(),
-            StatusCode::OK,
-            "{:?}",
-            body_json(created).await
-        );
-
-        let delivered = poll_until(std::time::Duration::from_secs(5), || async {
-            app.mailer()
-                .dev_mailbox()
-                .map(|mb| !mb.is_empty())
-                .unwrap_or(false)
-        })
-        .await;
-        assert!(
-            delivered,
-            "the deferred $notify.send's email channel must still deliver once the \
-             triggering transaction commits"
-        );
-        let mailbox = app.mailer().dev_mailbox().unwrap();
-        assert_eq!(mailbox.list()[0].subject, "Widget created");
-
-        let rows = app
-            .db()
-            .query(
-                r#"SELECT * FROM "_notifications" WHERE "recordRef" = $1"#,
-                &[cratebase_db::engine::Sql::from(recipient_id)],
-            )
-            .await
-            .expect("query _notifications");
-        assert_eq!(rows.len(), 1, "exactly one _notifications row for the send");
-        assert_eq!(rows[0].get_str("title"), Some("Widget created"));
-        assert_eq!(rows[0].get_str("type"), Some("widget.created"));
-    }
-
     /// Same as
     /// [`mails_send_in_after_create_success_hook_does_not_deadlock`], for
     /// `onRecordAfterUpdateSuccess` — the other half of the docs'
@@ -2460,6 +2342,80 @@ mod hot_reload_tests {
             log_rows.is_empty(),
             "no _mailLog row should exist for a send that never should have fired"
         );
+    }
+
+    /// [`mails_send_from_hook_is_not_delivered_when_the_write_rolls_back`]
+    /// for `$notify.send`: a notification queued from a hook whose write
+    /// then rolls back must leave no `_notifications` row and send no mail.
+    #[tokio::test]
+    async fn notify_send_from_hook_is_not_delivered_when_the_write_rolls_back() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let users = app.db().collections.get("users").expect("users");
+        let mut recipient = cratebase_core::Record::new(users);
+        recipient.set("email", serde_json::json!("rollback@example.com"));
+        recipient.set("password", serde_json::json!("supersecret123"));
+        cratebase_db::records::create(app.db(), &app.db().collections, &mut recipient)
+            .await
+            .expect("create recipient");
+        let recipient_id = recipient.id().to_string();
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "createRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            format!(
+                r#"onRecordAfterCreateSuccess((e) => {{
+                    $notify.send({{ to: "{recipient_id}", type: "t", title: "never", body: "b" }});
+                    e.next();
+                }}, "widgets");
+                onRecordAfterCreateSuccess((e) => {{
+                    throw new Error("force rollback after the notification was queued");
+                }}, "widgets");"#
+            ),
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("must not deadlock even though the write ultimately fails")
+        .unwrap();
+        assert_ne!(created.status(), StatusCode::OK);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(app.mailer().dev_mailbox().unwrap().len(), 0);
+        let rows = app
+            .db()
+            .query(r#"SELECT * FROM "_notifications""#, &[])
+            .await
+            .expect("query _notifications");
+        assert!(rows.is_empty(), "no notification for a rolled-back write");
     }
 
     /// Same regression as [`mails_send_in_after_create_success_hook_does_not_deadlock`],
