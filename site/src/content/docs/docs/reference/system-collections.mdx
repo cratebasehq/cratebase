@@ -3,7 +3,7 @@ title: "System collections"
 description: "Names, fixed ids, and rules for every built-in collection."
 ---
 
-`_superusers`, `_mfas`, `_otps`, `_magicLinks`, `_externalAuths`,
+`_superusers`, `_mfas`, `_otps`, `_totps`, `_magicLinks`, `_externalAuths`,
 `_authOrigins`, `_teams`, `_team_members`, `_cron_jobs`, `_rpc`, `_webhooks`,
 `_audit_log`, `_push_subscriptions`, `_sessions`, `_bans`,
 `_emailTemplates`, `_mailLog`, `_emailTriggers`, and the default `users`
@@ -41,6 +41,15 @@ own in between; per-call authorization comes from the definition's
 `rule` field instead, evaluated by
 [`POST /rpc/{name}`](/docs/reference/rest-api/rpc/), not by
 `_rpc.createRule`/`viewRule`/etc.
+
+`_totps` holds [TOTP 2FA](/docs/concepts/authentication/totp/) state, at
+most one row per `(collectionRef, recordRef)` pair: `id`,
+`collectionRef`, `recordRef`, `secret` (hidden, encrypted with
+`CB_ENCRYPTION` when set), `confirmed`, `backupCodes` (hidden, a JSON
+array of hashed one-time codes — an entry is removed the moment it's
+consumed), `lastUsedStep` (the TOTP replay guard). Owner-readable via
+`listRule`/`viewRule`; mutations only ever go through the dedicated
+`.../totp/*` routes, same reasoning as `_sessions`/`_bans` above.
 
 `_magicLinks` is the token store for [magic-link login](/docs/concepts/authentication/magic-link/)
 — same shape and rules as `_otps` (owner-readable, otherwise

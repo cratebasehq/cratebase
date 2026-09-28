@@ -12,3 +12,12 @@ session and answers `401 {"mfaId": "..."}` instead of a token. Completing
 it is a second call to `auth-with-password` or `auth-with-otp` carrying
 that `mfaId` — using a *different* method than the one that already
 succeeded. There is no separate `mfa/confirm` endpoint.
+
+[TOTP](/docs/concepts/authentication/totp/) is the other way a login ends
+up behind this same challenge: a record with confirmed TOTP requires a
+second factor on every login regardless of whether
+`authOptions.mfa.enabled` is set at all. The two triggers are
+independent — either one alone opens a pending `_mfas` session, and a
+collection using both still only ever has one challenge per login,
+completed with whichever second method (password/OTP/magic
+link/OAuth2/`auth-with-totp`) differs from the first.

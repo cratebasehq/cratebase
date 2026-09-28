@@ -1,0 +1,77 @@
+---
+title: "Sign in with Apple"
+description: "Apple's Service ID + private-key client secret, id_token identity, and the form_post callback."
+sidebar:
+  order: 6.1
+---
+
+Apple's OAuth2 implementation differs from every other preset in three
+ways this page walks through: there's no static client secret, there's
+no userinfo endpoint, and (whenever a `scope` is requested, which every
+login does) it callbacks with a `POST`, not a `GET`.
+
+## 1. Create a Services ID
+
+In [Apple Developer → Certificates, IDs & Profiles →
+Identifiers](https://developer.apple.com/account/resources/identifiers/list/serviceId),
+register a **Services ID** — its identifier (e.g.
+`com.example.app.service`) is the collection's OAuth2 **client id**.
+Enable **Sign In with Apple** on it and configure its website URLs with
+this collection's callback:
+
+```
+{appURL}/api/collections/{collection}/oauth2/apple/callback
+```
+
+## 2. Create a Sign in with Apple key
+
+Under **Keys**, create a new key with **Sign in with Apple** enabled and
+download the resulting `.p8` file — Apple only lets you download it
+once. Note the key's **Key ID**, and your account's **Team ID** (under
+**Membership**).
+
+## 3. Configure the collection
+
+Set the provider's `extra` fields (via the dashboard's provider editor,
+or directly in the collection's `oauth2.providers[]` entry):
+
+```json
+{
+  "name": "apple",
+  "clientId": "com.example.app.service",
+  "extra": {
+    "teamId": "ABCDE12345",
+    "keyId": "ABCD123456",
+    "privateKey": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+  }
+}
+```
+
+There is no `clientSecret` to set at all — one is minted per token
+request as a short-lived ES256 JWT (`iss` the team id, `sub` the
+service id, `kid` the key id), signed with `privateKey`. The dashboard
+never returns a stored `privateKey` back out (same treatment as any
+other secret), so the field starts blank when editing an existing
+provider; leave it blank to keep the current key.
+
+## Identity comes from the id_token, not a userinfo call
+
+Apple has no userinfo endpoint. `sub` (the stable per-app user id) and
+`email`/`email_verified` are read from the token response's `id_token`,
+which is verified against Apple's own published JWKS
+(`https://appleid.apple.com/auth/keys`, `iss` `https://appleid.apple.com`)
+before anything in it is trusted.
+
+## The name is only ever sent once
+
+Apple includes the person's name in a `user` form field **only on the
+very first authorization** of a given Apple ID + Services ID pair —
+every later login omits it entirely, even if the person revokes and
+re-grants access. Because Apple requires `response_mode=form_post`
+whenever a scope is requested, this arrives as a `POST` body, not a
+`GET` query string; `oauth2/apple/callback` handles both callback
+shapes, but only the server-driven [redirect
+flow](/docs/concepts/authentication/oauth2/#server-driven-redirect-flow)
+can receive a `POST` at all — the popup/`auth-with-oauth2` flow doesn't
+see this field, so a brand-new record signed up that way has no name to
+prefill.

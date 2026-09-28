@@ -1,0 +1,54 @@
+---
+title: "Generic OIDC"
+description: "Any OpenID Connect issuer, configured with nothing but its issuer URL."
+sidebar:
+  order: 6.2
+---
+
+A provider that isn't one of the [built-in
+presets](/docs/concepts/authentication/oauth2/#built-in-presets) but
+does speak standard OpenID Connect doesn't need its authorize/token/
+userinfo URLs hand-entered at all — set `extra.issuer` and everything
+else is discovered:
+
+```json
+{
+  "name": "oidc",
+  "clientId": "...",
+  "clientSecret": "...",
+  "extra": { "issuer": "https://issuer.example.com" }
+}
+```
+
+The name is conventionally `oidc`/`oidc2`/`oidc3` for more than one
+hand-configured issuer (matching PocketBase's own convention), but
+anything works — cratebase keys off `extra.issuer` being set, not the
+name.
+
+## What discovery does
+
+On first use (and again after the cache expires), the server fetches
+`{issuer}/.well-known/openid-configuration` for the
+`authorization_endpoint`/`token_endpoint`/`jwks_uri`, then caches the
+result for an hour. The `jwks_uri` document (the issuer's signing keys)
+is cached the same way, with a forced refresh-and-retry if a login ever
+presents a `kid` the cached set doesn't recognize — the one case a
+provider rotating its keys mid-cache-window needs.
+
+## Identity verification
+
+Like [Apple](/docs/concepts/authentication/apple/), a generic OIDC
+provider's identity comes from the token response's `id_token` rather
+than a separate userinfo call — every OIDC-conformant token endpoint
+returns one alongside the access token. It's verified against the
+issuer's own JWKS before anything in it is trusted: signature, `iss`
+matches the discovered issuer, `aud` matches this collection's client
+id, and `exp` hasn't passed. Its standard claims (`sub`, `email`,
+`email_verified`, `name`, `preferred_username`, `picture`) map onto a
+record the same way a [hand-configured
+provider's](/docs/concepts/authentication/oauth2/) userinfo response
+does — `email` is only trusted when `email_verified` is genuinely
+`true`.
+
+Default scope is `openid profile email` when the provider doesn't
+override it with its own `extra.scope`.

@@ -1,6 +1,6 @@
 ---
 title: "OAuth2"
-description: "Google, GitHub, and custom providers via authorization-code + PKCE."
+description: "12 built-in providers, a generic OIDC issuer, and custom providers via authorization-code + PKCE."
 sidebar:
   order: 6
 ---
@@ -8,10 +8,36 @@ sidebar:
 `auth-methods` hands back a per-provider `authURL`/`state`/`codeVerifier`;
 `auth-with-oauth2` exchanges the resulting `code` server-side, fetches
 user info, and either signs in the linked record (via `_externalAuths`),
-links onto a same-email match, or creates a new record. `google`/`github`
-only need a client id/secret configured on the collection; any other
-provider name is a hand-configured provider using its own
-authorize/token/userinfo URLs.
+links onto a same-email match, or creates a new record. A built-in
+preset only needs a client id/secret (plus whatever extra fields its own
+row below calls out) configured on the collection; any other provider
+name is a hand-configured provider using its own authorize/token/userinfo
+URLs — or, with nothing but an `extra.issuer` set, a [generic OIDC
+provider](/docs/concepts/authentication/oidc/) discovered automatically.
+
+## Built-in presets
+
+| Preset name | Scopes (default) | Extra config | Notes |
+| --- | --- | --- | --- |
+| `google` | `userinfo.profile userinfo.email` | — | |
+| `github` | `read:user user:email` | — | Falls back to `/user/emails` when the primary email is private. |
+| `apple` | `name email` | `teamId`, `keyId`, `privateKey` | See [Sign in with Apple](/docs/concepts/authentication/apple/) — no static client secret. |
+| `microsoft` | `openid profile email User.Read` | `tenant` (default `common`) | Entra ID (Azure AD) v2.0 endpoint. |
+| `discord` | `identify email` | — | |
+| `gitlab` | `read_user` | `baseUrl` (default `https://gitlab.com`) | Set `baseUrl` for a self-hosted instance. |
+| `facebook` | `email public_profile` | — | |
+| `twitter` | `tweet.read users.read offline.access` | — | X's OAuth2 has no email scope; PKCE is mandatory (already the default). |
+| `linkedin` | `openid profile email` | — | "Sign In with LinkedIn using OpenID Connect", not the legacy REST API. |
+| `slack` | `openid profile email` | — | "Sign in with Slack" (OpenID Connect). |
+| `twitch` | `user:read:email` | — | Helix API calls also need the app's Client ID as a header — handled automatically. |
+| `spotify` | `user-read-email user-read-private` | — | |
+
+Every preset's userinfo parsing only ever attributes an `email` to a
+record when the provider itself vouches it's verified (an
+`email_verified` claim, or GitHub's own `primary && verified` email
+list) — an unverified address on file with a provider is never enough
+to sign into (and silently verify) an existing record that happens to
+share it.
 
 ## Server-driven redirect flow
 

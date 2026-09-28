@@ -36,7 +36,14 @@ for the token model these endpoints share.
 | `POST .../ban/{id}` | bearer (superuser) | Ban a record, revoking its sessions immediately |
 | `DELETE .../ban/{id}` | bearer (superuser) | Lift a ban |
 | `GET .../oauth2/{provider}/start` | none | Begin the server-driven OAuth2 redirect flow |
-| `GET .../oauth2/{provider}/callback` | none | Complete it, landing the session in a cookie |
+| `GET .../oauth2/{provider}/callback` | none, `GET`/`POST` | Complete it, landing the session in a cookie |
+| `POST .../totp/setup` | bearer | Start (or restart) TOTP setup, returns the `otpauth://` URI + secret |
+| `POST .../totp/confirm` | bearer | Confirm setup, returns 10 backup codes shown once |
+| `POST .../totp/disable` | bearer | Disable TOTP with a code or the account password |
+| `POST .../totp/backup-codes/regenerate` | bearer | Invalidate existing backup codes, issue 10 new ones |
+| `POST .../auth-with-totp` | none | Complete a pending MFA challenge with a TOTP/backup code |
+| `GET .../records/{id}/external-auths` | bearer (owner/superuser) | List a record's linked OAuth2 providers |
+| `DELETE .../records/{id}/external-auths/{provider}` | bearer (owner/superuser) | Unlink one |
 
 ### `auth-with-password`
 
@@ -159,3 +166,46 @@ target — never called directly — and on success redirects to
 pending MFA challenge redirects with `?cb_mfa=<mfaId>` instead of
 setting the cookie. The exact URL to register with the provider is
 `{appURL}/api/collections/{collection}/oauth2/{provider}/callback`.
+The callback also accepts `POST` (Apple's `response_mode=form_post`
+sends `code`/`state`/`user` as form fields instead of query params —
+see [Sign in with Apple](/docs/concepts/authentication/apple/)); every
+other provider only ever uses `GET`.
+
+### `totp/setup` / `totp/confirm` / `totp/disable` / `totp/backup-codes/regenerate`
+
+Bearer-authenticated, act on the caller's own record — there's no `{id}`
+in any of these paths. `POST .../totp/setup` (no body) → `200 { "secret",
+"uri" }`; calling it again before confirming replaces the pending
+secret, and calling it once already confirmed answers `400`. `POST
+.../totp/confirm` body `{ "code": "123456" }` → `200 { "backupCodes":
+[...10 strings] }`, shown once and never retrievable again. `POST
+.../totp/disable` body `{ "code": "..." }` or `{ "password": "..." }` →
+`204`. `POST .../totp/backup-codes/regenerate` (no body) → `200 {
+"backupCodes": [...10 new strings] }`, invalidating every previous one.
+See [TOTP 2FA](/docs/concepts/authentication/totp/).
+
+### `auth-with-totp`
+
+```json
+{ "mfaId": "...", "code": "123456" }
+```
+
+Unauthenticated at the transport level — the pending `_mfas` session
+`mfaId` names already identifies the record. `code` is either a live
+TOTP code or one of the record's backup codes (consumed on use, and
+never accepted twice). Success: the normal `200 { "token", "record" }`;
+a wrong/reused code is `400`.
+
+### `records/{id}/external-auths`
+
+```json
+[{ "id": "...", "created": "...", "updated": "...", "recordId": "...", "collectionId": "...", "provider": "google", "providerId": "..." }]
+```
+
+`GET` lists every provider linked to `id` — a bare array, not the usual
+`{ "items": [...] }` list envelope. Both this and `DELETE
+.../external-auths/{provider}` require being `id`'s own owner or a
+superuser. The `DELETE` additionally refuses (`400`) when unlinking
+that provider would leave the record with no password, no other linked
+provider, and both OTP and magic-link login disabled — see [Linked
+accounts](/docs/concepts/authentication/linked-accounts/).

@@ -118,7 +118,34 @@ await cb.auth.changeEmail.request(newEmail);
 await cb.auth.changeEmail.confirm({ token, password });
 ```
 
-## External auths
+## TOTP 2FA
+
+```ts
+const { secret, uri } = await cb.auth.totp.setup();
+const { backupCodes } = await cb.auth.totp.confirm(codeFromApp); // 10 one-time codes, shown once
+await cb.auth.totp.disable({ code }); // or { password }
+await cb.auth.totp.regenerateBackupCodes();
+
+// Completes a pending MFA challenge, same as signIn.otp above:
+await cb.auth.signIn.totp({ mfaId: err.mfaId, code });
+```
+
+See [TOTP 2FA](/docs/concepts/authentication/totp/) for the full setup/
+login flow, including a QR-code rendering example.
+
+## Linked accounts
+
+```ts
+const linked = await cb.auth.accounts.list();      // defaults to the signed-in record
+await cb.auth.accounts.unlink("google");
+```
+
+Refuses to unlink a record's last way of signing in — see [Linked
+accounts](/docs/concepts/authentication/linked-accounts/).
+
+The older `cb.auth.externalAuths.list(recordId)`/`.unlink(recordId,
+provider)` (generic `_externalAuths` collection CRUD, no stranding
+check) still works for compatibility:
 
 ```ts
 await cb.auth.externalAuths.list(recordId);
@@ -137,6 +164,11 @@ const impersonated = await cb.auth.as("_superusers").admin.impersonate("users", 
 await cb.auth.as("_superusers").admin.ban("users", recordId, { reason: "abuse" });
 await cb.auth.as("_superusers").admin.unban("users", recordId);
 await cb.auth.as("_superusers").admin.stopImpersonating(); // cookie mode only
+
+// Cross-collection linked-accounts management, same "don't strand the
+// account" check as cb.auth.accounts above:
+await cb.auth.as("_superusers").admin.listExternalAuths("users", recordId);
+await cb.auth.as("_superusers").admin.unlinkExternalAuth("users", recordId, "google");
 ```
 
 `admin.stopImpersonating()` restores the impersonator's session from

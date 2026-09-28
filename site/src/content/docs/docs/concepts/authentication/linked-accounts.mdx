@@ -1,0 +1,43 @@
+---
+title: "Linked accounts"
+description: "Listing and unlinking a record's own OAuth2 providers, without stranding it."
+sidebar:
+  order: 6.3
+---
+
+Signing in through a second provider onto an already-linked-in record
+adds another `_externalAuths` row rather than creating a new one (see
+[OAuth2](/docs/concepts/authentication/oauth2/)); these two endpoints
+are how a record — or a superuser, on its behalf — manages that list
+directly instead of going through the generic `_externalAuths`
+collection API.
+
+- `GET /api/collections/{collection}/records/{id}/external-auths` — every
+  provider currently linked to `id`. A bare array (not the usual
+  `{items: [...]}` list envelope), matching PocketBase's own
+  `listExternalAuths` shape: `[{id, created, updated, recordId,
+  collectionId, provider, providerId}, ...]`.
+- `DELETE .../records/{id}/external-auths/{provider}` — unlinks it.
+
+Both are owner-or-superuser only. On the client:
+
+```ts
+const linked = await cb.auth.accounts.list(); // defaults to the signed-in record
+await cb.auth.accounts.unlink("google");
+
+// Acting on someone else's record as a superuser:
+const linked = await superuserAuth.admin.listExternalAuths("users", recordId);
+await superuserAuth.admin.unlinkExternalAuth("users", recordId, "google");
+```
+
+## The one check PocketBase doesn't have
+
+Unlinking the provider that happens to be a record's *only* way to sign
+in would otherwise lock it out permanently — `DELETE .../external-auths/
+{provider}` refuses with `400` when, after removing it, the record would
+have **no password set, no other linked provider, and both OTP and
+magic-link login disabled** on the collection. Any one of those being
+true is enough to allow the unlink; only their total absence is refused.
+A superuser hits the same check — there's no override, since the
+scenario it prevents (an account with no way back in) is exactly as
+bad regardless of who triggered it.

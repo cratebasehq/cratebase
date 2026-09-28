@@ -1,0 +1,114 @@
+---
+title: "TOTP 2FA"
+description: "RFC 6238 authenticator-app 2FA with backup codes, integrated with the existing MFA flow."
+sidebar:
+  order: 5.5
+---
+
+TOTP is a second, per-record factor built on the same `_mfas` challenge
+[MFA](/docs/concepts/authentication/mfa/) already uses — there is no
+separate `authOptions.totp` collection setting to turn on. A record
+opts in for itself; once confirmed, *every* first-factor login for that
+record (password, OTP, magic link, or OAuth2) answers `401 {mfaId}`
+regardless of whether the collection's own `authOptions.mfa` is enabled
+at all. A collection that does have `authOptions.mfa.enabled` keeps
+working exactly as before — the two are independent, and either one
+alone is enough to require a second factor.
+
+## Setup
+
+```ts
+const { secret, uri } = await cb.auth.totp.setup();
+// uri is an otpauth:// URI -- render it as a QR code (see below) or
+// show `secret` for manual entry.
+
+const { backupCodes } = await cb.auth.totp.confirm(codeFromTheApp);
+// Show these 10 codes to the person exactly once -- they're hashed
+// server-side and never retrievable again, only regenerated.
+```
+
+`setup()` generates a fresh secret and stores it pending (unconfirmed);
+calling it again before confirming replaces the pending secret rather
+than erroring, so an abandoned attempt can just be restarted. Once
+confirmed, calling `setup()` again is refused (`400`) until TOTP is
+disabled first.
+
+### Rendering the QR code
+
+`uri` is a standard `otpauth://totp/...` provisioning URI — any QR
+library renders it. Using
+[`qrcode.react`](https://www.npmjs.com/package/qrcode.react) (a peer
+dependency you install yourself; cratebase has no opinion on which QR
+library you use):
+
+```tsx
+import { QRCodeSVG } from "qrcode.react";
+
+function TotpSetup() {
+  const [state, setState] = useState<{ secret: string; uri: string } | null>(null);
+
+  useEffect(() => {
+    cb.auth.totp.setup().then(setState);
+  }, []);
+
+  if (!state) return null;
+  return (
+    <div>
+      <QRCodeSVG value={state.uri} size={200} />
+      <p>Can't scan? Enter this code manually: <code>{state.secret}</code></p>
+    </div>
+  );
+}
+```
+
+## Login
+
+A first-factor login against a record with confirmed TOTP answers `401
+{mfaId}`, exactly like collection-level MFA does. Complete it with a
+live code from the authenticator app or one of the backup codes:
+
+```ts
+try {
+  await cb.auth.signIn.password({ identity, password });
+} catch (err) {
+  if (err instanceof CratebaseError && err.mfaId) {
+    // Prompt for a TOTP/backup code, then:
+    await cb.auth.signIn.totp({ mfaId: err.mfaId, code });
+  }
+}
+```
+
+## Backup codes
+
+10 one-time codes (`XXXXX-XXXXX`, avoiding visually ambiguous
+characters) are issued on confirm and stored hashed — each is consumed
+the moment it's used to complete a login or to disable TOTP.
+`cb.auth.totp.regenerateBackupCodes()` invalidates every existing code
+and issues a fresh 10; do this if the original set is ever lost or
+suspected leaked.
+
+## Disabling
+
+```ts
+await cb.auth.totp.disable({ code }); // a live TOTP code or a backup code
+// or
+await cb.auth.totp.disable({ password }); // the account password
+```
+
+A superuser can also reset someone else's TOTP directly — the
+dashboard's record drawer has a "Reset TOTP" button, which is just
+`DELETE /api/collections/_totps/records/{id}` (superuser-only, same
+generic-collection mechanism as resetting anything else system-shaped).
+
+## Implementation notes
+
+- RFC 6238 defaults throughout: HMAC-SHA1, 6 digits, a 30-second step,
+  and a ±1 step verification window for ordinary clock drift.
+- **Replay protection**: a code's step is rejected once it's been used,
+  even if it's still numerically within the window — the same code
+  can never complete two logins.
+- The secret is encrypted at rest with `CB_ENCRYPTION` when it's set
+  (the same key `_params` values use), plaintext otherwise.
+- `.../totp/confirm`, `.../totp/disable`, and `.../auth-with-totp` share
+  the same rate-limit bucket every other login/verify endpoint uses
+  (`*:auth`), plus their own finer-grained tag.
