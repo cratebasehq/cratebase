@@ -22,12 +22,13 @@ import {
   ToggleSetting,
 } from "@/components/settings/settings-form";
 
-type Draft = Pick<ServerSettings, "smtp" | "s3">;
+type Draft = Pick<ServerSettings, "smtp" | "s3" | "storage">;
 
 function draftOf(settings: ServerSettings): Draft {
   return {
     smtp: { ...settings.smtp, password: "" },
     s3: { ...settings.s3, secret: "" },
+    storage: { ...settings.storage },
   };
 }
 
@@ -38,7 +39,7 @@ function payloadOf(draft: Draft) {
   if (!draft.smtp.password) delete smtp.password;
   const s3: Record<string, unknown> = { ...draft.s3 };
   if (!draft.s3.secret) delete s3.secret;
-  return { smtp, s3 };
+  return { smtp, s3, storage: draft.storage };
 }
 
 function validate(draft: Draft): string[] {
@@ -51,6 +52,8 @@ function validate(draft: Draft): string[] {
     if (!draft.s3.bucket.trim()) errors.push("S3 needs a bucket");
     if (!draft.s3.endpoint.trim()) errors.push("S3 needs an endpoint");
   }
+  if (draft.storage.maxTransformDimension < 0) errors.push("Max transform dimension can't be negative");
+  if (draft.storage.userQuotaBytes < 0) errors.push("Storage quota can't be negative");
   return errors;
 }
 
@@ -104,7 +107,7 @@ export function MailStoragePage() {
       onSuccess: () => {
         toast.success("Settings saved");
         // Secrets were consumed; clear the boxes so they read as "stored".
-        setDraft((d) => (d ? { smtp: { ...d.smtp, password: "" }, s3: { ...d.s3, secret: "" } } : d));
+        setDraft((d) => (d ? { ...d, smtp: { ...d.smtp, password: "" }, s3: { ...d.s3, secret: "" } } : d));
       },
       onError: (error) => {
         const failure = describeFailure(error);
@@ -292,6 +295,54 @@ export function MailStoragePage() {
             checked={draft.s3.forcePathStyle}
             onChange={(forcePathStyle) => setDraft({ ...draft, s3: { ...draft.s3, forcePathStyle } })}
             label={draft.s3.forcePathStyle ? "bucket in the path" : "bucket in the hostname"}
+          />
+        </SettingRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Storage limits"
+        description="Image transforms and the per-user storage quota — both apply whether files live on local disk or S3."
+      >
+        <SettingRow
+          label="Image transforms"
+          htmlFor="storage-transforms-enabled"
+          help="Whether ?w=/?h=/?fit=/?format=/?q= are honored on the files route. ?thumb= is unaffected either way."
+        >
+          <ToggleSetting
+            id="storage-transforms-enabled"
+            checked={draft.storage.imageTransformsEnabled}
+            onChange={(imageTransformsEnabled) =>
+              setDraft({ ...draft, storage: { ...draft.storage, imageTransformsEnabled } })
+            }
+            label={draft.storage.imageTransformsEnabled ? "Transforms enabled" : "Transforms disabled"}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Max transform dimension"
+          htmlFor="storage-max-dimension"
+          help="The largest ?w=/?h= a non-superuser request may ask for, in pixels. 0 means no limit."
+        >
+          <NumberSetting
+            id="storage-max-dimension"
+            min={0}
+            suffix="px (0 = no limit)"
+            value={draft.storage.maxTransformDimension}
+            onChange={(maxTransformDimension) =>
+              setDraft({ ...draft, storage: { ...draft.storage, maxTransformDimension } })
+            }
+          />
+        </SettingRow>
+        <SettingRow
+          label="Per-user storage quota"
+          htmlFor="storage-quota"
+          help="Caps the total bytes a single auth record may store across every collection with an ownerField set (see that collection's settings). 0 disables the quota."
+        >
+          <NumberSetting
+            id="storage-quota"
+            min={0}
+            suffix="bytes (0 = unlimited)"
+            value={draft.storage.userQuotaBytes}
+            onChange={(userQuotaBytes) => setDraft({ ...draft, storage: { ...draft.storage, userQuotaBytes } })}
           />
         </SettingRow>
       </SettingsSection>
