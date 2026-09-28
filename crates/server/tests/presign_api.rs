@@ -456,6 +456,96 @@ async fn sweep_removes_expired_pending_tickets_but_not_consumed_ones() {
     assert_eq!(response.status(), 200);
 }
 
+/// `settings.storage.userQuotaBytes` gates a presign against the sum of
+/// `ownerField`-matching, already-consumed presigned uploads.
+#[tokio::test]
+async fn per_user_quota_gates_further_presigns_once_exceeded() {
+    let harness = Harness::new().await;
+    harness
+        .collection(json!({
+            "name": "photos",
+            "type": "base",
+            "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": "",
+            "ownerField": "owner",
+            "fields": [
+                {"name": "owner", "type": "relation", "collectionId": "pbc_3142635823", "maxSelect": 1},
+                {"name": "photo", "type": "file", "maxSelect": 1},
+            ],
+        }))
+        .await;
+
+    // 15 bytes total quota.
+    let mut settings = harness.app.settings().as_ref().clone();
+    settings.storage.user_quota_bytes = 15;
+    harness.app.set_settings(settings).await.unwrap();
+
+    let admin_id = harness
+        .admin("GET", "/api/collections/_superusers/records", None)
+        .await
+        .1["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // First upload: 10 bytes, well under quota.
+    let (status, presigned) = harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "photos", "field": "photo", "filename": "a.bin",
+                "contentType": "application/octet-stream", "size": 10,
+            })),
+        )
+        .await;
+    assert_eq!(status, 200, "{presigned}");
+    let token = presigned["token"].as_str().unwrap().to_string();
+    let record_id = presigned["recordId"].as_str().unwrap().to_string();
+    let upload_url = presigned["uploadUrl"].as_str().unwrap().to_string();
+    harness
+        .raw(
+            Request::put(&upload_url)
+                .body(Body::from(vec![0u8; 10]))
+                .unwrap(),
+        )
+        .await;
+    let (status, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/photos/records",
+            Some(json!({"id": record_id, "owner": admin_id, "photo": token})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+
+    // Second upload: only 5 bytes of quota left, this one asks for 10 —
+    // over budget, refused before any ticket is minted.
+    let (status, body) = harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "photos", "field": "photo", "filename": "b.bin",
+                "contentType": "application/octet-stream", "size": 10,
+            })),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+
+    // A 5-byte upload still fits exactly.
+    let (status, body) = harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "photos", "field": "photo", "filename": "c.bin",
+                "contentType": "application/octet-stream", "size": 5,
+            })),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+}
+
 /// An unknown token in a file field is a normal validation error, not a
 /// panic or a 500 — it just isn't a token this server ever issued.
 #[tokio::test]

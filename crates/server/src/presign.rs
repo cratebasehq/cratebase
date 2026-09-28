@@ -156,6 +156,10 @@ pub async fn create_presign(
             mime_types.join(", ")
         )));
     }
+    let owner_id = info.auth.as_ref().map(|a| a.id.as_str());
+    if let Some(message) = crate::quota::exceeded(app, &collection, owner_id, req.size).await {
+        return Err(ApiError::bad_request(message));
+    }
 
     let ctx = info.to_context();
     let resolver = CollectionResolver::new(
