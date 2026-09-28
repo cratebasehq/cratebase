@@ -58,6 +58,16 @@ export interface AuthMethodsList {
   magicLink: { enabled: boolean; duration: number };
 }
 
+export interface ExternalAuthRow {
+  id: string;
+  created: string;
+  updated: string;
+  recordId: string;
+  collectionId: string;
+  provider: string;
+  providerId: string;
+}
+
 export interface SessionRow {
   id: string;
   kind: string;
@@ -347,6 +357,34 @@ export class AuthNamespace {
       );
       this.store.clear();
       return result;
+    },
+  };
+
+  /** The signed-in record's own linked OAuth2 providers — thin wrappers
+   * around the dedicated `GET/DELETE .../records/{id}/external-auths[/
+   * {provider}]` endpoints (owner-or-superuser; PocketBase's own
+   * `listExternalAuths`/`unlinkExternalAuth` shape), unlike
+   * {@link externalAuths}'s older generic-`_externalAuths`-collection
+   * version, which needed the record id spelled out and had no
+   * server-side "don't strand the account" check on unlink. */
+  readonly accounts = {
+    list: async (recordId?: string): Promise<ExternalAuthRow[]> => {
+      const id = recordId ?? this.store.record?.id;
+      if (!id) throw new CratebaseError({ status: 0, url: "", response: { message: "Not signed in.", status: 0 } });
+      return this.transport.send<ExternalAuthRow[]>(
+        this.basePath(`records/${encodeURIComponent(id)}/external-auths`),
+        {},
+        this.authHeader,
+      );
+    },
+    unlink: async (provider: string, recordId?: string): Promise<void> => {
+      const id = recordId ?? this.store.record?.id;
+      if (!id) throw new CratebaseError({ status: 0, url: "", response: { message: "Not signed in.", status: 0 } });
+      await this.transport.send(
+        this.basePath(`records/${encodeURIComponent(id)}/external-auths/${encodeURIComponent(provider)}`),
+        { method: "DELETE" },
+        this.authHeader,
+      );
     },
   };
 

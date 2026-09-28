@@ -166,6 +166,14 @@ pub fn router() -> Router<App> {
             "/collections/{collection}/auth-with-oauth2",
             post(auth_with_oauth2),
         )
+        .route(
+            "/collections/{collection}/records/{id}/external-auths",
+            get(list_external_auths),
+        )
+        .route(
+            "/collections/{collection}/records/{id}/external-auths/{provider}",
+            axum::routing::delete(unlink_external_auth),
+        )
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2282,6 +2290,117 @@ async fn auth_with_oauth2(
         Some(json!({ "meta": outcome.meta })),
     )
     .await
+}
+
+/// `auth.id == id` in `collection`, or a superuser — the access rule
+/// shared by both linked-account endpoints below (and, in spirit, the
+/// same one `session::revoke_session` already enforces for `_sessions`).
+fn require_owner_or_superuser(auth: &Auth, collection: &Collection, id: &str) -> ApiResult<()> {
+    let is_own = auth.collection.id == collection.id && auth.id == id;
+    if !is_own && !auth.is_superuser {
+        return Err(ApiError::forbidden(
+            "Only the record's own owner or a superuser may manage its linked accounts.",
+        ));
+    }
+    Ok(())
+}
+
+/// `GET /api/collections/{collection}/records/{id}/external-auths` —
+/// PocketBase's `listExternalAuths`: every OAuth2 provider currently
+/// linked to `id`, owner-or-superuser only. Matches PocketBase's own
+/// response shape (a bare array, not the usual `{items: [...]}` list
+/// envelope — this isn't a paginated collection listing).
+async fn list_external_auths(
+    State(app): State<App>,
+    Path((name, id)): Path<(String, String)>,
+    auth: Auth,
+) -> ApiResult<Json<Value>> {
+    let collection = common::auth_collection_of(&app, &name)?;
+    require_owner_or_superuser(&auth, &collection, &id)?;
+
+    let rows = app
+        .db()
+        .query(
+            r#"SELECT "id", "created", "updated", "provider", "providerId"
+               FROM "_externalAuths" WHERE "collectionRef" = $1 AND "recordRef" = $2
+               ORDER BY "created""#,
+            &[Sql::Text(collection.id.clone()), Sql::Text(id.clone())],
+        )
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.get_str("id").unwrap_or_default(),
+                "created": r.get_str("created").unwrap_or_default(),
+                "updated": r.get_str("updated").unwrap_or_default(),
+                "recordId": id,
+                "collectionId": collection.id,
+                "provider": r.get_str("provider").unwrap_or_default(),
+                "providerId": r.get_str("providerId").unwrap_or_default(),
+            })
+        })
+        .collect();
+    Ok(Json(Value::Array(items)))
+}
+
+/// `DELETE .../records/{id}/external-auths/{provider}` — PocketBase's
+/// `unlinkExternalAuth`, owner-or-superuser only, plus a check
+/// PocketBase itself doesn't have: refuse when unlinking `provider`
+/// would leave the record with no way to sign back in at all (no
+/// password, no *other* linked provider, and both OTP and magic-link
+/// login disabled on the collection) — a consumer app has exactly one
+/// chance to strand a user's own account here, so it's worth the extra
+/// round trip.
+async fn unlink_external_auth(
+    State(app): State<App>,
+    Path((name, id, provider)): Path<(String, String, String)>,
+    auth: Auth,
+) -> ApiResult<Response> {
+    let collection = common::auth_collection_of(&app, &name)?;
+    require_owner_or_superuser(&auth, &collection, &id)?;
+
+    let record = records::find_by_id_raw(app.db(), &collection, &id)
+        .await
+        .map_err(|_| ApiError::not_found("The record does not exist."))?;
+
+    let other_providers = app
+        .db()
+        .query_scalar(
+            r#"SELECT COUNT(*) FROM "_externalAuths"
+               WHERE "collectionRef" = $1 AND "recordRef" = $2 AND "provider" != $3"#,
+            &[
+                Sql::Text(collection.id.clone()),
+                Sql::Text(id.clone()),
+                Sql::Text(provider.clone()),
+            ],
+        )
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let has_password = !record.password_hash().is_empty();
+    let has_other_login = has_password
+        || other_providers > 0
+        || collection.auth.otp.enabled
+        || collection.auth.magic_link.enabled;
+    if !has_other_login {
+        return Err(ApiError::bad_request(
+            "Unlinking this provider would leave the account with no way to sign in.",
+        ));
+    }
+
+    app.db()
+        .execute(
+            r#"DELETE FROM "_externalAuths"
+               WHERE "collectionRef" = $1 AND "recordRef" = $2 AND "provider" = $3"#,
+            &[Sql::Text(collection.id.clone()), Sql::Text(id), Sql::Text(provider)],
+        )
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Finds or creates the record `oauth_user` should sign in as, and makes
