@@ -53,6 +53,12 @@ const BAD_PAYLOAD: &str = "Failed to load the submitted data due to invalid form
 /// write-only secret. Every response this module hands back goes
 /// through this first; the merge base in [`update`] does not, since
 /// that one has to keep the real value to preserve it across a PATCH.
+///
+/// `extra.privateKey` gets the same treatment — Apple's Sign in with
+/// Apple key (`extra.teamId`/`keyId`/`privateKey`, see
+/// `cratebase_auth::apple_client_secret`) is exactly as sensitive as a
+/// `clientSecret`, just stored in `extra` instead because Apple has no
+/// static client secret at all.
 fn redact_oauth2_secrets(mut value: Value) -> Value {
     if let Some(providers) = value
         .get_mut("oauth2")
@@ -62,6 +68,11 @@ fn redact_oauth2_secrets(mut value: Value) -> Value {
         for provider in providers {
             if let Some(obj) = provider.as_object_mut() {
                 obj.insert("clientSecret".into(), Value::String(String::new()));
+                if let Some(extra) = obj.get_mut("extra").and_then(Value::as_object_mut) {
+                    if extra.contains_key("privateKey") {
+                        extra.insert("privateKey".into(), Value::String(String::new()));
+                    }
+                }
             }
         }
     }
@@ -372,15 +383,23 @@ async fn update(
     // each existing provider's secret, matched by name, whenever the
     // submitted entry doesn't carry a non-empty one of its own.
     for provider in &mut next.auth.oauth2.providers {
+        let prev = existing
+            .auth
+            .oauth2
+            .providers
+            .iter()
+            .find(|p| p.name == provider.name);
         if provider.client_secret.is_empty() {
-            if let Some(prev) = existing
-                .auth
-                .oauth2
-                .providers
-                .iter()
-                .find(|p| p.name == provider.name)
-            {
+            if let Some(prev) = prev {
                 provider.client_secret = prev.client_secret.clone();
+            }
+        }
+        // Same "leave blank to keep" round trip as `clientSecret` just
+        // above, for Apple's `extra.privateKey`.
+        let submitted_private_key = provider.extra.get("privateKey").and_then(Value::as_str);
+        if submitted_private_key.is_none_or(str::is_empty) {
+            if let Some(prev_key) = prev.and_then(|p| p.extra.get("privateKey")).cloned() {
+                provider.extra.insert("privateKey".into(), prev_key);
             }
         }
     }
@@ -1299,6 +1318,44 @@ fn unquote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_oauth2_secrets_blanks_client_secret_and_apple_private_key() {
+        let value = serde_json::json!({
+            "oauth2": {
+                "providers": [
+                    { "name": "google", "clientSecret": "shh", "extra": {} },
+                    {
+                        "name": "apple",
+                        "clientSecret": "",
+                        "extra": { "teamId": "T1", "keyId": "K1", "privateKey": "-----BEGIN...-----" },
+                    },
+                ]
+            }
+        });
+        let redacted = redact_oauth2_secrets(value);
+        let providers = redacted["oauth2"]["providers"].as_array().unwrap();
+        assert_eq!(providers[0]["clientSecret"], "");
+        assert_eq!(providers[1]["extra"]["privateKey"], "");
+        // Untouched non-secret fields survive redaction.
+        assert_eq!(providers[1]["extra"]["teamId"], "T1");
+        assert_eq!(providers[1]["extra"]["keyId"], "K1");
+    }
+
+    #[test]
+    fn redact_oauth2_secrets_is_a_no_op_when_theres_no_private_key() {
+        let value = serde_json::json!({
+            "oauth2": { "providers": [{ "name": "microsoft", "clientSecret": "shh", "extra": { "tenant": "common" } }] }
+        });
+        let redacted = redact_oauth2_secrets(value);
+        assert_eq!(
+            redacted["oauth2"]["providers"][0]["extra"]["tenant"],
+            "common"
+        );
+        assert!(redacted["oauth2"]["providers"][0]["extra"]
+            .get("privateKey")
+            .is_none());
+    }
 
     #[test]
     fn duplicate_field_names_keep_the_last_definition() {
