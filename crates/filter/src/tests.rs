@@ -21,6 +21,10 @@ fn err(src: &str) -> FilterError {
     parse_and_compile(src, &TestResolver::sqlite("posts"), 0).unwrap_err()
 }
 
+fn with_err(src: &str, r: &TestResolver) -> FilterError {
+    parse_and_compile(src, r, 0).unwrap_err()
+}
+
 const CATS: &str = "json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\"";
 const CATS_EMPTY: &str = "(\"posts\".\"categories\" IS NULL OR \"posts\".\"categories\" = '' OR \"posts\".\"categories\" = '[]')";
 const TAGS: &str = "json_each(COALESCE(\"posts\".\"tags\", '[]')) AS \"__e1\" JOIN \"tags\" AS \"__r2\" ON \"__r2\".\"id\" = \"__e1\".\"value\"";
@@ -1071,6 +1075,71 @@ fn geo_distance() {
     );
     assert!(matches!(
         err("geoDistance(tags.name, 1, 2, 3) < 1"),
+        FilterError::Unsupported(_)
+    ));
+}
+
+#[test]
+fn search_bare_predicate_compiles_to_fts_match_on_sqlite() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    let c = with(r#"search("hello world")"#, &r);
+    assert_eq!(
+        c.sql,
+        "\"posts\".\"rowid\" IN (SELECT \"rowid\" FROM \"posts_fts\" WHERE \"posts_fts\" MATCH $1) = $2"
+    );
+    assert_eq!(c.params, vec![json!("hello world"), json!(true)]);
+}
+
+#[test]
+fn search_bare_predicate_compiles_to_tsquery_on_postgres() {
+    let r = TestResolver::postgres("posts")
+        .with_searchable("title")
+        .with_search_language("english");
+    let c = with(r#"search("hello world")"#, &r);
+    assert_eq!(
+        c.sql,
+        "\"posts\".\"_search\" @@ websearch_to_tsquery($1, $2) = $3"
+    );
+    assert_eq!(
+        c.params,
+        vec![json!("english"), json!("hello world"), json!(true)]
+    );
+}
+
+#[test]
+fn search_defaults_to_simple_language_on_postgres_without_search_language() {
+    let r = TestResolver::postgres("posts").with_searchable("title");
+    let c = with(r#"search("x")"#, &r);
+    assert_eq!(c.params[0], json!("simple"));
+}
+
+#[test]
+fn search_composes_with_and_or_and_explicit_comparison() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    // Combined with an ordinary comparison via `&&`.
+    let c = with(r#"search("hello") && published = true"#, &r);
+    assert!(c.sql.contains("MATCH $1) = $2"));
+    assert!(c.sql.contains("\"posts\".\"published\" = $3"));
+    // An explicit comparison against the call still works (no bare-predicate
+    // sugar kicks in because an operator follows).
+    let c = with(r#"search("hello") = false"#, &r);
+    assert_eq!(c.params, vec![json!("hello"), json!(false)]);
+}
+
+#[test]
+fn search_rejects_a_non_literal_argument() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    assert!(matches!(
+        with_err(r#"search(title)"#, &r),
+        FilterError::Parse(_)
+    ));
+}
+
+#[test]
+fn search_rejects_a_collection_with_no_searchable_fields() {
+    // "posts" fixture has no searchable field by default.
+    assert!(matches!(
+        err(r#"search("x")"#),
         FilterError::Unsupported(_)
     ));
 }

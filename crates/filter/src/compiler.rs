@@ -35,10 +35,10 @@
 
 use serde_json::Value;
 
-use crate::ast::{CompareOp, Expr, Modifier, Operand};
+use crate::ast::{CompareOp, Expr, Literal, Modifier, Operand};
 use crate::error::FilterError;
 use crate::eval::{self, is_empty, like_pattern, lowercase, to_text, EvalTerm};
-use crate::path::{FieldRef, Join, MultiMatchRef, PathResolver, SqlType};
+use crate::path::{quote, FieldRef, Join, MultiMatchRef, PathResolver, SqlType};
 use crate::resolver::{Dialect, Resolver};
 use crate::terms::{literal_value, macro_value, number_value, MacroTerm};
 
@@ -501,8 +501,57 @@ impl<'a> Compiler<'a> {
                     mm: None,
                 })
             }
+            "search" => self.resolve_search(args),
             other => Err(FilterError::Parse(format!("unknown function '{other}'"))),
         }
+    }
+
+    /// `search("query")`: a boolean predicate over the collection's
+    /// full-text index — SQLite's `rowid IN (SELECT rowid FROM
+    /// {table}_fts WHERE {table}_fts MATCH $n)`, Postgres's generated
+    /// `"_search" @@ websearch_to_tsquery($lang, $n)`. The query text is
+    /// always a bound parameter (`push_param`), never interpolated, so
+    /// FTS5's own mini-syntax (`*`, quoted phrases, `NEAR`, `-word`) and
+    /// `websearch_to_tsquery`'s (which is deliberately forgiving of
+    /// exactly that syntax, unlike `to_tsquery`) are the caller's to use
+    /// or misuse — at worst a malformed expression is a query error, not
+    /// a SQL-injection surface, exactly like the `~` operator's bound
+    /// `LIKE` pattern above.
+    fn resolve_search(&mut self, args: &[Operand]) -> Result<Term, FilterError> {
+        let Operand::Literal(Literal::Str(query)) = &args[0] else {
+            return Err(FilterError::Parse(
+                "search() requires a string literal argument".into(),
+            ));
+        };
+        let collection = self.resolver.root();
+        if !collection.has_search_index() {
+            return Err(FilterError::Unsupported(format!(
+                "collection '{}' has no searchable fields for search()",
+                collection.name
+            )));
+        }
+        let table = quote(collection.table_name());
+        let sql = match self.dialect {
+            Dialect::Sqlite => {
+                let fts = quote(&format!("{}_fts", collection.table_name()));
+                let p = self.push_param(Value::String(query.clone()));
+                format!(
+                    "{table}.\"rowid\" IN (SELECT \"rowid\" FROM {fts} WHERE {fts} MATCH {p})"
+                )
+            }
+            Dialect::Postgres => {
+                let lang = self.push_param(Value::String(
+                    collection.search_language_or_default().to_string(),
+                ));
+                let p = self.push_param(Value::String(query.clone()));
+                format!("{table}.\"_search\" @@ websearch_to_tsquery({lang}, {p})")
+            }
+        };
+        Ok(Term::Scalar {
+            sql,
+            ty: SqlType::Bool,
+            mm: None,
+        })
     }
 
     /// Turn a `:each` value into an element set by binding it as JSON.

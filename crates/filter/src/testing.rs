@@ -252,6 +252,28 @@ impl TestResolver {
         self.context = context.into();
         self
     }
+
+    /// Flip `field.searchable` on for the root collection, for tests of
+    /// `search()`/`?search=` compilation.
+    pub fn with_searchable(mut self, field: &str) -> Self {
+        let mut c = (*self.root).clone();
+        if let Some(f) = c.fields.iter_mut().find(|f| f.name == field) {
+            f.searchable = true;
+        } else {
+            panic!("no field '{field}' on fixture collection '{}'", c.name);
+        }
+        self.root = Arc::new(c);
+        self
+    }
+
+    /// Set the root collection's `searchLanguage` (Postgres tsvector
+    /// config), for tests of `search()`/`?search=` compilation.
+    pub fn with_search_language(mut self, lang: &str) -> Self {
+        let mut c = (*self.root).clone();
+        c.search_language = Some(lang.to_string());
+        self.root = Arc::new(c);
+        self
+    }
 }
 
 fn dig(v: &Value, path: &str) -> Value {
