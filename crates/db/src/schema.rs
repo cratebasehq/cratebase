@@ -777,8 +777,10 @@ fn add_column_sql(backend: Backend, table: &str, field: &Field) -> DbResult<Stri
 /// Drop the table or view behind `collection`, and its FTS5 shadow table
 /// if it has one. Dropping the base table already takes a Postgres
 /// `tsvector` column (and its GIN index) with it — only SQLite's FTS5
-/// table is a separate object that needs its own `DROP TABLE`; running it
-/// unconditionally is `IF EXISTS`-safe on both backends.
+/// table is a separate object that needs its own `DROP TABLE` (and its
+/// sync triggers, `DROP TRIGGER IF EXISTS name` with no `ON table`
+/// clause — valid SQLite, but a syntax error on Postgres), so that
+/// cleanup only runs for the SQLite backend.
 pub async fn drop_object(ex: &dyn Executor, collection: &Collection) -> DbResult<()> {
     let table = ident(&collection.name)?;
     let sql = if collection.is_view() {
@@ -787,7 +789,7 @@ pub async fn drop_object(ex: &dyn Executor, collection: &Collection) -> DbResult
         format!("DROP TABLE IF EXISTS {table}")
     };
     ex.execute(&sql, &[]).await?;
-    if !collection.is_view() {
+    if !collection.is_view() && Backend::from_dialect(ex.dialect()) == Backend::Sqlite {
         drop_sqlite_fts(ex, &collection.name).await?;
     }
     Ok(())
