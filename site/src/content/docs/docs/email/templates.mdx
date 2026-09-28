@@ -43,14 +43,34 @@ HTML-escaped (they're not an HTML context) — only the `html` field's
 ## Layout
 
 `layout: true` wraps `html` in a shared, table-based, email-client-safe
-base layout before sending — a centered card with a `.btn` button style,
-matching the look of the five built-in auth emails. Two settings style
-it for every layout-wrapped template at once (see
+base layout before sending: a centered ~600px card on a soft page
+background, a logo (or a text wordmark of the app name, if no logo is
+set) above the card, and a muted footer below it. It's responsive
+(full-width card on mobile), dark-mode friendly (`color-scheme` meta
+plus a `prefers-color-scheme: dark` stylesheet with safe fallbacks for
+clients that ignore it, e.g. classic Outlook), and uses only inline
+styles/table layout — no external CSS, matching the look of the five
+built-in auth emails, magic-link, and the `welcome` example. Two
+settings style it for every layout-wrapped template at once (see
 [Settings object](/docs/reference/settings-object/)):
 
-- `settings.meta.logoUrl` — shown at the top when non-empty.
-- `settings.meta.brandColor` — replaces the layout's default `#16161a`
-  button/accent color.
+- `settings.meta.logoUrl` — the header image. Empty falls back to a
+  text wordmark of `settings.meta.appName`.
+- `settings.meta.brandColor` — the `{{brandColor}}` built-in (see
+  above) that a template's own content interpolates into its call-to-
+  action button; empty falls back to a neutral near-black default. The
+  layout itself has no fixed button color — not every template has a
+  button, so the color lives in the content, not the shell.
+
+A call-to-action button built from this brand color
+(`cratebase_mailer::template::cta_button`, used by every seeded
+template that has one) is "bulletproof": a real `<a>` for every normal
+client, a VML `roundrect` fallback for Outlook's Word rendering engine
+(which ignores `border-radius`/padding on a plain link), and a
+plain-text "copy and paste this link" paragraph underneath so the URL
+survives even in a client that strips both. The OTP template's code is
+shown in a boxed, large, letter-spaced monospace block
+(`otp_code_block`) instead.
 
 `layout: false` sends `html` verbatim — useful for a template that
 already brings its own full HTML document (e.g. exported from an email
@@ -160,29 +180,59 @@ shouldn't be a free mail relay.
 ## Dashboard editor
 
 Settings → **Email templates** lists every row (key, name, locale,
-editor, and a `sendRule` badge) with create/duplicate/delete. Opening one
-gives:
+editor, and a `sendRule` badge) with create/duplicate/delete. Creating a
+new one first offers a **starter gallery** — Blank, Welcome, Verify
+email, Reset password, OTP code, Magic link, Receipt, Notification, and
+Newsletter — each a ready-made visual-editor document to start from and
+customize, rather than a blank canvas.
 
-- **Subject, name, locale, layout toggle**, and a plain-text alternative
-  field with an "Auto-derive from HTML" button (a client-side
-  approximation of the server's own strip-tags fallback — a starting
-  point to edit, not a preview of exactly what the server would derive).
-- **HTML mode** — a CodeMirror editor for hand-written or
-  externally-authored (e.g. exported [React Email](https://react.email))
-  HTML, with an "Insert variable" menu populated from the sample data
-  below.
-- **Visual mode** — a block-based editor
-  ([`@react-email/editor`](https://react.email/docs/editor/overview)).
-  Its document is stored in the opaque `design` field (the server never
-  reads it); saving derives `html`/`text` from it, which is what actually
-  gets sent. Switching from HTML to visual (or back) re-parses the
-  current HTML into/out of the editor's document — round-tripping
-  through both a few times can lose formatting the visual editor doesn't
-  represent, so pick one mode per template rather than bouncing between
-  them.
-- **`sendRule`**, via the same rule editor a collection API rule uses.
+The editor itself has a top bar (name, key, locale, subject — subject
+also takes `{{var}}`s), a center canvas at email width with a
+desktop/mobile toggle, and a right sidebar split into tabs:
+
+- **Theme** — pick a built-in theme (Basic or Minimal) and customize its
+  brand color, font, page background, content width, and corner radius.
+  Defaults come from `settings.meta.brandColor`/`logoUrl`. This is
+  powered by [`@react-email/editor`](https://react.email/docs/editor/overview)'s
+  own theming system — the same one the exported HTML is styled with, so
+  what you see in the canvas is what gets sent.
+- **Variables** — an "Insert variable" list, populated from the sample
+  data below plus the always-available `appName`/`appUrl`, and available
+  via the `/variable` slash command too. In the visual editor a variable
+  inserts as a small chip while editing; on export it becomes the
+  literal `{{path}}` text the `{{var}}` engine above resolves at send
+  time. A link or button's URL is a plain text field — type `{{path}}`
+  directly into it (e.g. `{{appUrl}}/invite/{{token}}`) the same way you
+  would in HTML mode.
+- **Settings** — the layout toggle, `sendRule` (via the same rule editor
+  a collection API rule uses), and the plain-text alternative field with
+  an "Auto-derive from HTML" button (a client-side approximation of the
+  server's own strip-tags fallback — a starting point to edit, not a
+  preview of exactly what the server would derive).
+- **Preview** — the editable sample-data JSON blob and the live preview
+  described below.
+
+**Visual mode** is a full block-based editor: headings, paragraphs,
+lists, quotes, code, tables, dividers, buttons, images, 2/3/4-column
+layouts, and links, with a bubble menu for formatting/links/alignment/
+colors on text selection and a `/` slash-command menu for every block
+type. Images upload straight to Cratebase's own storage (a superuser-
+only `_emailAssets` system collection) and get a real, publicly-servable
+URL — no separate host needed. The document is stored in the opaque
+`design` field (the server never reads it, only the `html`/`text` it
+exports); saving derives `html`/`text` from it, which is what actually
+gets sent.
+
+**HTML mode** stays a CodeMirror editor for hand-written or
+externally-authored (e.g. exported [React Email](https://react.email))
+HTML, with the same "Insert variable" menu. Switching from HTML to
+visual (or back) re-parses the current HTML into/out of the editor's
+document — round-tripping through both a few times can lose formatting
+the visual editor doesn't represent, so pick one mode per template
+rather than bouncing between them.
+
 - **Live preview** — renders through the real `POST /api/mails/preview`
-  pipeline against an editable sample-data JSON blob, debounced, with a
+  pipeline against the sample-data JSON blob, debounced, with a
   desktop/mobile width toggle, in a sandboxed (`srcdoc`, no scripts)
   iframe. It reflects unsaved edits, including mid-edit visual-editor
   content — nothing needs to be saved first to see it.
@@ -190,3 +240,8 @@ gives:
   the signed-in superuser's own), also unsaved-edit-aware. When the dev
   mail inbox is active (no real SMTP configured), a link jumps straight
   to it.
+- **Dark mode** — the editor UI itself follows the dashboard's own
+  light/dark theme; the *email* dark-mode behavior (`prefers-color-scheme`
+  on the recipient's end) is a property of the rendered layout (see
+  [Layout](#layout) above), not something toggled in the editor — preview
+  it by switching your own system/mail-client theme, not the dashboard's.

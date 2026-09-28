@@ -78,6 +78,23 @@ first real tagged release.
   three-step priority chain — a customized `authOptions.*Template` field
   wins, else the matching `_emailTemplates` row, else the same built-in
   default — so an unmodified install's mail is unchanged.
+- **Redesigned default email templates**: the branded base layout
+  (`layout: true`) is now a centered ~600px card on a soft page
+  background, a logo/wordmark header, a muted footer, dark-mode-friendly
+  (`color-scheme` + `prefers-color-scheme` with safe fallbacks for
+  clients that ignore it), and fully inline-styled/table-based. Every
+  seeded template with a call to action now uses a bulletproof button
+  (a real `<a>`, a VML fallback for Outlook, and a plain-text "copy this
+  link" line so the URL survives even in a client that strips the
+  button); the OTP template shows its code in a large, letter-spaced
+  monospace block. New migration
+  `17_refresh_default_email_templates.rs` rewrites the seven seed rows
+  to this new copy/layout, but only for a row whose `subject`/`html`
+  still exactly match what was originally seeded — a customized row is
+  left untouched. Also adds the `_emailAssets` system collection, an
+  unprotected single-file store the dashboard's email-template visual
+  editor uploads images to (superuser-only writes, publicly downloadable
+  by URL — an emailed `<img src>` has no session to authenticate with).
 - **`POST /api/mails/send` / `/api/mails/preview`**: `preview` stays
   superuser/API-key only; `send` by `template` key or raw `subject`/
   `html`/`text`, up to 50 recipients, logged to a new `_mailLog` system
@@ -107,11 +124,18 @@ first real tagged release.
   never fail the triggering request; a `toField` that resolves to
   nothing usable is logged to `_mailLog` as a failure instead.
 - **Dashboard**: new Settings pages — **Email templates** (list, create/
-  duplicate/delete, and an editor with HTML mode via CodeMirror, visual
-  mode via `@react-email/editor`, a `sendRule` field, a live preview
-  through `POST /api/mails/preview`, and test send), **Email triggers**
-  (CRUD over `_emailTriggers`), and **Mail log** (filterable, paginated
-  view over `_mailLog`).
+  duplicate/delete, a starter gallery of nine ready-made documents on
+  "new", and an editor with HTML mode via CodeMirror plus a full visual
+  mode built on [`@react-email/editor`](https://react.email/docs/editor/overview)
+  — headings/paragraphs/lists/quotes/code/tables/dividers/buttons/images/
+  2-3-4-column layouts/links, a bubble menu, a `/` slash-command menu
+  (including a custom `/variable` command), a Theme tab to pick a
+  built-in theme and customize brand color/font/background/content
+  width/radius, a Variables tab that inserts `{{path}}` chips from the
+  sample data, and image uploads to `_emailAssets`, a `sendRule` field,
+  a live preview through `POST /api/mails/preview`, and test send),
+  **Email triggers** (CRUD over `_emailTriggers`), and **Mail log**
+  (filterable, paginated view over `_mailLog`).
 - **Magic-link login**: `POST /collections/{c}/request-magic-link` /
   `auth-with-magic-link`, gated by a new
   `authOptions.magicLink.enabled` (default `false`), backed by a new
