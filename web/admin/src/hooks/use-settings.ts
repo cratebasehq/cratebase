@@ -16,6 +16,15 @@ export interface ServerSettings {
     senderAddress: string;
     hideControls: boolean;
     accentColor: string;
+    /** Optional logo shown at the top of the branded email layout
+     * (`cratebase_mailer::template::render_layout`) and used as the
+     * email-template editor's default theme logo. Empty means no logo
+     * image — a text wordmark of `appName` is used instead. */
+    logoUrl: string;
+    /** Optional brand color for the branded email layout's CTA buttons
+     * and the email-template editor's default theme. Empty falls back
+     * to the layout's own default accent. */
+    brandColor: string;
   };
   logs: { maxDays: number; minLevel: number; logIP: boolean; logAuthId: boolean; maxDataSize: number };
   batch: { enabled: boolean; maxRequests: number; timeout: number; maxBodySize: number };

@@ -38,6 +38,16 @@ function validate(draft: Draft): string[] {
   if (draft.meta.senderAddress.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.meta.senderAddress)) {
     errors.push("Sender address must be an email address");
   }
+  if (draft.meta.logoUrl.trim()) {
+    try {
+      new URL(draft.meta.logoUrl);
+    } catch {
+      errors.push("Logo URL must be a full URL, e.g. https://example.com/logo.png");
+    }
+  }
+  if (draft.meta.brandColor.trim() && !/^#[0-9a-fA-F]{3,8}$/.test(draft.meta.brandColor.trim())) {
+    errors.push("Brand color must be a hex color, e.g. #1055c9");
+  }
   if (draft.batch.maxRequests < 1) errors.push("A batch must allow at least one request");
   if (draft.batch.timeout < 1) errors.push("Batch timeout must be at least 1 second");
   return errors;
@@ -137,6 +147,31 @@ export function ApplicationPage() {
             value={draft.meta.senderAddress}
             onChange={(senderAddress) => patch({ meta: { ...draft.meta, senderAddress } })}
             placeholder="support@example.com"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Logo URL"
+          htmlFor="app-logo-url"
+          help="Shown at the top of system emails and as the email-template editor's default theme logo. Left blank, a text wordmark of the application name is used instead."
+        >
+          <TextSetting
+            id="app-logo-url"
+            value={draft.meta.logoUrl}
+            onChange={(logoUrl) => patch({ meta: { ...draft.meta, logoUrl } })}
+            placeholder="https://example.com/logo.png"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Brand color"
+          htmlFor="app-brand-color"
+          help="The call-to-action color in system emails and the email-template editor's default theme. Left blank, a neutral default is used."
+        >
+          <TextSetting
+            id="app-brand-color"
+            value={draft.meta.brandColor}
+            onChange={(brandColor) => patch({ meta: { ...draft.meta, brandColor } })}
+            placeholder="#1055c9"
+            mono
           />
         </SettingRow>
       </SettingsSection>
