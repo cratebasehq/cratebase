@@ -165,6 +165,19 @@ mod tests {
     const TEST_PRIVATE_KEY_PEM: &str = include_str!("../../testdata/oidc_test_rsa_private.pem");
     const TEST_JWKS_JSON: &str = include_str!("../../testdata/oidc_test_jwks.json");
 
+    /// A unique path suffix per call, so two tests' issuer strings never
+    /// collide even if wiremock's OS-assigned ephemeral port happens to
+    /// be reused between them — `discover`/`fetch_jwks`'s caches are
+    /// process-global (deliberately, in production: it's a per-server
+    /// process cache), so a same-issuer-string collision across tests
+    /// in this same test binary would otherwise leak one test's mocked
+    /// response into another's assertions.
+    fn unique_path_suffix() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        format!("/t{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
     fn sign_test_token(issuer: &str, audience: &str) -> String {
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some(TEST_KID.to_string());
@@ -191,7 +204,8 @@ mod tests {
     #[tokio::test]
     async fn discovers_and_verifies_against_a_mocked_issuer() {
         let server = MockServer::start().await;
-        let issuer = server.uri();
+        let base = unique_path_suffix();
+        let issuer = format!("{}{base}", server.uri());
         let jwks_uri = format!("{issuer}/jwks");
         let discovery_doc = json!({
             "issuer": issuer,
@@ -201,13 +215,13 @@ mod tests {
             "jwks_uri": jwks_uri,
         });
         Mock::given(method("GET"))
-            .and(path("/.well-known/openid-configuration"))
+            .and(path(format!("{base}/.well-known/openid-configuration")))
             .respond_with(ResponseTemplate::new(200).set_body_json(&discovery_doc))
             .mount(&server)
             .await;
         let jwks: serde_json::Value = serde_json::from_str(TEST_JWKS_JSON).unwrap();
         Mock::given(method("GET"))
-            .and(path("/jwks"))
+            .and(path(format!("{base}/jwks")))
             .respond_with(ResponseTemplate::new(200).set_body_json(&jwks))
             .mount(&server)
             .await;
@@ -233,7 +247,8 @@ mod tests {
     #[tokio::test]
     async fn discovery_is_cached_and_only_fetched_once() {
         let server = MockServer::start().await;
-        let issuer = server.uri();
+        let base = unique_path_suffix();
+        let issuer = format!("{}{base}", server.uri());
         let discovery_doc = json!({
             "issuer": issuer,
             "authorization_endpoint": format!("{issuer}/authorize"),
@@ -241,7 +256,7 @@ mod tests {
             "jwks_uri": format!("{issuer}/jwks"),
         });
         Mock::given(method("GET"))
-            .and(path("/.well-known/openid-configuration"))
+            .and(path(format!("{base}/.well-known/openid-configuration")))
             .respond_with(ResponseTemplate::new(200).set_body_json(&discovery_doc))
             .expect(1)
             .mount(&server)
@@ -257,10 +272,11 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_token_from_an_unrelated_issuer() {
         let server = MockServer::start().await;
-        let jwks_uri = format!("{}/jwks", server.uri());
+        let base = unique_path_suffix();
+        let jwks_uri = format!("{}{base}/jwks", server.uri());
         let jwks: serde_json::Value = serde_json::from_str(TEST_JWKS_JSON).unwrap();
         Mock::given(method("GET"))
-            .and(path("/jwks"))
+            .and(path(format!("{base}/jwks")))
             .respond_with(ResponseTemplate::new(200).set_body_json(&jwks))
             .mount(&server)
             .await;
