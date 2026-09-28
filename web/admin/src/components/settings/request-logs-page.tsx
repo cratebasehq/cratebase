@@ -21,7 +21,20 @@ import {
   SettingsSection,
   ToggleSetting,
 } from "@/components/settings/settings-form";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ListTree } from "lucide-react";
+
+/** `slog`'s numeric levels, same convention PocketBase uses — see
+ * `crates/server/src/middleware/request_log.rs`'s `LEVEL_*` constants.
+ * Request rows are always logged at `info`, so a `minLevel` above that
+ * silences every request row (only application warn/error lines above
+ * it still get through). */
+const LOG_LEVELS = [
+  { value: -4, label: "Debug", help: "Everything, including debug-only lines." },
+  { value: 0, label: "Info (default)", help: "Every request, plus warnings and errors." },
+  { value: 4, label: "Warn", help: "Only warnings and errors — no successful request rows." },
+  { value: 8, label: "Error", help: "Only errors. Silences request rows entirely." },
+];
 
 /** The activity chart above the log table — hourly request volume for the
  * current filter, over a fixed last-24-hours grid. `GET /api/logs/stats`
@@ -178,6 +191,8 @@ export function RequestLogsPage() {
     if (!logsDraft) return [];
     const errors: string[] = [];
     if (logsDraft.logs.maxDays < 0) errors.push("Log retention can't be negative");
+    if (logsDraft.logs.maxDataSize < 0) errors.push("Max data size can't be negative");
+    if (logsDraft.logs.mailLogMaxDays < 0) errors.push("Mail log retention can't be negative");
     return errors;
   }, [logsDraft]);
 
@@ -332,6 +347,53 @@ export function RequestLogsPage() {
               checked={logsDraft.logs.logAuthId}
               onChange={(logAuthId) => patchLogs({ logAuthId })}
               label={logsDraft.logs.logAuthId ? "Stored with each request" : "Not stored"}
+            />
+          </SettingRow>
+          <SettingRow
+            label="Minimum level"
+            htmlFor="logs-min-level"
+            help={LOG_LEVELS.find((l) => l.value === logsDraft.logs.minLevel)?.help}
+          >
+            <Select
+              value={String(logsDraft.logs.minLevel)}
+              onValueChange={(next) => patchLogs({ minLevel: Number(next) })}
+            >
+              <SelectTrigger id="logs-min-level" className="h-control-md w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOG_LEVELS.map((l) => (
+                  <SelectItem key={l.value} value={String(l.value)}>
+                    {l.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </SettingRow>
+          <SettingRow
+            label="Max data size"
+            htmlFor="logs-max-data"
+            help="Truncate a log entry's recorded request/response data past this many bytes. 0 means no limit."
+          >
+            <NumberSetting
+              id="logs-max-data"
+              min={0}
+              value={logsDraft.logs.maxDataSize}
+              onChange={(maxDataSize) => patchLogs({ maxDataSize })}
+              suffix="bytes"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Mail log retention"
+            htmlFor="logs-mail-retention"
+            help="How long _mailLog rows (every POST /api/mails/send / _emailTriggers send attempt) are kept, pruned on the same cadence as these request logs. 0 keeps them forever."
+          >
+            <NumberSetting
+              id="logs-mail-retention"
+              min={0}
+              value={logsDraft.logs.mailLogMaxDays}
+              onChange={(mailLogMaxDays) => patchLogs({ mailLogMaxDays })}
+              suffix="days"
             />
           </SettingRow>
         </SettingsSection>
