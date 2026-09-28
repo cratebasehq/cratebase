@@ -412,8 +412,11 @@ export function SchemaFieldRow({
             </OptionField>
             <div className="flex items-end pb-5">
               <CheckboxOption
-                checked={(field.convertUrls as boolean | undefined) ?? false}
-                onChange={(convertUrls) => patch({ convertUrls })}
+                // Wire key is `convertURLs` (capital URL) — an explicit
+                // serde rename on `FieldKind::Editor::convert_urls`, not
+                // the variant's own camelCase default.
+                checked={(field.convertURLs as boolean | undefined) ?? false}
+                onChange={(convertURLs) => patch({ convertURLs })}
                 label="Convert bare URLs in the content into links"
               />
             </div>
