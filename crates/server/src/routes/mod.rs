@@ -27,6 +27,7 @@ pub mod logs;
 pub mod mails;
 pub mod metrics;
 pub mod oauth2_flow;
+pub mod oidc;
 pub mod push;
 pub mod records;
 pub mod schema;

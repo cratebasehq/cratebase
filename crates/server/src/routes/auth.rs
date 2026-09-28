@@ -513,7 +513,21 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
 /// server-driven flow) calls it with the real callback URL). `None`
 /// when the provider has no usable `authURL` (neither configured nor a
 /// known preset).
-pub(crate) fn provider_auth_url(
+/// A provider's OIDC issuer, when it's configured as a generic OIDC
+/// provider (`extra.issuer` set) rather than one of [`cratebase_auth::
+/// KnownProvider`]'s fixed presets — conventionally named
+/// `oidc`/`oidc2`/`oidc3`, but keyed on `extra.issuer` alone so any name
+/// works.
+pub(crate) fn oidc_issuer(config: &cratebase_core::OAuth2Provider) -> Option<&str> {
+    config
+        .extra
+        .get("issuer")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
+pub(crate) async fn provider_auth_url(
+    client: &reqwest::Client,
     config: &cratebase_core::OAuth2Provider,
     state: &str,
     code_challenge: &str,
@@ -521,12 +535,18 @@ pub(crate) fn provider_auth_url(
 ) -> Option<String> {
     let known = cratebase_auth::KnownProvider::from_name(&config.name);
     let auth_url = if !config.auth_url.is_empty() {
-        config.auth_url.as_str()
+        config.auth_url.clone()
+    } else if let Some(issuer) = oidc_issuer(config) {
+        crate::routes::oidc::discover(client, issuer)
+            .await
+            .ok()?
+            .authorization_endpoint
     } else {
-        known
-            .map(cratebase_auth::KnownProvider::auth_url)
-            .unwrap_or("")
+        known.map(|k| k.auth_url(&config.extra)).unwrap_or_default()
     };
+    if auth_url.is_empty() {
+        return None;
+    }
     let scope = config
         .extra
         .get("scope")
@@ -534,14 +554,28 @@ pub(crate) fn provider_auth_url(
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| known.map(|k| k.default_scope().to_string()))
+        .or_else(|| oidc_issuer(config).map(|_| "openid profile email".to_string()))
         .unwrap_or_default();
-    let mut url = reqwest::Url::parse(auth_url).ok()?;
+    let mut url = reqwest::Url::parse(&auth_url).ok()?;
+    // Apple only issues a usable `id_token` (the sole place it exposes
+    // the user's identity — see `parse_apple_id_token_claims`) when
+    // `response_type` asks for one, and requires `response_mode=
+    // form_post` whenever a `scope` is requested — its own docs call a
+    // GET-redirect-with-scope combination invalid.
+    let response_type = if known == Some(cratebase_auth::KnownProvider::Apple) {
+        "code id_token"
+    } else {
+        "code"
+    };
     url.query_pairs_mut()
-        .append_pair("response_type", "code")
+        .append_pair("response_type", response_type)
         .append_pair("client_id", &config.client_id)
         .append_pair("state", state);
     if !scope.is_empty() {
         url.query_pairs_mut().append_pair("scope", &scope);
+        if known == Some(cratebase_auth::KnownProvider::Apple) {
+            url.query_pairs_mut().append_pair("response_mode", "form_post");
+        }
     }
     if !code_challenge.is_empty() {
         url.query_pairs_mut()
@@ -562,7 +596,10 @@ pub(crate) fn provider_auth_url(
 /// query param except `redirect_uri` already filled in — the SDK
 /// appends its own before sending the browser there, exactly like
 /// PocketBase's own `authURL + "&redirect_uri="`.
-fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
+async fn oauth2_provider_info(
+    client: &reqwest::Client,
+    config: &cratebase_core::OAuth2Provider,
+) -> Value {
     let known = cratebase_auth::KnownProvider::from_name(&config.name);
     let display_name = if !config.display_name.is_empty() {
         config.display_name.clone()
@@ -580,7 +617,9 @@ fn oauth2_provider_info(config: &cratebase_core::OAuth2Provider) -> Value {
     } else {
         (String::new(), String::new(), String::new())
     };
-    let auth_url = provider_auth_url(config, &state, &code_challenge, "").unwrap_or_default();
+    let auth_url = provider_auth_url(client, config, &state, &code_challenge, "")
+        .await
+        .unwrap_or_default();
     json!({
         "name": config.name,
         "displayName": display_name,
@@ -1808,11 +1847,11 @@ fn oauth2_client() -> &'static reqwest::Client {
 /// [`cratebase_auth::KnownProvider`] default when the collection left it
 /// blank — an admin enabling "google"/"github" only has to supply
 /// `clientId`/`clientSecret`, exactly like PocketBase's own presets.
-fn effective_url(configured: &str, known: Option<&'static str>) -> String {
+fn effective_url(configured: &str, known: Option<String>) -> String {
     if !configured.is_empty() {
         configured.to_string()
     } else {
-        known.unwrap_or_default().to_string()
+        known.unwrap_or_default()
     }
 }
 

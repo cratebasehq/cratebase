@@ -10,6 +10,7 @@
 mod error;
 mod fingerprint;
 mod oauth2;
+mod oidc;
 mod otp;
 mod password;
 mod pkce;
@@ -18,9 +19,14 @@ mod token;
 pub use error::{AuthError, AuthResult};
 pub use fingerprint::auth_origin_fingerprint;
 pub use oauth2::{
-    parse_generic_userinfo, parse_github_userinfo, parse_google_userinfo, parse_token_response,
-    KnownProvider, OAuth2User, TokenExchange, TokenResponse,
+    apple_client_secret, parse_apple_first_login_name, parse_apple_id_token_claims,
+    parse_discord_userinfo, parse_facebook_userinfo, parse_generic_userinfo,
+    parse_github_userinfo, parse_gitlab_userinfo, parse_google_userinfo, parse_linkedin_userinfo,
+    parse_microsoft_userinfo, parse_slack_userinfo, parse_spotify_userinfo,
+    parse_token_response, parse_twitch_userinfo, parse_twitter_userinfo, KnownProvider,
+    OAuth2User, TokenExchange, TokenResponse,
 };
+pub use oidc::{verify_id_token, IdTokenChecks};
 pub use otp::{generate_otp, hash_otp, DEFAULT_OTP_LENGTH};
 pub use password::{
     hash_password, hash_password_async, needs_rehash, verify_password, verify_password_async,
