@@ -75,6 +75,16 @@ export interface OtpConfig {
   emailTemplate: EmailTemplate;
 }
 
+/** Passwordless sign-in by emailed single-use link
+ * (`crates/core/src/collection.rs`'s `MagicLink`). Disabled by default,
+ * same shape as {@link OtpConfig} but mailing a link instead of a code. */
+export interface MagicLinkConfig {
+  enabled: boolean;
+  duration: number;
+  urlTemplate: string;
+  emailTemplate: EmailTemplate;
+}
+
 /** A collection's own schema, as `GET /api/collections` returns it. Every
  * `auth`-only field is present (with Cratebase's own defaults) only when
  * `type === "auth"` — flattened onto the collection JSON exactly as
@@ -112,6 +122,7 @@ export interface CollectionModel {
   verificationTemplate?: EmailTemplate;
   resetPasswordTemplate?: EmailTemplate;
   confirmEmailChangeTemplate?: EmailTemplate;
+  magicLink?: MagicLinkConfig;
   [key: string]: unknown;
 }
 

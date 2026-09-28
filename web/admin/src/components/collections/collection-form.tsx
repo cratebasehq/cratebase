@@ -170,9 +170,9 @@ export function CollectionForm({
    * whatever this form currently defines. */
   const indexColumns = useMemo(() => {
     const base = ["id", "created", "updated"];
-    if (value.type === "auth") base.push(value.identityField, "verified");
+    if (value.type === "auth") base.push(...value.identityFields, "verified");
     return [...base, ...value.schema.map((f) => f.name).filter(Boolean)];
-  }, [value.schema, value.type, value.identityField]);
+  }, [value.schema, value.type, value.identityFields]);
 
   const dropsColumn = pendingRemoval ? (persistedFieldNames?.has(pendingRemoval.field.name) ?? false) : false;
 
@@ -190,42 +190,38 @@ export function CollectionForm({
 
       {value.type === "auth" ? (
         <div>
+          <p className="mb-1.5 text-xs font-medium text-foreground/80">Log in with</p>
           {isNew ? (
             <ToggleGroup
-              type="single"
+              type="multiple"
               variant="outline"
               size="sm"
               spacing={0}
               aria-label="Log in with"
-              value={value.identityField}
-              // A segmented control always has exactly one option picked —
-              // Radix reports "" when the pressed item is toggled off.
-              onValueChange={(identityField) => {
-                if (identityField) onChange({ ...value, identityField });
+              value={value.identityFields}
+              onValueChange={(identityFields) => {
+                // At least one identity field is required — refuse to let
+                // the last one toggle off rather than silently falling back.
+                if (identityFields.length > 0) onChange({ ...value, identityFields });
               }}
             >
               <ToggleGroupItem value="email">Email</ToggleGroupItem>
               <ToggleGroupItem value="username">Username</ToggleGroupItem>
             </ToggleGroup>
           ) : (
-            <ToggleGroup
-              type="single"
-              variant="outline"
-              size="sm"
-              spacing={0}
-              aria-label="Log in with"
-              value={value.identityField}
-            >
-              <ToggleGroupItem value={value.identityField} disabled>
-                {value.identityField}
-              </ToggleGroupItem>
+            <ToggleGroup type="multiple" variant="outline" size="sm" spacing={0} aria-label="Log in with" value={value.identityFields}>
+              {value.identityFields.map((field) => (
+                <ToggleGroupItem key={field} value={field} disabled>
+                  {field}
+                </ToggleGroupItem>
+              ))}
             </ToggleGroup>
           )}
-          {!isNew ? (
-            <p className="mt-1.5 text-xs text-muted-foreground">
-              Changing the identity field after creation isn't supported yet.
-            </p>
-          ) : null}
+          <p className="mt-1.5 text-xs text-muted-foreground">
+            {isNew
+              ? "Pick email, username, or both — a caller may sign in with any of the fields selected here."
+              : "Changing the identity fields after creation isn't supported yet."}
+          </p>
         </div>
       ) : null}
 
@@ -235,8 +231,12 @@ export function CollectionForm({
             <span className="text-sm font-medium text-foreground">Fields</span>
             {value.type === "auth" ? (
               <span className="text-xs text-muted-foreground">
-                <code className="font-mono">{value.identityField}</code> and{" "}
-                <code className="font-mono">password</code> are managed automatically.
+                {value.identityFields.map((f) => (
+                  <code key={f} className="font-mono">
+                    {f}{" "}
+                  </code>
+                ))}
+                and <code className="font-mono">password</code> are managed automatically.
               </span>
             ) : null}
           </div>
