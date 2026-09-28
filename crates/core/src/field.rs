@@ -715,6 +715,48 @@ mod tests {
     }
 
     #[test]
+    fn searchable_flat_option_round_trips_and_defaults_to_false() {
+        let mut f = Field::new("title", FieldKind::Text {
+            min: 0,
+            max: 0,
+            pattern: String::new(),
+            autogenerate_pattern: String::new(),
+            primary_key: false,
+        });
+        assert!(!f.searchable);
+        assert!(!f.is_searchable());
+        f.searchable = true;
+        assert!(f.is_searchable());
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["searchable"], true);
+        let back: Field = serde_json::from_value(v).unwrap();
+        assert!(back.searchable);
+
+        // Absent in the input entirely (older/hand-written schema JSON)
+        // defaults to false rather than erroring.
+        let f: Field = serde_json::from_str(r#"{"name":"title","type":"text"}"#).unwrap();
+        assert!(!f.searchable);
+    }
+
+    #[test]
+    fn only_text_shaped_types_support_search() {
+        assert!(FieldType::Text.supports_search());
+        assert!(FieldType::Editor.supports_search());
+        assert!(FieldType::Email.supports_search());
+        assert!(FieldType::Url.supports_search());
+        assert!(!FieldType::Number.supports_search());
+        assert!(!FieldType::Bool.supports_search());
+        assert!(!FieldType::Json.supports_search());
+        assert!(!FieldType::Select.supports_search());
+
+        // `is_searchable()` refuses to trust a stray `searchable: true`
+        // on a type that can't support it.
+        let mut f = Field::new("count", FieldKind::Number { min: None, max: None, only_int: false });
+        f.searchable = true;
+        assert!(!f.is_searchable());
+    }
+
+    #[test]
     fn geo_point_tag_is_camel_case() {
         let f = Field::new("loc", FieldKind::GeoPoint {});
         let v = serde_json::to_value(&f).unwrap();
