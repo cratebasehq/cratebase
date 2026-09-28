@@ -512,6 +512,26 @@ export class AuthNamespace {
         this.authHeader,
       );
     },
+    /** {@link accounts.list}, but for a record in *any* collection —
+     * the superuser-only cross-collection sibling every other `admin.*`
+     * method here already has. */
+    listExternalAuths: async (collection: string, recordId: string): Promise<ExternalAuthRow[]> => {
+      return this.transport.send<ExternalAuthRow[]>(
+        this.pathFor(collection, `records/${encodeURIComponent(recordId)}/external-auths`),
+        {},
+        this.authHeader,
+      );
+    },
+    unlinkExternalAuth: async (collection: string, recordId: string, provider: string): Promise<void> => {
+      await this.transport.send(
+        this.pathFor(
+          collection,
+          `records/${encodeURIComponent(recordId)}/external-auths/${encodeURIComponent(provider)}`,
+        ),
+        { method: "DELETE" },
+        this.authHeader,
+      );
+    },
     /** Cookie-mode only: restores the impersonator's session from the
      * `cb_session_prev` cookie `impersonate` stashed. Bearer-mode
      * "stop impersonating" is just discarding the `AuthNamespace`
