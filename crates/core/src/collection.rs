@@ -353,6 +353,17 @@ pub struct Collection {
     pub updated: DateTime,
     /// View collections only.
     pub view_query: String,
+    /// The Postgres text-search config (`"english"`, `"indonesian"`,
+    /// ...) used to build the generated `tsvector` column when this
+    /// collection has any `searchable` field. `None`/absent falls back
+    /// to `"simple"` (no stemming/stopwords — always available, no
+    /// extra extension). Ignored on SQLite, which always uses FTS5's
+    /// own tokenizer. Not validated against Postgres's actual installed
+    /// configs here (that needs a live connection); an unknown name
+    /// falls back to `"simple"` at sync time rather than failing the
+    /// collection save.
+    #[serde(default)]
+    pub search_language: Option<String>,
     /// Auth collections only.
     #[serde(flatten)]
     pub auth: AuthOptions,
@@ -375,6 +386,7 @@ impl Default for Collection {
             created: DateTime::default(),
             updated: DateTime::default(),
             view_query: String::new(),
+            search_language: None,
             auth: AuthOptions::default(),
         }
     }
@@ -542,6 +554,24 @@ impl Collection {
         self.fields.iter().filter(move |f| f.field_type() == t)
     }
 
+    /// The fields that participate in this collection's full-text index,
+    /// in schema order (also the column order the FTS5/`tsvector`
+    /// expression concatenates them in).
+    pub fn searchable_fields(&self) -> impl Iterator<Item = &Field> {
+        self.fields.iter().filter(|f| f.is_searchable())
+    }
+
+    /// Whether this collection has a full-text index at all.
+    pub fn has_search_index(&self) -> bool {
+        self.searchable_fields().next().is_some()
+    }
+
+    /// The Postgres text-search config to use for this collection's
+    /// generated `tsvector`: `search_language` if set, else `"simple"`.
+    pub fn search_language_or_default(&self) -> &str {
+        self.search_language.as_deref().unwrap_or("simple")
+    }
+
     /// Identity fields usable for password login (auth collections).
     pub fn identity_fields(&self) -> Vec<String> {
         if self.auth.password_auth.identity_fields.is_empty() {
@@ -568,6 +598,7 @@ impl Collection {
         m.insert("created".into(), json!(self.created));
         m.insert("updated".into(), json!(self.updated));
         m.insert("system".into(), json!(self.system));
+        m.insert("searchLanguage".into(), json!(self.search_language));
         match self.collection_type {
             CollectionType::View => {
                 m.insert("viewQuery".into(), json!(self.view_query));
@@ -1613,6 +1644,34 @@ impl Collection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_language_defaults_to_simple_and_round_trips() {
+        let mut c = Collection::new("posts", CollectionType::Base);
+        assert_eq!(c.search_language_or_default(), "simple");
+        assert!(!c.has_search_index());
+
+        c.fields.push(Field::new(
+            "title",
+            FieldKind::Text {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                autogenerate_pattern: String::new(),
+                primary_key: false,
+            },
+        ));
+        c.fields.last_mut().unwrap().searchable = true;
+        c.search_language = Some("english".into());
+        assert!(c.has_search_index());
+        assert_eq!(c.searchable_fields().count(), 1);
+        assert_eq!(c.search_language_or_default(), "english");
+
+        let v = c.to_json();
+        assert_eq!(v["searchLanguage"], "english");
+        let back: Collection = serde_json::from_value(v).unwrap();
+        assert_eq!(back.search_language.as_deref(), Some("english"));
+    }
 
     #[test]
     fn base_collection_json_has_no_auth_or_view_blocks() {
