@@ -1155,7 +1155,8 @@ async fn refresh_default_email_templates_up(db: &Db) -> DbResult<()> {
             continue;
         };
         let mut record = crate::records::find_by_id_raw(db, &collection, &id).await?;
-        let unchanged = record.get("subject").and_then(serde_json::Value::as_str) == Some(old.subject)
+        let unchanged = record.get("subject").and_then(serde_json::Value::as_str)
+            == Some(old.subject)
             && record.get("html").and_then(serde_json::Value::as_str) == Some(old.html);
         if !unchanged {
             continue;
@@ -1401,6 +1402,74 @@ mod tests {
         let before = html_for(&db, "welcome").await;
         refresh_default_email_templates_up(&db).await.unwrap();
         assert_eq!(html_for(&db, "welcome").await, before);
+    }
+
+    /// Not run by default (`cargo test -- --ignored` to run it) — a
+    /// developer convenience, not a regression test: renders every
+    /// [`seed_email_templates`] row through the real
+    /// `render_email_template`/`render_layout` pipeline with
+    /// representative sample data for each `{{var}}`, and writes the
+    /// result to a temp dir for a human (or a screenshot tool) to look
+    /// at after touching the copy or the branded layout.
+    #[test]
+    #[ignore]
+    fn render_check_writes_every_default_template_to_a_temp_dir() {
+        use cratebase_core::settings::Meta;
+        use cratebase_mailer::{render_email_template, TemplateDoc};
+        use serde_json::json;
+
+        let sample_data: &[(&str, serde_json::Value)] = &[
+            ("auth.verification", json!({ "token": "tok_9f8a1c2e" })),
+            ("auth.passwordReset", json!({ "token": "tok_9f8a1c2e" })),
+            ("auth.emailChange", json!({ "token": "tok_9f8a1c2e" })),
+            ("auth.otp", json!({ "otp": "482913" })),
+            (
+                "auth.loginAlert",
+                json!({ "alertInfo": "Chrome on macOS · San Francisco, CA · Sep 28, 2026" }),
+            ),
+            (
+                "auth.magic-link",
+                json!({ "magicLink": "https://acme.test/_/#/auth/magic/tok_9f8a1c2e" }),
+            ),
+            ("welcome", json!({ "user": { "name": "Ada" } })),
+        ];
+
+        let dir = std::env::temp_dir().join("cratebase-email-render-check");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let meta = Meta {
+            app_name: "Acme".into(),
+            app_url: "https://acme.test".into(),
+            ..Meta::default()
+        };
+
+        let mut written = Vec::new();
+        for tpl in seed_email_templates() {
+            let (_, data) = sample_data
+                .iter()
+                .find(|(key, _)| *key == tpl.key)
+                .unwrap_or_else(|| panic!("no sample data for {}", tpl.key));
+            let doc = TemplateDoc {
+                subject: &tpl.subject,
+                html: &tpl.html,
+                text: "",
+                layout: true,
+            };
+            let (_, html, _) = render_email_template(&doc, data, &meta);
+            let path = dir.join(format!("{}.html", tpl.key.replace(['.', '-'], "_")));
+            std::fs::write(&path, &html).unwrap();
+            written.push(path);
+        }
+
+        eprintln!(
+            "render-check wrote {} files to {}:",
+            written.len(),
+            dir.display()
+        );
+        for path in &written {
+            eprintln!("  {}", path.display());
+        }
+        assert_eq!(written.len(), 7);
     }
 
     #[tokio::test]

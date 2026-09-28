@@ -373,10 +373,7 @@ pub fn render_email_template(
     } else {
         brand_color
     };
-    map.insert(
-        "brandColor".into(),
-        Value::String(brand_color.to_string()),
-    );
+    map.insert("brandColor".into(), Value::String(brand_color.to_string()));
     let data = Value::Object(map);
 
     // The subject line and the plain-text alternative are not HTML
@@ -482,7 +479,8 @@ mod tests {
         let html = render_layout("<p>hi</p>", &Meta::default());
         assert!(html.contains("@media only screen and (max-width: 620px)"));
         assert!(html.contains(".cb-px { padding-left: 20px !important;"));
-        assert!(html.contains(r#"<meta name="viewport" content="width=device-width, initial-scale=1">"#));
+        assert!(html
+            .contains(r#"<meta name="viewport" content="width=device-width, initial-scale=1">"#));
     }
 
     #[test]
