@@ -4,8 +4,16 @@ import { type FieldSchema, userFields } from "@/lib/field-types";
 /** One OAuth2 provider, as this dashboard edits it. The SDK types `pkce`
  * as `boolean | undefined`; this form treats "unset" as a real third state
  * (auto-detect, PocketBase's own default) rather than collapsing it into
- * `false`, so it's re-typed as `boolean | null`. */
-export type AuthProviderValue = Omit<OAuth2Provider, "logo" | "extra" | "pkce"> & { pkce: boolean | null };
+ * `false`, so it's re-typed as `boolean | null`. `extra` carries whatever a
+ * preset needs beyond client id/secret + the three URLs (Apple's
+ * `teamId`/`keyId`/`privateKey`, Microsoft's `tenant`, GitLab's `baseUrl`,
+ * a generic OIDC provider's `issuer`, or a `scope` override on any of
+ * them) — narrowed to `Record<string, string>` here since every one of
+ * those is a plain string on the wire too. */
+export type AuthProviderValue = Omit<OAuth2Provider, "logo" | "extra" | "pkce"> & {
+  pkce: boolean | null;
+  extra: Record<string, string>;
+};
 
 /** `crates/core/src/collection.rs::AuthOptions`, flattened into the form's
  * own field names. Every duration is in seconds, matching the wire. Only
@@ -137,7 +145,44 @@ export function emptyOAuth2Provider(): AuthProviderValue {
     userInfoURL: "",
     displayName: "",
     pkce: null,
+    extra: {},
   };
+}
+
+/** Presets whose Service ID/client id is authenticated with a per-request
+ * JWT client secret (`extra.teamId`/`keyId`/`privateKey`) instead of a
+ * static `clientSecret` — currently just Apple. */
+export function isJwtClientSecretProvider(name: string): boolean {
+  return name.trim().toLowerCase() === "apple";
+}
+
+/** Every preset `cratebase_auth::KnownProvider::from_name` recognizes —
+ * its auth/token/userinfo URLs are baked in server-side from the name
+ * alone, so this dashboard's own validation shouldn't demand them the
+ * way it does for a hand-configured provider. */
+export const KNOWN_PRESET_NAMES: ReadonlySet<string> = new Set([
+  "google",
+  "github",
+  "apple",
+  "microsoft",
+  "discord",
+  "gitlab",
+  "facebook",
+  "twitter",
+  "linkedin",
+  "slack",
+  "twitch",
+  "spotify",
+]);
+
+/** A provider configured with nothing but an issuer URL — auto-discovered
+ * at login time (`GET {issuer}/.well-known/openid-configuration`), so it
+ * needs none of the three endpoint URLs a hand-configured provider does.
+ * Matches any name (conventionally `oidc`/`oidc2`/`oidc3`, PocketBase's own
+ * convention for more than one), keyed on `extra.issuer` being set — same
+ * rule `crates/server/src/routes/auth.rs`'s `oidc_issuer` uses. */
+export function isGenericOidcProvider(extra: Record<string, string>): boolean {
+  return Boolean(extra.issuer?.trim());
 }
 
 /** Mirrors `cratebase_core::collection::AuthOptions::default()` — the
@@ -172,9 +217,27 @@ export function validateAuthOptions(auth: AuthOptionsValue): string[] {
     auth.oauth2Providers.forEach((provider, i) => {
       const label = provider.name || `Provider ${i + 1}`;
       if (!provider.name.trim()) errors.push(`OAuth2 provider ${i + 1} needs a name`);
-      if (!provider.clientId.trim()) errors.push(`${label}: client id is required`);
-      if (!provider.authURL.trim() || !provider.tokenURL.trim() || !provider.userInfoURL.trim()) {
-        errors.push(`${label}: auth, token, and user-info URLs are required`);
+      if (!provider.clientId.trim()) errors.push(`${label}: client id is required (Apple's Service ID)`);
+
+      if (isJwtClientSecretProvider(provider.name)) {
+        // Apple: no static clientSecret at all -- it's minted per
+        // request from these three instead (see
+        // `cratebase_auth::apple_client_secret`).
+        if (!provider.extra.teamId?.trim()) errors.push(`${label}: Team ID is required`);
+        if (!provider.extra.keyId?.trim()) errors.push(`${label}: Key ID is required`);
+        if (!provider.extra.privateKey?.trim()) errors.push(`${label}: private key is required`);
+      } else if (!isGenericOidcProvider(provider.extra)) {
+        // A generic OIDC provider is discovered at login time from just
+        // its issuer, so it's the one case (besides Apple) that skips
+        // this -- every other preset and hand-configured provider still
+        // needs its own auth/token/userinfo URLs (a preset's are filled
+        // in server-side from the name alone, so leaving them blank
+        // here is fine and expected).
+        if (!provider.authURL.trim() || !provider.tokenURL.trim() || !provider.userInfoURL.trim()) {
+          if (!KNOWN_PRESET_NAMES.has(provider.name.trim().toLowerCase())) {
+            errors.push(`${label}: auth, token, and user-info URLs are required`);
+          }
+        }
       }
     });
   }
@@ -238,6 +301,9 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
               userInfoURL: p.userInfoURL,
               displayName: p.displayName,
               pkce: p.pkce ?? null,
+              extra: Object.fromEntries(
+                Object.entries(p.extra ?? {}).map(([k, v]) => [k, v == null ? "" : String(v)]),
+              ),
             })),
             mfaEnabled: collection.mfa?.enabled ?? false,
             mfaDuration: collection.mfa?.duration ?? 600,
@@ -281,6 +347,7 @@ export function authOptionsPayload(auth: AuthOptionsValue, identityField: string
         tokenURL: p.tokenURL,
         userInfoURL: p.userInfoURL,
         displayName: p.displayName,
+        extra: p.extra,
         ...(p.pkce === null ? {} : { pkce: p.pkce }),
       })),
     },

@@ -3,6 +3,9 @@ import { Link } from "@tanstack/react-router";
 import { Check, Copy, ExternalLink, Plus, Trash2, TriangleAlert } from "lucide-react";
 import {
   emptyOAuth2Provider,
+  isGenericOidcProvider,
+  isJwtClientSecretProvider,
+  KNOWN_PRESET_NAMES,
   type AuthOptionsValue,
   type AuthProviderValue,
 } from "@/lib/collection-form-value";
@@ -115,6 +118,45 @@ const PROVIDER_GUIDES: Record<string, { console: string; consoleLabel: string; s
     consoleLabel: "Azure Portal → App registrations",
     steps: 'New registration → Authentication → Add a platform → Web, then paste the callback URL below into "Redirect URIs".',
   },
+  apple: {
+    console: "https://developer.apple.com/account/resources/identifiers/list/serviceId",
+    consoleLabel: "Apple Developer → Certificates, IDs & Profiles → Identifiers",
+    steps:
+      'Register a Services ID (its identifier is the "Client id" below), enable "Sign In with Apple", and paste the callback URL below into its website URLs\' "Return URLs". Then create a new Sign in with Apple key under Keys, and fill in Team ID / Key ID / the downloaded .p8 private key below — Apple has no static client secret at all.',
+  },
+  facebook: {
+    console: "https://developers.facebook.com/apps",
+    consoleLabel: "Meta for Developers → My Apps",
+    steps: 'Add the Facebook Login product, then paste the callback URL below into "Valid OAuth Redirect URIs".',
+  },
+  twitter: {
+    console: "https://developer.twitter.com/en/portal/projects-and-apps",
+    consoleLabel: "X Developer Portal → Projects & Apps",
+    steps:
+      'Set up User authentication settings with OAuth 2.0, then paste the callback URL below into "Callback URI / Redirect URL". PKCE is mandatory for X — leave "Force PKCE" unchecked to use the default, which already applies it.',
+  },
+  linkedin: {
+    console: "https://www.linkedin.com/developers/apps",
+    consoleLabel: "LinkedIn Developers → My Apps",
+    steps:
+      'Add the "Sign In with LinkedIn using OpenID Connect" product, then paste the callback URL below into "Authorized redirect URLs".',
+  },
+  slack: {
+    console: "https://api.slack.com/apps",
+    consoleLabel: "Slack API → Your Apps",
+    steps:
+      'Add "Sign in with Slack" (OpenID Connect), then paste the callback URL below into its redirect URLs.',
+  },
+  twitch: {
+    console: "https://dev.twitch.tv/console/apps",
+    consoleLabel: "Twitch Developer Console → Applications",
+    steps: 'Register your application, then paste the callback URL below into "OAuth Redirect URLs".',
+  },
+  spotify: {
+    console: "https://developer.spotify.com/dashboard",
+    consoleLabel: "Spotify for Developers → Dashboard",
+    steps: 'Create an app, open its settings, and paste the callback URL below into "Redirect URIs".',
+  },
 };
 
 /** The exact URL a provider redirects back to once someone approves the
@@ -217,18 +259,39 @@ function ProviderRow({
   function patch(next: Partial<AuthProviderValue>) {
     onChange({ ...provider, ...next });
   }
+  function patchExtra(next: Record<string, string>) {
+    patch({ extra: { ...provider.extra, ...next } });
+  }
+
+  const normalizedName = provider.name.trim().toLowerCase();
+  const isApple = isJwtClientSecretProvider(provider.name);
+  const isOidc = isGenericOidcProvider(provider.extra) || normalizedName.startsWith("oidc");
+  const isKnownPreset = KNOWN_PRESET_NAMES.has(normalizedName);
+  // A preset's (or a discovered OIDC issuer's) endpoints are never
+  // hand-entered, so hiding the raw URL fields for them keeps the form
+  // honest about what it's actually going to send.
+  const needsRawUrls = !isApple && !isOidc && !isKnownPreset;
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <CallbackUrlField appURL={appURL} collectionName={collectionName} providerName={provider.name} />
-        <OptionField label="Provider name" help='Built-in presets ("google", "github", …) or your own for a custom OpenID/OAuth2 endpoint.'>
+        <OptionField
+          label="Provider name"
+          help='A built-in preset name (see the list below), "oidc"/"oidc2"/"oidc3" for a generic issuer, or your own for a fully custom OAuth2 endpoint.'
+        >
           <Input
+            list="oauth2-known-provider-names"
             value={provider.name}
             onChange={(e) => patch({ name: e.target.value })}
             placeholder="google"
             className="h-control-md font-mono text-sm"
           />
+          <datalist id="oauth2-known-provider-names">
+            {[...KNOWN_PRESET_NAMES, "oidc"].map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
         </OptionField>
         <OptionField label="Display name" help="Shown on the sign-in button. Falls back to the provider name if left blank.">
           <Input
@@ -238,50 +301,137 @@ function ProviderRow({
             className="h-control-md text-sm"
           />
         </OptionField>
-        <OptionField label="Client id">
+        <OptionField label={isApple ? "Client id (Service ID)" : "Client id"}>
           <Input
             value={provider.clientId}
             onChange={(e) => patch({ clientId: e.target.value })}
+            placeholder={isApple ? "com.example.app.service" : undefined}
             className="h-control-md font-mono text-sm"
           />
         </OptionField>
-        <OptionField
-          label="Client secret"
-          help="The server never returns a stored secret, so this box starts empty for an existing provider — leave it blank only if you don't want to change it. Every other field on this row is safe to edit without retyping it, but if you don't have it handy, cancel out of this form and come back once you do."
-        >
-          <Input
-            type="password"
-            value={provider.clientSecret}
-            onChange={(e) => patch({ clientSecret: e.target.value })}
-            autoComplete="new-password"
-            placeholder="Stored — leave blank to keep"
-            className="h-control-md text-sm"
-          />
-        </OptionField>
-        <OptionField label="Auth URL">
-          <Input
-            value={provider.authURL}
-            onChange={(e) => patch({ authURL: e.target.value })}
-            placeholder="https://accounts.example.com/oauth2/authorize"
-            className="h-control-md font-mono text-xs"
-          />
-        </OptionField>
-        <OptionField label="Token URL">
-          <Input
-            value={provider.tokenURL}
-            onChange={(e) => patch({ tokenURL: e.target.value })}
-            placeholder="https://accounts.example.com/oauth2/token"
-            className="h-control-md font-mono text-xs"
-          />
-        </OptionField>
-        <OptionField label="User info URL" className="sm:col-span-2">
-          <Input
-            value={provider.userInfoURL}
-            onChange={(e) => patch({ userInfoURL: e.target.value })}
-            placeholder="https://accounts.example.com/oauth2/userinfo"
-            className="h-control-md font-mono text-xs"
-          />
-        </OptionField>
+        {isApple ? (
+          <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-2xs leading-snug text-muted-foreground sm:col-span-2">
+            Apple has no static client secret — it's generated per request from the Team ID, Key ID, and private
+            key below instead.
+          </div>
+        ) : (
+          <OptionField
+            label="Client secret"
+            help="The server never returns a stored secret, so this box starts empty for an existing provider — leave it blank only if you don't want to change it. Every other field on this row is safe to edit without retyping it, but if you don't have it handy, cancel out of this form and come back once you do."
+          >
+            <Input
+              type="password"
+              value={provider.clientSecret}
+              onChange={(e) => patch({ clientSecret: e.target.value })}
+              autoComplete="new-password"
+              placeholder="Stored — leave blank to keep"
+              className="h-control-md text-sm"
+            />
+          </OptionField>
+        )}
+
+        {isApple ? (
+          <>
+            <OptionField label="Team ID" help="Apple Developer → Membership.">
+              <Input
+                value={provider.extra.teamId ?? ""}
+                onChange={(e) => patchExtra({ teamId: e.target.value })}
+                placeholder="ABCDE12345"
+                className="h-control-md font-mono text-sm"
+              />
+            </OptionField>
+            <OptionField label="Key ID" help="The Sign in with Apple key's ID, from when it was created.">
+              <Input
+                value={provider.extra.keyId ?? ""}
+                onChange={(e) => patchExtra({ keyId: e.target.value })}
+                placeholder="ABCD123456"
+                className="h-control-md font-mono text-sm"
+              />
+            </OptionField>
+            <OptionField
+              label="Private key (.p8)"
+              className="sm:col-span-2"
+              help="The server never returns a stored key, so this box starts empty for an existing provider — leave it blank only if you don't want to change it."
+            >
+              <textarea
+                value={provider.extra.privateKey ?? ""}
+                onChange={(e) => patchExtra({ privateKey: e.target.value })}
+                placeholder={"-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----"}
+                rows={4}
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-2xs"
+              />
+            </OptionField>
+          </>
+        ) : null}
+
+        {normalizedName === "microsoft" ? (
+          <OptionField
+            label="Tenant"
+            help='Defaults to "common" (personal + work/school accounts) when left blank. Use a specific tenant ID to restrict sign-in to one Entra ID organization.'
+          >
+            <Input
+              value={provider.extra.tenant ?? ""}
+              onChange={(e) => patchExtra({ tenant: e.target.value })}
+              placeholder="common"
+              className="h-control-md font-mono text-sm"
+            />
+          </OptionField>
+        ) : null}
+
+        {normalizedName === "gitlab" ? (
+          <OptionField label="Base URL" help="Defaults to https://gitlab.com. Set this for a self-hosted GitLab instance.">
+            <Input
+              value={provider.extra.baseUrl ?? ""}
+              onChange={(e) => patchExtra({ baseUrl: e.target.value })}
+              placeholder="https://gitlab.com"
+              className="h-control-md font-mono text-sm"
+            />
+          </OptionField>
+        ) : null}
+
+        {isOidc ? (
+          <OptionField
+            label="Issuer"
+            className="sm:col-span-2"
+            help="The provider's OIDC issuer URL — its /.well-known/openid-configuration, authorization/token/userinfo endpoints, and signing keys are discovered from this alone."
+          >
+            <Input
+              value={provider.extra.issuer ?? ""}
+              onChange={(e) => patchExtra({ issuer: e.target.value })}
+              placeholder="https://issuer.example.com"
+              className="h-control-md font-mono text-sm"
+            />
+          </OptionField>
+        ) : null}
+
+        {needsRawUrls ? (
+          <>
+            <OptionField label="Auth URL">
+              <Input
+                value={provider.authURL}
+                onChange={(e) => patch({ authURL: e.target.value })}
+                placeholder="https://accounts.example.com/oauth2/authorize"
+                className="h-control-md font-mono text-xs"
+              />
+            </OptionField>
+            <OptionField label="Token URL">
+              <Input
+                value={provider.tokenURL}
+                onChange={(e) => patch({ tokenURL: e.target.value })}
+                placeholder="https://accounts.example.com/oauth2/token"
+                className="h-control-md font-mono text-xs"
+              />
+            </OptionField>
+            <OptionField label="User info URL" className="sm:col-span-2">
+              <Input
+                value={provider.userInfoURL}
+                onChange={(e) => patch({ userInfoURL: e.target.value })}
+                placeholder="https://accounts.example.com/oauth2/userinfo"
+                className="h-control-md font-mono text-xs"
+              />
+            </OptionField>
+          </>
+        ) : null}
       </div>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
