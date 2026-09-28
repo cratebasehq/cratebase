@@ -297,11 +297,7 @@ impl Storage {
     /// notion of a presigned URL; the caller falls back to a same-origin
     /// upload endpoint the server handles itself, so the SDK's upload
     /// flow looks identical either way.
-    pub async fn presign_put(
-        &self,
-        key: &str,
-        expires_in: Duration,
-    ) -> StorageResult<Option<Url>> {
+    pub async fn presign_put(&self, key: &str, expires_in: Duration) -> StorageResult<Option<Url>> {
         let Some(signer) = &self.signer else {
             return Ok(None);
         };

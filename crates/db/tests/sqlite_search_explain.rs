@@ -113,8 +113,13 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     for i in 0..50_000u32 {
         let title = format!(
             "{} number {i}",
-            ["a quiet afternoon", "weekly news roundup", "cooking with garlic", "notes on rust programming", "traveling through spain"]
-                [(i % 5) as usize]
+            [
+                "a quiet afternoon",
+                "weekly news roundup",
+                "cooking with garlic",
+                "notes on rust programming",
+                "traveling through spain"
+            ][(i % 5) as usize]
         );
         db.execute(
             "INSERT INTO \"posts\" (\"id\", \"title\", \"created\", \"updated\") VALUES ($1, $2, '', '')",
@@ -152,7 +157,8 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     let mut search_rows = 0;
     for _ in 0..RUNS {
         let r = resolver(&posts, &db.collections, &ctx);
-        let search_compiled = cratebase_db::query::search_condition(&r, "xenolithography", 0).unwrap();
+        let search_compiled =
+            cratebase_db::query::search_condition(&r, "xenolithography", 0).unwrap();
         let mut q1 = cratebase_db::query::Query::new(&posts);
         q1.push_filter(search_compiled);
         let sql1 = q1.select_sql();
