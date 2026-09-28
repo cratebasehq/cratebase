@@ -65,6 +65,14 @@ export type {
   SendNotificationResult,
   MarkAllNotificationsReadResult,
 } from "./cratebase-only.js";
+export type {
+  Channel,
+  ChannelMessage,
+  ChannelAuth,
+  ChannelPresence,
+  PresenceMember,
+  PresenceEventKind,
+} from "./cratebase-only.js";
 export { getMagicLinkTokenFromUrl } from "./cratebase-only.js";
 
 export interface CreateClientOptions {
@@ -173,6 +181,18 @@ export class CratebaseClient<
 
   batch(): BatchBuilder {
     return new BatchBuilder(this.transport, () => this.authHeaderFor(this.authCollection));
+  }
+
+  /** A realtime channel not tied to any record/collection — chat rooms,
+   * cursor sharing, live counters, presence. See `cratebase-only.ts`'s
+   * `Channel` for the full contract; authorization comes from the
+   * channel's `_channels` config row (dashboard: Automation > Realtime
+   * channels), with no matching row disabling it by default. Cheap to
+   * call repeatedly — `cb.channel(name)` builds a fresh handle each time
+   * rather than caching one, so there's no reason to hold onto the
+   * result past the calls you're making with it. */
+  channel<T = unknown>(name: string): cratebaseOnly.Channel<T> {
+    return cratebaseOnly.createChannel<T>(this, this.realtime, name);
   }
 
   /** Call a custom-SQL RPC (`POST /api/rpc/{name}`) — see

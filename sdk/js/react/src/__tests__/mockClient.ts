@@ -206,6 +206,97 @@ export function createFakeAuth(): FakeAuth {
   return auth;
 }
 
+export interface FakePresenceMember {
+  clientId: string;
+  state: unknown;
+  auth: null;
+}
+
+type PresenceKind = "join" | "update" | "leave";
+
+/** A minimal fake `Channel` (`@cratebase/client`'s realtime-channel
+ * handle): `subscribe`/`publish` are a synchronous in-memory pub/sub
+ * (like `FakeCollection`'s `emit`), and `presence` tracks members in a
+ * `Map` with test-only `_simulateJoin`/`_simulateLeave` for exercising a
+ * *second* peer's presence without a second real connection. */
+export interface FakeChannel {
+  subscribe(handler: (message: { event: string; data: unknown }) => void): Promise<() => void>;
+  publish(event: string, data?: unknown): Promise<void>;
+  presence: {
+    track(state: unknown): Promise<void>;
+    list(): Promise<FakePresenceMember[]>;
+    onChange(handler: (kind: PresenceKind, member: FakePresenceMember) => void): Promise<() => void>;
+  };
+  /** This fake channel's own "self" client id, used by `presence.track`. */
+  readonly selfClientId: string;
+  /** Test-only: simulate a *different* client joining/updating presence. */
+  _simulateJoin(clientId: string, state: unknown): void;
+  /** Test-only: simulate a *different* client's presence expiring/leaving. */
+  _simulateLeave(clientId: string): void;
+  /** Test-only: current subscriber counts, for asserting cleanup. */
+  listenerCount(): { messages: number; presence: number };
+}
+
+export function createFakeChannel(name: string): FakeChannel {
+  const messageListeners = new Set<(m: { event: string; data: unknown }) => void>();
+  const presenceListeners = new Set<(kind: PresenceKind, member: FakePresenceMember) => void>();
+  const members = new Map<string, FakePresenceMember>();
+  const selfClientId = `fake_${name}_self`;
+
+  function dispatchMessage(event: string, data: unknown) {
+    for (const l of [...messageListeners]) l({ event, data });
+  }
+  function dispatchPresence(kind: PresenceKind, member: FakePresenceMember) {
+    for (const l of [...presenceListeners]) l(kind, member);
+    dispatchMessage(`presence.${kind}`, member);
+  }
+
+  return {
+    selfClientId,
+    async subscribe(handler) {
+      messageListeners.add(handler);
+      return () => {
+        messageListeners.delete(handler);
+      };
+    },
+    async publish(event, data) {
+      dispatchMessage(event, data ?? null);
+    },
+    presence: {
+      async track(state) {
+        const isNew = !members.has(selfClientId);
+        const member: FakePresenceMember = { clientId: selfClientId, state, auth: null };
+        members.set(selfClientId, member);
+        dispatchPresence(isNew ? "join" : "update", member);
+      },
+      async list() {
+        return [...members.values()];
+      },
+      async onChange(handler) {
+        presenceListeners.add(handler);
+        return () => {
+          presenceListeners.delete(handler);
+        };
+      },
+    },
+    _simulateJoin(clientId, state) {
+      const member: FakePresenceMember = { clientId, state, auth: null };
+      const isNew = !members.has(clientId);
+      members.set(clientId, member);
+      dispatchPresence(isNew ? "join" : "update", member);
+    },
+    _simulateLeave(clientId) {
+      const member = members.get(clientId);
+      if (!member) return;
+      members.delete(clientId);
+      dispatchPresence("leave", member);
+    },
+    listenerCount() {
+      return { messages: messageListeners.size, presence: presenceListeners.size };
+    },
+  };
+}
+
 export interface FakePresenceHandle {
   online: Set<string>;
   subscribe(cb: (online: Set<string>) => void): () => void;
@@ -217,6 +308,7 @@ export function createFakeClient(collections: Record<string, FakeCollection<any>
   const collectionMap = new Map<string, FakeCollection<any>>(Object.entries(collections));
 
   const presenceHandles: FakePresenceHandle[] = [];
+  const channelMap = new Map<string, FakeChannel>();
 
   const getCollection = (name: string): FakeCollection<any> => {
     let c = collectionMap.get(name);
@@ -227,9 +319,20 @@ export function createFakeClient(collections: Record<string, FakeCollection<any>
     return c;
   };
 
+  const getChannel = (name: string): FakeChannel => {
+    let c = channelMap.get(name);
+    if (!c) {
+      c = createFakeChannel(name);
+      channelMap.set(name, c);
+    }
+    return c;
+  };
+
   return {
     auth,
     collection: getCollection,
+    channel: getChannel,
+    _channels: channelMap,
     notifications: {
       list: (options: any = {}) => getCollection("_notifications").list(options),
       fullList: (options: any = {}) => getCollection("_notifications").fullList(options),

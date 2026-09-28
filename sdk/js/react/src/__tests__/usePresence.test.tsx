@@ -4,33 +4,55 @@ import { usePresence } from "../usePresence.js";
 import { createFakeClient } from "./mockClient.js";
 
 describe("usePresence", () => {
-  test("tracks presence and reports the online set", async () => {
+  test("tracks this client's own state and lists it as a member", async () => {
     const client = createFakeClient();
-    const { result } = renderHook(() => usePresence(client, "presence", { id: "me" }));
+    const { result } = renderHook(() => usePresence(client, "room1", { name: "alice" }));
 
-    expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.online.has("me")).toBe(true);
-    expect(result.current.error).toBeNull();
+    const channel = client.channel("room1");
+    await waitFor(() =>
+      expect(result.current.members.some((m) => m.clientId === channel.selfClientId)).toBe(true),
+    );
+    const self = result.current.members.find((m) => m.clientId === channel.selfClientId);
+    expect(self?.state).toEqual({ name: "alice" });
   });
 
-  test("stops tracking on unmount", async () => {
+  test("sees another peer's join/leave via presence.onChange", async () => {
     const client = createFakeClient();
-    const { result, unmount } = renderHook(() => usePresence(client, "presence", { id: "me" }));
+    const { result } = renderHook(() => usePresence(client, "room1", null));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    const handle = client._presenceHandles[0];
-    expect(handle).toBeDefined();
-    unmount();
-    // stop() clears listeners synchronously in the fake; nothing else to
-    // assert against without a spy, so this just documents unmount runs
-    // without throwing.
+    const channel = client.channel("room1");
+    channel._simulateJoin("peer1", { name: "bob" });
+    await waitFor(() => expect(result.current.members.length).toBe(1));
+    expect(result.current.members[0]).toEqual({ clientId: "peer1", state: { name: "bob" }, auth: null });
+
+    channel._simulateLeave("peer1");
+    await waitFor(() => expect(result.current.members.length).toBe(0));
   });
 
-  test("enabled: false skips tracking", () => {
+  test("onChange callback fires with the event kind", async () => {
     const client = createFakeClient();
-    const { result } = renderHook(() => usePresence(client, "presence", { id: "me" }, { enabled: false }));
-    expect(result.current.loading).toBe(false);
-    expect(result.current.online.size).toBe(0);
+    const seen: string[] = [];
+    const { result } = renderHook(() =>
+      usePresence(client, "room1", null, { onChange: (kind) => seen.push(kind) }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const channel = client.channel("room1");
+    channel._simulateJoin("peer1", {});
+    channel._simulateJoin("peer1", { updated: true });
+    channel._simulateLeave("peer1");
+    await waitFor(() => expect(seen).toEqual(["join", "update", "leave"]));
+  });
+
+  test("state: null never tracks (no self member appears)", async () => {
+    const client = createFakeClient();
+    const { result } = renderHook(() => usePresence(client, "room1", null));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const channel = client.channel("room1");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(result.current.members.some((m) => m.clientId === channel.selfClientId)).toBe(false);
   });
 });

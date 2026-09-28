@@ -327,6 +327,119 @@ export async function markAllNotificationsRead(sender: Sender): Promise<MarkAllN
   return sender.send<MarkAllNotificationsReadResult>("/api/notifications/read-all", { method: "POST" });
 }
 
+// ---------------------------------------------------------------------
+// Realtime channels + presence (`crates/server/src/realtime.rs`'s
+// "Realtime channels + presence" section)
+// ---------------------------------------------------------------------
+
+/** One `{event, data}` message published on a channel — includes the
+ * three well-known presence events (`"presence.join"`/`.update`/`.leave`)
+ * a subscriber gets alongside whatever custom events a publisher sends;
+ * `channel.presence.onChange` is a filtered, typed convenience over the
+ * same stream for those three specifically. */
+export interface ChannelMessage<T = unknown> {
+  event: string;
+  data: T;
+}
+
+/** `{id, collectionName}` for whoever was authenticated when they
+ * published/tracked presence, or `null` when they were anonymous. */
+export interface ChannelAuth {
+  id: string;
+  collectionName: string;
+}
+
+export interface PresenceMember<T = unknown> {
+  clientId: string;
+  state: T;
+  auth: ChannelAuth | null;
+}
+
+export type PresenceEventKind = "join" | "update" | "leave";
+
+export interface ChannelPresence<T = unknown> {
+  /** `POST /api/realtime/channels/{name}/presence` — send/refresh this
+   * connection's own presence state. Ties to the current
+   * `GET /api/realtime` SSE stream (connecting first if necessary), so
+   * the server can automatically remove it if that stream disconnects
+   * without an explicit leave. Call again on a timer (a few times more
+   * often than the server's presence TTL, currently 45s — see
+   * `PRESENCE_TTL` in `crates/server/src/realtime.rs`) to stay listed;
+   * `useChannel`/`usePresence` (`@cratebase/react`) do this for you. */
+  track(state: T): Promise<void>;
+  /** `GET /api/realtime/channels/{name}/presence` — the current member
+   * list, in join order. */
+  list(): Promise<PresenceMember<T>[]>;
+  /** Fires on every `presence.join`/`.update`/`.leave` for this channel —
+   * a filtered view over the same stream `channel.subscribe` sees.
+   * Returns an unsubscribe function. */
+  onChange(handler: (kind: PresenceEventKind, member: PresenceMember<T>) => void): Promise<() => void>;
+}
+
+export interface Channel<T = unknown> {
+  readonly name: string;
+  /** `POST /api/realtime/channels/{name}/publish` — broadcast one
+   * `{event, data}` message to every current subscriber, local and
+   * cross-node alike. Refused (403) unless the channel's `_channels` row
+   * (`publishRule`) allows this caller — with no matching row, the
+   * channel is disabled by default. Oversized `data` is refused with 413
+   * rather than silently failing cross-node delivery. */
+  publish(event: string, data?: T): Promise<void>;
+  /** Subscribe to every message published on this channel (including
+   * presence events — see `ChannelMessage`'s doc comment). Requires the
+   * channel's `subscribeRule` to allow this caller; an unauthorized
+   * subscribe silently receives nothing rather than throwing (re-checked
+   * on every delivery, so a rule edit or login/logout takes effect on the
+   * very next message). Returns an unsubscribe function. */
+  subscribe(handler: (message: ChannelMessage<T>) => void): Promise<() => void>;
+  presence: ChannelPresence<T>;
+}
+
+/** `cb.channel(name)` — see `Channel`'s own doc comments for what each
+ * method does. Creating a `Channel` does no network I/O by itself; the
+ * first `subscribe`/`publish`/`presence.*` call is what actually opens
+ * the SSE connection or makes the HTTP request. */
+export function createChannel<T = unknown>(sender: Sender, realtime: RealtimeClient, name: string): Channel<T> {
+  const base = `/api/realtime/channels/${encodeURIComponent(name)}`;
+  const topic = `channel:${name}`;
+
+  const presence: ChannelPresence<T> = {
+    async track(state) {
+      const clientId = await realtime.ensureClientId();
+      await sender.send<{ event: string }>(`${base}/presence`, {
+        method: "POST",
+        body: { clientId, state },
+      });
+    },
+    async list() {
+      const res = await sender.send<{ members: PresenceMember<T>[] }>(`${base}/presence`);
+      return res.members;
+    },
+    async onChange(handler) {
+      return realtime.subscribeTopic(topic, (raw) => {
+        const msg = raw as ChannelMessage<PresenceMember<T>>;
+        if (msg.event === "presence.join") handler("join", msg.data);
+        else if (msg.event === "presence.update") handler("update", msg.data);
+        else if (msg.event === "presence.leave") handler("leave", msg.data);
+      });
+    },
+  };
+
+  return {
+    name,
+    async publish(event, data) {
+      await sender.send<void>(`${base}/publish`, {
+        method: "POST",
+        body: { event, data: data ?? null },
+      });
+    },
+    async subscribe(handler) {
+      return realtime.subscribeTopic(topic, (raw) => handler(raw as ChannelMessage<T>));
+    },
+    presence,
+  };
+}
+
 /** Reads a magic-link token out of the current page's URL (or an
  * explicitly-passed one), matching the default
  * `authOptions.magicLink.urlTemplate` (`.../auth/magic-link?token=...`).
