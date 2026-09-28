@@ -106,10 +106,31 @@ instance: [llms.txt](./llms.txt). Full endpoint reference:
   `email`/`password`, `POST .../auth-with-password`, and
   `POST .../auth-refresh` for free. Registration is just creating a
   record. Beyond password login: email verification, password reset,
-  email-change confirmation, OTP (passwordless) login, MFA, OAuth2
-  (Google/GitHub), superuser impersonation, and new-location login alerts
-  (`_authOrigins`) are all built in — see
+  email-change confirmation, OTP (passwordless) login, magic-link login,
+  TOTP 2FA with backup codes, MFA, 12 built-in OAuth2 presets (Google,
+  GitHub, Apple, Microsoft, Discord, GitLab, Facebook, X/Twitter,
+  LinkedIn, Slack, Twitch, Spotify) plus generic OIDC for anything else,
+  linked-account management, superuser impersonation, and new-location
+  login alerts (`_authOrigins`) are all built in — see
   [ROADMAP.md](./ROADMAP.md) for the endpoint list.
+- **Email platform** — an editable `_emailTemplates` collection
+  (`{{var}}` syntax, layouts, locales), sent via `POST /api/mails/send`/
+  `cb.mails.send(...)` or automatically on a record create/update/delete
+  through a no-code `_emailTriggers` rule. `_emailTemplates.sendRule` can
+  open a template to a non-superuser caller — a frontend can send
+  transactional mail (invites, receipts) with no backend of its own —
+  and every send is logged to `_mailLog`. The dashboard's template editor
+  is a full visual email builder (headings/buttons/columns/images, a
+  theme tab, live preview), not just an HTML textarea.
+- **Database extensibility** — Postgres extension management
+  (`GET/POST/DELETE /api/db/extensions`, e.g. `postgis`/`pgvector`/
+  `pg_trgm` one API call away) and a write-capable `$app.db().exec(sql)`
+  escape hatch for migrations; custom SQL RPC (the `_rpc` collection +
+  `POST /api/rpc/{name}` + `cb.rpc(name, params)`) for a query `filter`/
+  `sort` can't express, with its own rule and named parameters bound as
+  real driver parameters, never string-interpolated; `sort=geoDistance(...)`
+  nearest/farthest queries that automatically compile to a GiST-indexed
+  PostGIS expression once `postgis` is installed.
 - **Batch API** — `POST /api/batch` runs several record
   create/update/upsert/delete calls (JSON or multipart, for file fields)
   in one HTTP round trip and one SQL transaction: all of them commit or
@@ -130,7 +151,12 @@ instance: [llms.txt](./llms.txt). Full endpoint reference:
   (a dashboard edit takes effect immediately), with the last run's
   status and error written back for you to see.
 - **One binary** — the admin dashboard is embedded at compile time
-  (`rust-embed`). `cratebase serve` is the whole deployment.
+  (`rust-embed`). `cratebase serve` is the whole deployment. Every
+  server setting is configurable from it, organized into 7 tabbed
+  groups (Application, Email, Auth & security, Database, Automation,
+  Integrations, Logs), and a dismissible onboarding checklist on the
+  dashboard home walks a fresh install through app identity, mail
+  delivery, auth, backups, and rate limiting.
 - **Server-side rendering** — the official SDK's standard SSR pattern
   (a fresh client per request, auth store hydrated from a cookie) works
   unmodified against Cratebase; no framework-specific glue needed.
@@ -154,7 +180,7 @@ crates/core     domain types (Collection, Field, AppError) — no I/O
 crates/filter   filter expression parser + SQL compiler
 crates/db       storage engine: sqlx over sqlite/postgres, collection<->table sync
 crates/storage  file storage: local disk or any S3-compatible bucket
-crates/auth     Argon2id password hashing + JWT sessions, OAuth2, OTP/MFA
+crates/auth     Argon2id password hashing + JWT sessions, OAuth2/OIDC, OTP/MFA/TOTP
 crates/jsvm     embedded QuickJS runtime — pb_hooks/, routerAdd, cronAdd
 crates/mailer   pluggable mail backend (Resend API, SMTP, or log-only for dev)
 crates/server   axum HTTP API, CLI, plugin system, embedded admin dashboard
@@ -199,5 +225,3 @@ bun install && bun run admin:dev
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-</content>
-<parameter name="i">Rewrite README around install-first flow

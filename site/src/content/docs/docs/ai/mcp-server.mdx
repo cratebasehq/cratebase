@@ -1,13 +1,19 @@
 ---
 title: "MCP server"
-description: "Every collection auto-exposed as list_/get_/create_/update_/delete_ tools."
+description: "Collection CRUD, RPC, mail, geo search, and superuser dev tools, all over one JSON-RPC endpoint."
 ---
 
 `GET/POST /api/mcp` implements the Model Context Protocol. No extra
 wiring is needed: every collection is automatically exposed as MCP tools
 (`list_<collection>`, `get_<collection>`, `create_<collection>`,
 `update_<collection>`, `delete_<collection>`) — `POST /api/mcp
-{"method":"tools/list"}` reflects whatever collections currently exist.
+{"method":"tools/list"}` reflects whatever collections currently exist —
+plus a fixed set of **runtime tools** (`call_rpc`, `send_email`,
+`search_nearby`) any caller can see, and a fixed set of **developer
+tools** (schema introspection/apply, rule testing, raw SQL, log queries,
+email template/trigger management) visible only to a superuser caller.
+See [Tools](#tools) below for the full list.
+
 An agent authenticates with an [API key](/docs/concepts/authentication/api-keys/)
 like any other identity, through the same authorization path a normal
 HTTP request goes through — nothing bespoke for agent traffic. What
@@ -19,16 +25,19 @@ minted:
   record logging in normally. This is the shape that makes "an agent
   gets the same rule enforcement as a real user" literally true, and
   it's the one to reach for here: a compromised or over-eager agent can
-  only do what that one record could do.
+  only do what that one record could do. A record-scoped key never sees
+  or can call a developer tool — those are absent from `tools/list` and
+  refused by name in `tools/call` alike, so nothing confirms they exist.
 - A **superuser** key is unscoped root — every rule is bypassed, on
-  every collection, for every tool call. Only use one for an agent you
-  trust with the entire database, the same caution you'd give a
-  Supabase `service_role` key.
+  every collection, for every tool call, and every developer tool
+  becomes visible. Only use one for an agent you trust with the entire
+  database, the same caution you'd give a Supabase `service_role` key.
 
 Connect Claude, Cursor, or any MCP-speaking client by pointing it at
 this endpoint; the dashboard's **Settings → MCP** page shows the
-connection details and the dashboard's **Settings → API keys** page is
-where you mint either shape of key.
+connection details, a ready-to-paste client config, and the live tool
+list, and the dashboard's **Settings → API keys** page is where you mint
+either shape of key.
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "list_posts", "arguments": { "filter": "published = true", "perPage": 10 } } }
@@ -41,3 +50,88 @@ required field" signal a human would over plain HTTP, not a broken
 connection. See [Reference → REST API → MCP](/docs/reference/rest-api/mcp/)
 for the full method table (`initialize`, `ping`, `tools/list`,
 `tools/call`) and the exact tool-naming scheme.
+
+## Connecting Claude Code or Claude Desktop
+
+The endpoint accepts a bearer token exactly like any other Cratebase
+route: an `Authorization: Bearer <token>` header (a bare token with no
+`Bearer ` prefix also works, but the header form is what every MCP
+client sends). Mint an API key from **Settings → API keys** first — a
+record-scoped key for anything other than full trust in the agent.
+
+**Claude Code** (`claude mcp add`, HTTP transport):
+
+```bash
+claude mcp add --transport http cratebase http://localhost:8090/api/mcp \
+  --header "Authorization: Bearer <your-api-key>"
+```
+
+**Claude Desktop** (`claude_desktop_config.json`) or any client that
+takes the same `mcpServers` shape:
+
+```json
+{
+  "mcpServers": {
+    "cratebase": {
+      "url": "http://localhost:8090/api/mcp",
+      "headers": { "Authorization": "Bearer <your-api-key>" }
+    }
+  }
+}
+```
+
+Point `url` at your deployed instance's `/api/mcp` in production. The
+dashboard's **Settings → MCP** page generates this same snippet with
+your instance's real endpoint pre-filled.
+
+## Tools
+
+### Collection CRUD (always visible, per non-system collection)
+
+`list_<collection>`/`get_<collection>` (every collection, including
+`view` collections) and `create_<collection>`/`update_<collection>`/
+`delete_<collection>` (not for `view` collections) — each authorized
+exactly like the equivalent HTTP record route, through that collection's
+own `listRule`/`viewRule`/`createRule`/`updateRule`/`deleteRule`. See
+[Reference → REST API → MCP](/docs/reference/rest-api/mcp/) for the
+input schema each one takes.
+
+### Runtime tools (always visible)
+
+These restate an existing rule/`sendRule`-gated HTTP endpoint as a tool,
+never a second copy of its enforcement:
+
+| Tool | Restates | Enforcement |
+| --- | --- | --- |
+| `call_rpc` | `POST /api/rpc/{name}` | that `_rpc` row's own `rule` |
+| `send_email` | `POST /api/mails/send` | that `_emailTemplates` row's own `sendRule` |
+| `search_nearby` | `list_<collection>` with a `geoDistance(...)` filter/sort | that collection's own `listRule` |
+
+`call_rpc` takes `{name, params?}`. `send_email` takes
+`{template, to, data?, locale?}` — a non-superuser caller is restricted
+to exactly this shape, capped at 5 recipients, the same as a direct
+`POST /api/mails/send` call. `search_nearby` takes
+`{collection, field, lon, lat, radiusKm, limit?}`, where `field` is a
+`geoPoint` field on `collection`; on Postgres with `postgis` installed
+this is index-accelerated exactly like the equivalent
+`sort=geoDistance(...)` REST call.
+
+### Developer tools (superuser only — hidden from `tools/list` and
+refused by name in `tools/call` for anyone else)
+
+| Tool | Does | Reuses |
+| --- | --- | --- |
+| `get_schema` | Every collection's schema (OAuth2 secrets redacted) | the same snapshot `GET /api/collections` reads |
+| `apply_schema` | Diff/apply a schema-as-code payload; `dryRun` defaults to `true` | `POST /api/schema/apply`'s `plan_and_apply` |
+| `test_rule` | Evaluate a filter-rule expression for an auth record (or anonymous) + optional row; returns allow/deny and the compiled SQL when cheap | the same rule evaluator every collection rule runs through |
+| `list_email_templates` / `upsert_email_template` | CRUD on `_emailTemplates` (`upsert`: pass `id` to update, omit to create) | generic record CRUD |
+| `list_email_triggers` / `upsert_email_trigger` | CRUD on `_emailTriggers` (same upsert convention) | generic record CRUD |
+| `query_logs` | Filter/paginate `_logs` | `GET /api/logs` |
+| `sql_read` | Run a `SELECT`/`WITH` statement, row-capped | the SQL console's read-only path (`POST /api/sql`'s read branch) |
+
+`apply_schema`'s `dryRun: true` default means a call that only wants to
+*see* what would change never has to remember to ask for a dry run —
+the unsafe case (`dryRun: false`) is the one that needs to be spelled
+out. `sql_read` has no write path at all: it isn't `sql_read` with a
+flag, it's read-only by construction, capped at the SQL console's own
+row limit and statement timeout.
