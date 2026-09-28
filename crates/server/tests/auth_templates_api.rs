@@ -104,7 +104,7 @@ async fn editing_the_emailtemplates_row_changes_what_request_verification_sends(
     assert_eq!(status, StatusCode::NO_CONTENT);
     let mailbox = h.app.mailer().dev_mailbox().expect("dev mailbox");
     assert_eq!(mailbox.len(), 1);
-    assert!(mailbox.list()[0].html.contains("Thank you for joining us"));
+    assert!(mailbox.list()[0].html.contains("Verify your email"));
 
     // Edit the _emailTemplates row for auth.verification.
     let (status, list) = h
