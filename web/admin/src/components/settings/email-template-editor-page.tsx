@@ -6,13 +6,17 @@ import { ArrowLeft, Laptop, Loader2, Send, Smartphone, Sparkles } from "lucide-r
 import { toast } from "sonner";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { html as htmlLang } from "@codemirror/lang-html";
-import { EmailEditor, type EmailEditorProps, type EmailEditorRef } from "@react-email/editor";
+import type { Editor, JSONContent } from "@tiptap/core";
+import { EditorProvider, useCurrentEditor } from "@tiptap/react";
+import { StarterKit } from "@react-email/editor/extensions";
+import { composeReactEmail } from "@react-email/editor/core";
+import { BubbleMenu, SlashCommand, defaultSlashCommands } from "@react-email/editor/ui";
+import { EmailTheming, imageSlashCommand, useEditorImage } from "@react-email/editor/plugins";
 import "@react-email/editor/themes/default.css";
 import "@react-email/editor/styles/bubble-menu.css";
 import "@react-email/editor/styles/slash-command.css";
-import "@react-email/editor/styles/inspector.css";
 import { cb, currentSuperuser, describeFailure } from "@/lib/api";
-import { useDevMailInboxAvailable } from "@/hooks/use-settings";
+import { useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
 import { settingsEmailTemplateEditorRoute } from "@/routes/settings-email-template-editor";
 import { RuleField } from "@/components/collections/rule-field";
 import { Button } from "@/components/ui/button";
@@ -21,17 +25,33 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { uploadEmailImage } from "@/components/settings/email-editor/image-upload";
+import { Variable, variableKeysRef, variableSlashCommandItem } from "@/components/settings/email-editor/variable-extension";
+import {
+  ThemePanel,
+  buildEditorTheme,
+  defaultEmailTheme,
+  parseEmailTheme,
+  type EmailThemeState,
+} from "@/components/settings/email-editor/theme-panel";
+import { StarterGalleryDialog } from "@/components/settings/email-editor/starter-gallery-dialog";
+import type { StarterTemplate } from "@/components/settings/email-editor/starter-templates";
 
-/** The visual editor's own document shape — re-derived from its own
- * exported types (`EmailEditorProps`/`EmailEditorRef`) rather than a
- * direct `@tiptap/core` import: that package is a dependency of
- * `@react-email/editor`, not of this app, and isn't guaranteed to be
- * resolvable as a standalone import from here. */
-type EditorContent = EmailEditorProps["content"];
-type EditorJson = ReturnType<EmailEditorRef["getJSON"]>;
+/** The opaque `_emailTemplates.design` shape this editor writes —
+ * the editor's own tiptap document plus the Theme tab's state, kept as
+ * a sibling rather than embedded some other way since
+ * `@react-email/editor` has no built-in "persist my theme choice with
+ * the document" story we've wired up. A row saved before this shipped
+ * (or one whose `design` was never anything but raw HTML) has neither
+ * — see `loadDesign` below. */
+interface EmailDesign {
+  tiptap: JSONContent;
+  theme: EmailThemeState;
+}
 
 interface TemplateRecord {
   id: string;
@@ -106,16 +126,86 @@ function insertAtCursor(view: ReactCodeMirrorRef["view"], text: string) {
   view.focus();
 }
 
+/** Parses `_emailTemplates.design` into the visual editor's tiptap
+ * document plus theme state — tolerant of a row saved before the
+ * `{ tiptap, theme }` shape existed (`design` was the raw tiptap
+ * document itself back then), or one that's never been opened in the
+ * visual editor at all (`null`). */
+function loadDesign(
+  design: unknown,
+  brandColor: string | undefined,
+): { tiptap: JSONContent | null; theme: EmailThemeState } {
+  if (design && typeof design === "object") {
+    const obj = design as Record<string, unknown>;
+    if ("tiptap" in obj && obj.tiptap && typeof obj.tiptap === "object") {
+      return {
+        tiptap: obj.tiptap as JSONContent,
+        theme: parseEmailTheme(obj.theme, brandColor),
+      };
+    }
+    if ("type" in obj) {
+      // A pre-theme-tab row: `design` was the raw tiptap document.
+      return { tiptap: design as JSONContent, theme: defaultEmailTheme(brandColor) };
+    }
+  }
+  return { tiptap: null, theme: defaultEmailTheme(brandColor) };
+}
+
 const SAMPLE_DATA_PLACEHOLDER = `{\n  "user": { "name": "Ada" }\n}`;
+
+/** A stable reference to whatever `uploadImage` a render currently
+ * closes over, so `useEditorImage` (called once) always calls the
+ * latest one without needing the extensions array — and therefore the
+ * editor itself — to be rebuilt every time `appUrl` changes. */
+function useLatestUploadImage(appUrl: string) {
+  const ref = useRef(appUrl);
+  ref.current = appUrl;
+  return useMemo(
+    () => (file: File) => uploadEmailImage(file, ref.current).catch((error: unknown) => {
+      toast.error("Image upload failed", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }),
+    [],
+  );
+}
+
+/** Captures the live `Editor` instance into `ref` — `EditorProvider`
+ * has no `ref` prop of its own (unlike the old top-level `EmailEditor`
+ * component), so this tiny child (rendered inside the provider, with
+ * access to `useCurrentEditor`) is how the page keeps one. */
+function EditorInstanceCapture({
+  editorRef,
+  onUpdate,
+}: {
+  editorRef: React.MutableRefObject<Editor | null>;
+  onUpdate: () => void;
+}) {
+  const { editor } = useCurrentEditor();
+  useEffect(() => {
+    editorRef.current = editor;
+    if (!editor) return;
+    const handler = () => onUpdate();
+    editor.on("update", handler);
+    return () => {
+      editor.off("update", handler);
+    };
+  }, [editor, editorRef, onUpdate]);
+  return null;
+}
+
+const SLASH_COMMAND_ITEMS = [...defaultSlashCommands, imageSlashCommand, variableSlashCommandItem];
 
 /**
  * Create or edit one `_emailTemplates` row: subject/name/locale/layout,
  * the `sendRule` gate (`RuleField`, same component a collection API rule
- * uses), an HTML editor (CodeMirror) or the visual editor
- * (`@react-email/editor`, opaque `design` JSON — the server never reads
- * it, only the `html`/`text` it produces), a live preview rendered
- * through `POST /api/mails/preview` against editable sample data, and a
- * test send through `POST /api/mails/send`.
+ * uses), an HTML editor (CodeMirror) or the visual editor (built on
+ * `@react-email/editor`'s lower-level `EditorProvider` composition, so
+ * a custom `/variable` slash command and a live-editable theme can sit
+ * alongside its full block set), a live preview rendered through
+ * `POST /api/mails/preview` against editable sample data, and a test
+ * send through `POST /api/mails/send`.
  */
 export function EmailTemplateEditorPage() {
   const { id } = settingsEmailTemplateEditorRoute.useParams();
@@ -123,6 +213,8 @@ export function EmailTemplateEditorPage() {
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
   const { data: devMailAvailable } = useDevMailInboxAvailable();
+  const { data: settings } = useSettings();
+  const appUrl = settings?.meta.appURL ?? "";
 
   const { data: existing, isLoading } = useQuery({
     queryKey: ["email-templates", id],
@@ -139,8 +231,10 @@ export function EmailTemplateEditorPage() {
   const [text, setText] = useState("");
   const [sendRule, setSendRule] = useState<string | null>(null);
   const [editorMode, setEditorMode] = useState<"visual" | "html">("html");
-  const [design, setDesign] = useState<EditorJson | null>(null);
+  const [tiptapJson, setTiptapJson] = useState<JSONContent | null>(null);
+  const [themeState, setThemeState] = useState<EmailThemeState>(defaultEmailTheme(undefined));
   const [loadedOnce, setLoadedOnce] = useState(false);
+  const [starterPicked, setStarterPicked] = useState(!isNew);
 
   // Seed local form state once the record loads (or immediately for a
   // new template) — a query refetch afterwards must not clobber in-flight
@@ -148,6 +242,7 @@ export function EmailTemplateEditorPage() {
   useEffect(() => {
     if (loadedOnce) return;
     if (isNew) {
+      setThemeState(defaultEmailTheme(settings?.meta.brandColor));
       setLoadedOnce(true);
       return;
     }
@@ -161,22 +256,47 @@ export function EmailTemplateEditorPage() {
     setText(existing.text);
     setSendRule(existing.sendRule);
     setEditorMode(existing.editor === "visual" ? "visual" : "html");
-    setDesign((existing.design as EditorJson | null) ?? null);
+    const { tiptap, theme } = loadDesign(existing.design, settings?.meta.brandColor);
+    setTiptapJson(tiptap);
+    setThemeState(theme);
     setLoadedOnce(true);
-  }, [existing, isNew, loadedOnce]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-seed once existing/settings first arrive
+  }, [existing, isNew, loadedOnce, settings]);
 
   const codeMirrorRef = useRef<ReactCodeMirrorRef>(null);
-  const emailEditorRef = useRef<EmailEditorRef>(null);
+  const editorInstanceRef = useRef<Editor | null>(null);
   const [visualTick, setVisualTick] = useState(0);
 
   const [sampleData, setSampleData] = useState(SAMPLE_DATA_PLACEHOLDER);
   const sampleDataKeys = useMemo(() => {
     try {
-      return flattenKeys(JSON.parse(sampleData));
+      return [...flattenKeys(JSON.parse(sampleData)), "appName", "appUrl"];
     } catch {
-      return [];
+      return ["appName", "appUrl"];
     }
   }, [sampleData]);
+  // The Variable extension's chip/slash-command UI reads this ref live
+  // rather than an extension option, so editing the sample data never
+  // needs to reconfigure (and therefore remount) the editor.
+  variableKeysRef.current = sampleDataKeys;
+
+  const uploadImage = useLatestUploadImage(appUrl);
+  const imageExtension = useEditorImage({ uploadImage });
+  const editorTheme = useMemo(() => buildEditorTheme(themeState), [themeState]);
+  const extensions = useMemo(
+    () => [StarterKit, EmailTheming.configure({ theme: editorTheme }), imageExtension, Variable],
+    [editorTheme, imageExtension],
+  );
+  // Changing the theme requires remounting `EditorProvider` (its own
+  // documented "Dynamic Switching" pattern — the theme extension is
+  // configured once, at construction) — capture whatever's currently in
+  // the live document first so in-progress edits survive the remount.
+  const editorRemountKey = JSON.stringify(themeState);
+  function updateTheme(next: EmailThemeState) {
+    const latest = editorInstanceRef.current?.getJSON();
+    if (latest) setTiptapJson(latest);
+    setThemeState(next);
+  }
 
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -222,9 +342,10 @@ export function EmailTemplateEditorPage() {
    * unsaved visual-editor edits — used by both the preview and test send
    * so neither ever silently previews stale content. */
   async function currentEmail(): Promise<{ html: string; text: string }> {
-    if (editorMode === "visual" && emailEditorRef.current) {
+    if (editorMode === "visual" && editorInstanceRef.current) {
       try {
-        return await emailEditorRef.current.getEmail();
+        const composed = await composeReactEmail({ editor: editorInstanceRef.current });
+        return { html: composed.html, text: composed.text };
       } catch {
         // Fall through to the last-synced HTML below.
       }
@@ -270,12 +391,12 @@ export function EmailTemplateEditorPage() {
     mutationFn: async () => {
       let finalHtml = htmlBody;
       let finalText = text;
-      let finalDesign: EditorJson | null = design;
-      if (editorMode === "visual" && emailEditorRef.current) {
-        const email = await emailEditorRef.current.getEmail();
-        finalHtml = email.html;
-        finalText = email.text || text;
-        finalDesign = emailEditorRef.current.getJSON();
+      let finalDesign: EmailDesign | null = tiptapJson ? { tiptap: tiptapJson, theme: themeState } : null;
+      if (editorMode === "visual" && editorInstanceRef.current) {
+        const composed = await composeReactEmail({ editor: editorInstanceRef.current });
+        finalHtml = composed.html;
+        finalText = composed.text || text;
+        finalDesign = { tiptap: editorInstanceRef.current.getJSON(), theme: themeState };
       }
       const body: Record<string, unknown> = {
         key,
@@ -287,7 +408,7 @@ export function EmailTemplateEditorPage() {
         layout,
         sendRule,
         editor: editorMode,
-        design: editorMode === "visual" ? finalDesign : design,
+        design: editorMode === "visual" ? finalDesign : null,
       };
       return isNew
         ? cb.collection("_emailTemplates").create(body)
@@ -305,9 +426,40 @@ export function EmailTemplateEditorPage() {
     },
   });
 
-  const emailEditorContent: EditorContent = (design as EditorContent) ?? (htmlBody || undefined);
+  function pickStarter(template: StarterTemplate) {
+    setTiptapJson(template.content);
+    if (template.subject) setSubject(template.subject);
+    setEditorMode("visual");
+    setStarterPicked(true);
+  }
 
-  if (!isNew && isLoading) {
+  /** Re-parses content across the HTML/visual boundary, per
+   * `templates.mdx`'s own documented "switching modes round-trips
+   * through both, which can lose formatting" note: visual → HTML
+   * captures the live document's exported HTML into `htmlBody`; HTML →
+   * visual clears `tiptapJson` so the visual editor's `content` prop
+   * falls back to (and parses) the current `htmlBody` string. Either
+   * way the *other* mode always reflects the most recent edits, rather
+   * than silently reverting to whatever was last synced. */
+  async function switchEditorMode(next: "visual" | "html") {
+    if (next === editorMode) return;
+    if (editorMode === "visual" && editorInstanceRef.current) {
+      const composed = await composeReactEmail({ editor: editorInstanceRef.current });
+      setHtmlBody(composed.html);
+      setTiptapJson(null);
+    } else if (editorMode === "html") {
+      setTiptapJson(null);
+    }
+    setEditorMode(next);
+  }
+
+  // Gate on `loadedOnce`, not just `isLoading`: react-query resolves
+  // `isLoading` to `false` the instant `existing` arrives, one render
+  // before the "seed local state" effect above has actually run — the
+  // visual editor must never mount before `tiptapJson` reflects the
+  // loaded row, since nothing here forces a remount just because state
+  // changed (only a theme change does, via `editorRemountKey`).
+  if (!isNew && (isLoading || !loadedOnce)) {
     return (
       <div className="flex flex-col gap-4 p-page">
         <Skeleton className="h-8 w-64" />
@@ -318,6 +470,10 @@ export function EmailTemplateEditorPage() {
 
   return (
     <div className="flex h-full flex-col">
+      {isNew ? (
+        <StarterGalleryDialog open={!starterPicked} onPick={pickStarter} />
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-page py-3">
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="ghost" size="icon-sm" asChild>
@@ -372,14 +528,6 @@ export function EmailTemplateEditorPage() {
             </div>
 
             <div className="flex items-center justify-between">
-              <div className="flex flex-col">
-                <Label htmlFor="template-layout">Wrap in the branded layout</Label>
-                <p className="text-xs text-muted-foreground">Adds the shared header/footer chrome around this body.</p>
-              </div>
-              <Switch id="template-layout" checked={layout} onCheckedChange={setLayout} />
-            </div>
-
-            <div className="flex items-center justify-between">
               <Label>Editor</Label>
               <ToggleGroup
                 type="single"
@@ -388,7 +536,8 @@ export function EmailTemplateEditorPage() {
                 spacing={0}
                 value={editorMode}
                 onValueChange={(next) => {
-                  if (next === "visual" || next === "html") setEditorMode(next);
+                  if (next !== "visual" && next !== "html") return;
+                  void switchEditorMode(next);
                 }}
               >
                 <ToggleGroupItem value="html">HTML</ToggleGroupItem>
@@ -400,26 +549,24 @@ export function EmailTemplateEditorPage() {
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <Label>HTML</Label>
-                  {sampleDataKeys.length > 0 ? (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm" className="h-6 gap-1 text-xs">
-                          <Sparkles className="size-3" />
-                          Insert variable
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {sampleDataKeys.map((k) => (
-                          <DropdownMenuItem
-                            key={k}
-                            onSelect={() => insertAtCursor(codeMirrorRef.current?.view, `{{${k}}}`)}
-                          >
-                            <code className="font-mono text-xs">{`{{${k}}}`}</code>
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  ) : null}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="sm" className="h-6 gap-1 text-xs">
+                        <Sparkles className="size-3" />
+                        Insert variable
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {sampleDataKeys.map((k) => (
+                        <DropdownMenuItem
+                          key={k}
+                          onSelect={() => insertAtCursor(codeMirrorRef.current?.view, `{{${k}}}`)}
+                        >
+                          <code className="font-mono text-xs">{`{{${k}}}`}</code>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
                 <CodeMirror
                   ref={codeMirrorRef}
@@ -432,43 +579,50 @@ export function EmailTemplateEditorPage() {
                   basicSetup={{ foldGutter: false }}
                   className="overflow-hidden rounded-md border border-border/60 text-sm"
                 />
+                <p className="text-xs text-muted-foreground">
+                  A link or button href takes a variable the same way — type{" "}
+                  <code className="font-mono">{"{{path}}"}</code> directly into it.
+                </p>
               </div>
             ) : (
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <Label>Design</Label>
-                  {sampleDataKeys.length > 0 ? (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm" className="h-6 gap-1 text-xs">
-                          <Sparkles className="size-3" />
-                          Insert variable
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {sampleDataKeys.map((k) => (
-                          <DropdownMenuItem
-                            key={k}
-                            onSelect={() => emailEditorRef.current?.editor?.commands.insertContent(`{{${k}}}`)}
-                          >
-                            <code className="font-mono text-xs">{`{{${k}}}`}</code>
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  ) : null}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="sm" className="h-6 gap-1 text-xs">
+                        <Sparkles className="size-3" />
+                        Insert variable
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {sampleDataKeys.map((k) => (
+                        <DropdownMenuItem
+                          key={k}
+                          onSelect={() => editorInstanceRef.current?.commands.insertVariable(k)}
+                        >
+                          <code className="font-mono text-xs">{`{{${k}}}`}</code>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
-                <div className="min-h-72 rounded-md border border-border/60 bg-background p-2">
-                  <EmailEditor
-                    ref={emailEditorRef}
-                    content={emailEditorContent}
-                    placeholder="Start typing, or press '/' for blocks…"
-                    onUpdate={() => setVisualTick((t) => t + 1)}
-                  />
+                <div className="min-h-72 overflow-hidden rounded-md border border-border/60 bg-background">
+                  <EditorProvider
+                    key={editorRemountKey}
+                    extensions={extensions}
+                    content={(tiptapJson as JSONContent | undefined) ?? (htmlBody || undefined)}
+                    editorProps={{ attributes: { class: "cb-email-editor-content p-3 outline-none" } }}
+                  >
+                    <EditorInstanceCapture editorRef={editorInstanceRef} onUpdate={() => setVisualTick((t) => t + 1)} />
+                    <BubbleMenu />
+                    <SlashCommand items={SLASH_COMMAND_ITEMS} />
+                  </EditorProvider>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Variables insert as <code className="font-mono">{"{{path}}"}</code> text — they render once sent,
-                  same as HTML mode.
+                  Variables insert as a chip and export as{" "}
+                  <code className="font-mono">{"{{path}}"}</code> text — a link/button URL is a
+                  plain field, type the token directly into it.
                 </p>
               </div>
             )}
@@ -494,102 +648,154 @@ export function EmailTemplateEditorPage() {
                 className="min-h-24 font-mono text-xs"
               />
             </div>
-
-            <RuleField
-              label="Who can send this template"
-              value={sendRule}
-              onChange={setSendRule}
-              nullOption={{ label: "Superusers", description: "Only a superuser or API key may send this template." }}
-              publicOption={{
-                label: "Anyone",
-                description: "Any caller — including anonymous ones — may send this template. Use with care.",
-              }}
-            />
           </div>
         </div>
 
         <div className="flex min-h-0 flex-col overflow-y-auto p-page">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <Label>Sample data</Label>
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                size="sm"
-                spacing={0}
-                value={previewWidth}
-                onValueChange={(next) => {
-                  if (next === "desktop" || next === "mobile") setPreviewWidth(next);
-                }}
-              >
-                <ToggleGroupItem value="desktop" aria-label="Desktop width">
-                  <Laptop className="size-3.5" />
-                </ToggleGroupItem>
-                <ToggleGroupItem value="mobile" aria-label="Mobile width">
-                  <Smartphone className="size-3.5" />
-                </ToggleGroupItem>
-              </ToggleGroup>
-            </div>
-            <Textarea
-              value={sampleData}
-              onChange={(e) => setSampleData(e.target.value)}
-              className="min-h-20 font-mono text-xs"
-              spellCheck={false}
-            />
+          <Tabs defaultValue="theme" className="flex min-h-0 flex-1 flex-col gap-3">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="theme">Theme</TabsTrigger>
+              <TabsTrigger value="variables">Variables</TabsTrigger>
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+              <TabsTrigger value="preview">Preview</TabsTrigger>
+            </TabsList>
 
-            <Label>Preview</Label>
-            <div
-              className="mx-auto w-full overflow-hidden rounded-md border border-border bg-white transition-all"
-              style={{ maxWidth: previewWidth === "mobile" ? 375 : "100%" }}
-            >
-              {previewError ? (
-                <p className="p-3 text-xs text-destructive">{previewError}</p>
-              ) : preview ? (
-                <>
-                  <div className="border-b border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                    {preview.subject || "(no subject)"}
-                  </div>
-                  <iframe
-                    title="Template preview"
-                    srcDoc={preview.html}
-                    sandbox=""
-                    className="h-[520px] w-full"
-                  />
-                </>
+            <TabsContent value="theme" className="flex-1">
+              {editorMode === "visual" ? (
+                <ThemePanel value={themeState} onChange={updateTheme} />
               ) : (
-                <div className="flex h-[520px] items-center justify-center text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                </div>
+                <p className="text-sm text-muted-foreground">
+                  Theming applies to the visual editor. Switch to Visual mode to customize it.
+                </p>
               )}
-            </div>
+            </TabsContent>
 
-            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-card p-3">
-              <Label htmlFor="template-test-to">Send a test</Label>
-              <div className="flex gap-1.5">
-                <Input
-                  id="template-test-to"
-                  value={testTo}
-                  onChange={(e) => setTestTo(e.target.value)}
-                  placeholder="you@example.com"
-                  className="h-control-sm flex-1 text-sm"
-                />
-                <Button
-                  size="sm"
-                  className="gap-1.5"
-                  disabled={testSend.isPending || !testTo}
-                  onClick={() => testSend.mutate()}
-                >
-                  {testSend.isPending ? <Spinner className="size-3.5" /> : <Send className="size-3.5" />}
-                  Send
-                </Button>
+            <TabsContent value="variables" className="flex flex-col gap-2">
+              <p className="text-xs text-muted-foreground">
+                From the sample data below, plus the always-available <code className="font-mono">appName</code>/
+                <code className="font-mono">appUrl</code>. In Visual mode, also available via the{" "}
+                <code className="font-mono">/variable</code> slash command.
+              </p>
+              <div className="flex flex-col gap-1">
+                {sampleDataKeys.map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => {
+                      if (editorMode === "visual") editorInstanceRef.current?.commands.insertVariable(k);
+                      else insertAtCursor(codeMirrorRef.current?.view, `{{${k}}}`);
+                    }}
+                    className="flex items-center justify-between rounded-md border border-border/60 px-2 py-1.5 text-left text-xs hover:bg-accent"
+                  >
+                    <code className="font-mono">{`{{${k}}}`}</code>
+                    <Sparkles className="size-3 text-muted-foreground" />
+                  </button>
+                ))}
               </div>
-              {devMailAvailable ? (
-                <Link to="/settings/mail-inbox" className="text-xs text-muted-foreground hover:underline">
-                  No real SMTP configured — test sends land in the dev mail inbox →
-                </Link>
-              ) : null}
-            </div>
-          </div>
+            </TabsContent>
+
+            <TabsContent value="settings" className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <div className="flex flex-col">
+                  <Label htmlFor="template-layout">Wrap in the branded layout</Label>
+                  <p className="text-xs text-muted-foreground">Adds the shared header/footer chrome around this body.</p>
+                </div>
+                <Switch id="template-layout" checked={layout} onCheckedChange={setLayout} />
+              </div>
+              <RuleField
+                label="Who can send this template"
+                value={sendRule}
+                onChange={setSendRule}
+                nullOption={{ label: "Superusers", description: "Only a superuser or API key may send this template." }}
+                publicOption={{
+                  label: "Anyone",
+                  description: "Any caller — including anonymous ones — may send this template. Use with care.",
+                }}
+              />
+            </TabsContent>
+
+            <TabsContent value="preview" className="flex min-h-0 flex-1 flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <Label>Sample data</Label>
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  spacing={0}
+                  value={previewWidth}
+                  onValueChange={(next) => {
+                    if (next === "desktop" || next === "mobile") setPreviewWidth(next);
+                  }}
+                >
+                  <ToggleGroupItem value="desktop" aria-label="Desktop width">
+                    <Laptop className="size-3.5" />
+                  </ToggleGroupItem>
+                  <ToggleGroupItem value="mobile" aria-label="Mobile width">
+                    <Smartphone className="size-3.5" />
+                  </ToggleGroupItem>
+                </ToggleGroup>
+              </div>
+              <Textarea
+                value={sampleData}
+                onChange={(e) => setSampleData(e.target.value)}
+                className="min-h-20 font-mono text-xs"
+                spellCheck={false}
+              />
+
+              <Label>Preview</Label>
+              <div
+                className="mx-auto w-full overflow-hidden rounded-md border border-border bg-white transition-all"
+                style={{ maxWidth: previewWidth === "mobile" ? 375 : "100%" }}
+              >
+                {previewError ? (
+                  <p className="p-3 text-xs text-destructive">{previewError}</p>
+                ) : preview ? (
+                  <>
+                    <div className="border-b border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                      {preview.subject || "(no subject)"}
+                    </div>
+                    <iframe
+                      title="Template preview"
+                      srcDoc={preview.html}
+                      sandbox=""
+                      className="h-[520px] w-full"
+                    />
+                  </>
+                ) : (
+                  <div className="flex h-[520px] items-center justify-center text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-card p-3">
+                <Label htmlFor="template-test-to">Send a test</Label>
+                <div className="flex gap-1.5">
+                  <Input
+                    id="template-test-to"
+                    value={testTo}
+                    onChange={(e) => setTestTo(e.target.value)}
+                    placeholder="you@example.com"
+                    className="h-control-sm flex-1 text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    className="gap-1.5"
+                    disabled={testSend.isPending || !testTo}
+                    onClick={() => testSend.mutate()}
+                  >
+                    {testSend.isPending ? <Spinner className="size-3.5" /> : <Send className="size-3.5" />}
+                    Send
+                  </Button>
+                </div>
+                {devMailAvailable ? (
+                  <Link to="/settings/mail-inbox" className="text-xs text-muted-foreground hover:underline">
+                    No real SMTP configured — test sends land in the dev mail inbox →
+                  </Link>
+                ) : null}
+              </div>
+            </TabsContent>
+          </Tabs>
         </div>
       </div>
     </div>
