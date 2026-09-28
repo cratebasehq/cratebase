@@ -39,6 +39,18 @@ pub struct Query {
     joins: Vec<Join>,
     conditions: Vec<String>,
     params: Vec<Sql>,
+    /// Parameters bound by the `ORDER BY` (a `sort=geoDistance(...)`
+    /// token's own literal arguments) and by `LIMIT`/`OFFSET` —
+    /// deliberately tracked apart from `params` rather than appended to
+    /// it. [`Query::count_sql`] has neither an `ORDER BY` nor a
+    /// `LIMIT`/`OFFSET`, so a caller building its param list from a
+    /// single shared vec would hand the count query placeholders it has
+    /// no `$n` for at all once a sort function bound its own parameters
+    /// with no filter present to "absorb" the mismatch (SQLite/Postgres
+    /// both reject a param count that doesn't match the statement's
+    /// placeholder count) — see [`Query::params`] vs.
+    /// [`Query::all_params`].
+    tail_params: Vec<Sql>,
     order_by: String,
 }
 
@@ -49,6 +61,7 @@ impl Query {
             joins: Vec::new(),
             conditions: Vec::new(),
             params: Vec::new(),
+            tail_params: Vec::new(),
             order_by: String::new(),
         }
     }
@@ -77,29 +90,45 @@ impl Query {
     }
 
     /// Append parameters an `ORDER BY` clause already bound (a
-    /// `sort=geoDistance(...)` token — see [`order_by`]) — same convention
-    /// as [`push_filter`](Query::push_filter), just for a caller that
-    /// already has the SQL string and only needs the params appended.
+    /// `sort=geoDistance(...)` token — see [`order_by`]) into
+    /// [`Query::tail_params`], *not* [`Query::params`] — see that field's
+    /// doc for why a `count_sql()` call must never see these.
     pub fn push_order_params(&mut self, params: Vec<Sql>) {
-        self.params.extend(params);
+        self.tail_params.extend(params);
     }
 
     /// Bind the `LIMIT`/`OFFSET` values [`Query::select_sql`] emitted
-    /// placeholders for. Call it *after* rendering the SQL (and after
-    /// [`Query::count_sql`], which must not see them).
+    /// placeholders for, into [`Query::tail_params`] — same reasoning as
+    /// [`Query::push_order_params`]. Call after rendering the SQL (and
+    /// after [`Query::count_sql`], which must not see them).
     pub fn bind_page(&mut self, limit: i64, offset: i64) {
-        self.params.push(Sql::Int(limit));
-        self.params.push(Sql::Int(offset));
+        self.tail_params.push(Sql::Int(limit));
+        self.tail_params.push(Sql::Int(offset));
     }
 
+    /// The `WHERE`-clause (filter/rule) parameters only — what
+    /// [`Query::count_sql`] needs, since it has no `ORDER BY`/`LIMIT`/
+    /// `OFFSET` placeholders to bind. Use [`Query::all_params`] for
+    /// [`Query::select_sql`] or any other statement that includes those.
     pub fn params(&self) -> &[Sql] {
         &self.params
+    }
+
+    /// Every parameter bound so far, in placeholder order: `WHERE`
+    /// params first, then `ORDER BY`/`LIMIT`/`OFFSET` — what
+    /// [`Query::select_sql`]'s placeholders actually need.
+    pub fn all_params(&self) -> Vec<Sql> {
+        self.params
+            .iter()
+            .cloned()
+            .chain(self.tail_params.iter().cloned())
+            .collect()
     }
 
     /// Next free `$n` index (1-based) for a caller appending its own
     /// placeholders, e.g. `LIMIT`/`OFFSET`.
     pub fn next_placeholder(&self) -> usize {
-        self.params.len() + 1
+        self.params.len() + self.tail_params.len() + 1
     }
 
     fn qualified_id(&self) -> String {
@@ -481,10 +510,44 @@ mod tests {
         assert_eq!(q.params(), &[Sql::Text("x".into())]);
         assert!(q.count_sql().starts_with("SELECT COUNT(*) FROM"));
         q.bind_page(30, 0);
+        // `params()` (what `count_sql()` binds against) is unaffected by
+        // `bind_page` — only `all_params()` (what `select_sql()` binds
+        // against) grows.
+        assert_eq!(q.params(), &[Sql::Text("x".into())]);
         assert_eq!(
-            q.params(),
-            &[Sql::Text("x".into()), Sql::Int(30), Sql::Int(0)]
+            q.all_params(),
+            vec![Sql::Text("x".into()), Sql::Int(30), Sql::Int(0)]
         );
+    }
+
+    /// The bug this module's `tail_params` split fixes: a `sort=geoDistance(...)`
+    /// with no accompanying `filter` used to leave its own bound
+    /// parameters in the same vec `count_sql()` was executed against,
+    /// which has no `ORDER BY` (and therefore no placeholders for them)
+    /// at all — a param-count mismatch a real driver rejects outright.
+    #[test]
+    fn count_sql_never_sees_order_by_or_page_params() {
+        let (store, posts) = store();
+        let ctx = RequestContext::default();
+        let r = CollectionResolver::new(posts.clone(), &store, &ctx, Dialect::Sqlite);
+
+        let mut q = Query::new(&posts);
+        // No filter pushed at all — mirrors a public list rule with no
+        // `?filter=`.
+        let (order_sql, order_params) =
+            order_by(&r, Some("geoDistance(loc.lon, loc.lat, 1, 2)"), q.params().len()).unwrap();
+        q.set_order_by(order_sql);
+        q.push_order_params(order_params);
+
+        // `count_sql()` has no placeholders at all here — `params()` must
+        // agree, empty, regardless of the two geoDistance literals bound
+        // above.
+        assert!(!q.count_sql().contains('$'), "{}", q.count_sql());
+        assert!(q.params().is_empty(), "{:?}", q.params());
+
+        q.bind_page(30, 0);
+        assert!(q.params().is_empty(), "{:?}", q.params());
+        assert_eq!(q.all_params().len(), 4); // 2 geoDistance args + limit + offset
     }
 
     #[test]

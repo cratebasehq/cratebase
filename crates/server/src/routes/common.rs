@@ -123,7 +123,7 @@ pub async fn record_matches_rule(
     );
     let sql = query.select_sql();
     query.bind_page(1, 0);
-    Ok(ex.query_one(&sql, query.params()).await?.is_some())
+    Ok(ex.query_one(&sql, &query.all_params()).await?.is_some())
 }
 
 /// The subset of `ids` that satisfies `rule`, in a single statement.
@@ -165,7 +165,7 @@ pub async fn records_matching_rule(
     );
     let sql = query.select_sql();
     query.bind_page(ids.len() as i64, 0);
-    let rows = ex.query(&sql, query.params()).await?;
+    let rows = ex.query(&sql, &query.all_params()).await?;
     Ok(rows
         .iter()
         .filter_map(|r| r.get_str("id").map(str::to_string))
