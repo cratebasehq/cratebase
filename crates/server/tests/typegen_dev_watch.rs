@@ -21,7 +21,7 @@ struct Harness {
 impl Harness {
     async fn with(configure: impl FnOnce(&mut Config)) -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let mut config = Config::memory(dir.path());
+        let mut config = Config::memory(dir.path().join("pb_data"));
         configure(&mut config);
         let app = App::new(config);
         app.bootstrap().await.expect("bootstrap");

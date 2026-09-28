@@ -55,14 +55,22 @@
 //! would run full field validation for a write that only ever touches
 //! three system-owned columns.
 //!
-//! # Why delivery is fire-and-forget
+//! # Why delivery is fire-and-forget, and waits for the triggering commit
 //!
-//! [`dispatch_after_success`] spawns one `tokio::spawn` per triggering
-//! record event, and the lookup+delivery work inside it spawns one more
-//! `tokio::spawn` per matching webhook row, each POSTing with a 5 second
-//! timeout via `reqwest`. A slow or dead target therefore never blocks
-//! the record write's HTTP response, and one slow target never blocks
-//! another target's delivery either.
+//! [`dispatch_after_success`] runs as an ordinary `on_record_after_*_success`
+//! handler, so `e.app` is a [`crate::app::TxApp`] bound to the triggering
+//! write's own transaction — still open when the handler runs (see
+//! `crate::mails`'s module doc for the mechanism, and `crate::email_triggers`
+//! for the identical fix applied there). It therefore queues the actual
+//! lookup behind [`crate::app::TxApp::after_commit`] rather than touching
+//! the database inline, so it can never contend for the writer lock that
+//! transaction is still holding, and a webhook never fires for a write
+//! that ends up rolling back. Once that runs (after commit), it spawns
+//! one `tokio::spawn` for the `_webhooks` lookup, and the lookup+delivery
+//! work inside it spawns one more `tokio::spawn` per matching row, each
+//! POSTing with a 5 second timeout via `reqwest`. A slow or dead target
+//! therefore never blocks the record write's HTTP response, and one slow
+//! target never blocks another target's delivery either.
 //!
 //! # SSRF hardening
 //!
@@ -142,46 +150,43 @@ pub fn bind_hooks(app: &App) {
     // notification, not a gate, and every other handler that might be
     // registered on the same hook (e.g. `_cron_jobs`'/`_teams`' own
     // reactive sync) must still run after it.
-    let a = app.clone();
     app.hooks()
         .on_record_after_create_success
         .bind(Handler::new(move |e: &mut RecordEvent| {
-            dispatch_after_success(&a, "create", e);
+            dispatch_after_success("create", e);
             e.next()
         }));
-    let a = app.clone();
     app.hooks()
         .on_record_after_update_success
         .bind(Handler::new(move |e: &mut RecordEvent| {
-            dispatch_after_success(&a, "update", e);
+            dispatch_after_success("update", e);
             e.next()
         }));
-    let a = app.clone();
     app.hooks()
         .on_record_after_delete_success
         .bind(Handler::new(move |e: &mut RecordEvent| {
-            dispatch_after_success(&a, "delete", e);
+            dispatch_after_success("delete", e);
             e.next()
         }));
 }
 
-/// Snapshot what the hook needs from `e` and spawn the rest of the work,
-/// so a slow `_webhooks` lookup or a slow delivery never delays the
-/// record write's response.
-fn dispatch_after_success(app: &App, event: &str, e: &RecordEvent) {
+/// Snapshot what the hook needs from `e` and queue the rest of the work
+/// behind the triggering write's own commit — see the module doc's "Why
+/// delivery is fire-and-forget, and waits for the triggering commit".
+fn dispatch_after_success(event: &str, e: &RecordEvent) {
     // Never dispatch for writes to `_webhooks` itself — see the module
     // doc comment.
     if e.collection.name == COLLECTION || e.collection.id == COLLECTION {
         return;
     }
-    let app = app.clone();
+    let app = e.app.app().clone();
     let event = event.to_string();
     let collection_name = e.collection.name.clone();
     let collection_id = e.collection.id.clone();
     let record = e.record.to_json(Default::default());
-    tokio::spawn(async move {
+    e.app.after_commit(Box::pin(async move {
         dispatch(app, event, collection_name, collection_id, record).await;
-    });
+    }));
 }
 
 /// Load every enabled `_webhooks` row targeting `collection_name`/

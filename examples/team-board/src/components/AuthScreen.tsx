@@ -2,13 +2,13 @@ import { useState } from "react";
 import { cb, describeError, useAuth } from "../cratebase.js";
 import { useAuthMethods } from "../hooks/useAuthMethods.js";
 
-type Tab = "password" | "otp";
+type Tab = "password" | "otp" | "magic-link";
 
-export function AuthScreen() {
+export function AuthScreen({ magicLinkError }: { magicLinkError?: string }) {
   const { signIn } = useAuth();
   const methods = useAuthMethods();
   const [tab, setTab] = useState<Tab>("password");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(magicLinkError ?? "");
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
@@ -27,6 +27,9 @@ export function AuthScreen() {
             <TabButton active={tab === "otp"} onClick={() => setTab("otp")}>
               Email code
             </TabButton>
+            <TabButton active={tab === "magic-link"} onClick={() => setTab("magic-link")}>
+              Magic link
+            </TabButton>
           </div>
 
           {error && (
@@ -36,7 +39,13 @@ export function AuthScreen() {
           )}
 
           <div className="mt-6">
-            {tab === "password" ? <PasswordForm onError={setError} /> : <OtpForm onError={setError} />}
+            {tab === "password" ? (
+              <PasswordForm onError={setError} />
+            ) : tab === "otp" ? (
+              <OtpForm onError={setError} />
+            ) : (
+              <MagicLinkForm onError={setError} />
+            )}
           </div>
 
           {methods && methods.oauth2.enabled && methods.oauth2.providers.length > 0 && (
@@ -216,6 +225,58 @@ function OtpForm({ onError }: { onError: (msg: string) => void }) {
       </button>
       <button type="button" onClick={() => setOtpId(null)} className="text-left text-sm text-manifest hover:underline dark:text-manifest-light">
         Use a different email
+      </button>
+    </form>
+  );
+}
+
+function MagicLinkForm({ onError }: { onError: (msg: string) => void }) {
+  const [email, setEmail] = useState("alice@example.com");
+  const [sent, setSent] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  async function requestLink(e: React.FormEvent) {
+    e.preventDefault();
+    onError("");
+    setPending(true);
+    try {
+      // `redirectUrl` must be same-origin with `settings.meta.appURL`
+      // (scripts/setup.sh points that at this dev server) or the server
+      // falls back to its own default template instead — see
+      // `crates/server/src/routes/auth.rs`'s `is_same_origin`.
+      await cb.auth.magicLink.request({
+        email,
+        redirectUrl: `${window.location.origin}/auth/magic-link`,
+      });
+      setSent(true);
+    } catch (err) {
+      onError(describeError(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  if (sent) {
+    return (
+      <div className="flex flex-col gap-3 text-sm text-ink/70 dark:text-paper/70">
+        <p>
+          If <span className="font-medium">{email}</span> has an account, a sign-in link is on its way — in dev, open
+          the dashboard's Mail inbox (Settings → Mail inbox) to read it.
+        </p>
+        <button type="button" onClick={() => setSent(false)} className="text-left text-manifest hover:underline dark:text-manifest-light">
+          Use a different email
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={requestLink} className="flex flex-col gap-3">
+      <Field label="Email">
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="input" />
+      </Field>
+      <button type="submit" disabled={pending} className="btn-primary mt-1">
+        {pending ? "Sending…" : "Send magic link"}
       </button>
     </form>
   );

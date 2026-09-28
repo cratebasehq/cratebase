@@ -264,3 +264,123 @@ via `POST /api/db/extensions/{name}` (superuser only, Postgres only) or
 the dashboard's Settings → Database extensions page; version it from a
 migration with `$app.db().exec("CREATE EXTENSION IF NOT EXISTS postgis")`.
 See `site/src/content/docs/docs/database/` for the full guides.
+
+#### RPC recipe: nearest-location query
+
+`geoDistance(lonField, latField, lon, lat)` is a first-class filter/sort
+function — for a collection with a `geoPoint` field (stored as
+`{lon, lat}`), the simplest "find nearby" query needs no RPC at all:
+
+```javascript
+const nearby = await cb.collection("stores").getList(1, 20, {
+  filter: `geoDistance(location.lon, location.lat, ${lon}, ${lat}) < ${radiusKm}`,
+  sort: `geoDistance(location.lon, location.lat, ${lon}, ${lat})`, // nearest first
+});
+```
+
+On Postgres, once `postgis` is enabled this automatically compiles to a
+GiST-indexed `ST_DWithin`/KNN `<->` query instead of the portable
+haversine calculation — same syntax, no client change. Reach for an
+`_rpc` definition instead when you want a **fixed, rule-gated shape**
+(the caller shouldn't be able to pass arbitrary `filter`/`sort` strings)
+or the query needs a `JOIN`/aggregate a plain list can't express:
+
+```sql
+-- _rpc row: name = "nearest_stores"
+SELECT id, name, geoDistance(location.lon, location.lat, :lon, :lat) AS "distanceKm"
+FROM stores
+WHERE geoDistance(location.lon, location.lat, :lon, :lat) < :radiusKm
+ORDER BY "distanceKm"
+LIMIT 20
+```
+
+```javascript
+const { items } = await cb.rpc("nearest_stores", { lon: -122.42, lat: 37.77, radiusKm: 5 });
+```
+
+`_rpc.params` would declare `lon`/`lat`/`radiusKm` as `number`, and
+`_rpc.rule` as `""` if any signed-out visitor may call it, or a filter
+expression otherwise.
+
+### Email: sending from a frontend, magic-link + TOTP login, triggers
+
+**Recipe: sending an email straight from a frontend (`sendRule`).**
+`POST /api/mails/send` is superuser/API-key only by default, but an
+`_emailTemplates` row with a non-`null` `sendRule` opens itself to a
+non-superuser caller — an authenticated app user, or even an anonymous
+one — with no backend route of your own:
+
+```javascript
+// _emailTemplates row: key = "invite", sendRule = "@request.auth.id != ''"
+await cb.mails.send({
+  template: "invite",
+  to: { address: "friend@example.com" },
+  data: { inviterName: user.name, teamName: team.name },
+});
+```
+
+A non-superuser send is restricted to `{to, template, data, locale}` —
+no raw `subject`/`html`/`text`, no `from`/`cc`/`bcc`/`replyTo` override,
+capped at 5 recipients — and `sendRule` is evaluated once per `to`
+address against `@request.auth.*`/`@request.body.{to,data,locale}` (no
+bare field reference; there's no "record" a send is about). `null`
+(the default) keeps a template superuser-only; `""` opens it to anyone.
+Prefer this over a custom `pb_hooks` route whenever the check is
+expressible as a rule — it's strictly less code to maintain.
+
+**Recipe: email triggers (no code, fires on a record write).** For
+"email the assignee when a card is assigned" or "send a receipt on
+order create," a `_emailTriggers` row (superuser-managed, same shape as
+`_webhooks`) needs no hook file at all:
+
+```json
+{
+  "collection": "orders",
+  "event": "create",
+  "template": "order-receipt",
+  "toField": "customerEmail",
+  "condition": "status = 'paid'",
+  "dataMap": { "supportUrl": "https://example.com/support" }
+}
+```
+
+`toField` is a dotted path into the written record (or a literal address
+if that path doesn't resolve); `condition` is a filter expression
+evaluated against the record's bare fields (no `@request.*`); `dataMap`
+merges onto the default `{ record }` template data. It fires from an
+after-success hook and can never fail the triggering request — a
+`toField` that resolves to nothing usable is logged to `_mailLog` as a
+failure instead of raising an error. Reach for `$mails.send(...)` in a
+`pb_hooks/*.pb.js` hook instead when the trigger needs logic `condition`/
+`dataMap` can't express (calling another API first, computed content).
+
+**Recipe: magic-link + TOTP login.** Enable magic links on an auth
+collection (`authOptions.magicLink.enabled`, default `false`), then:
+
+```javascript
+await cb.auth.magicLink.request({ email, redirectUrl: "https://app.example.com/auth/magic-link" });
+// user clicks the emailed link → your app's /auth/magic-link route:
+const token = getMagicLinkTokenFromUrl(); // reads ?token= (or useMagicLinkCallback in React)
+await cb.auth.signIn.magicLink({ token });
+```
+
+If the signed-in record also has TOTP confirmed (independently of
+`authOptions.mfa`), any successful first factor — password, OTP, *or*
+magic link — comes back `401 { mfaId }` instead of a session, and a
+second call finishes it:
+
+```javascript
+const setup = await cb.auth.totp.setup(); // { qrUri, secret } — render qrUri with qrcode.react
+await cb.auth.totp.confirm({ code }); // enables TOTP, returns 10 one-time backup codes shown once
+// ...next login:
+try {
+  await cb.auth.signIn.password({ identity, password });
+} catch (err) {
+  if (err.mfaId) await cb.auth.signIn.totp({ mfaId: err.mfaId, code: totpCodeFromUser });
+}
+```
+
+`useMagicLinkCallback` (`@cratebase/react`) wraps the whole
+magic-link-callback dance (read the token, sign in, strip the param from
+the URL) as one hook — see `sdk/js/react/README.md` in the `cratebase`
+repo.

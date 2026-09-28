@@ -962,7 +962,7 @@ mod superuser_guard_tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path()));
+        let app = App::new(Config::memory(dir.path().join("pb_data")));
         app.bootstrap().await.expect("bootstrap");
         let mut settings = (*app.settings()).clone();
         settings.batch.enabled = true;

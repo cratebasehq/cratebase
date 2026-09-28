@@ -228,6 +228,31 @@ useSubscription(cb, "posts", "*", (event) => {
 });
 ```
 
+## `useMagicLinkCallback` — finish a magic-link sign-in
+
+Mount this on whatever page your magic-link email points at (its
+`redirectUrl`, or `authOptions.magicLink.urlTemplate`'s default). It reads
+the `token` query param (`getMagicLinkTokenFromUrl` under the hood),
+calls `client.auth.signIn.magicLink({ token })`, and removes the param
+from the URL on success so a refresh doesn't replay it.
+
+```tsx
+import { useMagicLinkCallback } from "@cratebase/react";
+import { cb } from "./cratebase";
+
+function MagicLinkCallback() {
+  const { status, error } = useMagicLinkCallback(cb, {
+    onSuccess: () => navigate("/"),
+  });
+  if (status === "pending") return <p>Signing you in…</p>;
+  if (status === "error") return <p>That link didn't work: {String(error)}</p>;
+  return null;
+}
+```
+
+`status` is `"idle"` (no `token` param present, e.g. a normal visit to
+this route) | `"pending"` | `"success"` | `"error"` | `"none"`.
+
 ## Versioning
 
 This package versions independently from the `cratebase` server binary and from

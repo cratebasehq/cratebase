@@ -34,7 +34,7 @@ fn node_config(url: &str, dir: &std::path::Path) -> Config {
         database_url: url.to_string(),
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir)
+        ..Config::for_data_dir(dir.join("pb_data"))
     }
 }
 

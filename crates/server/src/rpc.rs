@@ -407,7 +407,7 @@ fn rule_from_row(row: &Row) -> Option<String> {
     }
 }
 
-async fn call_rpc(
+pub(crate) async fn call_rpc(
     State(app): State<App>,
     Path(name): Path<String>,
     info: RequestInfo,

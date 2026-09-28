@@ -2,13 +2,49 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.3.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.4.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
 first real tagged release.
 
 ## [Unreleased]
+
+## 0.4.0 — 2026-09-28
+
+Email, database extensibility, consumer-app auth, and a dashboard where
+every setting is configurable. Highlights:
+
+- **Email platform** — editable templates (`{{var}}`, locales, branded
+  layout) with a visual editor built on React Email Editor, redesigned
+  default emails, `POST /api/mails/send` (callable from a frontend per
+  template via `sendRule`), no-code triggers, a mail log, and magic-link
+  login.
+- **Database** — Postgres extension management, custom SQL RPC
+  (`cb.rpc()`), nearest-first `sort=geoDistance(...)` with automatic
+  PostGIS acceleration.
+- **Auth** — Apple, Microsoft, Discord, GitLab, Facebook, X, LinkedIn,
+  Slack, Twitch and Spotify presets, generic OIDC, linked accounts, TOTP
+  2FA with backup codes.
+- **Dashboard** — settings consolidated into 7 tabbed groups, every
+  setting configurable without the API, an onboarding checklist.
+- **MCP** — runtime tools (`call_rpc`, `send_email`, `search_nearby`) and
+  superuser developer tools (schema, rules, email templates, logs, SQL).
+
+### Upgrading from 0.3.0
+
+- Migrations run automatically (`16_add_rpc`, `17_add_totps`,
+  `18_refresh_default_email_templates`). Seeded email
+  templates you never edited are refreshed to the new design; edited ones
+  are left alone.
+- `$mails.send`, email triggers and webhooks fired from after-success
+  hooks now run **after the write commits** (and never for a write that
+  rolls back) instead of inline.
+- Dashboard settings URLs moved under 7 groups (`/settings/email?tab=…`);
+  old URLs redirect.
+- `@cratebase/client` 0.3.0 / `@cratebase/react` 0.3.0 add `cb.mails`,
+  `cb.rpc`, `cb.auth.magicLink`, `cb.auth.totp`, `cb.auth.accounts` and
+  `useMagicLinkCallback`.
 
 ### Added
 
@@ -231,6 +267,94 @@ first real tagged release.
   haversine calculation — same syntax, an index-backed plan. The GiST
   index is created idempotently per `geoPoint` field as part of ordinary
   collection schema sync.
+- **MCP: runtime and superuser developer tools** (`crates/server/src/mcp.rs`),
+  on top of the existing per-collection CRUD tools:
+  - **Runtime tools** (visible to any caller, enforced exactly like the
+    HTTP route they restate): `call_rpc` (`name`/`params`, gated by that
+    `_rpc` row's own `rule` — reuses `crate::rpc::call_rpc` verbatim),
+    `send_email` (`template`/`to`/`data`/`locale`, gated by that
+    `_emailTemplates` row's `sendRule` — reuses a newly-extracted
+    `routes::mails::send_mail` shared by `POST /api/mails/send` too, so
+    the two never drift), and `search_nearby` (`collection`/`field`/
+    `lon`/`lat`/`radiusKm`/`limit` — a `geoDistance(...)` filter/sort
+    built for the existing `list_<collection>` tool, so it's enforced by
+    that collection's own `listRule` and gets PostGIS acceleration for
+    free where available).
+  - **Superuser-only developer tools** — absent from `tools/list` and
+    refused by name in `tools/call` for anyone else, so nothing confirms
+    they exist to a caller who can't use them: `get_schema` (every
+    collection's schema, OAuth2 secrets redacted); `apply_schema`
+    (`dryRun` defaults to `true`, reuses `routes::schema::plan_and_apply`);
+    `test_rule` (evaluate a filter-rule expression for a given auth
+    record — or anonymous — and an optional row, returning allow/deny
+    and the compiled SQL when it compiles without a database round
+    trip); `list_email_templates`/`upsert_email_template` and
+    `list_email_triggers`/`upsert_email_trigger` (CRUD on
+    `_emailTemplates`/`_emailTriggers` — an `id` argument updates, its
+    absence creates); `query_logs` (reuses `routes::logs::list`); and
+    `sql_read` (the SQL console's read-only path only — `SELECT`/`WITH`
+    only, row-capped, no write path at all).
+  - Docs: [AI → MCP server](https://cratebase.dev/docs/ai/mcp-server/)
+    documents connecting Claude Code/Claude Desktop with an API key and
+    the full tool reference.
+
+- **Docs sync pass for the email platform, database extensibility, and
+  dashboard overhaul above**: README's feature list and crate map,
+  ARCHITECTURE.md (new "Email platform"/"Database extensibility"
+  sections, an updated auth-model section, a corrected single-node-only
+  claim about realtime — cross-node Postgres realtime already shipped),
+  ROADMAP.md (moved shipped items out of stale descriptions, added an
+  explicit deferred-features list), the REST API index (stale path
+  counts, a missing Mails row), the dashboard tour page (onboarding
+  checklist, the auth-options editor), `.claude/skills/cratebase`
+  (recipes for sending mail via `sendRule` from a frontend, magic-link +
+  TOTP login, an RPC nearest-location query, and `_emailTriggers`), both
+  SDK READMEs (`cb.mails`, `cb.rpc`, `cb.auth.magicLink`/`.totp`/
+  `.accounts`, `useMagicLinkCallback`), and the stale `sms` settings
+  section (dead code, already removed from `crates/core/src/settings.rs`).
+
+### Fixed
+
+- A `sort=geoDistance(...)` with no accompanying `filter` (or, on
+  Postgres, one whose filter bound fewer parameters than the sort did)
+  could 500 instead of returning results: `Query`'s `ORDER BY`/`LIMIT`/
+  `OFFSET` parameters were appended to the same vec `count_sql()` — which
+  has neither clause — was executed against, so the driver rejected the
+  mismatched parameter count outright once there was no `filter` around
+  to happen to absorb it. `crates/db/src/query.rs`'s `Query` now tracks
+  those separately (`Query::all_params()`) so `count_sql()` only ever
+  sees the parameters its own placeholders need. Found and fixed while
+  building the `search_nearby` MCP tool above, whose happy path exercises
+  exactly this shape.
+- **`$mails.send` deadlocked when called from `onRecordAfterCreateSuccess`/
+  `onRecordAfterUpdateSuccess`** — exactly the pattern the docs recommend
+  ("send a welcome email after signup"). Those hooks' `e.app` is a `TxApp`
+  bound to the write's still-open transaction; `$mails.send` wrote its
+  `_mailLog` row through the plain connection pool, which contends for the
+  single SQLite writer connection that transaction already holds — the
+  same task waiting forever on a lock only itself could release.
+  `_emailTriggers` and `_webhooks` had the same transaction-vs-plain-pool
+  mismatch in their reactive dispatch, minus the deadlock (they already
+  bypassed the open transaction), but could still fire for a write that
+  later rolled back. All three now queue their DB write and delivery/
+  network I/O behind a new `TxApp::after_commit` (`crates/server/src/
+  app.rs`), which runs the queued work, detached, only once the
+  triggering transaction actually commits, and drops it unrun on
+  rollback — so `$mails.send` (and `_emailTriggers`/webhook dispatch) from
+  an after-success hook never deadlocks, never contends for the writer
+  lock, and never sends for a write that didn't happen.
+- **A flaky `routes::functions` test** (`missing_hooks_dir_returns_empty_lists`)
+  — and, more importantly, every other test built the same way — passed a
+  bare `tempfile::tempdir()` root straight to `Config::memory`/
+  `Config::for_data_dir`. `Config`'s `hooks_dir`/`migrations_dir` are
+  *siblings* of the data dir (`<data_dir>/../pb_hooks`), so a `data_dir`
+  that *is* the tempdir root resolves those siblings one level up, outside
+  the tempdir entirely — into the real, shared OS temp directory, where
+  they collide with every other test (and every other run) computing the
+  same path. Fixed at the root: every affected test now nests the data
+  dir under the tempdir (`dir.path().join("pb_data")`), so `pb_hooks`/
+  `pb_migrations` land inside the tempdir like everything else the test
+  creates, instead of leaking into `/tmp`.
 
 ## 0.3.0 — 2026-09-25
 

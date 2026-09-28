@@ -1018,6 +1018,7 @@ impl App {
         let handle = Arc::new(TxHandle {
             tx: tokio::sync::Mutex::new(tx),
             transactional,
+            post_commit: std::sync::Mutex::new(Vec::new()),
         });
         let tx_app = TxApp {
             app: self.clone(),
@@ -1026,10 +1027,18 @@ impl App {
         match f(tx_app).await {
             Ok(value) => {
                 handle.commit().await?;
+                // Only spawned once the commit above actually succeeded —
+                // see `TxApp::after_commit`'s doc.
+                for fut in handle.take_post_commit() {
+                    tokio::spawn(fut);
+                }
                 Ok(value)
             }
             Err(e) => {
                 handle.rollback().await;
+                // Discard rather than run: nothing queued here should
+                // fire for a write that just rolled back.
+                drop(handle.take_post_commit());
                 Err(e)
             }
         }
@@ -1298,6 +1307,10 @@ pub(crate) async fn insert_superuser_row(
     Ok(id)
 }
 
+/// A future queued on [`TxApp::after_commit`], to run only once the
+/// transaction it was queued under actually commits.
+type PostCommitFn = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
 /// The open transaction shared by every [`TxApp`] clone in one
 /// `run_in_transaction` scope.
 struct TxHandle {
@@ -1309,6 +1322,20 @@ struct TxHandle {
     /// transaction has already been committed", which must still be an
     /// error.
     transactional: bool,
+    /// Work queued by [`TxApp::after_commit`] — a record/collection hook
+    /// running while the write's transaction is still open (e.g. an
+    /// `onRecordAfterCreateSuccess` handler calling `$mails.send`) can't
+    /// safely do its own writes or network I/O here: any write would
+    /// contend for the single SQLite writer connection this scope is
+    /// already holding (a guaranteed self-deadlock, not just contention —
+    /// see `mails.rs`'s module doc and the `jsvm_host` tests this backs),
+    /// and holding that lock across a slow network call (SMTP, a
+    /// webhook's POST) would stall every other write in the process for
+    /// no reason. Queuing here instead defers the work until the
+    /// transaction has actually committed — plain `std::sync::Mutex`
+    /// since pushing/draining is a bare `Vec` operation with no `.await`
+    /// while held.
+    post_commit: std::sync::Mutex<Vec<PostCommitFn>>,
 }
 
 impl TxHandle {
@@ -1326,6 +1353,16 @@ impl TxHandle {
             }
         }
     }
+
+    /// Empties the post-commit queue, handing back what was in it.
+    fn take_post_commit(&self) -> Vec<PostCommitFn> {
+        std::mem::take(
+            &mut *self
+                .post_commit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
 }
 
 /// An [`App`] bound to an open transaction. Record and collection hooks
@@ -1340,6 +1377,22 @@ pub struct TxApp {
 impl TxApp {
     pub fn app(&self) -> &App {
         &self.app
+    }
+
+    /// Queue `fut` to run, detached (`tokio::spawn`), once this scope's
+    /// transaction commits. Dropped unrun if the scope instead rolls
+    /// back, so nothing queued here ever runs for a write that didn't
+    /// actually happen — see [`TxHandle::post_commit`]'s doc for why this
+    /// exists instead of doing the work inline.
+    pub fn after_commit<F>(&self, fut: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.handle
+            .post_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Box::pin(fut));
     }
 }
 

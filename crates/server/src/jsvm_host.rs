@@ -70,6 +70,12 @@ trait HostExec: Clone + Send + Sync + 'static {
     /// `CollectionStore::insert_with`/`update_with`/`delete_with` rather
     /// than opening its own nested one — see those methods' doc comments.
     fn is_transactional(&self) -> bool;
+    /// Run `fut` once any enclosing transaction commits, or immediately
+    /// (spawned) when there is none — see `mails_send`'s use of this: a
+    /// hook running inside a still-open transaction can't do its own
+    /// `_mailLog` write or SMTP send inline (see `crate::mails`'s module
+    /// doc), so that work is queued here instead.
+    fn after_commit(&self, fut: futures::future::BoxFuture<'static, ()>);
 }
 
 impl HostExec for App {
@@ -82,6 +88,9 @@ impl HostExec for App {
     fn is_transactional(&self) -> bool {
         false
     }
+    fn after_commit(&self, fut: futures::future::BoxFuture<'static, ()>) {
+        tokio::spawn(fut);
+    }
 }
 
 impl HostExec for TxApp {
@@ -93,6 +102,9 @@ impl HostExec for TxApp {
     }
     fn is_transactional(&self) -> bool {
         true
+    }
+    fn after_commit(&self, fut: futures::future::BoxFuture<'static, ()>) {
+        TxApp::after_commit(self, fut);
     }
 }
 
@@ -292,7 +304,7 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         };
         compiled_query.bind_page(lim, offset.max(0));
         let rows = ex
-            .query(&sql, compiled_query.params())
+            .query(&sql, &compiled_query.all_params())
             .await
             .map_err(AppError::from)?;
         Ok(rows
@@ -450,8 +462,44 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
             from,
             reply_to: get_str("replyTo"),
         };
-        let outcome = crate::mails::send(self.0.app(), send_input).await?;
-        serde_json::to_value(outcome).map_err(|e| AppError::internal(e.to_string()))
+
+        if !self.0.is_transactional() {
+            let outcome = crate::mails::send(self.0.app(), send_input).await?;
+            return serde_json::to_value(outcome).map_err(|e| AppError::internal(e.to_string()));
+        }
+
+        // Called from inside a record-write hook (`e.app`/`self.0` is a
+        // `TxApp`) whose transaction is still open — see `crate::mails`'s
+        // module doc. `prepare` only validates and renders (a template
+        // lookup is a read, which doesn't contend for the writer lock
+        // this scope may be holding), so a bad recipient or a missing
+        // template still throws synchronously, back into the hook, same
+        // as the non-transactional path above. The `_mailLog` write and
+        // the actual delivery are deferred to `after_commit`: they must
+        // not run here, since (a) writing `_mailLog` through the plain
+        // connection pool while this transaction holds the single SQLite
+        // writer connection is a guaranteed self-deadlock, and (b) an
+        // email must never go out for a write that ends up rolling back.
+        let template = send_input.template.clone();
+        let message = crate::mails::prepare(self.0.app(), send_input).await?;
+        let log_id = cratebase_core::record_id();
+        let result = serde_json::json!({
+            "id": log_id,
+            "status": crate::mails::STATUS_QUEUED,
+        });
+        let app = self.0.app().clone();
+        self.0.after_commit(Box::pin(async move {
+            if let Err(e) =
+                crate::mails::finish(&app, Some(log_id.clone()), message, template.as_deref()).await
+            {
+                tracing::warn!(
+                    error = %e,
+                    log_id = %log_id,
+                    "deferred $mails.send failed after its transaction committed"
+                );
+            }
+        }));
+        Ok(result)
     }
 
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
@@ -1244,7 +1292,7 @@ mod mails_send_tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path()));
+        let app = App::new(Config::memory(dir.path().join("pb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }
@@ -1314,6 +1362,7 @@ mod hot_reload_tests {
     use axum::body::Body;
     use axum::extract::ConnectInfo;
     use axum::http::{Request, StatusCode};
+    use cratebase_db::Executor;
     use tower::ServiceExt;
 
     use crate::app::App;
@@ -1915,6 +1964,291 @@ mod hot_reload_tests {
             "a hook file rewritten with the same mtime as before must still reload via the \
              --dev watcher, not stay stuck on the previous version until something else \
              happens to change the mtime"
+        );
+    }
+
+    /// Release-blocker regression test: PocketBase's own recommended
+    /// pattern — "send a welcome email after signup" — is `$mails.send`
+    /// called from `onRecordAfterCreateSuccess`. That hook's `e.app` is a
+    /// `TxApp` bound to the write's still-open transaction
+    /// (`crate::events::RecordEvent`), and before the fix this hung
+    /// forever: `mails::send` wrote `_mailLog` through the plain
+    /// connection pool, which contends for the single SQLite writer
+    /// connection this scope's own transaction already holds — the same
+    /// task waiting on a lock only itself could release. Wrapped in a
+    /// generous `tokio::time::timeout` so a regression fails the test
+    /// instead of hanging the whole suite.
+    #[tokio::test]
+    async fn mails_send_in_after_create_success_hook_does_not_deadlock() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterCreateSuccess((e) => {
+                $mails.send({
+                    to: "someone@example.com",
+                    subject: "Widget created",
+                    html: "<p>hi</p>",
+                });
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect(
+            "a create whose after-success hook calls $mails.send must not deadlock \
+             the request",
+        )
+        .unwrap();
+        assert_eq!(
+            created.status(),
+            StatusCode::OK,
+            "{:?}",
+            body_json(created).await
+        );
+
+        let delivered = poll_until(std::time::Duration::from_secs(5), || async {
+            app.mailer()
+                .dev_mailbox()
+                .map(|mb| !mb.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(
+            delivered,
+            "the deferred $mails.send must still deliver once the triggering \
+             transaction commits"
+        );
+        let mailbox = app.mailer().dev_mailbox().unwrap();
+        assert_eq!(mailbox.list()[0].subject, "Widget created");
+
+        let log_rows = app
+            .db()
+            .query(
+                r#"SELECT * FROM "_mailLog" WHERE "subject" = $1"#,
+                &[cratebase_db::engine::Sql::from("Widget created")],
+            )
+            .await
+            .expect("query _mailLog");
+        assert_eq!(log_rows.len(), 1, "exactly one _mailLog row for the send");
+        assert_eq!(log_rows[0].get_str("status"), Some("sent"));
+    }
+
+    /// Same as
+    /// [`mails_send_in_after_create_success_hook_does_not_deadlock`], for
+    /// `onRecordAfterUpdateSuccess` — the other half of the docs'
+    /// recommended pattern (e.g. "email on status change").
+    #[tokio::test]
+    async fn mails_send_in_after_update_success_hook_does_not_deadlock() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        let created = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let record_id = body_json(created).await["id"]
+            .as_str()
+            .expect("created id")
+            .to_string();
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterUpdateSuccess((e) => {
+                $mails.send({
+                    to: "someone@example.com",
+                    subject: "Widget updated",
+                    html: "<p>hi</p>",
+                });
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let updated = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "PATCH",
+                &format!("/api/collections/widgets/records/{record_id}"),
+                &token,
+                serde_json::json!({ "name": "gizmo-2" }),
+            )),
+        )
+        .await
+        .expect(
+            "a patch whose after-success hook calls $mails.send must not deadlock \
+             the request",
+        )
+        .unwrap();
+        assert_eq!(
+            updated.status(),
+            StatusCode::OK,
+            "{:?}",
+            body_json(updated).await
+        );
+
+        let delivered = poll_until(std::time::Duration::from_secs(5), || async {
+            app.mailer()
+                .dev_mailbox()
+                .map(|mb| !mb.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(
+            delivered,
+            "the deferred $mails.send must still deliver once the triggering \
+             transaction commits"
+        );
+    }
+
+    /// The other half of the contract: an email queued via `$mails.send`
+    /// from inside a hook must never actually go out if the triggering
+    /// write's own transaction ends up rolling back — here, a second
+    /// `onRecordAfterCreateSuccess` handler on the same collection throws
+    /// after the first one already queued a send.
+    #[tokio::test]
+    async fn mails_send_from_hook_is_not_delivered_when_the_write_rolls_back() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterCreateSuccess((e) => {
+                $mails.send({
+                    to: "rollback@example.com",
+                    subject: "should never be delivered",
+                    html: "<p>hi</p>",
+                });
+                e.next();
+            }, "widgets");
+            onRecordAfterCreateSuccess((e) => {
+                throw new Error("force rollback after the mail was queued");
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("must not deadlock even though the write ultimately fails")
+        .unwrap();
+        assert_ne!(
+            created.status(),
+            StatusCode::OK,
+            "the second handler's throw must fail the request"
+        );
+
+        // Give any wrongly-spawned send a moment to land before asserting
+        // its absence.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            app.mailer().dev_mailbox().unwrap().len(),
+            0,
+            "a mail queued before a later handler rolled back the write must never \
+             actually be sent"
+        );
+        let log_rows = app
+            .db()
+            .query(r#"SELECT * FROM "_mailLog""#, &[])
+            .await
+            .expect("query _mailLog");
+        assert!(
+            log_rows.is_empty(),
+            "no _mailLog row should exist for a send that never should have fired"
         );
     }
 }

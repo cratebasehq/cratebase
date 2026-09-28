@@ -74,7 +74,11 @@ cream/terracotta look generated UIs default to:
 
 - **Auth**: email+password sign-up/sign-in, an OTP ("email code") tab
   (`cb.auth.otp.request`/`signIn.otp` — the code lands in the dev mail
-  inbox), and OAuth buttons that only render when
+  inbox), a magic-link tab (`cb.auth.magicLink.request`/
+  `signIn.magicLink` — `authOptions.magicLink.enabled` turned on in
+  `scripts/gen-schema.ts`, `useMagicLinkCallback` in `App.tsx` finishes
+  the round trip when the emailed link lands back on this app), and
+  OAuth buttons that only render when
   `GET /api/collections/users/auth-methods` actually lists a configured
   provider (none are configured in this example by default).
 - **Teams**: `_teams`/`_team_members` (Cratebase's built-in team
@@ -100,8 +104,16 @@ cream/terracotta look generated UIs default to:
   in both listings and realtime, because `cards`' rules exclude
   `isQuery = true` rows.
 - **`pb_hooks/team-board.pb.js`**: derives `searchText`, notifies +
-  emails a card's assignee on (re)assignment, and a `cronAdd` job that
-  flags overdue cards once a minute.
+  emails a card's assignee on (re)assignment via `$mails.send` (called
+  from `onRecordAfterCreateSuccess`/`onRecordAfterUpdateSuccess`, still
+  inside the card write's own open transaction — `$mails.send` defers its
+  `_mailLog` write and delivery until that transaction commits, so it
+  never contends with it and never sends for a write that rolls back),
+  and a `cronAdd` job that flags overdue cards once a minute and emails
+  the assignee through `$mails.send` and a real `_emailTemplates` row
+  (`card-overdue`, seeded in `seed.json`, editable from the dashboard's
+  Settings → Email templates with no redeploy) rather than a hand-built
+  subject/html string like the assignment hook uses.
 - **Types**: `cratebase typegen` → `src/cratebase-types.d.ts` (not
   committed — see `.gitignore`), consumed via
   `createCratebaseHooks<Schema>()`. `_teams`/`_team_members` are system
