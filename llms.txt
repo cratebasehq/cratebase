@@ -83,8 +83,17 @@ source. Everything referenced below is real and current, not aspirational.
   - `GET /collections/{c}/sessions?recordId=`, `DELETE /collections/{c}/sessions/{id}`,
     `POST /collections/{c}/sessions/revoke-others`, `POST /collections/{c}/sessions/revoke-all`
   - `POST /collections/{c}/ban/{id}`, `DELETE /collections/{c}/ban/{id}` (superuser only)
-  - `GET /collections/{c}/oauth2/{provider}/start?redirect=`, `GET /collections/{c}/oauth2/{provider}/callback`
-    — server-driven OAuth2 redirect flow, requires `SESSION_COOKIE=true` and `settings.meta.appURL` set
+  - `GET /collections/{c}/oauth2/{provider}/start?redirect=`, `GET/POST /collections/{c}/oauth2/{provider}/callback`
+    — server-driven OAuth2 redirect flow, requires `SESSION_COOKIE=true` and `settings.meta.appURL` set;
+    `POST` is Apple's `response_mode=form_post` callback shape. 12 built-in presets (google, github, apple,
+    microsoft, discord, gitlab, facebook, twitter, linkedin, slack, twitch, spotify) plus a generic OIDC
+    provider (any name with `extra.issuer` set — discovered from `/.well-known/openid-configuration`, JWKS-verified)
+  - `POST /collections/{c}/totp/setup`, `POST /collections/{c}/totp/confirm`, `POST /collections/{c}/totp/disable`,
+    `POST /collections/{c}/totp/backup-codes/regenerate`, `POST /collections/{c}/auth-with-totp`
+    — RFC 6238 TOTP 2FA + backup codes, integrated with the existing `401 {mfaId}` MFA challenge (independent
+    of `authOptions.mfa`: a record with confirmed TOTP requires a second factor regardless of that setting)
+  - `GET /collections/{c}/records/{id}/external-auths`, `DELETE /collections/{c}/records/{id}/external-auths/{provider}`
+    — list/unlink a record's linked OAuth2 providers (owner or superuser); unlink refuses if it would strand the account
 - `GET /realtime` (SSE; first event carries a `clientId`),
   `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`
 - JS hooks: a `pb_hooks/*.pb.js` file next to the data directory can add
@@ -171,7 +180,9 @@ client with no hand-written types and no separate build step. See
 - `crates/db` — the storage engine (SQLite/Postgres via sqlx `Any`,
   collection<->table sync, record CRUD, rule enforcement).
 - `crates/storage` — file storage (local disk or any S3-compatible bucket).
-- `crates/auth` — password hashing, JWT session/action tokens, OTP hashing.
+- `crates/auth` — password hashing, JWT session/action tokens, OTP/TOTP
+  hashing, OAuth2 preset endpoints/scopes/userinfo parsing, OIDC JWKS
+  id_token verification.
 - `crates/jsvm` — embedded QuickJS runtime backing `pb_hooks/` and `routerAdd`.
 - `crates/mailer` — pluggable mail backend (Resend API, SMTP, or log-only).
 - `crates/server` — the axum HTTP API, CLI, plugin system, `jsvm`/`mailer`
