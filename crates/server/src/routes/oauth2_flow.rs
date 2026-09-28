@@ -184,8 +184,14 @@ async fn start(
     };
 
     let redirect_uri = callback_url(&settings.meta.app_url, &name, &provider);
-    let Some(auth_url) =
-        crate::routes::auth::provider_auth_url(config, &state, &code_challenge, &redirect_uri)
+    let Some(auth_url) = crate::routes::auth::provider_auth_url(
+        crate::routes::auth::oauth2_client(),
+        config,
+        &state,
+        &code_challenge,
+        &redirect_uri,
+    )
+    .await
     else {
         return bail("provider_not_enabled");
     };

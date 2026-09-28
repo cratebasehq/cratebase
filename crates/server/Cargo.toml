@@ -82,3 +82,7 @@ rand.workspace = true
 # (`tests/pocketbase_migrate_e2e.rs`); `rusqlite` is already a normal
 # dependency above, reused here for building that test's `data.db`.
 bcrypt = "0.17"
+# Mocks the OIDC issuer (discovery document + JWKS) in
+# `routes::oidc`'s tests, so the generic-OIDC login path is exercised
+# end to end without a real network round trip.
+wiremock = "0.6"

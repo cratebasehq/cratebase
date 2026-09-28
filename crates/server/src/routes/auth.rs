@@ -469,12 +469,12 @@ async fn auth_methods(State(app): State<App>, Path(name): Path<String>) -> ApiRe
     }
     let auth = &collection.auth;
     let providers = if auth.oauth2.enabled {
-        auth.oauth2
-            .providers
-            .iter()
-            .filter(|p| !p.client_id.is_empty() && !p.client_secret.is_empty())
-            .map(oauth2_provider_info)
-            .collect()
+        let client = oauth2_client();
+        let mut out = Vec::new();
+        for p in auth.oauth2.providers.iter().filter(|p| oauth2_provider_ready(p)) {
+            out.push(oauth2_provider_info(client, p).await);
+        }
+        out
     } else {
         Vec::new()
     };
@@ -524,6 +524,41 @@ pub(crate) fn oidc_issuer(config: &cratebase_core::OAuth2Provider) -> Option<&st
         .get("issuer")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
+}
+
+fn non_empty_extra<'a>(config: &'a cratebase_core::OAuth2Provider, key: &str) -> Option<&'a str> {
+    config.extra.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+}
+
+/// Whether a provider entry has enough config to attempt a login.
+/// Apple has no `clientSecret` at all (it's generated per-request from
+/// `extra.teamId`/`extra.keyId`/`extra.privateKey` — see
+/// [`apple_client_secret_for`]); every other preset, including a generic
+/// OIDC issuer, is a normal confidential client and needs one.
+fn oauth2_provider_ready(config: &cratebase_core::OAuth2Provider) -> bool {
+    if config.client_id.is_empty() {
+        return false;
+    }
+    if cratebase_auth::KnownProvider::from_name(&config.name) == Some(cratebase_auth::KnownProvider::Apple) {
+        non_empty_extra(config, "teamId").is_some()
+            && non_empty_extra(config, "keyId").is_some()
+            && non_empty_extra(config, "privateKey").is_some()
+    } else {
+        !config.client_secret.is_empty()
+    }
+}
+
+/// Apple's per-request JWT client secret (see
+/// [`cratebase_auth::apple_client_secret`]), read from `extra.teamId`/
+/// `extra.keyId`/`extra.privateKey`. `None` when any of the three is
+/// missing or signing fails (a malformed key), which callers treat as
+/// "provider not configured" rather than a 500.
+fn apple_client_secret_for(config: &cratebase_core::OAuth2Provider) -> Option<String> {
+    let team_id = non_empty_extra(config, "teamId")?;
+    let key_id = non_empty_extra(config, "keyId")?;
+    let private_key = non_empty_extra(config, "privateKey")?;
+    let now = chrono::Utc::now().timestamp();
+    cratebase_auth::apple_client_secret(team_id, key_id, private_key, &config.client_id, now).ok()
 }
 
 pub(crate) async fn provider_auth_url(
@@ -1832,7 +1867,7 @@ struct OAuth2Body {
 /// redirects on principle: a provider that answers a token exchange with
 /// a 3xx is not one this request should blindly follow with client
 /// credentials attached.
-fn oauth2_client() -> &'static reqwest::Client {
+pub(crate) fn oauth2_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -1843,29 +1878,26 @@ fn oauth2_client() -> &'static reqwest::Client {
     &CLIENT
 }
 
-/// A configured provider's endpoint, falling back to the
-/// [`cratebase_auth::KnownProvider`] default when the collection left it
-/// blank — an admin enabling "google"/"github" only has to supply
-/// `clientId`/`clientSecret`, exactly like PocketBase's own presets.
-fn effective_url(configured: &str, known: Option<String>) -> String {
-    if !configured.is_empty() {
-        configured.to_string()
-    } else {
-        known.unwrap_or_default()
-    }
-}
-
 /// GETs `url` with a bearer token, returning its body only on a 2xx.
-async fn get_bearer(client: &reqwest::Client, url: &str, access_token: &str) -> Option<Vec<u8>> {
-    let res = client
+/// `client_id_header` is Twitch's Helix API requirement (see
+/// [`cratebase_auth::KnownProvider::requires_client_id_header`]) — every
+/// other preset ignores it.
+async fn get_bearer(
+    client: &reqwest::Client,
+    url: &str,
+    access_token: &str,
+    client_id_header: Option<&str>,
+) -> Option<Vec<u8>> {
+    let mut req = client
         .get(url)
         .bearer_auth(access_token)
         .header("Accept", "application/json")
         // GitHub's API 403s any request with no User-Agent.
-        .header("User-Agent", "cratebase")
-        .send()
-        .await
-        .ok()?;
+        .header("User-Agent", "cratebase");
+    if let Some(client_id) = client_id_header {
+        req = req.header("Client-Id", client_id);
+    }
+    let res = req.send().await.ok()?;
     if !res.status().is_success() {
         return None;
     }
@@ -1874,18 +1906,24 @@ async fn get_bearer(client: &reqwest::Client, url: &str, access_token: &str) -> 
 
 /// Fetches the provider's userinfo, plus GitHub's second `/user/emails`
 /// call when that provider's primary response might not carry one (see
-/// [`cratebase_auth::KnownProvider::emails_url`]).
+/// [`cratebase_auth::KnownProvider::emails_url`]). Never called for
+/// Apple (see [`fetch_apple_user`]) or a generic OIDC issuer (identity
+/// comes from its verified `id_token`, same as Apple).
 async fn fetch_oauth2_user(
     client: &reqwest::Client,
     user_info_url: &str,
+    config: &cratebase_core::OAuth2Provider,
     known: Option<cratebase_auth::KnownProvider>,
     access_token: &str,
 ) -> ApiResult<cratebase_auth::OAuth2User> {
-    let user_body = get_bearer(client, user_info_url, access_token)
+    let client_id_header = known
+        .is_some_and(cratebase_auth::KnownProvider::requires_client_id_header)
+        .then_some(config.client_id.as_str());
+    let user_body = get_bearer(client, user_info_url, access_token, client_id_header)
         .await
         .ok_or_else(|| ApiError::bad_request("Failed to fetch OAuth2 user."))?;
     let emails_body = match known.and_then(cratebase_auth::KnownProvider::emails_url) {
-        Some(url) => get_bearer(client, url, access_token).await,
+        Some(url) => get_bearer(client, url, access_token, None).await,
         None => None,
     };
     let parsed = match known {
@@ -1895,6 +1933,36 @@ async fn fetch_oauth2_user(
         Some(cratebase_auth::KnownProvider::GitHub) => {
             cratebase_auth::parse_github_userinfo(&user_body, emails_body.as_deref())
         }
+        Some(cratebase_auth::KnownProvider::Microsoft) => {
+            cratebase_auth::parse_microsoft_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Discord) => {
+            cratebase_auth::parse_discord_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::GitLab) => {
+            cratebase_auth::parse_gitlab_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Facebook) => {
+            cratebase_auth::parse_facebook_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Twitter) => {
+            cratebase_auth::parse_twitter_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::LinkedIn) => {
+            cratebase_auth::parse_linkedin_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Slack) => {
+            cratebase_auth::parse_slack_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Twitch) => {
+            cratebase_auth::parse_twitch_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Spotify) => {
+            cratebase_auth::parse_spotify_userinfo(&user_body)
+        }
+        Some(cratebase_auth::KnownProvider::Apple) => {
+            unreachable!("Apple is handled by fetch_apple_user, never this function")
+        }
         None => cratebase_auth::parse_generic_userinfo(&user_body),
     }
     .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 user."))?;
@@ -1902,6 +1970,71 @@ async fn fetch_oauth2_user(
         return Err(ApiError::bad_request("Failed to fetch OAuth2 user."));
     }
     Ok(parsed)
+}
+
+/// Apple (and a generic OIDC issuer, see [`fetch_oidc_user`]) has no
+/// userinfo endpoint at all — identity comes from the token response's
+/// `id_token`, verified against Apple's fixed JWKS
+/// ([`crate::routes::oidc::APPLE_JWKS_URL`]/`APPLE_ISSUER`) so a
+/// man-in-the-middle on some *other* leg of the flow can't forge one.
+/// `aud` must be the Service ID (`config.client_id`), matching what
+/// [`apple_client_secret_for`] put in the client-secret JWT's `sub`.
+async fn fetch_apple_user(
+    client: &reqwest::Client,
+    config: &cratebase_core::OAuth2Provider,
+    id_token: &str,
+) -> ApiResult<cratebase_auth::OAuth2User> {
+    let checks = cratebase_auth::IdTokenChecks {
+        issuer: crate::routes::oidc::APPLE_ISSUER,
+        audience: &config.client_id,
+        nonce: None,
+    };
+    let claims = crate::routes::oidc::verify_id_token_cached(
+        client,
+        crate::routes::oidc::APPLE_JWKS_URL,
+        id_token,
+        &checks,
+    )
+    .await?;
+    let claims_json = serde_json::to_vec(&claims).unwrap_or_default();
+    let user = cratebase_auth::parse_apple_id_token_claims(&claims_json)
+        .map_err(|_| ApiError::bad_request("Invalid Apple identity token."))?;
+    if user.id.is_empty() {
+        return Err(ApiError::bad_request("Invalid Apple identity token."));
+    }
+    Ok(user)
+}
+
+/// A generic OIDC issuer likewise has no fixed userinfo shape cratebase
+/// can rely on beyond the standard OIDC claims already on the (verified)
+/// `id_token` — so, like Apple, that's read directly rather than making
+/// a separate userinfo call.
+async fn fetch_oidc_user(
+    client: &reqwest::Client,
+    config: &cratebase_core::OAuth2Provider,
+    issuer: &str,
+    discovery: &crate::routes::oidc::OidcDiscovery,
+    id_token: &str,
+) -> ApiResult<cratebase_auth::OAuth2User> {
+    let checks = cratebase_auth::IdTokenChecks {
+        issuer,
+        audience: &config.client_id,
+        nonce: None,
+    };
+    let claims = crate::routes::oidc::verify_id_token_cached(
+        client,
+        &discovery.jwks_uri,
+        id_token,
+        &checks,
+    )
+    .await?;
+    let claims_json = serde_json::to_vec(&claims).unwrap_or_default();
+    let user = cratebase_auth::parse_generic_userinfo(&claims_json)
+        .map_err(|_| ApiError::bad_request("Invalid OIDC identity token."))?;
+    if user.id.is_empty() {
+        return Err(ApiError::bad_request("Invalid OIDC identity token."));
+    }
+    Ok(user)
 }
 
 /// The full outcome of completing an OAuth2 login: the record signed in
@@ -1959,18 +2092,49 @@ pub(crate) async fn complete_oauth2(
     };
 
     let known = cratebase_auth::KnownProvider::from_name(provider);
-    let token_url = effective_url(
-        &config.token_url,
-        known.map(cratebase_auth::KnownProvider::token_url),
-    );
-    let user_info_url = effective_url(
-        &config.user_info_url,
-        known.map(cratebase_auth::KnownProvider::user_info_url),
-    );
+    let client = oauth2_client();
+    let is_apple = known == Some(cratebase_auth::KnownProvider::Apple);
+    let issuer = oidc_issuer(config);
+    let discovery = match issuer {
+        Some(issuer) => Some(crate::routes::oidc::discover(client, issuer).await?),
+        None => None,
+    };
+
+    let token_url = if !config.token_url.is_empty() {
+        config.token_url.clone()
+    } else if let Some(d) = &discovery {
+        d.token_endpoint.clone()
+    } else {
+        known.map(|k| k.token_url(&config.extra)).unwrap_or_default()
+    };
+    let user_info_url = if !config.user_info_url.is_empty() {
+        config.user_info_url.clone()
+    } else {
+        known.map(|k| k.user_info_url(&config.extra)).unwrap_or_default()
+    };
+
+    // Apple's "client_secret" is minted per request from `extra.teamId`/
+    // `keyId`/`privateKey` rather than read off the config directly (see
+    // `oauth2_provider_ready`, which already checked those three are
+    // present before this handler was ever reachable for an Apple
+    // provider).
+    let apple_secret = is_apple.then(|| apple_client_secret_for(config)).flatten();
+    let client_secret: &str = if is_apple {
+        apple_secret
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("Missing or invalid provider config.".to_string()))?
+    } else {
+        &config.client_secret
+    };
+
     if config.client_id.is_empty()
-        || config.client_secret.is_empty()
+        || client_secret.is_empty()
         || token_url.is_empty()
-        || user_info_url.is_empty()
+        // Apple and a generic OIDC issuer read identity from the
+        // token response's `id_token` instead of a separate userinfo
+        // call (see `fetch_apple_user`/`fetch_oidc_user`), so an empty
+        // `userInfoURL` is expected for them, not a config error.
+        || (user_info_url.is_empty() && !is_apple && issuer.is_none())
     {
         return Err(ApiError::internal(
             "Missing or invalid provider config.".to_string(),
@@ -1980,11 +2144,10 @@ pub(crate) async fn complete_oauth2(
     let exchange = cratebase_auth::TokenExchange {
         code,
         client_id: &config.client_id,
-        client_secret: &config.client_secret,
+        client_secret,
         redirect_uri: redirect_url,
         code_verifier: (!code_verifier.is_empty()).then_some(code_verifier),
     };
-    let client = oauth2_client();
     let token_res = client
         .post(&token_url)
         .header("Accept", "application/json")
@@ -1999,7 +2162,21 @@ pub(crate) async fn complete_oauth2(
     let token = cratebase_auth::parse_token_response(&token_body)
         .map_err(|_| ApiError::bad_request("Failed to fetch OAuth2 token."))?;
 
-    let oauth_user = fetch_oauth2_user(client, &user_info_url, known, &token.access_token).await?;
+    let oauth_user = if is_apple {
+        let id_token = token
+            .id_token
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("Apple did not return an identity token."))?;
+        fetch_apple_user(client, config, id_token).await?
+    } else if let (Some(issuer), Some(discovery)) = (issuer, &discovery) {
+        let id_token = token
+            .id_token
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("Provider did not return an identity token."))?;
+        fetch_oidc_user(client, config, issuer, discovery, id_token).await?
+    } else {
+        fetch_oauth2_user(client, &user_info_url, config, known, &token.access_token).await?
+    };
 
     // A caller already signed in to *this* collection links a second
     // provider onto their own record instead of creating (or matching

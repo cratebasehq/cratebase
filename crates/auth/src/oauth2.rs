@@ -274,6 +274,13 @@ pub struct TokenResponse {
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub scope: Option<String>,
+    /// Present for Apple and any OIDC-conformant provider — the OIDC
+    /// identity assertion, carrying the claims [`crate::oidc::
+    /// verify_id_token`] checks (verification itself needs the issuer's
+    /// JWKS, which this crate has no HTTP client to fetch — see that
+    /// module's doc comment).
+    #[serde(default)]
+    pub id_token: Option<String>,
 }
 
 pub fn parse_token_response(body: &[u8]) -> AuthResult<TokenResponse> {
