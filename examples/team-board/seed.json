@@ -13,6 +13,16 @@
     { "teamRef": "$acme", "userRef": "$bob", "role": "member" },
     { "teamRef": "$globex", "userRef": "$carol", "role": "owner" }
   ],
+  "_emailTemplates": [
+    {
+      "key": "card-overdue",
+      "name": "Card overdue",
+      "subject": "Overdue: {{title}}",
+      "html": "<p>Your card <strong>{{title}}</strong> is past its due date.</p>",
+      "text": "Your card \"{{title}}\" is past its due date.",
+      "layout": true
+    }
+  ],
   "columns": [
     { "$id": "backlog", "teamRef": "$acme", "name": "Backlog", "order": 1000 },
     { "$id": "in_progress", "teamRef": "$acme", "name": "In Progress", "order": 2000 },

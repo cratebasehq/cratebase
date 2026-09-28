@@ -81,6 +81,14 @@ const collections = [
     type: "auth",
     listRule: '@request.auth.id != ""',
     viewRule: '@request.auth.id != ""',
+    // Both default to `enabled: false` server-side — a fresh clone needs
+    // them turned on explicitly to demonstrate the OTP tab (already in
+    // AuthScreen.tsx) and magic-link sign-in (added alongside password
+    // below). `authOptions.*`'s fields flatten directly onto the
+    // collection JSON (`crates/core/src/collection.rs`'s `AuthOptions`),
+    // so `otp`/`magicLink` are top-level keys here, not nested.
+    otp: { enabled: true },
+    magicLink: { enabled: true },
   },
   {
     name: "columns",

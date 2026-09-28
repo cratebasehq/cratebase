@@ -78,6 +78,19 @@ curl -fsS -X PATCH "${CRATEBASE_URL}/api/settings" \
   -H "authorization: Bearer ${ADMIN_TOKEN}" -H 'content-type: application/json' \
   -d '{"teams":{"enabled":true}}' >/dev/null
 
+# `settings.meta.appURL` defaults to the *server's* own origin
+# (http://localhost:8090), which is what `request-magic-link`'s
+# `redirectURL` is checked against for same-origin before it's honored
+# (crates/server/src/routes/auth.rs's `is_same_origin`) — without this,
+# the emailed magic link would silently fall back to
+# `authOptions.magicLink.urlTemplate`'s default and point at the API
+# server instead of this Vite app. Point it at the dev server so the
+# link lands on the `/auth/magic-link` route below.
+echo "==> Setting settings.meta.appURL to the Vite dev server ..."
+curl -fsS -X PATCH "${CRATEBASE_URL}/api/settings" \
+  -H "authorization: Bearer ${ADMIN_TOKEN}" -H 'content-type: application/json' \
+  -d '{"meta":{"appURL":"http://localhost:5175"}}' >/dev/null
+
 echo "==> Generating schema.json ..."
 bun run scripts/gen-schema.ts
 
