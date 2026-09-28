@@ -53,6 +53,7 @@ export class CollectionService<
           perPage: options.perPage,
           sort: options.sort,
           filter: options.filter,
+          search: options.search,
           expand: options.expand,
           fields: options.fields,
           skipTotal: options.skipTotal,
