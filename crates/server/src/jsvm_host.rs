@@ -502,6 +502,62 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         Ok(result)
     }
 
+    async fn notify_send(&self, input: Map<String, Value>) -> Result<Value, AppError> {
+        let get_str = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
+        let to: Vec<String> = match input.get("to") {
+            Some(Value::String(s)) => vec![s.clone()],
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+            _ => vec![],
+        };
+        let channels = match input.get("channels") {
+            Some(Value::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            _ => None,
+        };
+        let notify_input = crate::notify::NotifySendInput {
+            to,
+            collection: get_str("collection"),
+            kind: get_str("type").unwrap_or_default(),
+            title: get_str("title").unwrap_or_default(),
+            body: get_str("body").unwrap_or_default(),
+            data: input.get("data").cloned().unwrap_or(Value::Null),
+            link: get_str("link"),
+            channels,
+        };
+
+        if !self.0.is_transactional() {
+            let outcome = crate::notify::send(self.0.app(), notify_input).await?;
+            return serde_json::to_value(outcome).map_err(|e| AppError::internal(e.to_string()));
+        }
+
+        // Same "validate/resolve now, deliver after commit" split as
+        // `mails_send` above, and for the same reason (see `crate::notify`'s
+        // module doc): the `inapp` channel's `_notifications` write and the
+        // `email`/`push` channels' deliveries must not run while this
+        // hook's own transaction is still open, and must never happen at
+        // all for a write that ends up rolling back.
+        let prepared = crate::notify::prepare(self.0.app(), notify_input).await?;
+        let recipients = prepared.recipient_ids();
+        let result = serde_json::json!({
+            "sent": recipients.len(),
+            "recipients": recipients,
+        });
+        let app = self.0.app().clone();
+        self.0.after_commit(Box::pin(async move {
+            crate::notify::finish(&app, prepared).await;
+        }));
+        Ok(result)
+    }
+
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
         static CLIENT: std::sync::LazyLock<reqwest::Client> =
             std::sync::LazyLock::new(reqwest::Client::new);

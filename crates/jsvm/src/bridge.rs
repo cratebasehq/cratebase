@@ -413,6 +413,10 @@ pub(crate) fn dispatch(
             let input = a.map(0);
             state.block_on(host.mails_send(input))
         }
+        "notifySend" => {
+            let input = a.map(0);
+            state.block_on(host.notify_send(input))
+        }
         other => Err(AppError::internal(format!("unknown native op {other}"))),
     }
 }

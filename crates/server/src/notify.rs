@@ -129,6 +129,17 @@ pub struct PreparedNotify {
     input: NotifySendInput,
 }
 
+impl PreparedNotify {
+    /// The recipient ids that actually resolved to a row — what
+    /// `crate::jsvm_host`'s deferred `$notify.send` reports back to the
+    /// hook synchronously, before [`finish`] (channel delivery) has even
+    /// run, same "the request was accepted" contract `mails_send` gives a
+    /// hook for its own deferred `_mailLog` id.
+    pub fn recipient_ids(&self) -> Vec<String> {
+        self.recipients.iter().map(|r| r.id().to_string()).collect()
+    }
+}
+
 /// `$notify.send`'s result: which recipients actually resolved to a row
 /// (every channel is delivered best-effort per recipient after that, so
 /// this doesn't distinguish "email bounced" from "email skipped" —
@@ -320,9 +331,11 @@ async fn deliver_push(
         }),
     };
     for row in &rows {
-        let (Some(id), Some(platform), Some(token)) =
-            (row.get_str("id"), row.get_str("platform"), row.get_str("token"))
-        else {
+        let (Some(id), Some(platform), Some(token)) = (
+            row.get_str("id"),
+            row.get_str("platform"),
+            row.get_str("token"),
+        ) else {
             continue;
         };
         tokio::spawn(push::deliver_and_cleanup(

@@ -178,10 +178,7 @@ struct UnreadCountResponse {
 /// comment on `notifications` and `tests::unread_count_uses_the_index`
 /// (Postgres/SQLite `EXPLAIN`, `crates/server/tests/`) for the query plan
 /// this relies on.
-async fn unread_count(
-    State(app): State<App>,
-    auth: Auth,
-) -> ApiResult<Json<UnreadCountResponse>> {
+async fn unread_count(State(app): State<App>, auth: Auth) -> ApiResult<Json<UnreadCountResponse>> {
     let row = app
         .db()
         .query_one(

@@ -306,6 +306,15 @@ pub trait HostApi: Send + Sync + 'static {
     /// unaware of the server's own `SendInput`/`SendOutcome` shapes.
     async fn mails_send(&self, input: Map<String, Value>) -> Result<Value, AppError>;
 
+    /// `$notify.send(...)` — `crate::notify::send` (server crate): fan a
+    /// notification out to one or more recipients across the `inapp`/
+    /// `email`/`push` channels. `input`/the returned value are plain JSON
+    /// (`{ to, collection, type, title, body, data, link, channels }` in,
+    /// `{ sent, recipients }` out) for the same "this crate stays unaware
+    /// of the server's own request/response shapes" reason
+    /// [`HostApi::mails_send`] does.
+    async fn notify_send(&self, input: Map<String, Value>) -> Result<Value, AppError>;
+
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError>;
 
     /// `level` follows PocketBase's slog levels: -4 debug, 0 info,
