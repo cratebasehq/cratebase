@@ -334,6 +334,56 @@ pub async fn store_local_upload(app: &App, token: &str, body: bytes::Bytes) -> A
     Ok(())
 }
 
+/// Hourly cron body (`cron::JOB_PENDING_UPLOADS_SWEEP`): drop tickets
+/// that expired without ever being claimed, and best-effort delete the
+/// object they reserved (a client may have PUT the bytes and then never
+/// come back to claim them, or never uploaded at all — either way
+/// nothing should reference that key any more). Deliberately scoped to
+/// `status = 'pending'`: a `consumed` ticket's key is a record's live
+/// file, never touched here even if its `expiresAt` is long past.
+pub async fn sweep_expired(app: &App) {
+    let now = cratebase_core::DateTime::now().to_pb_string();
+    let rows = match app
+        .db()
+        .query(
+            r#"SELECT "id", "key" FROM "_pendingUploads"
+               WHERE "status" = 'pending' AND "expiresAt" < $1"#,
+            &[Sql::Text(now.clone())],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "pending-upload sweep query failed");
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let storage = app.storage();
+    for row in &rows {
+        if let Some(key) = row.get_str("key") {
+            // Best-effort: the object may never have been uploaded at
+            // all (an abandoned presign), so "not found" is expected,
+            // not an error worth logging.
+            let _ = storage.delete(key).await;
+        }
+    }
+    if let Err(e) = app
+        .db()
+        .execute(
+            r#"DELETE FROM "_pendingUploads" WHERE "status" = 'pending' AND "expiresAt" < $1"#,
+            &[Sql::Text(now)],
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "pending-upload sweep delete failed");
+        return;
+    }
+    tracing::info!(swept = rows.len(), "expired pending uploads cleaned up");
+}
+
 /// Resolve every `CBUP_...` token in a file field of `body.data` for
 /// `collection`/`record_id`, replacing it with the resolved file name and
 /// appending an `already_stored` [`common::StagedUpload`] to

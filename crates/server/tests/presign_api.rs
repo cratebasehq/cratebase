@@ -351,6 +351,88 @@ async fn presign_expiry_is_enforced() {
     assert_eq!(status, 400, "{body}");
 }
 
+/// The hourly sweep (`crate::presign::sweep_expired`, cron id
+/// `__cbPendingUploadsSweep__`) removes an expired, still-`pending`
+/// ticket and its orphaned object, but never touches a `consumed` one
+/// (that key is a record's live file) even if its `expiresAt` has long
+/// since passed.
+#[tokio::test]
+async fn sweep_removes_expired_pending_tickets_but_not_consumed_ones() {
+    let harness = Harness::new().await;
+    harness.collection(docs_collection("docs")).await;
+
+    // Ticket 1: presigned, uploaded, never claimed, then expired —
+    // should be swept, object and all.
+    let (_, presigned1) = harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "docs", "field": "doc", "filename": "orphan.txt",
+                "contentType": "text/plain", "size": 5,
+            })),
+        )
+        .await;
+    let token1 = presigned1["token"].as_str().unwrap().to_string();
+    let upload_url1 = presigned1["uploadUrl"].as_str().unwrap().to_string();
+    harness
+        .raw(Request::put(&upload_url1).body(Body::from("hello")).unwrap())
+        .await;
+    harness.expire_token(&token1).await;
+
+    // Ticket 2: presigned, uploaded, claimed into a real record — its
+    // row is `consumed`; even backdating `expiresAt` must not sweep it.
+    let (_, presigned2) = harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "docs", "field": "doc", "filename": "keep.txt",
+                "contentType": "text/plain", "size": 11,
+            })),
+        )
+        .await;
+    let token2 = presigned2["token"].as_str().unwrap().to_string();
+    let record_id2 = presigned2["recordId"].as_str().unwrap().to_string();
+    let upload_url2 = presigned2["uploadUrl"].as_str().unwrap().to_string();
+    harness
+        .raw(Request::put(&upload_url2).body(Body::from("hello world")).unwrap())
+        .await;
+    let (status, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/docs/records",
+            Some(json!({"id": record_id2, "title": "keep", "doc": token2.clone()})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+    harness.expire_token(&token2).await;
+
+    cratebase_server::presign::sweep_expired(&harness.app).await;
+
+    let remaining: i64 = harness
+        .app
+        .db()
+        .query_scalar(r#"SELECT COUNT(*) FROM "_pendingUploads""#, &[])
+        .await
+        .unwrap()
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(remaining, 1, "only the consumed ticket should remain");
+
+    // The claimed record's file is still there — the sweep must not
+    // have deleted its object.
+    let stored = created["doc"].as_str().unwrap();
+    let url = format!(
+        "/api/files/{}/{}/{}",
+        created["collectionId"].as_str().unwrap(),
+        created["id"].as_str().unwrap(),
+        stored
+    );
+    let response = harness.raw(Request::get(&url).body(Body::empty()).unwrap()).await;
+    assert_eq!(response.status(), 200);
+}
+
 /// An unknown token in a file field is a normal validation error, not a
 /// panic or a 500 — it just isn't a token this server ever issued.
 #[tokio::test]
