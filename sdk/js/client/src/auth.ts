@@ -33,6 +33,15 @@ export interface SignInMagicLinkOptions {
   mfaId?: string;
 }
 
+export interface SignInTotpOptions {
+  /** The pending `_mfas` session id from a first factor's `401 {mfaId}`
+   * response. */
+  mfaId: string;
+  /** A live 6-digit TOTP code, or one of the account's backup codes
+   * (consumed on use). */
+  code: string;
+}
+
 export interface SignInCodeOptions {
   provider: string;
   code: string;
@@ -194,6 +203,16 @@ export class AuthNamespace {
       const result = await this.transport.send<AuthResult>(
         this.basePath("auth-with-magic-link"),
         { method: "POST", body: { token: options.token, mfaId: options.mfaId } },
+        this.authHeader,
+      );
+      return this.applyAuthResult(result);
+    },
+    /** Completes a pending MFA challenge (any first factor's `401
+     * {mfaId}`) with a TOTP code or a backup code. */
+    totp: async (options: SignInTotpOptions): Promise<AuthResult> => {
+      const result = await this.transport.send<AuthResult>(
+        this.basePath("auth-with-totp"),
+        { method: "POST", body: { mfaId: options.mfaId, code: options.code } },
         this.authHeader,
       );
       return this.applyAuthResult(result);
@@ -383,6 +402,47 @@ export class AuthNamespace {
       await this.transport.send(
         this.basePath(`records/${encodeURIComponent(id)}/external-auths/${encodeURIComponent(provider)}`),
         { method: "DELETE" },
+        this.authHeader,
+      );
+    },
+  };
+
+  /** TOTP 2FA for the signed-in record. `setup`/`confirm` happen once;
+   * after that the collection's `authOptions.mfa`-style `401 {mfaId}` /
+   * `signIn.totp({mfaId, code})` pair (see {@link signIn}) is how a
+   * login actually completes the second factor. */
+  readonly totp = {
+    /** Starts (or restarts, if never confirmed) setup. Returns the
+     * `otpauth://` URI to render as a QR code and the raw base32
+     * secret for manual entry. */
+    setup: async (): Promise<{ secret: string; uri: string }> => {
+      return this.transport.send(this.basePath("totp/setup"), { method: "POST" }, this.authHeader);
+    },
+    /** Confirms setup with a code from the authenticator app. Returns
+     * 10 one-time backup codes -- shown to the person exactly once,
+     * never retrievable again (only regenerated, invalidating the old
+     * set). */
+    confirm: async (code: string): Promise<{ backupCodes: string[] }> => {
+      return this.transport.send(
+        this.basePath("totp/confirm"),
+        { method: "POST", body: { code } },
+        this.authHeader,
+      );
+    },
+    /** Disables TOTP with either a current code or the account
+     * password. */
+    disable: async (options: { code?: string; password?: string }): Promise<void> => {
+      await this.transport.send(
+        this.basePath("totp/disable"),
+        { method: "POST", body: options },
+        this.authHeader,
+      );
+    },
+    /** Invalidates every existing backup code and issues 10 new ones. */
+    regenerateBackupCodes: async (): Promise<{ backupCodes: string[] }> => {
+      return this.transport.send(
+        this.basePath("totp/backup-codes/regenerate"),
+        { method: "POST" },
         this.authHeader,
       );
     },
