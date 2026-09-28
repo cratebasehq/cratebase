@@ -6,8 +6,9 @@ description: "Names, fixed ids, and rules for every built-in collection."
 `_superusers`, `_mfas`, `_otps`, `_totps`, `_magicLinks`, `_externalAuths`,
 `_authOrigins`, `_teams`, `_team_members`, `_cron_jobs`, `_rpc`, `_webhooks`,
 `_audit_log`, `_push_subscriptions`, `_sessions`, `_bans`,
-`_emailTemplates`, `_mailLog`, `_emailTriggers`, and the default `users`
-auth collection all ship with fixed, deterministic ids shared with
+`_emailTemplates`, `_mailLog`, `_emailTriggers`, `_emailAssets`, and the
+default `users` auth collection all ship with fixed, deterministic ids
+shared with
 PocketBase's own equivalents where one exists — see
 [Collections](/docs/concepts/collections/) for the id-derivation formula
 that makes this consistent.
@@ -75,3 +76,12 @@ append-only like `_audit_log`, pruned by `settings.logs.mailLogMaxDays`.
 covers: `collection`, `event` (`create`/`update`/`delete`), `template`,
 `toField`, `condition`, `enabled`, `dataMap`. Superuser-only end to end,
 same trust tier as `_webhooks`.
+
+`_emailAssets` backs the dashboard's [email-template visual editor](/docs/email/templates/#dashboard-editor)'s
+image uploads: a single `file` field, up to 8MB, image mime types only.
+`createRule`/`updateRule`/`deleteRule` are superuser-only like every
+other system collection here, but the field itself is **not**
+`protected` — `GET /api/files/{collectionId}/{recordId}/{filename}`
+serves it to anyone with the URL regardless of a viewer's session, which
+an emailed `<img src>` needs, since the recipient has no session to
+present at all.
