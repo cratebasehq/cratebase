@@ -112,6 +112,14 @@ request — prototype a rule there before pasting it into a `*Rule` field.
   `401 {mfaId}` challenge. `cb.auth.accounts.list()/.unlink(provider)`
   manage a record's linked OAuth2 providers, refusing to unlink the
   last way it can sign in.
+- Magic-link login (`cb.auth.magicLink.request(...)`/
+  `cb.auth.signIn.magicLink({token})`) needs
+  `authOptions.magicLink.enabled` set explicitly — it defaults to
+  `false`, same as OTP. `POST /api/mails/send` is superuser/API-key only
+  *unless* the `_emailTemplates` row being sent has a non-`null`
+  `sendRule` — see `references/collections-and-sdk.md`'s email recipes
+  for sending straight from a frontend and firing mail on a record write
+  with no code at all (`_emailTriggers`).
 
 ## Reference files
 
@@ -119,7 +127,9 @@ request — prototype a rule there before pasting it into a `*Rule` field.
   context variables, macros, relation dot-notation, worked/compiled
   examples.
 - `references/collections-and-sdk.md` — field types, the
-  `POST /api/collections` shape, real SDK call patterns.
+  `POST /api/collections` shape, real SDK call patterns, and recipes for
+  RPC nearest-location queries, sending email straight from a frontend
+  via `sendRule`, no-code `_emailTriggers`, and magic-link + TOTP login.
 - `references/js-hooks.md` — every hook, `routerAdd`/`cronAdd`, request
   context, and the globals available inside `pb_hooks/*.pb.js`.
 

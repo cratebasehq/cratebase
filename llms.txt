@@ -191,6 +191,8 @@ client with no hand-written types and no separate build step. See
 
 Read [ARCHITECTURE.md](./ARCHITECTURE.md) for how these fit together and
 the specific, deliberate trade-offs (e.g. why booleans are stored as
-integers, why realtime is single-node). Read [ROADMAP.md](./ROADMAP.md) for
-what's intentionally not built yet (realtime beyond a single node, admin
-audit log, per-collection rate limiting).
+integers, why realtime is single-node on SQLite). Read
+[ROADMAP.md](./ROADMAP.md) for what's intentionally not built yet
+(organizations/multi-tenancy beyond `_teams`, passkeys, SMS 2FA, SAML,
+anonymous auth, Cratebase acting as its own OIDC/JWKS provider, CAPTCHA,
+payments).

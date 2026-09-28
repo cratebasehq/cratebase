@@ -292,7 +292,7 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         };
         compiled_query.bind_page(lim, offset.max(0));
         let rows = ex
-            .query(&sql, compiled_query.params())
+            .query(&sql, &compiled_query.all_params())
             .await
             .map_err(AppError::from)?;
         Ok(rows

@@ -350,7 +350,7 @@ async fn fetch_by_ids(
 
     let sql = query.select_sql();
     query.bind_page(ids.len() as i64, 0);
-    let rows = ex.query(&sql, query.params()).await?;
+    let rows = ex.query(&sql, &query.all_params()).await?;
     Ok(decode(collection, &rows))
 }
 
@@ -411,7 +411,7 @@ async fn fetch_back(
     let sql = query.select_sql();
     let cap = (MAX_BACK_RELATION_ROWS * parent_ids.len()) as i64;
     query.bind_page(cap, 0);
-    let rows = ex.query(&sql, query.params()).await?;
+    let rows = ex.query(&sql, &query.all_params()).await?;
     Ok(decode(collection, &rows))
 }
 

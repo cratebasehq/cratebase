@@ -101,11 +101,14 @@ use crate::extract::RequireSuperuser;
 use crate::http_error::{ApiError, ApiJson, ApiResult};
 
 /// Response rows are truncated to this many entries; see the module doc.
-const ROW_CAP: usize = 500;
+/// `pub(crate)` so the MCP `sql_read` tool (`crate::mcp`) enforces the
+/// same cap through the same constant, never a second number to drift.
+pub(crate) const ROW_CAP: usize = 500;
 
 /// How long an ad-hoc statement is allowed to run before the endpoint
-/// gives up and returns an error; see the module doc.
-const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// gives up and returns an error; see the module doc. `pub(crate)` for
+/// the same reason as [`ROW_CAP`].
+pub(crate) const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub fn router() -> Router<App> {
     Router::new().route("/sql", post(run_sql))

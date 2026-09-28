@@ -1,9 +1,11 @@
 # @cratebase/client
 
 The first-party typed TypeScript SDK for [Cratebase](https://github.com/cratebasehq/cratebase):
-records, auth (password/OTP/OAuth2/MFA, cookie sessions, impersonation, bans), realtime, files,
-batch, and admin APIs — plus the value-add surface (vector search, LLM chat, MCP tool schemas, the
-durable job queue, presence) built in, no separate package required.
+records, auth (password/OTP/magic-link/TOTP/OAuth2 (12 built-in presets + generic OIDC)/MFA,
+linked accounts, cookie sessions, impersonation, bans), realtime, files, batch, mail
+(`_emailTemplates` + `sendRule`), custom SQL RPC, and admin APIs — plus the value-add surface
+(vector search, LLM chat, MCP tool schemas, the durable job queue, presence) built in, no separate
+package required.
 
 Cratebase's wire is byte-compatible with PocketBase v0.23+, so the official
 [`pocketbase`](https://www.npmjs.com/package/pocketbase) npm SDK still works unchanged against a
@@ -42,10 +44,17 @@ Full documentation lives on the docs site under
   object-options only. The `filter`/`raw` tagged templates build safe `filter=` expressions without
   hand-escaping user input.
 - `cb.auth` — the whole authentication surface for one auth collection (`cb.auth.as("_superusers")`
-  for another): `signUp`, `signIn.password`/`.otp`/`.code`/`.social`, `signOut` (now
-  server-revoking, not just a client-side store wipe), `refresh`, `sessions.*` (list/revoke),
+  for another): `signUp`, `signIn.password`/`.otp`/`.code`/`.social`/`.magicLink`/`.totp`, `signOut`
+  (now server-revoking, not just a client-side store wipe), `refresh`, `sessions.*` (list/revoke),
   `admin.impersonate`/`.ban`/`.unban`/`.stopImpersonating`, MFA via a `401`+`mfaId` on the first
-  factor, email verification, password reset, email change.
+  factor, email verification, password reset, email change, `magicLink.request(...)`,
+  `totp.setup`/`.confirm`/`.disable`/`.regenerateBackupCodes`, and `accounts.list()`/`.unlink(provider)`
+  for a record's linked OAuth2 providers.
+- `cb.mails.send(...)`/`.preview(...)` — `POST /api/mails/send`/`/preview`: send by `_emailTemplates`
+  key (`{{var}}` data) or, as a superuser/API key, raw `subject`/`html`/`text`. A template with a
+  `sendRule` can be sent by any caller that rule allows, restricted to `{to, template, data, locale}`.
+- `cb.rpc<T>(name, params?)` — call a saved `_rpc` definition (`POST /api/rpc/{name}`); named
+  parameters bind as real driver parameters, gated by that definition's own `rule`.
 - `cb.realtime` / `cb.collection(x).subscribe(...)` — one shared SSE connection over `fetch` (no
   `EventSource`, no polyfill needed, works in Node/SSR too).
 - `cb.files` — file URLs (with `thumb`/`download`/protected-file tokens) and batch (`cb.batch()`,

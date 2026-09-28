@@ -17,7 +17,8 @@ crates/
              (object_store crate — one implementation for AWS S3,
              R2, MinIO, RustFS, B2, ...).
   auth     — Argon2id password hashing, HS256 JWT session/action tokens,
-             OTP hashing.
+             OTP/TOTP hashing, 12 built-in OAuth2 presets + generic OIDC
+             (JWKS verification, issuer discovery).
   jsvm     — an embedded QuickJS runtime (PocketBase-compatible `pb_hooks/`
              JS hooks and `routerAdd`/`cronAdd`), decoupled from `server`'s
              HTTP/DB types behind a `HostApi` trait it calls back through.
@@ -130,8 +131,17 @@ rest of PocketBase's auth surface on auth collections: email verification
 and password reset (`request-`/`confirm-verification`,
 `request-`/`confirm-password-reset`), email-change confirmation
 (`request-`/`confirm-email-change`), OTP passwordless login (`request-otp`,
-`auth-with-otp`), MFA gating a second factor behind a pending `_mfas`
-session, OAuth2 (Google/GitHub, `oauth2.rs`), superuser impersonation
+`auth-with-otp`), magic-link login (`request-magic-link`,
+`auth-with-magic-link`, gated by `authOptions.magicLink.enabled`), MFA
+gating a second factor behind a pending `_mfas` session (a record with
+confirmed TOTP requires one independently of `authOptions.mfa`), TOTP 2FA
+with backup codes (`totp.rs` — RFC 6238, replay-protected, `_totps`),
+OAuth2 — 12 built-in presets (Google, GitHub, Apple, Microsoft, Discord,
+GitLab, Facebook, X/Twitter, LinkedIn, Slack, Twitch, Spotify,
+`oauth2.rs`) plus a generic OIDC provider discovered from
+`/.well-known/openid-configuration` and verified against its own JWKS
+(`oidc.rs`) — linked-account management
+(`GET`/`DELETE .../external-auths[/{provider}]`), superuser impersonation
 (`POST .../impersonate/{id}`), and best-effort new-location login alerts
 tracked in the `_authOrigins` collection.
 
@@ -160,10 +170,68 @@ the table and the in-memory set together.
 `crates/server/src/realtime.rs` is an in-process pub/sub hub: SSE clients
 connect to `GET /api/realtime`, get a `clientId`, then `POST /api/realtime`
 to declare which collections/records they want (`"posts"` or
-`"posts/<id>"`). Record mutations publish to matching subscribers. This is
-single-node by design (no external broker) — a deliberate scope decision.
-Horizontal scale-out needs a shared broker (Postgres `LISTEN/NOTIFY`, or a
-queue) and is tracked in [ROADMAP.md](./ROADMAP.md).
+`"posts/<id>"`). Record mutations publish to matching subscribers directly
+within the process that handled the write. On SQLite this is single-node
+by construction (one file, one process) — nothing more is needed. On
+Postgres, every write also calls `Engine::notify_realtime`
+(`pg_notify`/`LISTEN`, `crates/db/src/postgres.rs`) with a small JSON
+payload (collection id, action, record id, and — only for a delete — a
+record snapshot), and every app process sharing that database runs a
+`subscribe_realtime` listener started at boot, so a client connected to
+one instance behind a load balancer still gets events from a write
+handled by a different instance. A receiving process re-fetches the
+record and re-evaluates the subscriber's own `listRule`/topic filter
+itself, never trusting anything the writer serialized. See
+[ROADMAP.md](./ROADMAP.md)'s "Cross-node realtime (Postgres only)" entry
+for the full design and the two-process integration test that proves it.
+
+## Email platform
+
+An editable `_emailTemplates` system collection renders with `{{var}}`
+mustache-style substitution (`crates/mailer/src/mustache.rs`, dotted
+paths, HTML-escaped by default, `{{{raw}}}` for unescaped), wrapped in a
+shared branded base layout unless `layout: false`. `crates/server/src/mail_templates.rs`
+resolves each of the built-in auth-flow emails (verification, password
+reset, email change, OTP, login alert, magic link) through a three-step
+priority chain — a customized `authOptions.*Template` field, else the
+matching `_emailTemplates` row (locale-aware, falling back to `""`), else
+the same built-in default — so an unmodified install's mail is
+byte-for-byte unchanged. `crates/server/src/mails.rs` is the actual send
+pipeline (validate → render → log to `_mailLog` → deliver inline or via
+the durable queue), shared verbatim between `POST /api/mails/send`
+(`crates/server/src/routes/mails.rs`) and the JS hook binding `$mails.send`.
+`_emailTemplates.sendRule` (a filter-rule expression evaluated by
+`crate::mail_templates::eval_send_rule` against `@request.auth`/
+`@request.body.{to,data,locale}`) is what lets a non-superuser HTTP caller
+reach `POST /api/mails/send` at all — restricted to `template`/`to`/`data`,
+a handful of recipients, and its own rate-limit tag. `_emailTriggers`
+(`crates/server/src/email_triggers.rs`) fires a template automatically
+from an after-success record hook on create/update/delete, with an
+optional `condition` filter and `dataMap`; it can never fail the
+triggering request.
+
+## Database extensibility
+
+Three independent pieces sit on top of the same `crates/db` engine
+described above. **Postgres extension management**
+(`GET/POST/DELETE /api/db/extensions[/{name}]`, superuser only, 404 on
+SQLite) runs `CREATE EXTENSION IF NOT EXISTS`/`DROP EXTENSION` and audits
+every install/drop; `$app.db().exec(sql, params?)` is a write-capable
+escape hatch alongside the existing read-only `$app.rawQuery`, letting a
+`pb_migrations/*.js` file version something like `CREATE EXTENSION postgis`
+the same way it versions schema changes. **Custom SQL RPC**
+(`crates/server/src/rpc.rs`) is the `_rpc` system collection — `sql` with
+`:name`-style named placeholders bound as real driver parameters (never
+string-interpolated), a `rule` evaluated the same way a collection's own
+rules are, and `readOnly` (default `true`) enforced by reusing the SQL
+console's `BEGIN READ ONLY`/`PRAGMA query_only` machinery — plus
+`POST /api/rpc/{name}`. **PostGIS-accelerated geo queries**: the existing
+`geoDistance(...)` filter/sort function (`crates/filter`) compiles against
+a GiST-indexed `geography` expression (`ST_DWithin`/KNN `<->`) instead of
+the portable haversine calculation once `postgis` is installed on a
+Postgres database, with the index created idempotently per `geoPoint`
+field as part of ordinary collection schema sync
+(`crates/server/src/geo.rs`) — identical filter/sort syntax either way.
 
 ## File storage
 
@@ -191,6 +259,15 @@ exists, and the dashboard renders an inline setup form against `POST
 `cratebase superuser create` still works for scripted/headless setup —
 `setup.rs` re-checks "does a superuser exist" at write time, so whichever
 path wins the race closes the other one out.
+
+Settings navigation is 7 tabbed groups (Application, Email, Auth &
+security, Database, Automation, Integrations, Logs — `web/admin/src/lib/settings-nav.ts`),
+each one page with tabs addressed by a `?tab=` URL search param rather
+than a flat ~24-item sidebar; every server setting is reachable from it.
+A dismissible onboarding checklist on the dashboard home
+(`components/dashboard/onboarding-checklist.tsx`) is computed live from
+the same settings/collections APIs the rest of the dashboard uses, not a
+separate wizard with its own state.
 
 ## Extending with JavaScript (`crates/jsvm`)
 

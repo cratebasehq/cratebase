@@ -54,29 +54,29 @@ pub fn router() -> Router<App> {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MailBody {
+pub(crate) struct MailBody {
     #[serde(default)]
-    to: Value,
+    pub(crate) to: Value,
     #[serde(default)]
-    cc: Value,
+    pub(crate) cc: Value,
     #[serde(default)]
-    bcc: Value,
+    pub(crate) bcc: Value,
     #[serde(default)]
-    template: Option<String>,
+    pub(crate) template: Option<String>,
     #[serde(default)]
-    locale: Option<String>,
+    pub(crate) locale: Option<String>,
     #[serde(default)]
-    data: Value,
+    pub(crate) data: Value,
     #[serde(default)]
-    subject: Option<String>,
+    pub(crate) subject: Option<String>,
     #[serde(default)]
-    html: Option<String>,
+    pub(crate) html: Option<String>,
     #[serde(default)]
-    text: Option<String>,
+    pub(crate) text: Option<String>,
     #[serde(default)]
-    from: Option<Value>,
+    pub(crate) from: Option<Value>,
     #[serde(default, rename = "replyTo")]
-    reply_to: Option<String>,
+    pub(crate) reply_to: Option<String>,
 }
 
 fn parse_input(body: MailBody) -> Result<SendInput, ApiError> {
@@ -118,12 +118,26 @@ async fn send(
 ) -> ApiResult<Json<mails::SendOutcome>> {
     let body: MailBody = serde_json::from_value(raw)
         .map_err(|_| ApiError::bad_request(cratebase_core::AppError::DEFAULT_BAD_REQUEST))?;
-    if !auth.as_ref().is_some_and(|a| a.is_superuser) {
-        check_send_permission(&app, auth.as_ref(), &body).await?;
+    let outcome = send_mail(&app, auth.as_ref(), body).await?;
+    Ok(Json(outcome))
+}
+
+/// The `POST /api/mails/send` pipeline, minus HTTP extraction: enforce
+/// `sendRule` for a non-superuser caller (see the module doc), then hand
+/// off to [`crate::mails::send`]. Shared with the MCP `send_email` tool
+/// (`crate::mcp`) so the two never drift into different enforcement —
+/// an MCP caller gets exactly the same `sendRule` gate an HTTP caller
+/// does, superuser or not.
+pub(crate) async fn send_mail(
+    app: &App,
+    auth: Option<&Auth>,
+    body: MailBody,
+) -> ApiResult<mails::SendOutcome> {
+    if !auth.is_some_and(|a| a.is_superuser) {
+        check_send_permission(app, auth, &body).await?;
     }
     let input = parse_input(body)?;
-    let outcome = mails::send(&app, input).await.map_err(ApiError)?;
-    Ok(Json(outcome))
+    mails::send(app, input).await.map_err(ApiError)
 }
 
 /// `403`, with no detail about *why* — a template that doesn't exist, has

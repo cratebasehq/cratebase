@@ -295,7 +295,7 @@ pub async fn list(
     // `LIMIT $n OFFSET $n+1` placeholders land on the right slots.
     let sql = query.select_sql();
     query.bind_page(per_page, (page - 1) * per_page);
-    let rows = ex.query(&sql, query.params()).await?;
+    let rows = ex.query(&sql, &query.all_params()).await?;
     let mut items = rows_to_records(collection, &rows);
 
     if let Some(spec) = params.expand.map(str::trim).filter(|s| !s.is_empty()) {
@@ -358,7 +358,7 @@ pub async fn find_by_id(
     let sql = query.select_sql();
     query.bind_page(1, 0);
     let row = ex
-        .query_one(&sql, query.params())
+        .query_one(&sql, &query.all_params())
         .await?
         .ok_or(DbError::NotFound)?;
     let mut records = vec![row_to_record(collection, &row)];
@@ -429,7 +429,7 @@ pub async fn find_first_by_filter(
     query.push_order_params(order_params);
     let sql = query.select_sql();
     query.bind_page(1, 0);
-    let row = ex.query_one(&sql, query.params()).await?;
+    let row = ex.query_one(&sql, &query.all_params()).await?;
     Ok(row.map(|r| row_to_record(collection, &r)))
 }
 

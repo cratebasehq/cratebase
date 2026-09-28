@@ -39,6 +39,17 @@ comes back as a normal result with `isError: true`, **not** a JSON-RPC
 error — only a malformed request (bad method, missing `name`, unknown
 tool) is a protocol-level error.
 
+Beyond the per-collection tools, `tools/list` always includes three
+fixed **runtime tools** (`call_rpc`, `send_email`, `search_nearby` — each
+enforced by the same rule/`sendRule` its HTTP equivalent uses) and, only
+for a superuser caller, nine fixed **developer tools** (`get_schema`,
+`apply_schema`, `test_rule`, `list_email_templates`/
+`upsert_email_template`, `list_email_triggers`/`upsert_email_trigger`,
+`query_logs`, `sql_read`) — absent from `tools/list` and refused by name
+in `tools/call` for anyone else, so nothing here confirms they exist to
+a caller who can't use them. See [AI → MCP server](/docs/ai/mcp-server/)
+for the full tool reference and input schemas.
+
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "list_posts", "arguments": { "filter": "published = true", "perPage": 10 } } }
 ```

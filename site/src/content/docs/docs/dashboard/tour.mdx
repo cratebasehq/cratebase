@@ -10,3 +10,35 @@ popover on every rule input. Collection **Import/export** round-trips the
 same JSON shape [Schema as code](/docs/extending/schema-as-code/) uses,
 so a collection built by hand in the dashboard can be checked into
 version control the same way a hand-written one can.
+
+A collection's own **auth options** editor (on an `auth`-type collection)
+covers sign-in/manage rules, `identityFields` as a real email/username
+multi-select, login alerts, magic-link sign-in, an OAuth2 provider picker
+with per-preset config fields (Apple's Team ID/Key ID/private key,
+Microsoft's tenant, GitLab's base URL, a generic OIDC issuer), per-flow
+verification/reset-password/confirm-email-change template overrides, and
+a write-only "regenerate secret" action per token kind. The record drawer
+for an auth record shows its TOTP status (with a superuser "Reset TOTP"
+button) and its linked OAuth2 providers (with per-provider Unlink).
+
+## Getting started checklist
+
+A dismissible "Getting started" card on the dashboard home is computed
+live from your instance's own settings/collections APIs — not a
+separate onboarding flow with its own state — and walks a fresh install
+through app identity, branding, mail delivery (including sending a test
+email), giving an auth collection a sign-in method, scheduling backups,
+enabling rate limiting, and (optionally) configuring S3 storage. Each
+item links straight to the settings page/tab that satisfies it, and the
+card disappears on its own once everything on it is done (or you dismiss
+it).
+
+## Settings
+
+Every server setting lives under **Settings**, organized into 7 tabbed
+groups — Application, Email, Auth & security, Database, Automation,
+Integrations, and Logs — each a single page with tabs addressed by a
+`?tab=` URL search param rather than the old flat sidebar of individual
+pages. The command palette still jumps straight to any individual tab by
+name. See [Settings pages](/docs/dashboard/settings-pages/) for what
+lives in each group.

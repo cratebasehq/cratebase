@@ -6,12 +6,11 @@ description: "Every settings.* key, its default, and how it's read/written."
 `GET /api/settings` (superuser-only) returns the whole object below,
 minus write-only secrets, stripped by `Settings::to_public_json`
 (`crates/core/src/settings.rs`): `smtp.password`, `s3.secret`,
-`backups.s3.secret`, `llm.apiKey`, `sms.authToken`,
-`push.vapid.privateKey`, `push.fcm.serviceAccountJson`, and
-`push.apns.key` are all accepted on write and stored, but never echoed
-back on read. `PATCH /api/settings` deep-merges a partial payload onto
-the current settings, so omitting a secret on an update keeps its stored
-value rather than blanking it.
+`backups.s3.secret`, `llm.apiKey`, `push.vapid.privateKey`,
+`push.fcm.serviceAccountJson`, and `push.apns.key` are all accepted on
+write and stored, but never echoed back on read. `PATCH /api/settings`
+deep-merges a partial payload onto the current settings, so omitting a
+secret on an update keeps its stored value rather than blanking it.
 
 ## `meta`
 
@@ -155,18 +154,6 @@ cadence as `maxDays` prunes `_logs`; `<= 0` disables cleanup.
 | `baseUrl` | `"https://api.openai.com/v1"` | |
 | `apiKey` | *(write-only)* | |
 | `model` | `"gpt-4o-mini"` | |
-
-## `sms`
-
-| Key | Default |
-| --- | --- |
-| `enabled` | `false` |
-| `accountSid` | `""` |
-| `authToken` | *(write-only)* |
-| `fromNumber` | `""` |
-
-Twilio-compatible REST API; `false` falls back to the same zero-config
-log backend `smtp.enabled: false` uses.
 
 ## `push`
 

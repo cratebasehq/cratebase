@@ -156,18 +156,38 @@ until someone happens to restart the server.
   `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
   IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
   deliberately excluded — see `routes/auth.rs`'s doc comment for why.
-- **OAuth2 (Google, GitHub, custom).** `crates/auth/src/oauth2.rs` (token
-  exchange body, Google/GitHub userinfo parsing, generic-provider
-  fallback) plus `routes/auth.rs`'s `auth-with-oauth2` and `auth-methods`
-  providers list. Authorization-code + PKCE, matching the SDK's
-  `authWithOAuth2Code`: `auth-methods` hands back a per-provider
-  `authURL`/`state`/`codeVerifier`, and `auth-with-oauth2` exchanges the
-  resulting `code` server-side, fetches userinfo, and either signs in
-  the `_externalAuths`-linked record, links onto a same-email match, or
-  creates a new one (`resolve_oauth2_record`). "google"/"github" only
-  need a client id/secret configured on the collection; any other
-  `name` is a hand-configured provider using its own auth/token/userinfo
-  URLs.
+- **12 OAuth2 presets, generic OIDC, TOTP 2FA, and linked-account
+  management.** `crates/auth/src/{oauth2,oidc,totp}.rs`,
+  `crates/server/src/routes/{auth,oidc,totp,oauth2_flow}.rs`.
+  Authorization-code + PKCE, matching the SDK's `authWithOAuth2Code`:
+  `auth-methods` hands back a per-provider `authURL`/`state`/
+  `codeVerifier`, and `auth-with-oauth2` exchanges the resulting `code`
+  server-side, fetches userinfo, and either signs in the
+  `_externalAuths`-linked record, links onto a same-email match, or
+  creates a new one (`resolve_oauth2_record`). Google, GitHub, Apple,
+  Microsoft (Entra ID), Discord, GitLab (self-hosted `baseUrl`
+  supported), Facebook, X/Twitter, LinkedIn, Slack, Twitch, and Spotify
+  are built-in `KnownProvider` presets — endpoints, scopes, PKCE, and
+  userinfo parsing for each, table-driven tested — needing only a client
+  id/secret on the collection; any other provider name is a
+  hand-configured one using its own auth/token/userinfo URLs, or a
+  **generic OIDC** provider (just `extra.issuer`, discovered via
+  `/.well-known/openid-configuration` and verified against the issuer's
+  own JWKS). Apple's client secret is a per-request ES256 JWT signed
+  with `extra.teamId`/`keyId`/`privateKey` (no static secret), and its
+  identity comes from a JWKS-verified `id_token` rather than a userinfo
+  endpoint.
+  **Linked accounts**: `GET`/`DELETE .../records/{id}/external-auths[/{provider}]`
+  (owner-or-superuser), refusing to unlink the last way a record can
+  sign in. SDK: `cb.auth.accounts.list()`/`.unlink(provider)`.
+  **TOTP 2FA + backup codes**: `POST .../totp/setup`/`confirm`/`disable`/
+  `backup-codes/regenerate` and `POST .../auth-with-totp {mfaId, code}`,
+  integrated with the existing `_mfas` challenge — a record with
+  confirmed TOTP requires a second factor independently of
+  `authOptions.mfa`. RFC 6238 with replay protection; secret encrypted
+  with `CB_ENCRYPTION` when set. SDK:
+  `cb.auth.totp.setup/confirm/disable/regenerateBackupCodes`,
+  `cb.auth.signIn.totp({mfaId, code})`.
 - **Mailer.** `crates/mailer`: Resend HTTP API, plain SMTP, or a `Log`
   fallback that writes the email to `tracing` instead of delivering it —
   every email-dependent flow below is exercisable with zero external
@@ -300,7 +320,63 @@ collection has no address to send them to.
   (light/dark contrast), **sidebar system-collection grouping**,
   **type-aware records table**, and **field-editor UX polish** (per-type
   option panels, inline validation, a syntax-help popover on every rule
-  input).
+  input). Superseded by the settings-nav overhaul below, which
+  reorganizes this same area into 7 tabbed groups.
+- **Settings navigation consolidated to 7 tabbed groups**
+  (`web/admin/src/lib/settings-nav.ts` and the
+  `routes/settings-*.tsx`/`components/settings/*-settings-page.tsx`
+  files): the ~24-item settings sidebar is now Application, Email,
+  Auth & security, Database, Automation, Integrations, and Logs, each a
+  single page with tabs addressed by a `?tab=` URL search param. Every
+  old top-level route redirects to its new group + tab, preserving its
+  own filters. Every server setting is now configurable from the
+  dashboard (accent color, batch `maxBodySize`, module toggles, log
+  retention, backup schedule/`cronMaxKeep`, ...) — nothing left that
+  required editing `settings.json`/env vars by hand. A dismissible
+  **onboarding checklist** on the dashboard home
+  (`components/dashboard/onboarding-checklist.tsx`) walks a fresh
+  install through app identity, branding, mail delivery + a sent test
+  email, an auth collection's sign-in method, backups scheduled, rate
+  limiting, and optional S3 storage.
+- **Email platform.** An editable `_emailTemplates` system collection
+  (`{{var}}` syntax — dotted paths, HTML-escaped, `{{{raw}}}` for
+  unescaped, locale fallback, a shared branded base layout), seeded with
+  the built-in auth emails plus `auth.magic-link` and a `welcome`
+  example; each auth-flow email resolves through a customized
+  `authOptions.*Template` field, else the matching `_emailTemplates` row,
+  else the same built-in default. `POST /api/mails/send`/`/preview`
+  (`_mailLog`, the durable queue when enabled, `$mails.send(...)` in JS
+  hooks) and `_emailTemplates.sendRule` — an optional filter-rule
+  expression that lets a non-superuser caller send that one template
+  directly (`to`/`template`/`data` only, capped recipients, its own rate
+  limit). `_emailTriggers` fires a template automatically on a record
+  create/update/delete, no code, no redeploy. Dashboard: Email templates
+  (list/duplicate/starter gallery/HTML+visual editor built on
+  `@react-email/editor`/live preview/test send), Email triggers (CRUD),
+  and Mail log. SDK: `cb.mails.send`/`.preview`.
+- **Magic-link login.** `POST .../request-magic-link`/`auth-with-magic-link`,
+  gated by `authOptions.magicLink.enabled` (default `false`), backed by
+  `_magicLinks`. Same account-enumeration-resistant contract and
+  ban/MFA/login-alert handling as every other login path. SDK:
+  `cb.auth.magicLink.request(...)`/`cb.auth.signIn.magicLink(...)`,
+  `getMagicLinkTokenFromUrl(...)` (`@cratebase/client`),
+  `useMagicLinkCallback(...)` (`@cratebase/react`).
+- **Database extensibility.** Postgres extension management
+  (`GET/POST/DELETE /api/db/extensions[/{name}]`, superuser only,
+  Postgres only) plus a `Settings → Database extensions` page, audited
+  end to end; `$app.db().exec(sql, params?)`, a write-capable escape
+  hatch for `pb_migrations/*.js` alongside the existing read-only
+  `$app.rawQuery`. **Custom SQL RPC**: the `_rpc` system collection
+  (`name`, `sql` with `:name` placeholders bound as real driver
+  parameters, `params`, `rule`, `readOnly`/`timeoutMs`/`maxRows`) plus
+  `POST /api/rpc/{name}` — `readOnly` (default `true`) reuses the SQL
+  console's `BEGIN READ ONLY`/`PRAGMA query_only` machinery. Dashboard
+  "RPC functions" page; SDK `cb.rpc<T>(name, params)`. **PostGIS-accelerated
+  geo queries**: `sort=geoDistance(lon, lat, x, y)` (and
+  `-geoDistance(...)`) for nearest/farthest-first order, matching the
+  existing radius filter's semantics; on Postgres, once `postgis` is
+  installed, both automatically compile against a GiST-indexed geography
+  expression instead of the portable haversine calculation.
 - **Multi-file append/remove semantics.** A multipart update field named
   `field+` appends newly uploaded files to an existing multi-file field
   without disturbing the rest; `field-` removes named files (deleting
@@ -333,4 +409,26 @@ this session; see Shipped below.)
 - A visual query builder for filters (the filter language is meant to be
   hand-written; a builder is a dashboard feature, not a core one).
 - Multi-tenant / workspace-scoped superusers (one superuser table, full
-  access to everything).
+  access to everything) — note this is distinct from the shipped `_teams`/
+  `_team_members` feature, which scopes ordinary auth-record data, not
+  the superuser table itself.
+- **Organizations / multi-tenancy** beyond what `_teams` already covers
+  (cross-org billing, org-level roles/permissions as a first-class
+  concept rather than a filter rule over `_team_members`).
+- **Passkeys / WebAuthn.**
+- **SMS 2FA** (the old `sms.*` Twilio-shaped settings namespace was
+  dead code and has been removed; TOTP is the supported second factor).
+- **SAML.**
+- **Anonymous auth** (a session with no backing record at all).
+- **Cratebase as its own OIDC/JWKS-publishing identity provider** — the
+  generic OIDC support that shipped is the *consumer* side (verifying a
+  third-party provider's JWKS to log a user in); Cratebase acting as the
+  identity provider for other apps, with its own `/.well-known/jwks.json`,
+  is a different, unplanned feature.
+- **CAPTCHA** (no bot-mitigation challenge on signup/login).
+- **Payments / billing** (no subscription, metering, or payment-provider
+  integration).
+
+See [the auth overview's "Cratebase vs better-auth"
+comparison](https://cratebase.dev/docs/concepts/authentication/overview/)
+for the same list in context, alongside what *is* built in.

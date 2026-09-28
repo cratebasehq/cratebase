@@ -135,7 +135,7 @@ async fn matching_ids(
     query.push_filter(compiled);
     let sql = query.select_sql();
     query.bind_page(1_000_000, 0);
-    let rows = db.query(&sql, query.params()).await.unwrap();
+    let rows = db.query(&sql, &query.all_params()).await.unwrap();
     let mut ids: Vec<String> = rows
         .iter()
         .map(|row| row.get_str("id").unwrap().to_string())
@@ -203,7 +203,7 @@ async fn postgis_radius_filter_matches_haversine_and_uses_the_index() {
     query.push_filter(compiled);
     let explain_sql = format!("EXPLAIN {}", query.select_sql());
     query.bind_page(1_000_000, 0);
-    let rows = db.query(&explain_sql, query.params()).await.unwrap();
+    let rows = db.query(&explain_sql, &query.all_params()).await.unwrap();
     let plan: String = rows
         .iter()
         .filter_map(|r| r.get_str("QUERY PLAN"))
