@@ -252,6 +252,13 @@ pub fn project(value: &mut Value, fields: Option<&str>) {
 enum StagedData {
     Memory(Bytes),
     Spilled(tempfile::TempPath),
+    /// A presigned upload (`POST /api/files/presign`): the bytes are
+    /// already at the destination key — the client `PUT` them there
+    /// directly (S3) or through the local same-origin fallback route —
+    /// so [`StagedUpload::store`] is a no-op. Still goes through the
+    /// same validation (`cratebase_db::validate::file`) and rollback
+    /// (`remove_keys`) as every other upload.
+    AlreadyStored,
 }
 
 /// One uploaded file, parsed but not yet in the object store.
@@ -269,6 +276,20 @@ pub struct StagedUpload {
 }
 
 impl StagedUpload {
+    /// A file already written to its final key by a presigned upload —
+    /// see [`StagedData::AlreadyStored`]. `name` is both the value stored
+    /// on the record and the last path segment of the object key.
+    pub fn already_stored(field: String, name: String, size: i64, mime: String) -> Self {
+        StagedUpload {
+            original: name.clone(),
+            field,
+            name,
+            size,
+            mime,
+            data: StagedData::AlreadyStored,
+        }
+    }
+
     pub fn meta(&self) -> UploadMeta {
         UploadMeta {
             field: self.field.clone(),
@@ -290,6 +311,7 @@ impl StagedUpload {
                     .put_stream(key, stream, Some(self.size.max(0) as u64))
                     .await?;
             }
+            StagedData::AlreadyStored => {}
         }
         Ok(())
     }

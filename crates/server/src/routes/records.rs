@@ -77,6 +77,9 @@ pub(crate) struct ListQuery {
     pub(crate) per_page: Option<i64>,
     pub(crate) sort: Option<String>,
     pub(crate) filter: Option<String>,
+    /// `?search=` — index-backed full-text search over the collection's
+    /// `searchable` fields; see `cratebase_db::query::search_condition`.
+    pub(crate) search: Option<String>,
     pub(crate) expand: Option<String>,
     pub(crate) fields: Option<String>,
     pub(crate) skip_total: Option<String>,
@@ -162,6 +165,7 @@ pub(crate) async fn list(
         let per_page = query.per_page.unwrap_or(records::DEFAULT_PER_PAGE);
         let sort = query.sort.clone();
         let filter = query.filter.clone();
+        let search = query.search.clone();
         let expand = query.expand.clone();
         let skip_total = flag(query.skip_total.as_ref());
         app.hooks()
@@ -179,6 +183,7 @@ pub(crate) async fn list(
                             per_page,
                             sort: sort.as_deref(),
                             filter: filter.as_deref(),
+                            search: search.as_deref(),
                             expand: expand.as_deref(),
                             skip_total,
                         },
@@ -319,6 +324,7 @@ async fn nearest_list(
                 per_page: NEAREST_FETCH_PAGE,
                 sort: None,
                 filter: query.filter.as_deref(),
+                search: None,
                 expand: None,
                 skip_total: true,
             },
@@ -512,6 +518,19 @@ pub(crate) async fn create_record(
     }
     let mut body = read_body(&app, &collection, request).await?;
     normalize_email_template_send_rule(&collection, &mut body.data);
+    // A presigned-upload token (`POST /api/files/presign`) in a file
+    // field is resolved to its real file name *before* `input`/`Record`
+    // are built from `body.data` below, so the rest of this handler sees
+    // an ordinary file value and never has to know a presign happened.
+    // A create presign has no id yet, so its ticket is keyed on whatever
+    // id the client sends here — see `crate::presign`'s module doc.
+    let target_id = body
+        .data
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    crate::presign::resolve_body_tokens(&app, &collection, &target_id, &mut body).await?;
     let info = info.with_body(body.data.clone());
     let ctx = info.to_context();
 
@@ -627,6 +646,9 @@ pub(crate) async fn update_record(
     }
     let mut body = read_body(&app, &collection, request).await?;
     normalize_email_template_send_rule(&collection, &mut body.data);
+    // See the matching call in `create_record`; here the record already
+    // has an id, so the ticket must have been presigned against it.
+    crate::presign::resolve_body_tokens(&app, &collection, &id, &mut body).await?;
     let info = info.with_body(body.data.clone());
     let ctx = info.to_context();
 

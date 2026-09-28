@@ -23,9 +23,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use bytes::Bytes;
 use cratebase_core::{Collection, Field, FieldKind, FieldType, Record};
@@ -38,7 +38,7 @@ use serde_json::json;
 use crate::app::App;
 use crate::events::{collection_tags, FileDownloadEvent, FileTokenEvent};
 use crate::extract::{Auth, RequestInfo};
-use crate::http_error::{ApiError, ApiQuery, ApiResult};
+use crate::http_error::{ApiError, ApiJson, ApiQuery, ApiResult};
 use crate::routes::common;
 
 /// PocketBase's `@request.context` value while a protected file's
@@ -48,7 +48,35 @@ const PROTECTED_FILE_CONTEXT: &str = "protectedFile";
 pub fn router() -> Router<App> {
     Router::new()
         .route("/files/token", post(token))
+        .route("/files/presign", post(presign))
+        .route("/files/presign-upload/{token}", put(presign_upload))
         .route("/files/{collection}/{recordId}/{filename}", get(download))
+}
+
+/// `POST /api/files/presign` — see `crate::presign`'s module doc.
+async fn presign(
+    State(app): State<App>,
+    info: RequestInfo,
+    ApiJson(req): ApiJson<crate::presign::PresignRequest>,
+) -> ApiResult<Json<crate::presign::PresignResponse>> {
+    Ok(Json(
+        crate::presign::create_presign(&app, &info, req).await?,
+    ))
+}
+
+/// `PUT /api/files/presign-upload/{token}` — the local-storage fallback
+/// for a presigned upload: the token itself is the bearer (same trust
+/// model as an S3 presigned URL's query-string signature), so this route
+/// needs no separate auth. Rejects a body that doesn't match the ticket's
+/// declared size so a client can't smuggle a bigger file past the
+/// `maxSize` check `POST /api/files/presign` already ran.
+async fn presign_upload(
+    State(app): State<App>,
+    Path(token): Path<String>,
+    body: Bytes,
+) -> ApiResult<StatusCode> {
+    crate::presign::store_local_upload(&app, &token, body).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/files/token`. Any authenticated record may mint one; what

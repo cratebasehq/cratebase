@@ -476,6 +476,7 @@ async fn render_export(app: &App, job: &ClaimedExport) -> Result<(i64, i64), Str
             per_page: 10_000,
             sort: (!job.sort.is_empty()).then_some(job.sort.as_str()),
             filter: (!job.filter.is_empty()).then_some(job.filter.as_str()),
+            search: None,
             expand: None,
             skip_total: true,
         },
