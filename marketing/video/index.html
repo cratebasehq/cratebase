@@ -2,123 +2,44 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Cratebase — launch film</title>
-<!-- Brand faces, per docs/style_guide.md. CDN for now (network available
-     in this sandbox); vendoring @fontsource-variable locally (the site
-     already depends on it) is a follow-up for a fully offline/
-     deterministic render — see README.md "Known gaps". -->
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400..800&family=Red+Hat+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<title>Cratebase launch film</title>
 <style>
+  /* All fonts vendored by fetch-fonts.sh: offline, deterministic renders. */
+  @font-face { font-family: "Bricolage"; src: url(assets/fonts/bricolage-grotesque-latin-standard-normal.woff2) format("woff2"); font-weight: 200 800; font-stretch: 75% 100%; }
+  @font-face { font-family: "RHMono"; src: url(assets/fonts/red-hat-mono-latin-wght-normal.woff2) format("woff2"); font-weight: 300 700; }
+  @font-face { font-family: "Plex"; src: url(assets/fonts/ibm-plex-sans-latin-wght-normal.woff2) format("woff2"); font-weight: 100 700; }
+  @font-face { font-family: "JBMono"; src: url(assets/fonts/jetbrains-mono-latin-wght-normal.woff2) format("woff2"); font-weight: 100 800; }
+  @font-face { font-family: "Inter"; src: url(assets/fonts/inter-latin-wght-normal.woff2) format("woff2"); font-weight: 100 900; }
+  @font-face { font-family: "Archivo"; src: url(assets/fonts/archivo-latin-wght-normal.woff2) format("woff2"); font-weight: 100 900; }
+
   :root {
-    /* Verbatim from site/src/styles/tokens.css dark palette — see
-       docs/style_guide.md "Palette". */
-    --harbor-bg: #0a1622;
-    --harbor-panel: #101f30;
-    --harbor-ink: #eef1f4;
-    --harbor-ink-secondary: #93a4b6;
-    --harbor-hairline: rgba(238, 241, 244, 0.14);
-    --crate: #ef7d3e;
-    --font-display: "Bricolage Grotesque", system-ui, sans-serif;
-    --font-mono: "Red Hat Mono", ui-monospace, monospace;
+    --navy: #0a1622; --panel: #101f30; --ink: #eef1f4; --ink2: #93a4b6;
+    --fog: #eef1f4; --harbor: #0e2238; --crate: #ef7d3e;
+    --crate-l: #d26f3a; --crate-r: #b05f37;
+    --tb-ink: #16181d; --tb-ink7: #1b1e25; --tb-ink6: #2b2f38;
+    --tb-paper: #f6f4ef; --tb-paper2: #efebe2; --tb-slate: #c9c2b4;
+    --tb-crate: #e8622c; --tb-crate-d: #f07440; --tb-manifest: #3a5b8c; --tb-manifest-l: #6c8fc7;
+    --display: "Bricolage", system-ui, sans-serif;
+    --mono: "RHMono", ui-monospace, monospace;
   }
-
-  /* Render contract: no CSS transitions/animations anywhere. Every
-     visual state is set directly by seek(t) each frame. */
-  * { box-sizing: border-box; transition: none !important; animation: none !important; }
-  html, body { margin: 0; padding: 0; background: var(--harbor-bg); overflow: hidden; }
-
-  #stage {
-    position: relative;
-    width: 1920px;
-    height: 1080px;
-    background: var(--harbor-bg);
-    overflow: hidden;
-    font-family: var(--font-display);
-    color: var(--harbor-ink);
-  }
-
-  #bg-parallax { position: absolute; inset: 0; opacity: 0.14; pointer-events: none; }
-  #bg-parallax svg { position: absolute; }
-
-  #panel {
-    position: absolute;
-    background: var(--harbor-panel);
-    overflow: hidden;
-    border: 1px solid var(--harbor-hairline);
-  }
-  #panel > .layer {
-    position: absolute;
-    inset: 0;
-    display: none;
-  }
-  #panel > .layer.active { display: block; }
-  #panel img.shot { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
-
-  .crate-svg { width: 100%; height: 100%; display: block; }
-  .crate-svg path { stroke: none; }
-
-  .term { font-family: var(--font-mono); font-size: 26px; line-height: 1.5; padding: 28px 32px; color: var(--harbor-ink); white-space: pre-wrap; }
-  .term .prompt { color: var(--harbor-ink-secondary); }
-  .term-bar { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: rgba(255,255,255,0.03); border-bottom: 1px solid var(--harbor-hairline); }
-  .term-bar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--harbor-ink-secondary); opacity: 0.4; }
-
-  .caption-mono { position: absolute; font-family: var(--font-mono); font-size: 22px; color: var(--harbor-ink-secondary); }
-
-  #headline { position: absolute; font-weight: 800; letter-spacing: -0.01em; }
-  #headline .line { position: absolute; white-space: nowrap; overflow: hidden; }
-  #headline .line span { display: inline-block; }
-
-  #section-title { position: absolute; font-weight: 700; font-size: 56px; overflow: hidden; white-space: nowrap; }
-
-  #hud { position: absolute; left: 96px; bottom: 72px; font-family: var(--font-mono); font-size: 30px; color: var(--harbor-ink); overflow: hidden; white-space: nowrap; }
-
-  .rule { position: absolute; height: 6px; background: var(--crate); }
-
-  .bench-bar { position: absolute; bottom: 0; background: var(--harbor-ink); }
-  .bench-bar.crate-color { background: var(--crate); }
-  .bench-label { position: absolute; font-family: var(--font-mono); font-size: 24px; color: var(--harbor-ink-secondary); }
-  .bench-number { position: absolute; font-family: var(--font-mono); font-weight: 600; font-size: 120px; color: var(--harbor-ink); }
-
-  .totp-box { position: absolute; width: 64px; height: 76px; border: 1px solid var(--harbor-hairline); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 32px; }
-  .qr { position: absolute; background: var(--harbor-ink); }
-
-  .pin { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: var(--crate); }
-  .cursor-dot { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--crate); }
-  .cursor-label { position: absolute; font-family: var(--font-mono); font-size: 18px; color: var(--harbor-ink-secondary); }
-
-  .bell-badge { position: absolute; font-family: var(--font-mono); font-weight: 600; font-size: 22px; color: var(--harbor-bg); background: var(--crate); border-radius: 999px; display: flex; align-items: center; justify-content: center; }
-  .chat-bubble { position: absolute; background: var(--harbor-panel); border: 1px solid var(--harbor-hairline); border-radius: 14px; padding: 16px 20px; font-size: 24px; }
-
-  .toggle-pill { position: absolute; border: 1px solid var(--harbor-hairline); border-radius: 999px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 24px; }
-  .toggle-pill.on { background: var(--harbor-ink); color: var(--harbor-bg); }
+  /* Render contract: no CSS transitions/animations; seek(t) sets every state. */
+  *, *::before, *::after { box-sizing: border-box; transition: none !important; animation: none !important; }
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  #stage { position: relative; overflow: hidden; background: var(--navy); font-family: var(--display); color: var(--ink); }
+  #world { position: absolute; inset: 0; }
+  .scene { position: absolute; inset: 0; overflow: hidden; }
+  .abs { position: absolute; left: 0; top: 0; }
+  .plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; backface-visibility: hidden; }
+  .plane > img { display: block; }
+  .nowrap { white-space: nowrap; }
+  .clip { overflow: hidden; }
+  .disp { font-family: var(--display); font-weight: 800; font-stretch: 75%; letter-spacing: -0.035em; line-height: 0.84; }
+  .stmt { font-family: var(--display); font-weight: 760; font-stretch: 88%; letter-spacing: -0.03em; line-height: 0.95; }
+  .mono { font-family: var(--mono); }
 </style>
 </head>
 <body>
-  <div id="stage">
-    <div id="bg-parallax"></div>
-    <div id="panel">
-      <div class="layer" data-layer="crate"><svg class="crate-svg" viewBox="-220 -220 440 440"></svg></div>
-      <div class="layer" data-layer="terminal">
-        <div class="term-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-        <div class="term" id="term-text"></div>
-      </div>
-      <div class="layer" data-layer="shot-a"><img class="shot" id="shot-a-img" /></div>
-      <div class="layer" data-layer="shot-b"><img class="shot" id="shot-b-img" /></div>
-      <div class="layer" data-layer="search" id="layer-search"></div>
-      <div class="layer" data-layer="totp" id="layer-totp"></div>
-      <div class="layer" data-layer="map" id="layer-map"></div>
-      <div class="layer" data-layer="presence" id="layer-presence"></div>
-      <div class="layer" data-layer="notif" id="layer-notif"></div>
-      <div class="layer" data-layer="channel" id="layer-channel"></div>
-      <div class="layer" data-layer="proof" id="layer-proof"></div>
-      <div class="layer" data-layer="compat" id="layer-compat"></div>
-    </div>
-    <div id="headline"></div>
-    <div id="section-title"></div>
-    <div id="hud"></div>
-  </div>
+  <div id="stage"><div id="world"></div></div>
   <script type="module" src="main.js"></script>
 </body>
 </html>
