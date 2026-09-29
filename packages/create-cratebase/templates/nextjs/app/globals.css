@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #16181d;
+  --color-paper: #f6f4ef;
+  --color-accent: #e8622c;
+  --color-accent-dark: #ff8552;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background: var(--color-ink);
+    color: var(--color-paper);
+  }
+}
+
+.card {
+  @apply rounded-xl border border-black/10 bg-white/70 p-6 shadow-sm dark:border-white/10 dark:bg-white/5;
+}
+
+/* Tailwind v4's `@apply` only accepts real utilities, not other custom
+   classes — so each button variant repeats the shared base styles rather
+   than composing a `.btn` class via `@apply`. */
+.btn-primary {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-dark)];
+}
+
+.btn-secondary {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 border border-black/15 bg-transparent text-current hover:bg-black/5 dark:border-white/20 dark:hover:bg-white/10;
+}
+
+.input {
+  @apply w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none ring-[var(--color-accent)] focus:ring-2 dark:border-white/15 dark:bg-black/30 dark:text-white;
+}

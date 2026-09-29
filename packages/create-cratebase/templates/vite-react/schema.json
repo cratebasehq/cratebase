@@ -1,0 +1,19 @@
+[
+  {
+    "name": "posts",
+    "type": "base",
+    "fields": [
+      { "name": "title", "type": "text", "required": true, "searchable": true },
+      { "name": "content", "type": "editor", "required": false, "searchable": true },
+      { "name": "owner", "type": "relation", "required": true, "collectionId": "_pb_users_auth_", "maxSelect": 1 },
+      { "name": "cover", "type": "file", "required": false, "maxSelect": 1 },
+      { "name": "created", "type": "autodate", "onCreate": true },
+      { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true }
+    ],
+    "listRule": "owner = @request.auth.id",
+    "viewRule": "owner = @request.auth.id",
+    "createRule": "@request.auth.id != \"\"",
+    "updateRule": "owner = @request.auth.id",
+    "deleteRule": "owner = @request.auth.id"
+  }
+]

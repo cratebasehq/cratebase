@@ -1,0 +1,39 @@
+{
+  "name": "create-cratebase",
+  "version": "0.1.0",
+  "description": "Scaffold a new app on Cratebase — Next.js, Vite + React, or Expo, wired up to @cratebase/client and @cratebase/react out of the box.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cratebasehq/cratebase.git",
+    "directory": "packages/create-cratebase"
+  },
+  "homepage": "https://cratebase.dev/docs/getting-started/starter-kits/",
+  "bugs": "https://github.com/cratebasehq/cratebase/issues",
+  "keywords": ["cratebase", "scaffold", "create-app", "nextjs", "vite", "expo", "pocketbase"],
+  "bin": {
+    "create-cratebase": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "dev": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "~6.0.2"
+  }
+}

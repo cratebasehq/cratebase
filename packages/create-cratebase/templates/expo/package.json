@@ -1,0 +1,36 @@
+{
+  "name": "{{PROJECT_NAME}}",
+  "main": "expo-router/entry",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n cratebase,app -c yellow,cyan \"node scripts/cratebase-dev.mjs\" \"expo start\"",
+    "web": "expo start --web",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "build:web": "expo export --platform web",
+    "typecheck": "tsc --noEmit",
+    "typegen": "cratebase typegen -o ./cratebase-types.d.ts"
+  },
+  "dependencies": {
+    "@cratebase/client": "^0.4.0",
+    "@cratebase/react": "^0.4.0",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~57.0.25",
+    "expo-constants": "~57.0.19",
+    "expo-linking": "~57.0.11",
+    "expo-router": "~57.0.23",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-web": "~0.21.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "concurrently": "^10.0.0",
+    "typescript": "~6.0.3"
+  }
+}

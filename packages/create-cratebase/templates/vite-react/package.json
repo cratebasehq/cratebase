@@ -1,0 +1,34 @@
+{
+  "name": "{{PROJECT_NAME}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n cratebase,web -c yellow,cyan \"node scripts/cratebase-dev.mjs\" \"vite\"",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "typegen": "cratebase typegen -o ./cratebase-types.d.ts"
+  },
+  "dependencies": {
+    "@cratebase/client": "^0.4.0",
+    "@cratebase/react": "^0.4.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

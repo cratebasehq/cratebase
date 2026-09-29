@@ -23,6 +23,7 @@ COPY tests/conformance/package.json tests/conformance/package.json
 # `sdk/js/client` is copied in full above because web/admin imports it.
 COPY sdk/js/react/package.json sdk/js/react/package.json
 COPY sdk/js/extras/package.json sdk/js/extras/package.json
+COPY packages/create-cratebase/package.json packages/create-cratebase/package.json
 RUN bun install && bun run admin:build && bun run email:build
 
 # ---- deps cache layer -------------------------------------------------
