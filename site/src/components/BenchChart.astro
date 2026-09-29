@@ -1,0 +1,237 @@
+---
+/**
+ * Grouped horizontal bar chart: Cratebase vs PocketBase req/s, from the
+ * idle-host run recorded in benchmarks/README.md (2026-09-04). Two-entity
+ * comparison, so color is assigned by entity (ink = Cratebase, a muted
+ * outline = PocketBase) and held fixed across every row — never by rank,
+ * never re-painted if rows are reordered. Direct labels replace a legend
+ * for "which bar is which" is still spelled out once, since bars aren't
+ * colored by the brand's reserved orange (that's illustrations/mark-only
+ * per tokens.css — a chart's data-ink stays in ink/neutral tokens).
+ * A full data table ships alongside for anyone who wants exact numbers
+ * or is using a screen reader / print / forced-colors mode.
+ */
+interface Row {
+  category: string;
+  detail: string;
+  conc: number;
+  cb: number;
+  pb: number;
+  ratio: string;
+}
+const rows: Row[] = [
+  { category: "search", detail: "GET .../records, perPage=30", conc: 50, cb: 49986, pb: 4774, ratio: "10.47x" },
+  { category: "search-auth", detail: "same, authenticated", conc: 100, cb: 38768, pb: 3989, ratio: "9.72x" },
+  { category: "search-wide", detail: "perPage=200", conc: 100, cb: 16414, pb: 1924, ratio: "8.53x" },
+  { category: "create", detail: "POST .../records", conc: 100, cb: 11960, pb: 6606, ratio: "1.81x" },
+  { category: "delete", detail: "DELETE .../records/:id", conc: 100, cb: 11321, pb: 5030, ratio: "2.25x" },
+];
+const max = Math.max(...rows.flatMap((r) => [r.cb, r.pb]));
+const fmt = (n: number) => n.toLocaleString("en-US");
+---
+
+<div class="bench-chart" data-reveal>
+  <div class="bench-legend">
+    <span class="legend-item"><i class="swatch swatch-cb"></i>Cratebase</span>
+    <span class="legend-item"><i class="swatch swatch-pb"></i>PocketBase</span>
+    <span class="legend-note">requests/sec, higher is better — median of 3 runs</span>
+  </div>
+
+  <div class="bench-rows" role="img" aria-label="Bar chart comparing Cratebase and PocketBase throughput across five request categories; see the data table below for exact figures.">
+    {
+      rows.map((r) => (
+        <div class="bench-row">
+          <div class="bench-row-label">
+            <span class="mono cat">{r.category}</span>
+            <span class="detail">{r.detail} · c{r.conc}</span>
+          </div>
+          <div class="bench-bars">
+            <div class="bar-track">
+              <div class="bar bar-cb" style={`width:${(r.cb / max) * 100}%`} title={`Cratebase: ${fmt(r.cb)} req/s`}>
+                <span class="bar-value mono">{fmt(r.cb)}</span>
+              </div>
+            </div>
+            <div class="bar-track">
+              <div class="bar bar-pb" style={`width:${(r.pb / max) * 100}%`} title={`PocketBase: ${fmt(r.pb)} req/s`}>
+                <span class="bar-value mono muted">{fmt(r.pb)}</span>
+              </div>
+            </div>
+          </div>
+          <div class="bench-ratio mono">{r.ratio}</div>
+        </div>
+      ))
+    }
+  </div>
+
+  <details class="bench-table-toggle">
+    <summary>View as a data table</summary>
+    <div class="bench-table-scroll">
+    <table class="bench-table">
+      <caption class="sr-only">Cratebase vs PocketBase requests per second by category</caption>
+      <thead>
+        <tr><th scope="col">Category</th><th scope="col">Concurrency</th><th scope="col">Cratebase req/s</th><th scope="col">PocketBase req/s</th><th scope="col">Ratio</th></tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr>
+            <td class="mono">{r.category}</td>
+            <td class="mono">{r.conc}</td>
+            <td class="mono">{fmt(r.cb)}</td>
+            <td class="mono">{fmt(r.pb)}</td>
+            <td class="mono ratio-cell">{r.ratio}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    </div>
+  </details>
+</div>
+
+<style>
+  .bench-chart {
+    display: grid;
+    gap: 1.25rem;
+  }
+  .bench-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1.25rem;
+    font-size: 0.85rem;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 600;
+  }
+  .swatch {
+    width: 0.85rem;
+    height: 0.6rem;
+    border-radius: 0.15rem;
+    display: inline-block;
+  }
+  .swatch-cb {
+    background: var(--color-ink);
+  }
+  .swatch-pb {
+    background: transparent;
+    border: 1.5px solid var(--color-text-secondary);
+  }
+  .legend-note {
+    color: var(--color-text-secondary);
+    font-size: 0.8rem;
+  }
+
+  .bench-rows {
+    display: grid;
+    gap: 1.1rem;
+  }
+  .bench-row {
+    display: grid;
+    grid-template-columns: 9rem 1fr 3.5rem;
+    gap: 1rem;
+    align-items: center;
+  }
+  .bench-row-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .bench-row-label .cat {
+    font-weight: 700;
+    font-size: 0.88rem;
+  }
+  .bench-row-label .detail {
+    font-size: 0.72rem;
+    color: var(--color-text-secondary);
+  }
+  .bench-bars {
+    display: grid;
+    gap: 0.3rem;
+  }
+  .bar-track {
+    background: var(--color-fog);
+    border-radius: 0.3rem;
+    height: 1.35rem;
+    overflow: hidden;
+  }
+  :root[data-theme="dark"] .bar-track {
+    background: #101f30;
+  }
+  .bar {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    border-radius: 0.3rem;
+    min-width: 2.4rem;
+    transition: width 700ms var(--ease-out);
+  }
+  .bar-cb {
+    background: var(--color-ink);
+  }
+  .bar-pb {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--color-text-secondary);
+  }
+  .bar-value {
+    padding-inline: 0.5rem;
+    font-size: 0.72rem;
+    color: var(--color-button-text);
+    white-space: nowrap;
+  }
+  .bar-value.muted {
+    color: var(--color-text-secondary);
+  }
+  .bench-ratio {
+    font-weight: 700;
+    text-align: right;
+    color: var(--color-ink);
+  }
+
+  .bench-table-toggle {
+    font-size: 0.85rem;
+  }
+  .bench-table-toggle summary {
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+  }
+  .bench-table-scroll {
+    overflow-x: auto;
+  }
+  .bench-table {
+    margin-top: 0.75rem;
+    width: 100%;
+    min-width: 32rem;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  .bench-table th,
+  .bench-table td {
+    text-align: left;
+    padding: 0.45rem 0.7rem;
+    border-bottom: 1px solid var(--color-hairline);
+  }
+  .ratio-cell {
+    font-weight: 700;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
+  @media (max-width: 640px) {
+    .bench-row {
+      grid-template-columns: 1fr;
+      gap: 0.4rem;
+    }
+    .bench-ratio {
+      text-align: left;
+    }
+  }
+</style>

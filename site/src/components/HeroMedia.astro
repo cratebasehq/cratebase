@@ -1,0 +1,183 @@
+---
+/**
+ * Hero visual slot.
+ *
+ * The launch film (cratebase-launch.mp4/.webm + poster.png) is being
+ * produced separately and doesn't exist yet. Rather than a manual toggle
+ * to flip later, this checks the public/video/ directory at BUILD TIME:
+ * drop the three files in and rebuild — no code change needed, this
+ * component picks the video up automatically and starts rendering the
+ * autoplaying muted loop + click-to-play lightbox with sound. Until then
+ * it falls back to a real, framed dashboard screenshot.
+ *
+ * ▶ TO SWAP IN THE FILM: put these three files in site/public/video/ and
+ *   rebuild — nothing else to change:
+ *     - cratebase-launch.mp4
+ *     - cratebase-launch.webm
+ *     - poster.png
+ */
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import DeviceFrame from "./DeviceFrame.astro";
+import type { ImageMetadata } from "astro";
+
+interface Props {
+  fallbackLight: ImageMetadata;
+  fallbackDark: ImageMetadata;
+  fallbackAlt: string;
+}
+const { fallbackLight, fallbackDark, fallbackAlt } = Astro.props;
+
+const publicVideoDir = fileURLToPath(new URL("../../public/video/", import.meta.url));
+const hasMp4 = existsSync(`${publicVideoDir}cratebase-launch.mp4`);
+const hasWebm = existsSync(`${publicVideoDir}cratebase-launch.webm`);
+const hasPoster = existsSync(`${publicVideoDir}poster.png`);
+const hasVideo = hasMp4 || hasWebm;
+---
+
+{
+  hasVideo ? (
+    <div class="hero-media">
+      <button type="button" class="hero-video-trigger" data-open-lightbox aria-label="Play the Cratebase launch film with sound">
+        <video
+          class="hero-video"
+          autoplay
+          muted
+          loop
+          playsinline
+          poster={hasPoster ? "/video/poster.png" : undefined}
+        >
+          {hasWebm && <source src="/video/cratebase-launch.webm" type="video/webm" />}
+          {hasMp4 && <source src="/video/cratebase-launch.mp4" type="video/mp4" />}
+        </video>
+        <span class="hero-play" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+        </span>
+      </button>
+
+      <dialog id="hero-lightbox" aria-label="Cratebase launch film">
+        <button type="button" class="lightbox-close" data-close-lightbox aria-label="Close video">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M6 6l12 12M18 6L6 18" />
+          </svg>
+        </button>
+        <video
+          id="hero-lightbox-video"
+          controls
+          playsinline
+          poster={hasPoster ? "/video/poster.png" : undefined}
+        >
+          {hasWebm && <source src="/video/cratebase-launch.webm" type="video/webm" />}
+          {hasMp4 && <source src="/video/cratebase-launch.mp4" type="video/mp4" />}
+        </video>
+      </dialog>
+    </div>
+  ) : (
+    <div class="hero-media hero-media-fallback">
+      <DeviceFrame
+        light={fallbackLight}
+        dark={fallbackDark}
+        alt={fallbackAlt}
+        path="localhost:8090/_/"
+        widths={[560, 840, 1120, 1600]}
+        sizes="(min-width: 1100px) 46vw, 92vw"
+        eager
+      />
+    </div>
+  )
+}
+
+<style>
+  .hero-media {
+    position: relative;
+  }
+  .hero-video-trigger {
+    display: block;
+    position: relative;
+    width: 100%;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    cursor: pointer;
+    background: var(--color-harbor);
+    box-shadow: 0 20px 60px -20px rgba(14, 34, 56, 0.35);
+  }
+  .hero-video {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .hero-play {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    color: #fff;
+    opacity: 0;
+    background: rgba(14, 34, 56, 0.28);
+    transition: opacity 200ms var(--ease-house);
+  }
+  .hero-video-trigger:hover .hero-play,
+  .hero-video-trigger:focus-visible .hero-play {
+    opacity: 1;
+  }
+  .hero-play svg {
+    filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.4));
+  }
+
+  #hero-lightbox {
+    border: none;
+    padding: 0;
+    background: transparent;
+    max-width: min(92vw, 68rem);
+    width: 100%;
+  }
+  #hero-lightbox::backdrop {
+    background: rgba(10, 22, 34, 0.82);
+  }
+  #hero-lightbox video {
+    display: block;
+    width: 100%;
+    border-radius: var(--radius);
+  }
+  .lightbox-close {
+    position: absolute;
+    top: -2.5rem;
+    right: 0;
+    background: transparent;
+    border: none;
+    color: #eef1f4;
+    cursor: pointer;
+    padding: 0.4rem;
+  }
+
+  .hero-media-fallback :global(.device) {
+    box-shadow: 0 20px 60px -20px rgba(14, 34, 56, 0.35);
+  }
+</style>
+
+<script>
+  const trigger = document.querySelector<HTMLButtonElement>("[data-open-lightbox]");
+  const dialog = document.getElementById("hero-lightbox") as HTMLDialogElement | null;
+  const closeBtn = document.querySelector<HTMLButtonElement>("[data-close-lightbox]");
+  const lightboxVideo = document.getElementById("hero-lightbox-video") as HTMLVideoElement | null;
+  const inlineVideo = document.querySelector<HTMLVideoElement>(".hero-video");
+
+  trigger?.addEventListener("click", () => {
+    inlineVideo?.pause();
+    dialog?.showModal();
+    lightboxVideo?.play().catch(() => {});
+  });
+  const closeLightbox = () => {
+    lightboxVideo?.pause();
+    if (lightboxVideo) lightboxVideo.currentTime = 0;
+    dialog?.close();
+    inlineVideo?.play().catch(() => {});
+  };
+  closeBtn?.addEventListener("click", closeLightbox);
+  dialog?.addEventListener("click", (e) => {
+    if (e.target === dialog) closeLightbox();
+  });
+  dialog?.addEventListener("close", closeLightbox);
+</script>
