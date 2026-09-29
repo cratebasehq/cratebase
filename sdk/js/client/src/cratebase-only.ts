@@ -170,27 +170,76 @@ export async function toolSchemas(sender: Sender, collections: string[]): Promis
 }
 
 export interface EnqueueOptions {
+  /** How many attempts (including the first) before the job is given up
+   * on for good and left `failed`. Server default: 5. */
   maxAttempts?: number;
+  /** ISO-8601/RFC3339 timestamp; the job is not eligible to run before
+   * this. Takes precedence over `delay` when both are given. */
+  runAt?: string;
+  /** @deprecated Use `runAt` — kept as an accepted alias since the server
+   * still reads it under this name too. */
   runAfter?: string;
+  /** Milliseconds from now to delay the job's first attempt. Ignored if
+   * `runAt`/`runAfter` is also given. */
+  delay?: number;
+  /** A caller-chosen idempotency key: a second `enqueue` call with the
+   * same non-empty key while an earlier job with it is still
+   * pending/in-progress is a no-op — see `EnqueuedJob.deduped`. */
+  dedupeKey?: string;
+  /** Higher runs first among otherwise-due jobs. Server default: `0`. */
+  priority?: number;
 }
 
 export interface EnqueuedJob {
   id: string;
   queue: string;
   status: string;
-  runAfter?: string;
+  runAfter: string;
+  /** `true` when `options.dedupeKey` matched an already pending/
+   * in-progress job — `id`/`status`/`runAfter` describe *that* job, not
+   * a newly inserted one. */
+  deduped: boolean;
 }
 
+/** `cb.queue.enqueue(queue, payload, options)` — `POST /api/queue/enqueue`
+ * (the `POST /api/plugins/queue/enqueue` alias still works server-side,
+ * but this SDK always calls the canonical route). Superuser or API key
+ * — the same trust tier as `_cron_jobs`/`_webhooks`: `pb.authStore` needs
+ * a `_superusers` session, or an API key header, before calling this.
+ * Works even while `settings.queue.enabled` is off; the job just sits
+ * `pending` until an operator turns processing on. */
 export async function enqueue(
   sender: Sender,
   queue: string,
   payload: unknown,
   options: EnqueueOptions = {},
 ): Promise<EnqueuedJob> {
-  return sender.send<EnqueuedJob>("/api/plugins/queue/enqueue", {
+  return sender.send<EnqueuedJob>("/api/queue/enqueue", {
     method: "POST",
-    body: { queue, payload, maxAttempts: options.maxAttempts, runAfter: options.runAfter },
+    body: {
+      queue,
+      payload,
+      maxAttempts: options.maxAttempts,
+      runAt: options.runAt,
+      runAfter: options.runAfter,
+      delay: options.delay,
+      dedupeKey: options.dedupeKey,
+      priority: options.priority,
+    },
   });
+}
+
+/** `cb.queue.retry(id)` — `POST /api/queue/jobs/{id}/retry`: resets a
+ * `failed` job back to `pending` with a fresh `attempts` budget. Rejects
+ * (404) a missing job, or (400) one that isn't currently `failed`. */
+export async function retryJob(sender: Sender, id: string): Promise<void> {
+  await sender.send<void>(`/api/queue/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
+}
+
+/** `cb.queue.delete(id)` — `DELETE /api/queue/jobs/{id}`: removes a
+ * `_queue_jobs` row outright, whatever its status. */
+export async function deleteJob(sender: Sender, id: string): Promise<void> {
+  await sender.send<void>(`/api/queue/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export interface MailRecipient {

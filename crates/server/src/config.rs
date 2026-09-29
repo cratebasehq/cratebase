@@ -191,6 +191,16 @@ pub struct Config {
     /// `crate::routes::collections::apply`). `None` disables the watch;
     /// `cratebase typegen` still works as a one-shot regardless.
     pub typegen_out: Option<String>,
+    /// Whether `App::bootstrap` starts `crate::webhook_deliveries`'s
+    /// always-on ticker. `true` everywhere real (there is no
+    /// `settings.webhooks.enabled` to gate this behind — see that
+    /// module's doc for why delivery has no toggle); `false` only for a
+    /// test that wants to manipulate `_webhookDeliveries`/`_webhooks`
+    /// deterministically without racing a live worker claiming the very
+    /// rows it just wrote, within the same process, on its own 1-second
+    /// timer. Not a real feature flag, not exposed to `settings` or any
+    /// env var — a construction-time-only testability seam.
+    pub webhook_worker: bool,
 }
 
 /// A cookie's `SameSite` attribute. Parsed case-insensitively from
@@ -261,6 +271,7 @@ impl Config {
             session_cookie_secure: true,
             setup_token: None,
             typegen_out: None,
+            webhook_worker: true,
         }
     }
 

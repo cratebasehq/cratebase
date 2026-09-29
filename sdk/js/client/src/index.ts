@@ -222,6 +222,8 @@ export class CratebaseClient<
   readonly queue = {
     enqueue: (queue: string, payload: unknown, options: cratebaseOnly.EnqueueOptions = {}) =>
       cratebaseOnly.enqueue(this, queue, payload, options),
+    retry: (id: string) => cratebaseOnly.retryJob(this, id),
+    delete: (id: string) => cratebaseOnly.deleteJob(this, id),
   };
 
   /** `send` works for any caller a template's `sendRule` allows (see

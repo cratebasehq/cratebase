@@ -112,9 +112,17 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 pub const CLEANUP_JOB_ID: &str = "__cbWebhookDeliveriesCleanup__";
 
 /// Start the always-on ticker and register the retention-cleanup cron.
-/// Called once, unconditionally, from `App::bootstrap` — see the module
-/// doc for why this has no toggle.
+/// Called once from `App::bootstrap` for every real boot — see the
+/// module doc for why there is no `settings.webhooks.enabled` gating
+/// this the way `settings.queue.enabled` gates `crate::queue`.
+/// `Config::webhook_worker` (default `true`) exists purely so a test can
+/// opt out and manipulate `_webhookDeliveries`/`_webhooks` deterministically
+/// instead of racing this ticker's own 1-second timer — see that field's
+/// doc.
 pub fn start(app: &App) {
+    if !app.config().webhook_worker {
+        return;
+    }
     let tick_app = app.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
@@ -304,6 +312,28 @@ fn backoff_delay(attempts: i64) -> Duration {
     Duration::from_secs(BACKOFF_SECONDS[idx] as u64)
 }
 
+/// `X-Cratebase-Signature`'s value: `sha256=<hex>`, the hex-encoded
+/// HMAC-SHA256 of `"{timestamp}.{body}"` keyed by the webhook's secret.
+/// This is the exact computation a receiver reproduces to verify a
+/// delivery — see the module doc's "Signature, delivery id and
+/// timestamp" section and the site docs' webhooks page for a Node
+/// recipe. Pulled out as its own function (rather than inlined in
+/// [`attempt`]) so it has one obviously-correct definition both this
+/// server and a receiver's own re-implementation can be checked against.
+pub(crate) fn sign(secret: &str, timestamp: i64, body: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts a key of any length");
+    mac.update(format!("{timestamp}.").as_bytes());
+    mac.update(body);
+    let hex = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    format!("sha256={hex}")
+}
+
 static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
     reqwest::Client::builder()
         // See the module doc's SSRF section: without this, a
@@ -379,17 +409,8 @@ async fn attempt(app: &App, claimed: Claimed) {
                 .header("X-Cratebase-Timestamp", timestamp.to_string())
                 .timeout(DELIVERY_TIMEOUT);
             if let Some(secret) = &secret {
-                let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-                    .expect("HMAC accepts a key of any length");
-                mac.update(format!("{timestamp}.").as_bytes());
-                mac.update(&body);
-                let signature = mac
-                    .finalize()
-                    .into_bytes()
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>();
-                builder = builder.header("X-Cratebase-Signature", format!("sha256={signature}"));
+                let signature = sign(secret, timestamp, &body);
+                builder = builder.header("X-Cratebase-Signature", signature);
             }
             match builder.body(body).send().await {
                 Ok(resp) => {
@@ -685,6 +706,8 @@ async fn replay_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use cratebase_db::engine::Row;
 
     #[test]
     fn backoff_follows_the_fixed_schedule_and_caps_at_the_last_entry() {
@@ -695,5 +718,403 @@ mod tests {
         assert_eq!(backoff_delay(5), Duration::from_secs(21600));
         assert_eq!(backoff_delay(6), Duration::from_secs(21600));
         assert_eq!(backoff_delay(100), Duration::from_secs(21600));
+    }
+
+    /// A golden value computed independently (Python's `hmac`/`hashlib`)
+    /// for `secret = "whsec_test123"`, `timestamp = 1700000000`,
+    /// `body = {"event":"create"}` — proves this server's own signature
+    /// computation is exactly what the docs' receiver recipe describes,
+    /// not just internally self-consistent.
+    #[test]
+    fn sign_matches_a_known_hmac_sha256_golden_value() {
+        let sig = sign("whsec_test123", 1700000000, br#"{"event":"create"}"#);
+        assert_eq!(
+            sig,
+            "sha256=3d7755bf99d88f43b1cfc1ff055b4f62378a21f161b886ede746ce8145f0dc80"
+        );
+    }
+
+    #[test]
+    fn sign_changes_with_timestamp_or_body() {
+        let base = sign("secret", 1000, b"body");
+        assert_ne!(base, sign("secret", 1001, b"body"));
+        assert_ne!(base, sign("secret", 1000, b"other"));
+        assert_ne!(base, sign("other-secret", 1000, b"body"));
+    }
+
+    /// `webhook_worker: false` — these tests drive `claim_next`/`attempt`/
+    /// `finish` directly and assert on `_webhookDeliveries` rows the
+    /// instant after writing them; the live ticker has no toggle to stay
+    /// quiet behind (see `Config::webhook_worker`'s doc), so it has to be
+    /// turned off at construction instead, same idea as `crate::queue`'s
+    /// own tests relying on `settings.queue.enabled` defaulting `false`.
+    async fn test_app() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut cfg = Config::memory(dir.path().join("pb_data"));
+        cfg.webhook_worker = false;
+        let app = App::new(cfg);
+        app.bootstrap().await.expect("bootstrap");
+        (app, dir)
+    }
+
+    /// Inserts a `_webhooks` row directly (bypassing the dashboard/API),
+    /// enabled, subscribed to every event, with the given `url`/`secret`/
+    /// `max_attempts`.
+    async fn insert_webhook(
+        app: &App,
+        url: &str,
+        secret: Option<&str>,
+        max_attempts: i64,
+    ) -> String {
+        let collection = app
+            .db()
+            .collections
+            .get_by_name(crate::webhooks::COLLECTION)
+            .unwrap();
+        let mut row = Record::new(collection);
+        row.set("name", json!("test webhook"));
+        row.set("collectionRef", json!("widgets"));
+        row.set("events", json!("create,update,delete"));
+        row.set("url", json!(url));
+        row.set("secret", json!(secret.unwrap_or_default()));
+        row.set("enabled", json!(true));
+        row.set("maxAttempts", json!(max_attempts));
+        row.set("consecutiveFailures", json!(0));
+        cratebase_db::records::create(app.db(), &app.db().collections, &mut row)
+            .await
+            .expect("insert webhook");
+        row.id().to_string()
+    }
+
+    async fn webhook_row(app: &App, id: &str) -> Row {
+        app.db()
+            .query_one(
+                &format!(
+                    r#"SELECT * FROM "{}" WHERE "id" = $1"#,
+                    crate::webhooks::COLLECTION
+                ),
+                &[Sql::from(id)],
+            )
+            .await
+            .expect("query _webhooks")
+            .expect("webhook row present")
+    }
+
+    async fn delivery_row(app: &App, id: &str) -> Row {
+        app.db()
+            .query_one(
+                &format!(r#"SELECT * FROM "{COLLECTION}" WHERE "id" = $1"#),
+                &[Sql::from(id)],
+            )
+            .await
+            .expect("query _webhookDeliveries")
+            .expect("delivery row present")
+    }
+
+    fn claimed_for(id: &str, webhook_id: &str, attempts: i64, max_attempts: i64) -> Claimed {
+        Claimed {
+            id: id.to_string(),
+            webhook_id: webhook_id.to_string(),
+            event: "create".to_string(),
+            collection: "widgets".to_string(),
+            record: json!({"id": "rec1"}),
+            attempts,
+            max_attempts,
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_delivery_creates_a_pending_row_with_defaults() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 6).await;
+        let id = enqueue_delivery(
+            &app,
+            &webhook_id,
+            "create",
+            "widgets",
+            "rec1",
+            json!({"id": "rec1"}),
+            6,
+        )
+        .await
+        .expect("enqueue");
+
+        let row = delivery_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(0));
+        assert_eq!(row.get_i64("maxAttempts"), Some(6));
+        assert_eq!(row.get_str("webhookRef"), Some(webhook_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn finish_on_success_marks_delivered_and_resets_consecutive_failures() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 6).await;
+        app.db()
+            .execute(
+                &format!(
+                    r#"UPDATE "{}" SET "consecutiveFailures" = 3 WHERE "id" = $1"#,
+                    crate::webhooks::COLLECTION
+                ),
+                &[Sql::from(webhook_id.clone())],
+            )
+            .await
+            .unwrap();
+        let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 6)
+            .await
+            .unwrap();
+
+        finish(
+            &app,
+            &claimed_for(&id, &webhook_id, 0, 6),
+            Outcome {
+                success: true,
+                response_code: Some(200),
+                response_body: "ok".to_string(),
+                error: String::new(),
+                duration_ms: 12,
+            },
+        )
+        .await;
+
+        let delivery = delivery_row(&app, &id).await;
+        assert_eq!(delivery.get_str("status"), Some(STATUS_SUCCESS));
+        assert_eq!(delivery.get_str("responseCode"), Some("200"));
+
+        let webhook = webhook_row(&app, &webhook_id).await;
+        assert_eq!(webhook.get_i64("consecutiveFailures"), Some(0));
+        assert_eq!(webhook.get_str("lastStatus"), Some("200"));
+    }
+
+    #[tokio::test]
+    async fn finish_retries_with_backoff_then_gives_up_after_max_attempts() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 2).await;
+        let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 2)
+            .await
+            .unwrap();
+
+        let failing = || Outcome {
+            success: false,
+            response_code: Some(500),
+            response_body: "boom".to_string(),
+            error: "received HTTP 500 Internal Server Error".to_string(),
+            duration_ms: 5,
+        };
+
+        // Attempt 1 of 2: retried, not given up yet.
+        finish(&app, &claimed_for(&id, &webhook_id, 0, 2), failing()).await;
+        let row = delivery_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(1));
+        assert!(row.get_str("error").unwrap_or_default().contains("500"));
+
+        // Attempt 2 of 2 == maxAttempts: gives up.
+        finish(&app, &claimed_for(&id, &webhook_id, 1, 2), failing()).await;
+        let row = delivery_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_FAILED));
+        assert_eq!(row.get_i64("attempts"), Some(2));
+
+        let webhook = webhook_row(&app, &webhook_id).await;
+        assert_eq!(webhook.get_i64("consecutiveFailures"), Some(2));
+    }
+
+    #[tokio::test]
+    async fn finish_auto_disables_the_webhook_after_the_configured_threshold() {
+        let (app, _dir) = test_app().await;
+        let mut settings = (*app.settings()).clone();
+        settings.webhooks.disable_after_failures = 3;
+        app.apply_settings(std::sync::Arc::new(settings)).unwrap();
+
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 100).await;
+        let failing = || Outcome {
+            success: false,
+            response_code: Some(500),
+            response_body: String::new(),
+            error: "boom".to_string(),
+            duration_ms: 1,
+        };
+        for i in 0..3 {
+            let id = enqueue_delivery(
+                &app,
+                &webhook_id,
+                "create",
+                "widgets",
+                "rec1",
+                json!({}),
+                100,
+            )
+            .await
+            .unwrap();
+            finish(&app, &claimed_for(&id, &webhook_id, i, 100), failing()).await;
+        }
+
+        let webhook = webhook_row(&app, &webhook_id).await;
+        assert_eq!(webhook.get_i64("consecutiveFailures"), Some(3));
+        assert_eq!(
+            webhook.get("enabled").and_then(Sql::as_i64),
+            Some(0),
+            "the webhook must be auto-disabled once consecutiveFailures reaches the threshold"
+        );
+
+        let audit = app
+            .db()
+            .query(
+                r#"SELECT * FROM "_audit_log" WHERE "action" = 'webhook.autoDisabled'"#,
+                &[],
+            )
+            .await
+            .expect("query _audit_log");
+        assert_eq!(audit.len(), 1, "exactly one auto-disable audit row");
+        assert_eq!(audit[0].get_str("target"), Some(webhook_id.as_str()));
+    }
+
+    /// A real `attempt()` call (not the lower-level `finish()` above)
+    /// against a blocked address proves the SSRF guard actually runs
+    /// *inside* the delivery path, not just as a standalone unit —
+    /// `crate::webhooks`'s own test suite already covers every blocked
+    /// range exhaustively, so this only needs one representative case.
+    #[tokio::test]
+    async fn attempt_against_a_blocked_url_fails_fast_with_the_ssrf_message() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "http://127.0.0.1:1/hook", None, 1).await;
+        let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 1)
+            .await
+            .unwrap();
+
+        attempt(&app, claimed_for(&id, &webhook_id, 0, 1)).await;
+
+        let row = delivery_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_FAILED));
+        assert!(
+            row.get_str("error")
+                .unwrap_or_default()
+                .contains("blocked address"),
+            "{:?}",
+            row.get_str("error")
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_next_only_claims_a_due_pending_row() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 6).await;
+        let due = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 6)
+            .await
+            .unwrap();
+        let future_id =
+            enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec2", json!({}), 6)
+                .await
+                .unwrap();
+        app.db()
+            .execute(
+                &format!(r#"UPDATE "{COLLECTION}" SET "nextAttemptAt" = $1 WHERE "id" = $2"#),
+                &[
+                    Sql::from(
+                        DateTime::from_utc(DateTime::now().inner() + chrono::Duration::hours(1))
+                            .to_pb_string(),
+                    ),
+                    Sql::from(future_id.clone()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let claimed = claim_next(&app)
+            .await
+            .unwrap()
+            .expect("one due row claimed");
+        assert_eq!(claimed.id, due);
+        let row = delivery_row(&app, &due).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_IN_PROGRESS));
+        let future_row = delivery_row(&app, &future_id).await;
+        assert_eq!(future_row.get_str("status"), Some(STATUS_PENDING));
+
+        assert!(
+            claim_next(&app).await.unwrap().is_none(),
+            "nothing else due"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_resets_a_failed_delivery_to_pending_with_a_fresh_budget() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 1).await;
+        let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 1)
+            .await
+            .unwrap();
+        finish(
+            &app,
+            &claimed_for(&id, &webhook_id, 0, 1),
+            Outcome {
+                success: false,
+                response_code: Some(500),
+                response_body: String::new(),
+                error: "boom".to_string(),
+                duration_ms: 1,
+            },
+        )
+        .await;
+        assert_eq!(
+            delivery_row(&app, &id).await.get_str("status"),
+            Some(STATUS_FAILED)
+        );
+
+        replay(&app, &id).await.expect("replay");
+
+        let row = delivery_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(0));
+        assert_eq!(row.get_str("error"), Some(""));
+
+        assert_eq!(
+            replay(&app, "nope").await.unwrap_err().status(),
+            404,
+            "replaying a missing delivery is a 404"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_prunes_rows_older_than_the_retention_setting_but_not_newer_ones() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 6).await;
+        let old_id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 6)
+            .await
+            .unwrap();
+        let new_id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec2", json!({}), 6)
+            .await
+            .unwrap();
+        let old_created = DateTime::from_utc(DateTime::now().inner() - chrono::Duration::days(30));
+        app.db()
+            .execute(
+                &format!(r#"UPDATE "{COLLECTION}" SET "created" = $1 WHERE "id" = $2"#),
+                &[
+                    Sql::from(old_created.to_pb_string()),
+                    Sql::from(old_id.clone()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        cleanup(&app).await;
+
+        assert!(app
+            .db()
+            .query_one(
+                &format!(r#"SELECT "id" FROM "{COLLECTION}" WHERE "id" = $1"#),
+                &[Sql::from(old_id)],
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(app
+            .db()
+            .query_one(
+                &format!(r#"SELECT "id" FROM "{COLLECTION}" WHERE "id" = $1"#),
+                &[Sql::from(new_id)],
+            )
+            .await
+            .unwrap()
+            .is_some());
     }
 }
