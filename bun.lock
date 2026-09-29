@@ -21,14 +21,14 @@
     },
     "sdk/js/client": {
       "name": "@cratebase/client",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "devDependencies": {
         "typescript": "~6.0.2",
       },
     },
     "sdk/js/extras": {
       "name": "@cratebase/extras",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "pocketbase": "^0.28.0",
         "typescript": "~6.0.2",
@@ -1593,6 +1593,8 @@
     "@babel/helper-replace-supers/@babel/traverse": ["@babel/traverse@7.29.8", "", { "dependencies": { "@babel/code-frame": "^7.29.7", "@babel/generator": "^7.29.8", "@babel/helper-globals": "^7.29.7", "@babel/parser": "^7.29.8", "@babel/template": "^7.29.7", "@babel/types": "^7.29.8", "debug": "^4.3.1" } }, "sha512-I5z7H3bf/41ktsNVLtpN0wAa336HkqIHQ5BuPLEhTkt1jVSyZpeNKIzTgEWmlxjdg81R0IgUCcaE+Ok3NvrfZg=="],
 
     "@babel/helper-skip-transparent-expression-wrappers/@babel/traverse": ["@babel/traverse@7.29.8", "", { "dependencies": { "@babel/code-frame": "^7.29.7", "@babel/generator": "^7.29.8", "@babel/helper-globals": "^7.29.7", "@babel/parser": "^7.29.8", "@babel/template": "^7.29.7", "@babel/types": "^7.29.8", "debug": "^4.3.1" } }, "sha512-I5z7H3bf/41ktsNVLtpN0wAa336HkqIHQ5BuPLEhTkt1jVSyZpeNKIzTgEWmlxjdg81R0IgUCcaE+Ok3NvrfZg=="],
+
+    "@cratebase/react/@cratebase/client": ["@cratebase/client@0.4.0", "", {}, "sha512-ZkcGEtzttM0u5WPhrRcIL3d8+NbRSZGS/RrX67BpNHH3BOt1XE2cv2ItjeCdsz3+kFu55aXyGNtE4BKDL9LIew=="],
 
     "@cratebase/react/bun-types": ["bun-types@1.4.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="],
 
