@@ -399,6 +399,13 @@ fn decode_column(row: &tokio_postgres::Row, i: usize, ty: &Type) -> DbResult<Sql
             .try_get::<_, Option<NaiveDate>>(i)?
             .and_then(|d| d.and_hms_opt(0, 0, 0))
             .map(pb_naive),
+        // The generated `_search` column (`schema::sync_postgres_tsvector`)
+        // rides along on every `SELECT {table}.*` a searchable collection
+        // runs, but it's a pure indexing artifact — no schema field is
+        // ever named `_search`, so nothing looks its value up — hence a
+        // placeholder rather than actually decoding `tsvector`'s wire
+        // format (which none of this crate's callers need).
+        Type::TS_VECTOR => Some(Sql::Null),
         _ => {
             return Err(DbError::Unsupported(format!(
                 "postgres column type {ty} (column {i})"

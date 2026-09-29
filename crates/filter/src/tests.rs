@@ -21,6 +21,10 @@ fn err(src: &str) -> FilterError {
     parse_and_compile(src, &TestResolver::sqlite("posts"), 0).unwrap_err()
 }
 
+fn with_err(src: &str, r: &TestResolver) -> FilterError {
+    parse_and_compile(src, r, 0).unwrap_err()
+}
+
 const CATS: &str = "json_each(COALESCE(\"posts\".\"categories\", '[]')) AS \"__e1\"";
 const CATS_EMPTY: &str = "(\"posts\".\"categories\" IS NULL OR \"posts\".\"categories\" = '' OR \"posts\".\"categories\" = '[]')";
 const TAGS: &str = "json_each(COALESCE(\"posts\".\"tags\", '[]')) AS \"__e1\" JOIN \"tags\" AS \"__r2\" ON \"__r2\".\"id\" = \"__e1\".\"value\"";
@@ -1073,6 +1077,112 @@ fn geo_distance() {
         err("geoDistance(tags.name, 1, 2, 3) < 1"),
         FilterError::Unsupported(_)
     ));
+}
+
+#[test]
+fn search_bare_predicate_compiles_to_fts_match_on_sqlite() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    let c = with(r#"search("hello world")"#, &r);
+    assert_eq!(
+        c.sql,
+        "\"posts\".\"rowid\" IN (SELECT \"rowid\" FROM \"posts_fts\" WHERE \"posts_fts\" MATCH $1)"
+    );
+    assert_eq!(c.params, vec![json!("hello world")]);
+}
+
+#[test]
+fn search_bare_predicate_compiles_to_tsquery_on_postgres() {
+    let r = TestResolver::postgres("posts")
+        .with_searchable("title")
+        .with_search_language("english");
+    let c = with(r#"search("hello world")"#, &r);
+    // `lang` is a literal (`known_ts_config`'s fixed allow-list), not a
+    // bound parameter — see `resolve_search`'s doc comment for why
+    // binding it runs into a Postgres parameter-type-inference gotcha.
+    assert_eq!(
+        c.sql,
+        "\"posts\".\"_search\" @@ websearch_to_tsquery('english', $1)"
+    );
+    assert_eq!(c.params, vec![json!("hello world")]);
+}
+
+#[test]
+fn search_defaults_to_simple_language_on_postgres_without_search_language() {
+    let r = TestResolver::postgres("posts").with_searchable("title");
+    let c = with(r#"search("x")"#, &r);
+    assert!(
+        c.sql.contains("websearch_to_tsquery('simple', "),
+        "{}",
+        c.sql
+    );
+}
+
+#[test]
+fn search_composes_with_and_or_and_explicit_comparison() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    // Combined with an ordinary comparison via `&&`.
+    let c = with(r#"search("hello") && published = true"#, &r);
+    assert!(c.sql.contains("MATCH $1)"));
+    assert!(!c.sql.contains("MATCH $1) = "), "{}", c.sql);
+    assert!(c.sql.contains("\"posts\".\"published\" = $2"));
+    // An explicit comparison against the call still works — `= false`
+    // negates the predicate directly rather than binding a redundant
+    // `false` parameter (same query-shape fix as the bare-predicate
+    // case above; see `compile_compare`'s `search(...)`-vs-bool-literal
+    // special case).
+    let c = with(r#"search("hello") = false"#, &r);
+    assert_eq!(
+        c.sql,
+        "NOT (\"posts\".\"rowid\" IN (SELECT \"rowid\" FROM \"posts_fts\" WHERE \"posts_fts\" MATCH $1))"
+    );
+    assert_eq!(c.params, vec![json!("hello")]);
+}
+
+#[test]
+fn search_sanitizes_sqlite_query_text_but_keeps_phrase_and_prefix_syntax() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    // Punctuation that has no meaning in FTS5's query grammar (and could
+    // otherwise trip its parser) is neutralized to spaces; letters,
+    // digits, spaces, `"` (phrases) and `*` (prefix) pass through
+    // untouched.
+    let c = with(r#"search("'; DROP TABLE posts; --")"#, &r);
+    assert_eq!(c.params[0], json!("   drop table posts    "));
+
+    // Also lowercased, so a bare `OR`/`AND`/`NOT` in adversarial input
+    // can't act as an FTS5 boolean operator (see `sanitize_fts5_query`'s
+    // doc comment).
+    let c = with(r#"search("hello' OR '1'='1")"#, &r);
+    assert_eq!(c.params[0], json!("hello  or  1   1"));
+
+    // Prefix matching and an explicit phrase are untouched (beyond
+    // case-folding, which doesn't change their meaning).
+    let c = with(r#"search("hel*")"#, &r);
+    assert_eq!(c.params[0], json!("hel*"));
+    let c = with(r#"search("\"Hello World\"")"#, &r);
+    assert_eq!(c.params[0], json!("\"hello world\""));
+
+    // Postgres path is untouched: `websearch_to_tsquery` is already
+    // designed to parse arbitrary/untrusted input safely, so sanitizing
+    // it further would just mangle legitimate `-word`/quoted-phrase
+    // syntax it understands natively.
+    let pg = TestResolver::postgres("posts").with_searchable("title");
+    let c = with(r#"search("'; DROP TABLE posts; --")"#, &pg);
+    assert_eq!(c.params[0], json!("'; DROP TABLE posts; --"));
+}
+
+#[test]
+fn search_rejects_a_non_literal_argument() {
+    let r = TestResolver::sqlite("posts").with_searchable("title");
+    assert!(matches!(
+        with_err(r#"search(title)"#, &r),
+        FilterError::Parse(_)
+    ));
+}
+
+#[test]
+fn search_rejects_a_collection_with_no_searchable_fields() {
+    // "posts" fixture has no searchable field by default.
+    assert!(matches!(err(r#"search("x")"#), FilterError::Unsupported(_)));
 }
 
 #[test]

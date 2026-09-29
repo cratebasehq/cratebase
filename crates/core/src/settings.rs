@@ -438,6 +438,43 @@ impl Default for Notifications {
     }
 }
 
+/// Image transforms (`GET /api/files/...?w=&h=&fit=&format=&q=`) and the
+/// storage quota. Both live under `storage` rather than `s3` — they apply
+/// to the local driver too, unlike everything else in `S3`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Storage {
+    /// Whether `?w=`/`?h=`/`?fit=`/`?format=`/`?q=` are honored at all.
+    /// `?thumb=` is unaffected either way (it predates this setting and
+    /// has always been on). Defaults to `true`.
+    pub image_transforms_enabled: bool,
+    /// The largest `w`/`h` a non-superuser request may ask for — caps
+    /// the set of distinct cached variants an attacker could otherwise
+    /// generate by varying the query string (a cache-filling DoS: each
+    /// new `w`/`h` pair is a new object written to storage). A superuser
+    /// request bypasses this. 0 means "no limit" but the setting itself
+    /// defaults to 4000 (already generous for any real thumbnail/preview
+    /// use, e.g. print-resolution images).
+    pub max_transform_dimension: u32,
+    /// Per-user storage quota in bytes: the sum of `size` across every
+    /// file field of every record whose configured owner field (see
+    /// `ownerField`) is the uploading auth record. `0`/absent disables
+    /// quota enforcement (the default) — see `crates/server/src/quota.rs`
+    /// for why this stays intentionally simple: one global byte ceiling
+    /// per auth record, not a per-collection breakdown.
+    pub user_quota_bytes: i64,
+}
+
+impl Default for Storage {
+    fn default() -> Self {
+        Storage {
+            image_transforms_enabled: true,
+            max_transform_dimension: 4000,
+            user_quota_bytes: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
@@ -455,6 +492,7 @@ pub struct Settings {
     pub queue: Queue,
     pub zip_export: ZipExport,
     pub notifications: Notifications,
+    pub storage: Storage,
     #[serde(rename = "superuserIPs")]
     pub superuser_ips: Vec<String>,
 }
@@ -556,6 +594,9 @@ mod tests {
         assert_eq!(v["batch"]["maxRequests"], 50);
         assert_eq!(v["logs"]["maxDays"], 5);
         assert_eq!(v["superuserIPs"], serde_json::json!([]));
+        assert_eq!(v["storage"]["imageTransformsEnabled"], true);
+        assert_eq!(v["storage"]["maxTransformDimension"], 4000);
+        assert_eq!(v["storage"]["userQuotaBytes"], 0);
     }
 
     #[test]

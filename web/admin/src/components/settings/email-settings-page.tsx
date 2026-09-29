@@ -2,7 +2,7 @@ import { settingsEmailRoute, type EmailTab } from "@/routes/settings-email";
 import { SETTINGS_GROUPS, isSettingsTabVisible } from "@/lib/settings-nav";
 import { useDevMailInboxAvailable, useSettings } from "@/hooks/use-settings";
 import { SettingsTabsPage } from "@/components/settings/settings-form";
-import { MailStoragePage } from "@/components/settings/mail-storage-page";
+import { EmailDeliveryPage } from "@/components/settings/email-delivery-page";
 import { EmailTemplatesPage } from "@/components/settings/email-templates-page";
 import { EmailTriggersPage } from "@/components/settings/email-triggers-page";
 import { MailLogPage } from "@/components/settings/mail-log-page";
@@ -20,7 +20,7 @@ export function EmailSettingsPage() {
   const { data: devMailInboxAvailable } = useDevMailInboxAvailable();
 
   const componentFor: Record<EmailTab, React.ReactNode> = {
-    delivery: <MailStoragePage />,
+    delivery: <EmailDeliveryPage />,
     templates: <EmailTemplatesPage />,
     triggers: <EmailTriggersPage />,
     "mail-log": <MailLogPage />,

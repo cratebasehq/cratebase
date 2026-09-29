@@ -25,7 +25,7 @@ import { createClient } from "@cratebase/client";
 
 const cb = createClient("http://localhost:8090");
 
-const posts = await cb.collection("posts").list({ filter: "published = true" });
+const posts = await cb.collection("posts").list({ filter: "published = true", search: "treasure" });
 const unsubscribe = await cb.collection("posts").subscribe("*", (e) => console.log(e.action, e.record));
 
 await cb.auth.signIn.password({ identity: "you@example.com", password: "..." });
@@ -42,7 +42,8 @@ Full documentation lives on the docs site under
 
 - `cb.collection(name)` — typed CRUD: `list`/`fullList`/`first`/`one`/`create`/`update`/`delete`/`subscribe`,
   object-options only. The `filter`/`raw` tagged templates build safe `filter=` expressions without
-  hand-escaping user input.
+  hand-escaping user input. `list({ search })` runs a full-text query over the collection's
+  `searchable` fields, ANDed onto `filter` (see [`full-text-search`](https://cratebase.dev/docs/database/full-text-search/)).
 - `cb.auth` — the whole authentication surface for one auth collection (`cb.auth.as("_superusers")`
   for another): `signUp`, `signIn.password`/`.otp`/`.code`/`.social`/`.magicLink`/`.totp`, `signOut`
   (now server-revoking, not just a client-side store wipe), `refresh`, `sessions.*` (list/revoke),
@@ -64,8 +65,11 @@ Full documentation lives on the docs site under
 - `cb.notifications` — in-app/email/push in one call: `.send(...)` (superuser/API key),
   `.list`/`.fullList`/`.subscribe` (the ordinary records API against `_notifications`),
   `.unreadCount()`, `.markRead(id)`, `.markAllRead()`.
-- `cb.files` — file URLs (with `thumb`/`download`/protected-file tokens) and batch (`cb.batch()`,
-  several writes in one request/transaction).
+- `cb.files` — file URLs (`thumb`, independent `w`/`h`/`fit`/`format`/`q` image transforms,
+  `download`, protected-file tokens) and `cb.files.upload(file, { collection, field })` — a
+  presigned direct upload (straight to S3 or a same-origin local route, not through a multipart
+  body) that returns a single-use token to pass as the field's value in the `create`/`update` that
+  follows. `cb.batch()` runs several writes in one request/transaction.
 - `cb.admin.*` — superuser-only management: collections, schema, settings, logs, backups, crons,
   storage, API keys, push, raw SQL.
 - `cb.vector`, `cb.llm`, `cb.mcp`, `cb.queue` — the Cratebase-only value-add surface, built in (this

@@ -242,6 +242,23 @@ Sending (`cb.notifications.send(...)`, superuser/API key only) and reading are i
 frontend typically only ever calls this hook; sending happens server-side via `$notify.send(...)`
 in a JS hook or from trusted backend code.
 
+## `useUpload` — presigned direct uploads with progress
+
+Wraps `client.files.upload` (presign, then `PUT` straight to storage) with `progress`/`pending`/
+`error` state and an `abort()`, instead of every caller wiring up its own `useState` around the
+same `onProgress` callback:
+
+```tsx
+const { upload, progress, pending } = useUpload(cb);
+
+async function onFileChange(file: File) {
+  const result = await upload(file, { collection: "posts", field: "cover" });
+  await cb.collection("posts").create({ id: result.recordId, title, cover: result.token });
+}
+```
+
+Composes with a caller-supplied `onProgress`/`signal` rather than overriding them.
+
 ## `useSubscription` — raw realtime events
 
 A thin, stateless primitive for callers who want raw realtime events without `useRecords`'/

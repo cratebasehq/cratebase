@@ -18,14 +18,40 @@
 //! `{collectionId}/{recordId}/thumbs_{filename}/{spec}_{filename}`, so
 //! the second request is a plain object-store read. A thumb of something
 //! that is not an image falls back to the original file with a `200`.
+//!
+//! # Image transforms
+//!
+//! `?w=&h=&fit=cover|contain|inside&format=webp|jpeg|png&q=1-100` — a more
+//! flexible sibling of `?thumb=` (which keeps working unchanged; the two
+//! are mutually exclusive, `thumb` wins if both are present) covering the
+//! same generate-once-cache-forever path ([`transform`], cached under
+//! `.../thumbs_{filename}/t_{spec}_{filename.ext}`) with three differences
+//! `?thumb=` doesn't have: an independent output `format` (so a JPEG
+//! upload can be re-served as WebP — typically 25-35% smaller at the same
+//! visual quality — without a second upload), a `q`uality dial, and
+//! `fit=inside`, which (unlike `contain`) never *up*scales a source
+//! smaller than the requested box.
+//!
+//! Gated by `settings.storage.imageTransformsEnabled` (default on);
+//! `settings.storage.maxTransformDimension` (default 4000) clamps `w`/`h`
+//! for a non-superuser request rather than rejecting it, so wildly
+//! different oversized requests (`w=999999` vs `w=1000000`) collapse onto
+//! the same capped, single cached variant instead of each minting a new
+//! object in storage — the actual DoS surface a free-form `w`/`h` opens
+//! up. AVIF was deliberately left out: the `image` crate's AVIF *decode*
+//! path needs the system `dav1d` library (not a portable, no-bloat
+//! dependency) and its encoder pulls in `rav1e`, a large additional build
+//! (see the search/storage report for the exact numbers this was measured
+//! against) for a format most CDNs/browsers already get an equivalent win
+//! from via WebP.
 
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use bytes::Bytes;
 use cratebase_core::{Collection, Field, FieldKind, FieldType, Record};
@@ -38,7 +64,7 @@ use serde_json::json;
 use crate::app::App;
 use crate::events::{collection_tags, FileDownloadEvent, FileTokenEvent};
 use crate::extract::{Auth, RequestInfo};
-use crate::http_error::{ApiError, ApiQuery, ApiResult};
+use crate::http_error::{ApiError, ApiJson, ApiQuery, ApiResult};
 use crate::routes::common;
 
 /// PocketBase's `@request.context` value while a protected file's
@@ -48,7 +74,35 @@ const PROTECTED_FILE_CONTEXT: &str = "protectedFile";
 pub fn router() -> Router<App> {
     Router::new()
         .route("/files/token", post(token))
+        .route("/files/presign", post(presign))
+        .route("/files/presign-upload/{token}", put(presign_upload))
         .route("/files/{collection}/{recordId}/{filename}", get(download))
+}
+
+/// `POST /api/files/presign` — see `crate::presign`'s module doc.
+async fn presign(
+    State(app): State<App>,
+    info: RequestInfo,
+    ApiJson(req): ApiJson<crate::presign::PresignRequest>,
+) -> ApiResult<Json<crate::presign::PresignResponse>> {
+    Ok(Json(
+        crate::presign::create_presign(&app, &info, req).await?,
+    ))
+}
+
+/// `PUT /api/files/presign-upload/{token}` — the local-storage fallback
+/// for a presigned upload: the token itself is the bearer (same trust
+/// model as an S3 presigned URL's query-string signature), so this route
+/// needs no separate auth. Rejects a body that doesn't match the ticket's
+/// declared size so a client can't smuggle a bigger file past the
+/// `maxSize` check `POST /api/files/presign` already ran.
+async fn presign_upload(
+    State(app): State<App>,
+    Path(token): Path<String>,
+    body: Bytes,
+) -> ApiResult<StatusCode> {
+    crate::presign::store_local_upload(&app, &token, body).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/files/token`. Any authenticated record may mint one; what
@@ -103,6 +157,16 @@ struct FileQuery {
     download: Option<String>,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    w: Option<String>,
+    #[serde(default)]
+    h: Option<String>,
+    #[serde(default)]
+    fit: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    q: Option<String>,
 }
 
 async fn download(
@@ -148,6 +212,24 @@ async fn download(
         {
             served_key = thumb_key;
             inline_bytes = bytes;
+        }
+    } else if app.settings().storage.image_transforms_enabled {
+        let is_superuser = info.auth.as_ref().is_some_and(|a| a.is_superuser);
+        // 0 means "no cap" — a superuser request bypasses the limit
+        // entirely, matching every other superuser-bypasses-limits rule
+        // in this codebase.
+        let max_dim = if is_superuser {
+            0
+        } else {
+            app.settings().storage.max_transform_dimension
+        };
+        if let Some(spec) = TransformSpec::parse(&query, max_dim) {
+            if let Some((transform_key, bytes)) =
+                transform(&storage, &collection.id, &record_id, &filename, &key, spec).await
+            {
+                served_key = transform_key;
+                inline_bytes = bytes;
+            }
         }
     }
 
@@ -445,6 +527,263 @@ fn render(source: &[u8], format: image::ImageFormat, spec: ThumbSpec) -> Option<
     Some(Bytes::from(out.into_inner()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransformFit {
+    /// Resize to cover the box, then center-crop — same idea as
+    /// [`ThumbMode::Crop`], just without an anchor choice.
+    Cover,
+    /// Resize to fit entirely inside the box, preserving aspect ratio;
+    /// may upscale a smaller source.
+    Contain,
+    /// Like `Contain`, but never enlarges a source already smaller than
+    /// the box in both dimensions.
+    Inside,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    /// Re-encode in the file's own existing format.
+    Same,
+    Jpeg,
+    Png,
+    WebP,
+}
+
+impl OutputFormat {
+    fn parse(raw: &str) -> Option<OutputFormat> {
+        match raw.to_ascii_lowercase().as_str() {
+            "jpeg" | "jpg" => Some(OutputFormat::Jpeg),
+            "png" => Some(OutputFormat::Png),
+            "webp" => Some(OutputFormat::WebP),
+            _ => None,
+        }
+    }
+
+    fn image_format(self, original: image::ImageFormat) -> image::ImageFormat {
+        match self {
+            OutputFormat::Same => original,
+            OutputFormat::Jpeg => image::ImageFormat::Jpeg,
+            OutputFormat::Png => image::ImageFormat::Png,
+            OutputFormat::WebP => image::ImageFormat::WebP,
+        }
+    }
+
+    fn extension(self, original: &str) -> String {
+        match self {
+            OutputFormat::Same => original.to_string(),
+            OutputFormat::Jpeg => "jpg".to_string(),
+            OutputFormat::Png => "png".to_string(),
+            OutputFormat::WebP => "webp".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TransformSpec {
+    /// `None` when the caller only asked to change `format`/`q`, keeping
+    /// the source's own dimensions.
+    width: Option<u32>,
+    height: Option<u32>,
+    fit: TransformFit,
+    format: OutputFormat,
+    /// 1-100; only meaningful for `Jpeg`/`WebP` (both `image`'s PNG
+    /// encoder and `Same` on an already-lossless format ignore it).
+    quality: u8,
+}
+
+const DEFAULT_TRANSFORM_QUALITY: u8 = 82;
+
+impl TransformSpec {
+    /// `None` when the request has none of `w`/`h`/`format`/`q` at all
+    /// (nothing to transform) — a present-but-garbage value for one of
+    /// them (an unparsable number, an unknown `fit`/`format`) is treated
+    /// the same as absent for *that* param rather than failing the whole
+    /// request, the same graceful-degradation convention `?thumb=` uses.
+    /// `max_dim` (0 = no cap) clamps `w`/`h` down rather than rejecting
+    /// an oversized request, so wildly different oversized values
+    /// collapse onto the same one capped, cached variant — see this
+    /// module's doc comment for why that's the actual DoS mitigation.
+    fn parse(query: &FileQuery, max_dim: u32) -> Option<TransformSpec> {
+        let clamp = |raw: &Option<String>| -> Option<u32> {
+            let n: u32 = raw.as_deref()?.trim().parse().ok()?;
+            if n == 0 {
+                return None;
+            }
+            Some(if max_dim > 0 { n.min(max_dim) } else { n })
+        };
+        let width = clamp(&query.w);
+        let height = clamp(&query.h);
+        let format = query
+            .format
+            .as_deref()
+            .and_then(OutputFormat::parse)
+            .unwrap_or(OutputFormat::Same);
+        let quality = query
+            .q
+            .as_deref()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map(|q| q.clamp(1, 100) as u8)
+            .unwrap_or(DEFAULT_TRANSFORM_QUALITY);
+        let fit = match query.fit.as_deref() {
+            Some("contain") => TransformFit::Contain,
+            Some("inside") => TransformFit::Inside,
+            _ => TransformFit::Cover,
+        };
+        if width.is_none() && height.is_none() && format == OutputFormat::Same {
+            return None;
+        }
+        Some(TransformSpec {
+            width,
+            height,
+            fit,
+            format,
+            quality,
+        })
+    }
+
+    /// The cache-key suffix: deterministic and injection-safe (every
+    /// component is either a bounded integer or one of a small closed
+    /// enum's variants, never raw query text).
+    fn key(&self) -> String {
+        let fit = match self.fit {
+            TransformFit::Cover => "cover",
+            TransformFit::Contain => "contain",
+            TransformFit::Inside => "inside",
+        };
+        let format = match self.format {
+            OutputFormat::Same => "same",
+            OutputFormat::Jpeg => "jpeg",
+            OutputFormat::Png => "png",
+            OutputFormat::WebP => "webp",
+        };
+        format!(
+            "t_{}x{}_{fit}_{format}_{}",
+            self.width.unwrap_or(0),
+            self.height.unwrap_or(0),
+            self.quality
+        )
+    }
+}
+
+/// Serve a cached transform, or generate and cache one. `None` means "not
+/// a transformable file" and the caller falls back to the original —
+/// same contract as [`thumb`], which this otherwise mirrors exactly.
+async fn transform(
+    storage: &cratebase_storage::Storage,
+    collection_id: &str,
+    record_id: &str,
+    filename: &str,
+    original_key: &str,
+    spec: TransformSpec,
+) -> Option<(String, Option<Bytes>)> {
+    let original_format = image::ImageFormat::from_path(filename).ok()?;
+    let out_ext = spec.format.extension(
+        std::path::Path::new(filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or(""),
+    );
+    let out_name = match std::path::Path::new(filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+    {
+        Some(stem) if !out_ext.is_empty() => format!("{stem}.{out_ext}"),
+        _ => filename.to_string(),
+    };
+    let key = format!(
+        "{}/{}_{out_name}",
+        common::thumbs_prefix(collection_id, record_id, filename),
+        spec.key()
+    );
+    if storage.exists(&key).await.unwrap_or(false) {
+        return Some((key, None));
+    }
+
+    let source = storage.get(original_key).await.ok()?;
+    let generated =
+        tokio::task::spawn_blocking(move || render_transform(&source, original_format, spec))
+            .await
+            .ok()??;
+    if let Err(e) = storage.put(&key, generated.clone()).await {
+        tracing::warn!(key = %key, error = %e, "failed to cache an image transform");
+    }
+    Some((key, Some(generated)))
+}
+
+/// Decode, resize (if `w`/`h` given) and re-encode (in `spec.format`, at
+/// `spec.quality` for lossy formats). CPU-bound, so it runs on the
+/// blocking pool, same as [`render`].
+fn render_transform(
+    source: &[u8],
+    original_format: image::ImageFormat,
+    spec: TransformSpec,
+) -> Option<Bytes> {
+    use image::codecs::jpeg::JpegEncoder;
+    use image::imageops::FilterType;
+    use image::ImageEncoder;
+
+    let image = image::load_from_memory_with_format(source, original_format).ok()?;
+    let (width, height) = (image.width().max(1), image.height().max(1));
+
+    let resized = match (spec.width, spec.height) {
+        (None, None) => image,
+        (w, h) => {
+            let target_w = w.unwrap_or_else(|| {
+                let hh = h.unwrap();
+                ((width as f64) * (hh as f64) / (height as f64))
+                    .round()
+                    .max(1.0) as u32
+            });
+            let target_h = h.unwrap_or_else(|| {
+                let ww = w.unwrap();
+                ((height as f64) * (ww as f64) / (width as f64))
+                    .round()
+                    .max(1.0) as u32
+            });
+            match spec.fit {
+                TransformFit::Contain => image.resize(target_w, target_h, FilterType::Lanczos3),
+                TransformFit::Inside if target_w >= width && target_h >= height => image,
+                TransformFit::Inside => image.resize(target_w, target_h, FilterType::Lanczos3),
+                TransformFit::Cover => {
+                    let scale =
+                        (target_w as f64 / width as f64).max(target_h as f64 / height as f64);
+                    let covered = image.resize_exact(
+                        ((width as f64 * scale).round() as u32).max(target_w),
+                        ((height as f64 * scale).round() as u32).max(target_h),
+                        FilterType::Lanczos3,
+                    );
+                    let x = covered.width().saturating_sub(target_w) / 2;
+                    let y = covered.height().saturating_sub(target_h) / 2;
+                    let mut covered = covered;
+                    image::imageops::crop(&mut covered, x, y, target_w, target_h)
+                        .to_image()
+                        .into()
+                }
+            }
+        }
+    };
+
+    let out_format = spec.format.image_format(original_format);
+    let mut out = std::io::Cursor::new(Vec::new());
+    match out_format {
+        // The plain `write_to` path doesn't expose a quality dial for
+        // JPEG, so that one case goes through the encoder directly.
+        image::ImageFormat::Jpeg => {
+            let rgb = resized.to_rgb8();
+            JpegEncoder::new_with_quality(&mut out, spec.quality)
+                .write_image(
+                    &rgb,
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .ok()?;
+        }
+        other => resized.write_to(&mut out, other).ok()?,
+    }
+    Some(Bytes::from(out.into_inner()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +876,188 @@ mod tests {
         assert!(is_active_content("application/javascript"));
         assert!(!is_active_content("text/plain"));
         assert!(!is_active_content("image/png"));
+    }
+
+    fn q(
+        w: Option<&str>,
+        h: Option<&str>,
+        fit: Option<&str>,
+        format: Option<&str>,
+        qv: Option<&str>,
+    ) -> FileQuery {
+        FileQuery {
+            thumb: None,
+            download: None,
+            token: None,
+            w: w.map(String::from),
+            h: h.map(String::from),
+            fit: fit.map(String::from),
+            format: format.map(String::from),
+            q: qv.map(String::from),
+        }
+    }
+
+    #[test]
+    fn transform_spec_parses_dimensions_fit_format_and_quality() {
+        let spec = TransformSpec::parse(
+            &q(
+                Some("200"),
+                Some("100"),
+                Some("contain"),
+                Some("webp"),
+                Some("50"),
+            ),
+            0,
+        )
+        .unwrap();
+        assert_eq!(spec.width, Some(200));
+        assert_eq!(spec.height, Some(100));
+        assert_eq!(spec.fit, TransformFit::Contain);
+        assert_eq!(spec.format, OutputFormat::WebP);
+        assert_eq!(spec.quality, 50);
+
+        // Defaults: no fit -> Cover, no q -> DEFAULT_TRANSFORM_QUALITY.
+        let spec = TransformSpec::parse(&q(Some("10"), None, None, None, None), 0).unwrap();
+        assert_eq!(spec.fit, TransformFit::Cover);
+        assert_eq!(spec.quality, DEFAULT_TRANSFORM_QUALITY);
+        assert_eq!(spec.height, None);
+
+        // Nothing to do at all (no w/h/format) is `None`, even with a q.
+        assert!(TransformSpec::parse(&q(None, None, None, None, Some("10")), 0).is_none());
+        // `format` alone (re-encode only, keep dimensions) is honored.
+        assert!(TransformSpec::parse(&q(None, None, None, Some("png"), None), 0).is_some());
+
+        // Garbage values degrade gracefully rather than erroring: an
+        // unparsable `w`, an unknown `fit`/`format`, all just fall back
+        // to "absent"/default instead of failing the whole request.
+        let spec = TransformSpec::parse(
+            &q(
+                Some("nope"),
+                Some("50"),
+                Some("nonsense"),
+                Some("bogus"),
+                None,
+            ),
+            0,
+        )
+        .unwrap();
+        assert_eq!(spec.width, None);
+        assert_eq!(spec.height, Some(50));
+        assert_eq!(spec.fit, TransformFit::Cover);
+        assert_eq!(spec.format, OutputFormat::Same);
+
+        // `q` out of 1-100 is clamped, not rejected.
+        let spec = TransformSpec::parse(&q(Some("10"), None, None, None, Some("500")), 0).unwrap();
+        assert_eq!(spec.quality, 100);
+        let spec = TransformSpec::parse(&q(Some("10"), None, None, None, Some("0")), 0).unwrap();
+        assert_eq!(spec.quality, 1);
+    }
+
+    #[test]
+    fn transform_spec_clamps_dimensions_to_max_unless_unlimited() {
+        let spec =
+            TransformSpec::parse(&q(Some("999999"), Some("1"), None, None, None), 4000).unwrap();
+        assert_eq!(spec.width, Some(4000), "clamped to the configured max");
+        // Two very different oversized requests must collapse onto the
+        // exact same clamped variant (the actual DoS mitigation).
+        let spec2 =
+            TransformSpec::parse(&q(Some("1000000"), Some("1"), None, None, None), 4000).unwrap();
+        assert_eq!(spec.key(), spec2.key());
+
+        // 0 = unlimited (the superuser-bypass case).
+        let spec = TransformSpec::parse(&q(Some("999999"), None, None, None, None), 0).unwrap();
+        assert_eq!(spec.width, Some(999999));
+
+        // `w=0`/`h=0` mean "not given", same as `?thumb=0xH` meaning
+        // "aspect-preserving", not a literal zero-sized image.
+        assert_eq!(
+            TransformSpec::parse(&q(Some("0"), Some("50"), None, None, None), 0)
+                .unwrap()
+                .width,
+            None
+        );
+    }
+
+    #[test]
+    fn render_transform_resizes_and_reencodes_a_real_image() {
+        let mut source = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(20, 10)
+            .write_to(&mut source, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = source.into_inner();
+
+        // `contain`: fit inside 8x8 preserving aspect (20x10 -> 8x4).
+        let spec = TransformSpec {
+            width: Some(8),
+            height: Some(8),
+            fit: TransformFit::Contain,
+            format: OutputFormat::Same,
+            quality: DEFAULT_TRANSFORM_QUALITY,
+        };
+        let out = render_transform(&bytes, image::ImageFormat::Png, spec).unwrap();
+        let decoded = image::load_from_memory_with_format(&out, image::ImageFormat::Png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (8, 4));
+
+        // `cover`: fills the whole 8x8 box, cropping the excess.
+        let spec = TransformSpec {
+            fit: TransformFit::Cover,
+            ..spec
+        };
+        let out = render_transform(&bytes, image::ImageFormat::Png, spec).unwrap();
+        let decoded = image::load_from_memory_with_format(&out, image::ImageFormat::Png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (8, 8));
+
+        // `inside`: the box (100x100) is bigger than the 20x10 source, so
+        // it is left alone rather than upscaled.
+        let spec = TransformSpec {
+            width: Some(100),
+            height: Some(100),
+            fit: TransformFit::Inside,
+            format: OutputFormat::Same,
+            quality: DEFAULT_TRANSFORM_QUALITY,
+        };
+        let out = render_transform(&bytes, image::ImageFormat::Png, spec).unwrap();
+        let decoded = image::load_from_memory_with_format(&out, image::ImageFormat::Png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (20, 10));
+
+        // Format conversion: re-encoded as WebP is decodable as WebP.
+        let spec = TransformSpec {
+            width: None,
+            height: None,
+            fit: TransformFit::Cover,
+            format: OutputFormat::WebP,
+            quality: DEFAULT_TRANSFORM_QUALITY,
+        };
+        let out = render_transform(&bytes, image::ImageFormat::Png, spec).unwrap();
+        let decoded = image::load_from_memory_with_format(&out, image::ImageFormat::WebP).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (20, 10));
+
+        // Format conversion to Jpeg (the quality-dial path) round-trips.
+        let spec = TransformSpec {
+            format: OutputFormat::Jpeg,
+            quality: 40,
+            ..spec
+        };
+        let out = render_transform(&bytes, image::ImageFormat::Png, spec).unwrap();
+        let decoded = image::load_from_memory_with_format(&out, image::ImageFormat::Jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (20, 10));
+
+        assert!(render_transform(b"not an image", image::ImageFormat::Png, spec).is_none());
+    }
+
+    #[test]
+    fn output_format_extension_and_parse() {
+        assert_eq!(OutputFormat::parse("JPG"), Some(OutputFormat::Jpeg));
+        assert_eq!(OutputFormat::parse("jpeg"), Some(OutputFormat::Jpeg));
+        assert_eq!(OutputFormat::parse("WEBP"), Some(OutputFormat::WebP));
+        assert_eq!(OutputFormat::parse("png"), Some(OutputFormat::Png));
+        assert_eq!(
+            OutputFormat::parse("avif"),
+            None,
+            "AVIF deliberately unsupported"
+        );
+        assert_eq!(OutputFormat::parse("bogus"), None);
+        assert_eq!(OutputFormat::Jpeg.extension("png"), "jpg");
+        assert_eq!(OutputFormat::Same.extension("png"), "png");
     }
 }

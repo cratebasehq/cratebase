@@ -17,16 +17,72 @@ const url = cb.files.url(post, post.cover);
 
 ```ts
 interface FileURLOptions {
-  thumb?: string;      // "WxH", "WxHt|b|f", "0xH", or "Wx0"
-  download?: boolean;  // force Content-Disposition: attachment
+  thumb?: string;       // "WxH", "WxHt|b|f", "0xH", or "Wx0"
+  download?: boolean;   // force Content-Disposition: attachment
   token?: string;       // protected-file token
+  // An independent image transform — mutually exclusive with `thumb`
+  // (thumb wins if both are given). See Concepts → Files → Image transforms.
+  w?: number;
+  h?: number;
+  fit?: "cover" | "contain" | "inside";
+  format?: "jpeg" | "png" | "webp";
+  q?: number;            // 1-100, ignored for lossless formats
 }
 ```
 
 ```ts
 cb.files.url(post, post.cover, { thumb: "300x300f" });
 cb.files.url(post, post.attachment, { download: true });
+cb.files.url(post, post.cover, { w: 800, format: "webp", q: 80 });
 ```
+
+## Direct uploads
+
+`cb.files.upload(file, options)` presigns a direct upload to storage (S3,
+signed — or a same-origin route for the local driver) and returns a
+single-use token, instead of sending the file's bytes through a
+multipart `create`/`update` request:
+
+```ts
+const upload = await cb.files.upload(file, { collection: "posts", field: "cover" });
+await cb.collection("posts").create({
+  id: upload.recordId, // required: the token was reserved against this id
+  title: "Hello",
+  cover: upload.token,
+});
+```
+
+Uploading into an *existing* record's field instead (an update) passes
+`recordId`, and the returned `recordId` is just an echo of that instead
+of a freshly reserved one:
+
+```ts
+const upload = await cb.files.upload(file, { collection: "posts", field: "cover", recordId: post.id });
+await cb.collection("posts").update(post.id, { cover: upload.token });
+```
+
+`onProgress` (0-1) and `signal` (`AbortSignal`) are both supported —
+`onProgress` uses `XMLHttpRequest` where available (every browser) and
+falls back to a plain `fetch` PUT (still correct, no progress
+callbacks) elsewhere, e.g. Node/SSR. `@cratebase/react`'s `useUpload()`
+wraps this with `progress`/`pending`/`error` state and an `abort()`:
+
+```tsx
+import { useUpload } from "@cratebase/react";
+
+function CoverUploader({ postId }: { postId: string }) {
+  const { upload, progress, pending } = useUpload();
+  async function onFileChange(file: File) {
+    const result = await upload(file, { collection: "posts", field: "cover", recordId: postId });
+    await cb.collection("posts").update(postId, { cover: result.token });
+  }
+  return pending ? <progress value={progress} max={1} /> : <input type="file" onChange={(e) => e.target.files?.[0] && onFileChange(e.target.files[0])} />;
+}
+```
+
+See [Files → Direct uploads](/docs/concepts/files/#direct-uploads) for
+the server side of this flow (presign validation, storage quota, ticket
+expiry).
 
 ## Protected files
 

@@ -89,6 +89,16 @@ export interface CollectionFormValue {
   createRule: string | null;
   updateRule: string | null;
   deleteRule: string | null;
+  /** Postgres text-search config used for this collection's `?search=`
+   * index — `null` falls back to `"simple"` server-side. Ignored on
+   * SQLite (FTS5 has no per-language config), but still editable there
+   * since a SQLite-today project may move to Postgres later. */
+  searchLanguage: string | null;
+  /** The field naming a record's owner, for `storage.userQuotaBytes` —
+   * `null` means this collection is never counted toward or gated by the
+   * quota. Conventionally a `relation` to `users` or a plain `text` field
+   * storing an auth record's id. */
+  ownerField: string | null;
   auth: AuthOptionsValue | null;
 }
 
@@ -362,6 +372,8 @@ export function emptyCollectionForm(type: "base" | "auth" = "base"): CollectionF
     createRule: null,
     updateRule: null,
     deleteRule: null,
+    searchLanguage: null,
+    ownerField: null,
     auth: type === "auth" ? defaultAuthOptions() : null,
   };
 }
@@ -386,6 +398,8 @@ export function collectionToFormValue(collection: CollectionModel): CollectionFo
     createRule: collection.createRule ?? null,
     updateRule: collection.updateRule ?? null,
     deleteRule: collection.deleteRule ?? null,
+    searchLanguage: collection.searchLanguage ?? null,
+    ownerField: collection.ownerField ?? null,
     auth:
       collection.type === "auth"
         ? {

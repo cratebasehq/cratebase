@@ -1,12 +1,17 @@
 import { useMemo, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { describeFailure } from "@/lib/api";
+import { TestTube } from "lucide-react";
+import { cb, describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import { settingsApplicationRoute, type ApplicationTab } from "@/routes/settings-application";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   NumberSetting,
+  SecretSetting,
   SettingRow,
   SettingsSaveBar,
   SettingsSection,
@@ -15,10 +20,12 @@ import {
 } from "@/components/settings/settings-form";
 
 /** The slice of settings this page owns. Kept as one draft across all
- * three tabs (General/Branding/Modules) — they're small enough, and share
- * a save bar, that splitting the draft per-tab would only add friction
- * (switching tabs with unsaved edits would need to warn, or lose them). */
-type Draft = Pick<ServerSettings, "meta" | "batch" | "teams" | "queue" | "zipExport">;
+ * four tabs (General/Branding/Modules/Storage) — they're small enough, and
+ * share a save bar, that splitting the draft per-tab would only add
+ * friction (switching tabs with unsaved edits would need to warn, or lose
+ * them). `s3`/`storage` (file storage + its limits) joined the other
+ * three when they moved here from Email → Delivery. */
+type Draft = Pick<ServerSettings, "meta" | "batch" | "teams" | "queue" | "zipExport" | "s3" | "storage">;
 
 function draftOf(settings: ServerSettings): Draft {
   return {
@@ -27,6 +34,25 @@ function draftOf(settings: ServerSettings): Draft {
     teams: { ...settings.teams },
     queue: { ...settings.queue },
     zipExport: { ...settings.zipExport },
+    s3: { ...settings.s3, secret: "" },
+    storage: { ...settings.storage },
+  };
+}
+
+/** Only send the S3 secret when one was typed — an empty box means "keep
+ * what is stored", not "clear it" (same convention as the SMTP password
+ * on the Email → Delivery tab). */
+function payloadOf(draft: Draft) {
+  const s3: Record<string, unknown> = { ...draft.s3 };
+  if (!draft.s3.secret) delete s3.secret;
+  return {
+    meta: draft.meta,
+    batch: draft.batch,
+    teams: draft.teams,
+    queue: draft.queue,
+    zipExport: draft.zipExport,
+    s3,
+    storage: draft.storage,
   };
 }
 
@@ -62,6 +88,12 @@ function validate(draft: Draft): string[] {
   if (draft.batch.maxRequests < 1) errors.push("A batch must allow at least one request");
   if (draft.batch.timeout < 1) errors.push("Batch timeout must be at least 1 second");
   if (draft.batch.maxBodySize < 0) errors.push("Batch max body size can't be negative");
+  if (draft.s3.enabled) {
+    if (!draft.s3.bucket.trim()) errors.push("S3 needs a bucket");
+    if (!draft.s3.endpoint.trim()) errors.push("S3 needs an endpoint");
+  }
+  if (draft.storage.maxTransformDimension < 0) errors.push("Max transform dimension can't be negative");
+  if (draft.storage.userQuotaBytes < 0) errors.push("Storage quota can't be negative");
   return errors;
 }
 
@@ -72,6 +104,14 @@ function dirtyAgainst(draft: Draft, settings: ServerSettings): boolean {
 export function ApplicationPage() {
   const { data: settings, isPending } = useSettings();
   const save = useSettingsMutation();
+  const testS3 = useMutation({
+    mutationFn: (which: "storage" | "backups") => cb.admin.settings.testS3(which),
+    onSuccess: () => toast.success("S3 reachable", { description: "The bucket answered." }),
+    onError: (error) => {
+      const failure = describeFailure(error);
+      toast.error("S3 test failed", { description: failure.serverMessage || failure.detail });
+    },
+  });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [seedKey, setSeedKey] = useState<ServerSettings | undefined>(settings);
   const search = settingsApplicationRoute.useSearch();
@@ -109,19 +149,20 @@ export function ApplicationPage() {
 
   function submit() {
     if (!draft || errors.length > 0) return;
-    save.mutate(
-      { meta: draft.meta, batch: draft.batch, teams: draft.teams, queue: draft.queue, zipExport: draft.zipExport },
-      {
-        onSuccess: () => toast.success("Settings saved"),
-        onError: (error) => {
-          const failure = describeFailure(error);
-          const fields = Object.entries(failure.fields).map(([k, v]) => `${k}: ${v}`);
-          toast.error(failure.title, {
-            description: fields.length > 0 ? fields.join("; ") : failure.serverMessage || failure.detail,
-          });
-        },
+    save.mutate(payloadOf(draft), {
+      onSuccess: () => {
+        toast.success("Settings saved");
+        // The S3 secret was consumed; clear the box so it reads as "stored".
+        setDraft((d) => (d ? { ...d, s3: { ...d.s3, secret: "" } } : d));
       },
-    );
+      onError: (error) => {
+        const failure = describeFailure(error);
+        const fields = Object.entries(failure.fields).map(([k, v]) => `${k}: ${v}`);
+        toast.error(failure.title, {
+          description: fields.length > 0 ? fields.join("; ") : failure.serverMessage || failure.detail,
+        });
+      },
+    });
   }
 
   return (
@@ -129,7 +170,7 @@ export function ApplicationPage() {
       <div className="flex flex-col">
         <h1 className="text-base font-medium tracking-tight">Application</h1>
         <p className="mt-0.5 max-w-measure text-sm text-muted-foreground">
-          How this instance identifies itself, its branding, and which optional modules are on.
+          How this instance identifies itself, its branding, which optional modules are on, and file storage.
         </p>
       </div>
 
@@ -138,6 +179,7 @@ export function ApplicationPage() {
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="branding">Branding</TabsTrigger>
           <TabsTrigger value="modules">Modules</TabsTrigger>
+          <TabsTrigger value="storage">Storage</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="pt-2">
@@ -328,6 +370,137 @@ export function ApplicationPage() {
                 checked={draft.zipExport.enabled}
                 onChange={(enabled) => patch({ zipExport: { enabled } })}
                 label={draft.zipExport.enabled ? "Enabled — restart to apply" : "Disabled"}
+              />
+            </SettingRow>
+          </SettingsSection>
+        </TabsContent>
+
+        <TabsContent value="storage" className="pt-2 flex flex-col gap-4">
+          <SettingsSection
+            title="File storage"
+            description="Where uploaded files live. Off keeps them on the server's own disk under the data directory."
+            action={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-control-sm shrink-0 gap-1.5"
+                disabled={testS3.isPending}
+                onClick={() => testS3.mutate("storage")}
+              >
+                {testS3.isPending ? <Spinner /> : <TestTube className="size-3.5" />}
+                Test connection
+              </Button>
+            }
+          >
+            <SettingRow label="Use S3" htmlFor="s3-enabled">
+              <ToggleSetting
+                id="s3-enabled"
+                checked={draft.s3.enabled}
+                onChange={(enabled) => patch({ s3: { ...draft.s3, enabled } })}
+                label={draft.s3.enabled ? "Uploads go to S3" : "Uploads stay on local disk"}
+              />
+            </SettingRow>
+            <SettingRow label="Bucket" htmlFor="s3-bucket">
+              <TextSetting
+                id="s3-bucket"
+                value={draft.s3.bucket}
+                onChange={(bucket) => patch({ s3: { ...draft.s3, bucket } })}
+                mono
+              />
+            </SettingRow>
+            <SettingRow label="Region" htmlFor="s3-region">
+              <TextSetting
+                id="s3-region"
+                value={draft.s3.region}
+                onChange={(region) => patch({ s3: { ...draft.s3, region } })}
+                placeholder="us-east-1"
+                mono
+              />
+            </SettingRow>
+            <SettingRow label="Endpoint" htmlFor="s3-endpoint" help="Any S3-compatible endpoint — R2, MinIO, Spaces.">
+              <TextSetting
+                id="s3-endpoint"
+                value={draft.s3.endpoint}
+                onChange={(endpoint) => patch({ s3: { ...draft.s3, endpoint } })}
+                placeholder="https://s3.amazonaws.com"
+                mono
+              />
+            </SettingRow>
+            <SettingRow label="Access key" htmlFor="s3-key">
+              <TextSetting
+                id="s3-key"
+                value={draft.s3.accessKey}
+                onChange={(accessKey) => patch({ s3: { ...draft.s3, accessKey } })}
+                mono
+              />
+            </SettingRow>
+            <SettingRow label="Secret" htmlFor="s3-secret" help="Never sent back. Leave blank to keep the stored one.">
+              <SecretSetting
+                id="s3-secret"
+                value={draft.s3.secret ?? ""}
+                onChange={(secret) => patch({ s3: { ...draft.s3, secret } })}
+                storedHint="•••••••• (unchanged)"
+              />
+            </SettingRow>
+            <SettingRow
+              label="Path-style URLs"
+              htmlFor="s3-path"
+              help="Needed by MinIO and some self-hosted gateways that don't support virtual-hosted buckets."
+            >
+              <ToggleSetting
+                id="s3-path"
+                checked={draft.s3.forcePathStyle}
+                onChange={(forcePathStyle) => patch({ s3: { ...draft.s3, forcePathStyle } })}
+                label={draft.s3.forcePathStyle ? "bucket in the path" : "bucket in the hostname"}
+              />
+            </SettingRow>
+          </SettingsSection>
+
+          <SettingsSection
+            title="Storage limits"
+            description="Image transforms and the per-user storage quota — both apply whether files live on local disk or S3."
+          >
+            <SettingRow
+              label="Image transforms"
+              htmlFor="storage-transforms-enabled"
+              help="Whether ?w=/?h=/?fit=/?format=/?q= are honored on the files route. ?thumb= is unaffected either way."
+            >
+              <ToggleSetting
+                id="storage-transforms-enabled"
+                checked={draft.storage.imageTransformsEnabled}
+                onChange={(imageTransformsEnabled) =>
+                  patch({ storage: { ...draft.storage, imageTransformsEnabled } })
+                }
+                label={draft.storage.imageTransformsEnabled ? "Transforms enabled" : "Transforms disabled"}
+              />
+            </SettingRow>
+            <SettingRow
+              label="Max transform dimension"
+              htmlFor="storage-max-dimension"
+              help="The largest ?w=/?h= a non-superuser request may ask for, in pixels. 0 means no limit."
+            >
+              <NumberSetting
+                id="storage-max-dimension"
+                min={0}
+                suffix="px (0 = no limit)"
+                value={draft.storage.maxTransformDimension}
+                onChange={(maxTransformDimension) =>
+                  patch({ storage: { ...draft.storage, maxTransformDimension } })
+                }
+              />
+            </SettingRow>
+            <SettingRow
+              label="Per-user storage quota"
+              htmlFor="storage-quota"
+              help="Caps the total bytes a single auth record may store across every collection with an ownerField set (see that collection's settings). 0 disables the quota."
+            >
+              <NumberSetting
+                id="storage-quota"
+                min={0}
+                suffix="bytes (0 = unlimited)"
+                value={draft.storage.userQuotaBytes}
+                onChange={(userQuotaBytes) => patch({ storage: { ...draft.storage, userQuotaBytes } })}
               />
             </SettingRow>
           </SettingsSection>

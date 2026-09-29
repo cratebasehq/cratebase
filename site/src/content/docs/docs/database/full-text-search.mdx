@@ -1,0 +1,161 @@
+---
+title: "Full-text search"
+description: "?search=, the search() filter function, query syntax, relevance, and SQLite vs Postgres performance."
+---
+
+Any `text`/`editor`/`email`/`url` field can be marked `searchable`. Once a collection has at least
+one, its records endpoint accepts `?search=` (and any API rule can use the equivalent `search()`
+filter function) to run a full-text query over those fields together — SQLite's FTS5 virtual table,
+or Postgres's generated `tsvector` column and GIN index. There is no separate search endpoint: it's
+a query-parameter mode of the same `GET /collections/{c}/records`
+[records list](/docs/reference/rest-api/records/) every collection already has.
+
+## Setup
+
+Mark a field `searchable` from the field editor in a collection's schema (or set
+`"searchable": true` on the field in `PATCH /api/collections/{id}`). Multiple fields can be
+searchable on the same collection — a query matches if it matches *any* of them, concatenated.
+Postgres additionally reads the collection's `searchLanguage` setting (e.g. `"english"`,
+`"indonesian"`; unset/unrecognized falls back to `"simple"`) to pick a text-search config with real
+stemming and stopwords — `"english"` matches "running" against a stored "run". SQLite ignores
+`searchLanguage`; FTS5 always does plain token/prefix matching, language-independent.
+
+Both index types are kept in sync automatically whenever the field's `searchable` set, the
+collection's name, or (Postgres) `searchLanguage` changes — adding, removing, or renaming a
+searchable field resyncs the index as part of that same schema-update transaction, the same as any
+other column change.
+
+## Querying
+
+```
+GET /api/collections/posts/records?search=treasure+map
+```
+
+```ts
+await cb.collection("posts").list({ search: "treasure map" });
+```
+
+`search` **ANDs onto** `filter` rather than replacing it — both narrow the same result set:
+
+```
+GET /api/collections/posts/records?search=treasure&filter=published=true
+```
+
+Equivalently, from an API rule or a hand-written `filter=`, `search("treasure")` is an ordinary
+boolean filter predicate, combinable with `&&`/`||` like any other:
+
+```
+listRule: search("treasure") && author = @request.auth.id
+```
+
+A collection with no searchable fields rejects `search()`/`?search=` with a `400` rather than
+silently matching nothing.
+
+### Query syntax
+
+| Syntax | SQLite (FTS5) | Postgres (`websearch_to_tsquery`) |
+| --- | --- | --- |
+| `word1 word2` | Matches rows containing both (implicit AND) | Same |
+| `"exact phrase"` | Matches the words adjacent, in that order | Same |
+| `word*` | Prefix match (`run*` matches "running", "runner") | Not supported — treated as a literal word |
+| `word1 or word2` | Not supported — `or` sanitizes to a literal word | Logical OR (lowercase `or` only) |
+| `-word` | Not supported — `-` sanitizes to a space | Excludes rows containing `word` |
+| `AND` / `OR` / `NOT` (uppercase) | Defused to lowercase terms, never operators | N/A (not `websearch_to_tsquery`'s syntax either) |
+
+The query text is always sent to the database as a bound parameter, never interpolated into SQL —
+at worst a malformed expression is a query error, never a SQL-injection surface. On SQLite, the
+input is additionally pre-sanitized (punctuation other than `"`/`*` becomes a space, and the whole
+string is lowercased) before it ever reaches FTS5's own MATCH parser, specifically so an adversarial
+`AND`/`OR`/`NOT` can't act as a boolean operator — legitimate quoted phrases and `*` prefixes pass
+through untouched. `websearch_to_tsquery` on Postgres needs no such pre-sanitization; it's already
+designed to parse arbitrary, untrusted input safely.
+
+### Relevance ordering
+
+Without an explicit `sort`, `?search=`/`search()` results are ordered most-relevant-first:
+SQLite's `bm25()` (ascending — lower is better), Postgres's `ts_rank()` over the same `tsvector`
+column and language the `WHERE` matched against (descending — higher is better). Passing an
+explicit `sort=` overrides this the same as it would for any other list query.
+
+### Rules
+
+`search()`/`?search=` is gated by the collection's `listRule` exactly like a plain `filter=` is — a
+non-matching or denied request gets an ordinary empty page, not an error, and a rule that scopes
+results to `author = @request.auth.id` still applies on top of the search predicate, not instead of
+it.
+
+## Performance
+
+### SQLite (FTS5)
+
+`EXPLAIN QUERY PLAN` over a `search()` predicate shows the plan reaching into the FTS5 shadow table
+(`{table}_fts`) *and* using it to drive the base table scan by `rowid`, rather than a full scan of
+the base table's text columns:
+
+```
+SEARCH posts USING INTEGER PRIMARY KEY (rowid=?)
+SCAN posts_fts VIRTUAL TABLE INDEX 0:M1
+```
+
+A 50k-row micro-benchmark (`crates/db/tests/sqlite_search_explain.rs`, best-of-5) comparing this
+against a portable `~` (`LIKE`) scan over the same column, on the machine these docs were built on —
+for a rare term (3 matching rows out of 50,003) and a common one (~10,000 matching rows), both as a
+`list` query and as the matching `COUNT`:
+
+```
+rare term ("xenolithography", 3 rows):
+  list:  search() = 0.41ms   ~ (LIKE) = 12.55ms   (search() ~31x faster)
+  count: search() = 0.39ms   ~ (LIKE) = 12.63ms   (search() ~32x faster)
+
+common term ("garlic", ~10,000 rows):
+  list:  search() = 25.85ms  ~ (LIKE) = 27.12ms   (about even)
+  count: search() = 11.31ms  ~ (LIKE) = 13.72ms   (search() ~1.2x faster)
+```
+
+`search()` clearly wins for the rare, specific queries a search box is actually for — the case that
+matters, since a term matching a fifth of the table isn't a realistic search query. It's roughly
+even for a term that unrealistically matches a large fraction of the table: once thousands of full
+rows have to be fetched either way, the win from *finding* the matching rowids stops mattering next
+to the cost of reading that many rows, whichever plan gets you there. `search()` is still correct
+and still the only way to get relevance ranking, prefix matching, and phrase queries on SQLite;
+these numbers are what this repo's own benchmark measures on its own machine, not a guarantee for
+yours — check with `EXPLAIN QUERY PLAN` and your own data at your own scale.
+
+Getting there requires the query's `WHERE` clause to hand SQLite's planner the FTS5 semi-join
+(`rowid IN (SELECT rowid FROM posts_fts WHERE posts_fts MATCH ?)`) as its own top-level boolean
+expression: wrapped in an extra `(...) = $n` equality against a *bound* parameter — which is what a
+naive compilation of `search("q") = true` produces — the planner can no longer prove the comparison
+redundant at plan time and falls back to a full `SCAN posts` re-testing subquery membership for
+every row (a `LIST SUBQUERY` probe), the shape this page used to document as the SQLite result being
+slower than `~`. `search()`'s compiled SQL avoids that wrapper (folding `search(...) = true`/`!=
+false` to the bare predicate, and their negations to `NOT (...)`) so the semi-join stays flattenable.
+
+### Postgres (GIN)
+
+At the same 50k rows, the same benchmark (`crates/db/tests/postgres_search.rs`) shows the shape a
+GIN index is built for:
+
+```
+search() = 3.1ms   ~ (ILIKE) = 29.6ms   (search() ~9.5x faster)
+```
+
+`EXPLAIN` at this table size still shows the planner honestly choosing a `Seq Scan` over the GIN
+index `idx_{table}_search` unforced — a few-megabyte, fully-cached table doesn't clear a GIN
+posting-list probe's own per-row overhead; that crossover shows up at a much larger scale (hundreds
+of thousands to millions of rows), the same shape you'd see with any GIN/GiST index on a small
+table. Forcing the index on (`SET enable_seqscan = off`) confirms it's a well-formed, usable, and
+*correct* plan — the point of that test isn't the small-table timing, it's proving the index itself
+actually works. Run `EXPLAIN` (or `EXPLAIN ANALYZE`) against the [SQL console](/docs/dashboard/) on
+your own table size to see which plan Postgres actually picks for you.
+
+## Not supported
+
+**Highlighting** (returning the matched excerpt with the term wrapped, e.g.
+`...an old <mark>treasure</mark> map...`) is not implemented. SQLite's `snippet()`/`highlight()` and
+Postgres's `ts_headline()` both exist and could back this, but neither is "free" the way relevance
+ordering already is: `snippet()`/`ts_headline()` require re-invoking the search engine on the
+matched row's actual text (not just the boolean/ranking already computed), which is a real cost per
+result row, plus new response-shape and SDK surface. It wasn't added speculatively — if you need
+highlighted excerpts today, compute them client-side from the field's returned value and the
+original query text via a simple substring/prefix match, which for most UIs (long-form search
+results) is close enough that a server round-trip for it isn't worth the API surface yet.

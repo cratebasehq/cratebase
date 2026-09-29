@@ -230,6 +230,18 @@ impl Runner {
             Box::new(|db| Box::pin(refresh_default_email_templates_up(db))),
             Box::new(|db| Box::pin(refresh_default_email_templates_down(db))),
         ));
+        // `_pendingUploads` follows the same story as `_totps`/`_rpc`
+        // above: added to `default_system_collections()` after
+        // `REFRESH_EMAIL_TEMPLATES` shipped, so an existing database
+        // needs this follow-up migration to retroactively get the table.
+        // A fresh database already has it and this migration is a no-op
+        // there. Named `19_...`: the next core migration number after
+        // `REFRESH_EMAIL_TEMPLATES` (`18_...`).
+        r.register(Migration::new(
+            ADD_PENDING_UPLOADS,
+            Box::new(|db| Box::pin(add_pending_uploads_up(db))),
+            Box::new(|db| Box::pin(add_pending_uploads_down(db))),
+        ));
         // `_notifications`/`_channels` follow the same story as every
         // migration above: added to `default_system_collections()` after
         // `REFRESH_EMAIL_TEMPLATES` shipped, so an existing database
@@ -237,7 +249,8 @@ impl Runner {
         // tables. A fresh database already has them and this migration
         // is a no-op there. Also seeds the `notification` `_emailTemplates`
         // row `$notify.send`'s email channel renders through — see
-        // `add_notifications_and_channels_up`'s doc.
+        // `add_notifications_and_channels_up`'s doc. Named `20_...`: the
+        // next core migration number after `ADD_PENDING_UPLOADS` (`19_...`).
         r.register(Migration::new(
             ADD_NOTIFICATIONS_AND_CHANNELS,
             Box::new(|db| Box::pin(add_notifications_and_channels_up(db))),
@@ -1210,6 +1223,32 @@ async fn refresh_default_email_templates_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_PENDING_UPLOADS: &str = "19_add_pending_uploads.rs";
+
+/// See `_pendingUploads`'s doc comment on
+/// [`cratebase_core::Collection::default_system_collections`] for what
+/// the table is for.
+async fn add_pending_uploads_up(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_pendingUploads").is_some() {
+        return Ok(());
+    }
+    let collection = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_pendingUploads")
+        .expect("_pendingUploads is a default system collection");
+    db.collections.insert(&*db.engine, &collection).await?;
+    Ok(())
+}
+
+async fn add_pending_uploads_down(db: &Db) -> DbResult<()> {
+    if db.collections.get_by_name("_pendingUploads").is_some() {
+        db.collections
+            .delete(&*db.engine, "_pendingUploads")
+            .await?;
+    }
+    Ok(())
+}
+
 pub const ADD_NOTIFICATIONS_AND_CHANNELS: &str = "20_add_notifications_and_channels.rs";
 
 /// Adds `_notifications`/`_channels` (see `default_system_collections`'s
@@ -1285,6 +1324,7 @@ mod tests {
                 ADD_RPC.to_string(),
                 ADD_TOTPS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
+                ADD_PENDING_UPLOADS.to_string(),
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
             ]
         );
@@ -1315,6 +1355,7 @@ mod tests {
         assert!(db.collections.get("_emailAssets").is_some());
         assert!(db.collections.get("_notifications").is_some());
         assert!(db.collections.get("_channels").is_some());
+        assert!(db.collections.get("_pendingUploads").is_some());
         assert!(db
             .collections
             .get("_emailTemplates")
@@ -1346,6 +1387,9 @@ mod tests {
             "_emailTriggers",
             "_totps",
             "_emailAssets",
+            "_pendingUploads",
+            "_notifications",
+            "_channels",
         ] {
             assert!(db.engine.table_exists(t).await.unwrap(), "{t}");
         }
@@ -1361,11 +1405,12 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 19).await.unwrap();
+        let reverted = Runner::core().down(&db, 20).await.unwrap();
         assert_eq!(
             reverted,
             vec![
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
+                ADD_PENDING_UPLOADS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
                 ADD_TOTPS.to_string(),
                 ADD_RPC.to_string(),
@@ -1766,5 +1811,17 @@ mod tests {
         add_email_triggers_up(&db).await.unwrap();
         add_email_triggers_down(&db).await.unwrap();
         assert!(db.collections.get_by_name("_emailTriggers").is_none());
+    }
+
+    #[tokio::test]
+    async fn add_pending_uploads_up_is_idempotent() {
+        let db = fresh().await;
+        assert!(db.collections.get_by_name("_pendingUploads").is_none());
+        add_pending_uploads_up(&db).await.unwrap();
+        assert!(db.collections.get_by_name("_pendingUploads").is_some());
+        // Re-running is a no-op, not an error.
+        add_pending_uploads_up(&db).await.unwrap();
+        add_pending_uploads_down(&db).await.unwrap();
+        assert!(db.collections.get_by_name("_pendingUploads").is_none());
     }
 }

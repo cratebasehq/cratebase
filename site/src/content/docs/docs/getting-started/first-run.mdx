@@ -96,8 +96,8 @@ a zero-config `Log` backend instead of failing or silently dropping it.
 Every email it "sends" — a signup verification link, a password-reset
 link, a one-time login code — lands in an in-memory dev inbox you can
 browse superuser-only at `GET /api/dev/mails`, or in the dashboard under
-**Settings → Mail inbox** (next to **Mail & storage**, which only appears
-while `Log` is actually in use). Click through the rendered HTML — links
+**Settings → Email → Dev inbox** (next to **Delivery**; Dev inbox only
+appears while `Log` is actually in use). Click through the rendered HTML — links
 open in a new tab — or read the plain-text alternative; either way the
 token is right there, no real mailbox required. Turn on real SMTP later
 (`smtp.enabled: true` or `SMTP_HOST`/`SMTP_ENABLED`, etc. — see the

@@ -303,9 +303,35 @@ export interface FakePresenceHandle {
   stop(): Promise<void>;
 }
 
-export function createFakeClient(collections: Record<string, FakeCollection<any>> = {}) {
+export interface FakeFiles {
+  upload(file: Blob & { name?: string }, options: any): Promise<{ token: string; recordId: string; filename: string }>;
+}
+
+/** A trivial fake `FilesService.upload` — resolves immediately with a
+ * deterministic token, reporting progress in three steps so a test can
+ * assert on intermediate values without a real XHR/fetch. */
+export function createFakeFiles(): FakeFiles {
+  let nextId = 1;
+  return {
+    async upload(file, options: any = {}) {
+      if (options.signal?.aborted) {
+        throw new DOMException("Upload aborted.", "AbortError");
+      }
+      options.onProgress?.(0.5);
+      options.onProgress?.(1);
+      const id = nextId++;
+      return { token: `tok_upload_${id}`, recordId: `rec_upload_${id}`, filename: file.name ?? "upload" };
+    },
+  };
+}
+
+export function createFakeClient(
+  collections: Record<string, FakeCollection<any>> = {},
+  extras: { files?: FakeFiles } = {},
+) {
   const auth = createFakeAuth();
   const collectionMap = new Map<string, FakeCollection<any>>(Object.entries(collections));
+  const files = extras.files ?? createFakeFiles();
 
   const presenceHandles: FakePresenceHandle[] = [];
   const channelMap = new Map<string, FakeChannel>();
@@ -333,6 +359,7 @@ export function createFakeClient(collections: Record<string, FakeCollection<any>
     collection: getCollection,
     channel: getChannel,
     _channels: channelMap,
+    files,
     notifications: {
       list: (options: any = {}) => getCollection("_notifications").list(options),
       fullList: (options: any = {}) => getCollection("_notifications").fullList(options),

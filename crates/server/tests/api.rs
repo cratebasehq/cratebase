@@ -375,6 +375,7 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
             "rateLimits",
             "s3",
             "smtp",
+            "storage",
             "superuserIPs",
             "teams",
             "trustedProxy",

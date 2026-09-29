@@ -34,7 +34,7 @@ export type {
 export { CollectionService } from "./records.js";
 export { RealtimeClient } from "./realtime.js";
 export { FilesService } from "./files.js";
-export type { FileURLOptions } from "./files.js";
+export type { FileURLOptions, UploadOptions, UploadResult } from "./files.js";
 export { BatchBuilder } from "./batch.js";
 export type { BatchResult } from "./batch.js";
 export { AdminNamespace } from "./admin.js";

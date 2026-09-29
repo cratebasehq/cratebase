@@ -50,6 +50,10 @@ pub const JOB_MAIL_LOG_CLEANUP: &str = "__cbMailLogCleanup__";
 /// *read* rows are pruned, see `cratebase_core::settings::Notifications`'s
 /// doc comment. Cratebase-only.
 pub const JOB_NOTIFICATIONS_CLEANUP: &str = "__cbNotificationsCleanup__";
+/// Hourly `_pendingUploads` sweep (`crate::presign::sweep_expired`):
+/// drops presigned-upload tickets that expired without being claimed,
+/// and best-effort deletes the object they reserved. Cratebase-only.
+pub const JOB_PENDING_UPLOADS_SWEEP: &str = "__cbPendingUploadsSweep__";
 
 #[derive(Clone)]
 struct Job {

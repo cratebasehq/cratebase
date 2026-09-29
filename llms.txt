@@ -61,8 +61,11 @@ source. Everything referenced below is real and current, not aspirational.
   (superuser only — this is schema management)
 - `GET/POST /collections/{idOrName}/records`,
   `GET/PATCH/DELETE /collections/{idOrName}/records/{id}`
-  (list supports `?filter=`, `?sort=`, `?page=`, `?perPage=`; create/update
-  accept JSON or `multipart/form-data` when the collection has file fields)
+  (list supports `?filter=`, `?sort=`, `?page=`, `?perPage=`, `?search=`
+  — full-text query over the collection's `searchable` fields, ANDed
+  onto `?filter=`, ranked by relevance unless `?sort=` is given, `400` if
+  the collection has none searchable; create/update accept JSON or
+  `multipart/form-data` when the collection has file fields)
 - `POST /batch` — several record create/update/upsert/delete calls (JSON
   or multipart, for file fields) in one HTTP round trip and one SQL
   transaction.
@@ -124,6 +127,20 @@ source. Everything referenced below is real and current, not aspirational.
   string-interpolated; `readOnly: true` (the default) runs inside a
   read-only transaction the same way the SQL console's read/write gate
   does. Returns `{ items: [...] }`.
+- Files: `GET /files/{collection}/{recordId}/{filename}` (gated by
+  `viewRule`) accepts `?thumb=WxH` (plus `f`/`t`/`b` fit variants) or,
+  independently, `?w=&h=&fit=cover|contain|inside&format=jpeg|png|webp&q=`
+  for an on-the-fly image transform (mutually exclusive with `?thumb=`;
+  gated by `settings.storage.imageTransformsEnabled`, dimensions clamped
+  to `settings.storage.maxTransformDimension` for non-superusers).
+  `POST /files/presign` + `PUT /files/presign-upload/{token}` (local
+  driver) or a presigned S3 URL: upload straight to storage and claim it
+  with a single-use token as a file field's value in the create/update
+  that follows, instead of a multipart body — optionally metered by
+  `settings.storage.userQuotaBytes` per auth record, scoped to whichever
+  collections set `ownerField`. `POST /files/token` mints a short-lived
+  token for a `protected` field, usable as `?token=` where an
+  `Authorization` header can't be sent (`<img src>`).
 - Geo: `filter=geoDistance(loc.lon, loc.lat, x, y) < r` (kilometers) and
   `sort=geoDistance(...)` (nearest first; `-geoDistance(...)` farthest
   first) work on both backends; on Postgres with `postgis` installed,

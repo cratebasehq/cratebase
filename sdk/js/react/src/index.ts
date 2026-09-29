@@ -54,4 +54,7 @@ export type { UseChannelOptions, UseChannelResult } from "./useChannel.js";
 export { usePresence } from "./usePresence.js";
 export type { UsePresenceOptions, UsePresenceResult } from "./usePresence.js";
 
+export { useUpload } from "./useUpload.js";
+export type { UseUploadResult } from "./useUpload.js";
+
 export { createCratebaseHooks } from "./createHooks.js";

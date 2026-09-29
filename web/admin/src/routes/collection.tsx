@@ -42,6 +42,7 @@ import { RecordsGrid, type GridColumn } from "@/components/records/records-grid"
 import type { Density } from "@/lib/grid";
 import { ColumnsMenu, SelectionBar, ViewMenu } from "@/components/records/records-toolbar";
 import { FilterBar } from "@/components/records/filter-bar";
+import { SearchBox } from "@/components/records/search-box";
 import { GridFooter } from "@/components/records/grid-footer";
 import { RecordDrawer } from "@/components/records/record-drawer";
 import { CollectionSettings } from "@/components/collections/collection-settings";
@@ -74,6 +75,9 @@ type CollectionSearch = {
   perPage?: number;
   sort?: string;
   filter?: string;
+  /** Full-text search box, shown only when the collection has at least
+   * one `searchable` field — see `query.search` below. */
+  search?: string;
   tab?: "records" | "schema" | "api";
   /** Set by a relation-value popover's "Open record" link elsewhere in the
    * dashboard — jumps straight to this collection and pops the record
@@ -106,6 +110,7 @@ function CollectionPage() {
   const page = urlSearch.page ?? 1;
   const perPage = urlSearch.perPage ?? DEFAULT_PAGE_SIZE;
   const userFilter = urlSearch.filter ?? "";
+  const userSearchQuery = urlSearch.search ?? "";
 
   const [density, setDensity] = useLocalState<Density>("cratebase:grid-density", "comfortable", isDensity);
   const [countTotal, setCountTotal] = useLocalState<boolean>("cratebase:grid-count-total", true, isBoolean);
@@ -193,11 +198,14 @@ function CollectionPage() {
     .map((f) => f.name)
     .join(",");
 
+  const hasSearchableFields = fields.some((f) => f.searchable);
+
   const query: RecordsQuery = {
     page,
     perPage,
     filter: userFilter,
     sort: sortParam,
+    search: hasSearchableFields ? userSearchQuery : "",
     expand,
     skipTotal: !countTotal,
   };
@@ -452,6 +460,13 @@ function CollectionPage() {
               fields={fields}
               extraSearchFields={collection.type === "auth" ? collection.passwordAuth?.identityFields : undefined}
             />
+            {hasSearchableFields ? (
+              <SearchBox
+                className="w-56 shrink-0"
+                value={userSearchQuery}
+                onApply={(next) => updateSearch({ search: next || undefined, page: undefined })}
+              />
+            ) : null}
             <div className="flex shrink-0 items-center gap-2">
               <ColumnsMenu prefs={columnPrefs} labels={columnLabels} locked={["id"]} />
               <ViewMenu
@@ -725,6 +740,7 @@ export const collectionRoute = createRoute({
         : undefined,
     sort: typeof search.sort === "string" ? search.sort : undefined,
     filter: typeof search.filter === "string" ? search.filter : undefined,
+    search: typeof search.search === "string" ? search.search : undefined,
     tab: search.tab === "schema" ? "schema" : search.tab === "api" ? "api" : undefined,
     openId: typeof search.openId === "string" ? search.openId : undefined,
   }),

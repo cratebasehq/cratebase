@@ -145,7 +145,7 @@ type NameAction =
   | { kind: "rename"; target: { type: "file" | "folder"; key: string } };
 
 /** Raw bucket/file browser over the storage backend configured in
- * Mail & storage (`settings.s3`), independent of any record — see
+ * Application → Storage (`settings.s3`), independent of any record — see
  * `crate::routes::file_manager`'s doc comment for why this exists next to
  * the per-record file API and what "delete" does and doesn't clean up. */
 export function FileManagerPage() {

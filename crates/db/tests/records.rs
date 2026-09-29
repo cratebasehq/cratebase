@@ -54,6 +54,7 @@ async fn fixture() -> Db {
         },
     );
     title.required = true;
+    title.searchable = true;
     insert_fields(
         &mut posts,
         vec![
@@ -1380,4 +1381,259 @@ async fn views_are_read_only_and_geo_distance_filters_run() {
         .await
         .unwrap_err();
     assert!(matches!(err, DbError::Unsupported(_)), "{err:?}");
+}
+
+// --- full-text search (`?search=`) -----------------------------------------
+
+#[tokio::test]
+async fn search_matches_ranks_by_relevance_and_composes_with_filter() {
+    let db = fixture().await;
+    // `posts.title` is `searchable` (see `fixture()`).
+    create(&db, "posts", json!({"title": "A rusty red fox"})).await;
+    create(&db, "posts", json!({"title": "The fox jumps"})).await;
+    create(&db, "posts", json!({"title": "fox fox fox here"})).await;
+    create(&db, "posts", json!({"title": "Not related at all"})).await;
+    let posts = collection(&db, "posts");
+    let ctx = superuser();
+
+    // Only rows that actually match come back.
+    let page = records::list(
+        &db,
+        &db.collections,
+        &ctx,
+        &posts,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("fox"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total_items, 3);
+    // Default ordering (no `sort` given) is most-relevant-first: the row
+    // that says "fox" three times outranks the ones that say it once.
+    assert_eq!(page.items[0].get_string("title"), "fox fox fox here");
+
+    // `search=` composes with `filter=` (AND), not instead of it.
+    let page = records::list(
+        &db,
+        &db.collections,
+        &ctx,
+        &posts,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("fox"),
+            filter: Some("title = 'The fox jumps'"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total_items, 1);
+    assert_eq!(page.items[0].get_string("title"), "The fox jumps");
+
+    // An explicit `sort=` overrides the relevance default.
+    let page = records::list(
+        &db,
+        &db.collections,
+        &ctx,
+        &posts,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("fox"),
+            sort: Some("title"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.items[0].get_string("title"), "A rusty red fox");
+
+    // No match at all is an ordinary empty page, not an error.
+    let page = records::list(
+        &db,
+        &db.collections,
+        &ctx,
+        &posts,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("nonexistentxyz"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total_items, 0);
+}
+
+#[tokio::test]
+async fn search_stays_in_sync_after_update_and_delete() {
+    let db = fixture().await;
+    let a = create(&db, "posts", json!({"title": "alpha content"})).await;
+    let b = create(&db, "posts", json!({"title": "beta content"})).await;
+    let posts = collection(&db, "posts");
+    let ctx = superuser();
+
+    let search = |q: &'static str| {
+        let db = &db;
+        let posts = posts.clone();
+        let ctx = ctx.clone();
+        async move {
+            records::list(
+                db,
+                &db.collections,
+                &ctx,
+                &posts,
+                ListParams {
+                    page: 1,
+                    per_page: 30,
+                    search: Some(q),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .total_items
+        }
+    };
+    assert_eq!(search("alpha").await, 1);
+    assert_eq!(search("beta").await, 1);
+
+    let mut updated = records::find_by_id_raw(&db, &posts, a.id()).await.unwrap();
+    updated.set("title", json!("gamma content"));
+    records::update(&db, &db.collections, &mut updated)
+        .await
+        .unwrap();
+    assert_eq!(search("alpha").await, 0);
+    assert_eq!(search("gamma").await, 1);
+
+    records::delete(&db, &db.collections, &b).await.unwrap();
+    assert_eq!(search("beta").await, 0);
+}
+
+#[tokio::test]
+async fn search_is_still_gated_by_the_list_rule() {
+    let db = fixture().await;
+    let mut secrets = Collection::new("secrets", CollectionType::Base);
+    let mut body = Field::new("body", FieldKind::default_for(FieldType::Text));
+    body.searchable = true;
+    insert_fields(&mut secrets, vec![body]);
+    // Only superusers may list — a non-superuser's `?search=` must come
+    // back empty, not bypass the rule.
+    secrets.list_rule = None;
+    db.collections.insert(&*db.engine, &secrets).await.unwrap();
+    let secrets = collection(&db, "secrets");
+    let mut record = records::from_body(secrets.clone(), &Map::new());
+    record.set("body", json!("hidden treasure"));
+    records::create(&db, &db.collections, &mut record)
+        .await
+        .unwrap();
+
+    let anon = RequestContext::default();
+    let page = records::list(
+        &db,
+        &db.collections,
+        &anon,
+        &secrets,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("treasure"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total_items, 0);
+
+    let page = records::list(
+        &db,
+        &db.collections,
+        &superuser(),
+        &secrets,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("treasure"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total_items, 1);
+}
+
+#[tokio::test]
+async fn search_query_syntax_is_safe_against_injection_and_malformed_fts_syntax() {
+    let db = fixture().await;
+    create(&db, "posts", json!({"title": "hello world"})).await;
+    let posts = collection(&db, "posts");
+    let ctx = superuser();
+
+    // A string that would be dangerous if concatenated into SQL (quotes,
+    // semicolons) is just a search query with no matches — never a SQL
+    // error, since it is always a bound parameter.
+    for q in ["'; DROP TABLE posts; --", "hello' OR '1'='1"] {
+        let page = records::list(
+            &db,
+            &db.collections,
+            &ctx,
+            &posts,
+            ListParams {
+                page: 1,
+                per_page: 30,
+                search: Some(q),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.total_items, 0, "query {q:?} must not match or error");
+    }
+
+    // FTS5 prefix matching (`term*`) works as ordinary query syntax, not
+    // something the caller has to construct specially.
+    let page = records::list(
+        &db,
+        &db.collections,
+        &ctx,
+        &posts,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("hel*"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.total_items, 1);
+
+    // Unbalanced quotes are a malformed FTS5 expression: a query error
+    // (mapped through `DbError`), never a SQL-injection surface — the
+    // text is always bound as a parameter, so at worst the FTS5 MATCH
+    // parser itself rejects its own mini-syntax.
+    let err = records::list(
+        &db,
+        &db.collections,
+        &ctx,
+        &posts,
+        ListParams {
+            page: 1,
+            per_page: 30,
+            search: Some("\"unterminated"),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, DbError::Sqlite(_) | DbError::Unsupported(_)),
+        "{err:?}"
+    );
 }

@@ -69,7 +69,8 @@ pub mod testing;
 pub use ast::{CompareOp, Expr, Literal, Modifier, Operand, FUNCTIONS};
 pub use cache::{parse_cached, CACHE_CAPACITY};
 pub use compiler::{
-    compile, compile_sort_function, parse_and_compile, resolve_sort_path, CompiledFilter,
+    compile, compile_sort_function, parse_and_compile, resolve_sort_path, sanitize_fts5_query,
+    CompiledFilter,
 };
 pub use error::FilterError;
 pub use eval::evaluate;

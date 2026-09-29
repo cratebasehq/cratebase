@@ -22,6 +22,9 @@ export interface CollectionField {
   required?: boolean;
   hidden?: boolean;
   presentable?: boolean;
+  /** Full-text-indexed — only meaningful (and only settable from the
+   * dashboard) on `text`/`editor`/`email`/`url` fields. */
+  searchable?: boolean;
   [key: string]: unknown;
 }
 
@@ -106,6 +109,15 @@ export interface CollectionModel {
   updated?: string;
   /** View collections only. */
   viewQuery?: string;
+  /** Postgres text-search config for the generated `tsvector` column
+   * when this collection has any `searchable` field (e.g. `"english"`,
+   * `"indonesian"`); `null`/absent falls back to `"simple"`. Ignored on
+   * SQLite. */
+  searchLanguage?: string | null;
+  /** The relation field naming a record's owner, for
+   * `settings.storage.userQuotaBytes`. `null`/absent means this
+   * collection never counts toward or is gated by the quota. */
+  ownerField?: string | null;
   /** Auth collections only, below. `None` = superusers only. */
   authRule?: string | null;
   manageRule?: string | null;
@@ -185,6 +197,11 @@ export interface ListOptions<T = RecordModel> {
   perPage?: number;
   sort?: SortSpec<T>;
   filter?: string;
+  /** Full-text search over the collection's `searchable` fields, ANDed
+   * onto `filter`. Ranks by relevance (SQLite: bm25; Postgres: ts_rank)
+   * unless `sort` is also given, in which case `sort` wins. A collection
+   * with no searchable fields rejects this with a 400. */
+  search?: string;
   expand?: string;
   fields?: string;
   skipTotal?: boolean;

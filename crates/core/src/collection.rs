@@ -353,6 +353,26 @@ pub struct Collection {
     pub updated: DateTime,
     /// View collections only.
     pub view_query: String,
+    /// The Postgres text-search config (`"english"`, `"indonesian"`,
+    /// ...) used to build the generated `tsvector` column when this
+    /// collection has any `searchable` field. `None`/absent falls back
+    /// to `"simple"` (no stemming/stopwords — always available, no
+    /// extra extension). Ignored on SQLite, which always uses FTS5's
+    /// own tokenizer. Not validated against Postgres's actual installed
+    /// configs here (that needs a live connection); an unknown name
+    /// falls back to `"simple"` at sync time rather than failing the
+    /// collection save.
+    #[serde(default)]
+    pub search_language: Option<String>,
+    /// The relation field (pointing at an auth collection) that names a
+    /// record's owner, for the `storage.userQuotaBytes` per-user storage
+    /// quota (`crates/server/src/quota.rs`) — quota usage is the sum of
+    /// every file field's stored size across this collection's records
+    /// whose `ownerField` equals the uploading auth record's id. `None`
+    /// (the default) means this collection never counts toward or is
+    /// gated by the quota, whatever `userQuotaBytes` is set to.
+    #[serde(default)]
+    pub owner_field: Option<String>,
     /// Auth collections only.
     #[serde(flatten)]
     pub auth: AuthOptions,
@@ -375,6 +395,8 @@ impl Default for Collection {
             created: DateTime::default(),
             updated: DateTime::default(),
             view_query: String::new(),
+            search_language: None,
+            owner_field: None,
             auth: AuthOptions::default(),
         }
     }
@@ -550,6 +572,24 @@ impl Collection {
         self.fields.iter().filter(move |f| f.field_type() == t)
     }
 
+    /// The fields that participate in this collection's full-text index,
+    /// in schema order (also the column order the FTS5/`tsvector`
+    /// expression concatenates them in).
+    pub fn searchable_fields(&self) -> impl Iterator<Item = &Field> {
+        self.fields.iter().filter(|f| f.is_searchable())
+    }
+
+    /// Whether this collection has a full-text index at all.
+    pub fn has_search_index(&self) -> bool {
+        self.searchable_fields().next().is_some()
+    }
+
+    /// The Postgres text-search config to use for this collection's
+    /// generated `tsvector`: `search_language` if set, else `"simple"`.
+    pub fn search_language_or_default(&self) -> &str {
+        self.search_language.as_deref().unwrap_or("simple")
+    }
+
     /// Identity fields usable for password login (auth collections).
     pub fn identity_fields(&self) -> Vec<String> {
         if self.auth.password_auth.identity_fields.is_empty() {
@@ -576,6 +616,8 @@ impl Collection {
         m.insert("created".into(), json!(self.created));
         m.insert("updated".into(), json!(self.updated));
         m.insert("system".into(), json!(self.system));
+        m.insert("searchLanguage".into(), json!(self.search_language));
+        m.insert("ownerField".into(), json!(self.owner_field));
         match self.collection_type {
             CollectionType::View => {
                 m.insert("viewQuery".into(), json!(self.view_query));
@@ -1693,6 +1735,61 @@ impl Collection {
         channels.indexes =
             vec!["CREATE UNIQUE INDEX `idx_channels_name` ON `_channels` (name)".into()];
 
+        // Presigned direct-upload claim tickets (`POST /api/files/presign`
+        // in the server crate): one row per outstanding upload, superuser-
+        // only end to end like `_sessions`/`_bans` above — a client never
+        // reads this collection directly, only through the presign
+        // endpoint (which returns the raw token once, never stored) and
+        // the ordinary record create/update path (which consumes a token
+        // it's handed in a file field's value). `tokenHash` is
+        // `sha256(token)`, same convention as `_sessions`/`_magicLinks`.
+        // `recordRef` is blank for a presign ahead of a *create* (the
+        // record doesn't exist yet); `status` moves from `"pending"` to
+        // `"consumed"` the moment a create/update call claims it, so a
+        // reused token is rejected rather than silently attaching the
+        // same upload twice. `expiresAt` rows past due are removed by the
+        // storage cleanup cron (`crate::routes::files`, server crate).
+        let mut pending_uploads = Collection::new("_pendingUploads", CollectionType::Base);
+        pending_uploads.system = true;
+        let mut pu_record_ref = text("recordRef");
+        pu_record_ref.required = false;
+        let mut pu_token_hash = text("tokenHash");
+        pu_token_hash.hidden = true;
+        let mut pu_size = Field::new("size", FieldKind::default_for(FieldType::Number));
+        pu_size.system = true;
+        let mut pu_status = text("status");
+        pu_status.system = true;
+        let mut pu_expires_at = Field::new(
+            "expiresAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        pu_expires_at.system = true;
+        pu_expires_at.required = true;
+        let pos = pending_uploads.fields.len() - 2;
+        pending_uploads.fields.splice(
+            pos..pos,
+            [
+                text("collectionRef"),
+                text("field"),
+                pu_record_ref,
+                text("filename"),
+                text("key"),
+                pu_size,
+                text("mime"),
+                pu_token_hash,
+                pu_status,
+                pu_expires_at,
+            ],
+        );
+        pending_uploads.indexes = vec![
+            "CREATE UNIQUE INDEX `idx_pendingUploads_tokenHash` ON `_pendingUploads` (tokenHash)"
+                .into(),
+            "CREATE INDEX `idx_pendingUploads_expiresAt` ON `_pendingUploads` (expiresAt)".into(),
+        ];
+
         vec![
             external,
             mfas,
@@ -1717,6 +1814,7 @@ impl Collection {
             email_assets,
             notifications,
             channels,
+            pending_uploads,
         ]
     }
 }
@@ -1724,6 +1822,48 @@ impl Collection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_language_defaults_to_simple_and_round_trips() {
+        let mut c = Collection::new("posts", CollectionType::Base);
+        assert_eq!(c.search_language_or_default(), "simple");
+        assert!(!c.has_search_index());
+
+        c.fields.push(Field::new(
+            "title",
+            FieldKind::Text {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                autogenerate_pattern: String::new(),
+                primary_key: false,
+            },
+        ));
+        c.fields.last_mut().unwrap().searchable = true;
+        c.search_language = Some("english".into());
+        assert!(c.has_search_index());
+        assert_eq!(c.searchable_fields().count(), 1);
+        assert_eq!(c.search_language_or_default(), "english");
+
+        let v = c.to_json();
+        assert_eq!(v["searchLanguage"], "english");
+        let back: Collection = serde_json::from_value(v).unwrap();
+        assert_eq!(back.search_language.as_deref(), Some("english"));
+    }
+
+    #[test]
+    fn owner_field_defaults_to_none_and_round_trips() {
+        let mut c = Collection::new("photos", CollectionType::Base);
+        assert!(c.owner_field.is_none());
+        c.owner_field = Some("owner".into());
+        let v = c.to_json();
+        assert_eq!(v["ownerField"], "owner");
+        let back: Collection = serde_json::from_value(v).unwrap();
+        assert_eq!(back.owner_field.as_deref(), Some("owner"));
+
+        let v2 = Collection::new("posts", CollectionType::Base).to_json();
+        assert!(v2["ownerField"].is_null());
+    }
 
     #[test]
     fn base_collection_json_has_no_auth_or_view_blocks() {
@@ -1886,6 +2026,7 @@ mod tests {
                 crate::ids::collection_id("base", "_emailAssets").as_str(),
                 crate::ids::collection_id("base", "_notifications").as_str(),
                 crate::ids::collection_id("base", "_channels").as_str(),
+                crate::ids::collection_id("base", "_pendingUploads").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");

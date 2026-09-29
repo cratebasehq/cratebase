@@ -1,7 +1,7 @@
 //! Recursive-descent parser producing an [`Expr`] tree. `||` binds looser
 //! than `&&`; parentheses group.
 
-use crate::ast::{CompareOp, Expr, Literal, Operand, FUNCTIONS};
+use crate::ast::{CompareOp, Expr, Literal, Operand, BARE_PREDICATE_FUNCTIONS, FUNCTIONS};
 use crate::error::FilterError;
 use crate::lexer::{Lexer, Token};
 
@@ -102,6 +102,22 @@ impl Parser {
 
     fn parse_comparison(&mut self) -> Result<Expr, FilterError> {
         let left = self.parse_operand()?;
+        // `search("query")` (and any other function in
+        // `BARE_PREDICATE_FUNCTIONS`) may stand alone as a whole boolean
+        // predicate, with no comparison operator: `title = "x" &&
+        // search("hello")`. Only sugars it when no operator actually
+        // follows, so `search("q") = false` still parses as an explicit
+        // comparison against that call's normal (non-sugared) result.
+        if let Operand::Call { name, .. } = &left {
+            if BARE_PREDICATE_FUNCTIONS.contains(&name.as_str()) && !self.at_comparison_operator() {
+                return Ok(Expr::Compare {
+                    left,
+                    op: CompareOp::Eq,
+                    any_of: false,
+                    right: Operand::Literal(Literal::Bool(true)),
+                });
+            }
+        }
         let (op, any_of) = match self.bump() {
             Token::Eq => (CompareOp::Eq, false),
             Token::NotEq => (CompareOp::NotEq, false),
@@ -132,6 +148,32 @@ impl Parser {
             any_of,
             right,
         })
+    }
+
+    /// Whether the current token is one of the comparison operators
+    /// `parse_comparison` accepts — used to decide whether a just-parsed
+    /// bare-predicate call (`search("q")`) should be sugared into `= true`
+    /// or left for the normal operator-then-operand path.
+    fn at_comparison_operator(&self) -> bool {
+        matches!(
+            self.peek(),
+            Token::Eq
+                | Token::NotEq
+                | Token::Gt
+                | Token::Gte
+                | Token::Lt
+                | Token::Lte
+                | Token::Like
+                | Token::NotLike
+                | Token::QEq
+                | Token::QNotEq
+                | Token::QGt
+                | Token::QGte
+                | Token::QLt
+                | Token::QLte
+                | Token::QLike
+                | Token::QNotLike
+        )
     }
 
     fn parse_operand(&mut self) -> Result<Operand, FilterError> {

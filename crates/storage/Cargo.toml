@@ -12,6 +12,8 @@ bytes.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+http = "1"
+url = "2"
 
 [dependencies.object_store]
 version = "0.14"
