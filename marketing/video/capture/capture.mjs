@@ -1,20 +1,25 @@
 // Capture real Cratebase dashboard screens for the launch film.
 //
 // Runs inside the Docker image (see ../Dockerfile) with --network host so
-// it can reach `cratebase dev` listening on the host's localhost:8090 —
-// this machine's own Chromium is missing system libs and there's no sudo.
+// it can reach a `cratebase dev` instance on the host's loopback — this
+// machine's own Chromium is missing system libs and there's no sudo.
 //
-// Auth: rather than scripting the login form for every shot, this signs
-// in once via the same REST call the dashboard itself makes
-// (`/api/collections/_superusers/auth-with-password`) and writes the
-// result straight into `localStorage["cratebase_auth"]` in the shape
-// `LocalAuthStore` expects (`{token, record}` — see
-// `sdk/js/client/src/auth-store.ts`), then reloads. Every subsequent
-// screenshot is a fresh page load already signed in.
+// v2 (art-direction rework): the film's virtual camera pushes in on single
+// details (a rule expression, a `{{user.name}}` variable, one field row),
+// so every capture is taken at deviceScaleFactor 4 on a narrow 1280px
+// viewport — the framed detail must still be ≥ 1:1 texels when a 40px
+// dashboard glyph is blown up to ~56px on a 1080p frame. Each shot also
+// writes `<name>.boxes.json`: the on-screen rect (CSS px) of every input,
+// button and text run, so camera framings and callouts in main.js anchor
+// to measured element positions instead of eyeballed pixel guesses.
 //
-// Never redraws the product UI from imagination: every PNG here is a
-// pixel-for-pixel capture of the real v0.4.0 dashboard running against
-// the demo schema/seed described in docs/shotlist.md.
+// Auth: signs in once via the same REST call the dashboard makes
+// (`/api/collections/_superusers/auth-with-password`) and writes the result
+// into `localStorage["cratebase_auth"]` in the shape `LocalAuthStore`
+// expects (`{token, record}` — `sdk/js/client/src/auth-store.ts`).
+//
+// Never redraws the product UI: every PNG is a pixel capture of the real
+// v0.4.0 dashboard running the demo schema from capture/seed.sh.
 
 import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -26,6 +31,8 @@ const OUT_DIR = process.env.CAPTURE_OUT ?? path.join(__dirname, "shots");
 const BASE_URL = process.env.CRATEBASE_URL ?? "http://127.0.0.1:8090";
 const EMAIL = process.env.CRATEBASE_SUPERUSER_EMAIL;
 const PASSWORD = process.env.CRATEBASE_SUPERUSER_PASSWORD;
+const DPR = Number(process.env.CAPTURE_DPR ?? 4);
+const VIEW_W = Number(process.env.CAPTURE_WIDTH ?? 1280);
 
 if (!EMAIL || !PASSWORD) {
   console.error(
@@ -37,31 +44,33 @@ if (!EMAIL || !PASSWORD) {
 
 mkdirSync(OUT_DIR, { recursive: true });
 
-// One row per shot in docs/shotlist.md. `tab`/`search` become the route's
-// query string (TanStack Router search params — see
-// web/admin/src/routes/collection.tsx's `CollectionSearch`).
+// One row per camera subject in docs/shotlist.md. `h` is the viewport
+// height for that shot (tall pages give the camera somewhere to travel);
+// `steps` run after load (click a row, scroll a pane) before the capture.
 const SHOTS = [
-  { name: "01-dashboard-home", path: "/_/" },
-  { name: "02-collections-places-records", path: "/_/collections/places" },
-  { name: "03-collections-places-schema-rules", path: "/_/collections/places?tab=schema" },
-  { name: "04-collections-places-api-docs", path: "/_/collections/places?tab=api" },
-  { name: "05-settings-index", path: "/_/settings" },
-  // OAuth/OIDC/TOTP providers aren't under Settings → Auth & security
-  // (that page is superusers/sessions/API keys/network) — they're the
-  // `users` auth collection's own "Auth options" panel, on its schema
-  // tab (web/admin/src/components/collections/auth-options-editor.tsx).
-  { name: "06-users-auth-options", path: "/_/collections/users?tab=schema", scrollTo: "OAuth2" },
-  { name: "07-settings-email-templates", path: "/_/settings/email?tab=templates" },
-  { name: "08-settings-email-template-editor", path: "/_/settings/email-templates/{{welcomeTemplateId}}" },
-  { name: "09-settings-rpc", path: "/_/settings/rpc" },
-  { name: "10-settings-mail-inbox", path: "/_/settings/mail-inbox" },
-  { name: "11-collections-posts-records-search", path: "/_/collections/posts" },
+  { name: "hd-overview", path: "/_/", h: 900 },
+  { name: "hd-places-schema", path: "/_/collections/places?tab=schema", h: 1560 },
+  { name: "hd-places-records", path: "/_/collections/places", h: 820 },
+  { name: "hd-places-api", path: "/_/collections/places?tab=api", h: 1200 },
+  { name: "hd-email-templates", path: "/_/settings/email?tab=templates", h: 820 },
+  { name: "hd-email-editor", path: "/_/settings/email-templates/{{welcomeTemplateId}}", h: 900, settle: 4000 },
+  {
+    name: "hd-mail-inbox",
+    path: "/_/settings/mail-inbox",
+    h: 900,
+    // capture/seed-film.sh sends one real `welcome` mail through
+    // POST /api/mails/send; open it so the reading pane shows the render.
+    steps: async (page) => {
+      await page.getByText("Welcome", { exact: false }).first().click({ timeout: 5000 });
+      await page.waitForTimeout(1500);
+    },
+  },
 ];
 
-async function findWelcomeTemplateId(request) {
+async function findWelcomeTemplateId(request, token) {
   const res = await request.get(
     `${BASE_URL}/api/collections/_emailTemplates/records?filter=${encodeURIComponent('key = "welcome"')}`,
-    { headers: { Authorization: `Bearer ${global.__token}` } },
+    { headers: { Authorization: `Bearer ${token}` } },
   );
   const body = await res.json();
   const item = body.items?.[0];
@@ -69,71 +78,83 @@ async function findWelcomeTemplateId(request) {
   return item.id;
 }
 
+// Every visible input/textarea (with its value), button, and text run, in
+// CSS px relative to the viewport. Text runs are measured per text node
+// with a Range, so a single token like `owner = @request.auth.id` inside a
+// larger block still gets its own rect.
+function dumpBoxes() {
+  const out = [];
+  const vh = window.innerHeight;
+  const vw = window.innerWidth;
+  const keep = (r) => r.width >= 1 && r.height >= 1 && r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+  const rect = (r) => ({ x: +r.x.toFixed(1), y: +r.y.toFixed(1), w: +r.width.toFixed(1), h: +r.height.toFixed(1) });
+  for (const el of document.querySelectorAll("input, textarea")) {
+    const r = el.getBoundingClientRect();
+    if (keep(r)) out.push({ kind: el.tagName.toLowerCase(), text: (el.value || el.placeholder || "").slice(0, 200), ...rect(r) });
+  }
+  for (const el of document.querySelectorAll("button, a, [role=tab], [role=switch]")) {
+    const r = el.getBoundingClientRect();
+    const text = (el.innerText || el.getAttribute("aria-label") || "").trim();
+    if (keep(r)) out.push({ kind: "button", text: text.slice(0, 200), ...rect(r) });
+  }
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  while (walker.nextNode()) {
+    const n = walker.currentNode;
+    const text = n.textContent.replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    range.selectNodeContents(n);
+    const r = range.getBoundingClientRect();
+    if (keep(r)) out.push({ kind: "text", text: text.slice(0, 200), ...rect(r) });
+  }
+  return out;
+}
+
 async function main() {
   const browser = await chromium.launch();
-  const context = await browser.newContext({
-    viewport: { width: 1600, height: 1000 },
-    deviceScaleFactor: 2, // high-DPI, per the brief
-  });
+  const context = await browser.newContext({ viewport: { width: VIEW_W, height: 900 }, deviceScaleFactor: DPR });
   const page = await context.newPage();
   const request = context.request;
 
-  // Sign in exactly the way the dashboard does, then seed localStorage
-  // so every navigation below loads already authenticated.
   const authRes = await request.post(`${BASE_URL}/api/collections/_superusers/auth-with-password`, {
     data: { identity: EMAIL, password: PASSWORD },
   });
-  if (!authRes.ok()) {
-    throw new Error(`Superuser auth failed: ${authRes.status()} ${await authRes.text()}`);
-  }
+  if (!authRes.ok()) throw new Error(`Superuser auth failed: ${authRes.status()} ${await authRes.text()}`);
   const auth = await authRes.json();
-  global.__token = auth.token;
 
   await page.goto(`${BASE_URL}/_/`);
-  await page.evaluate(
-    ({ token, record }) => {
-      localStorage.setItem("cratebase_auth", JSON.stringify({ token, record }));
-    },
-    { token: auth.token, record: auth.record },
-  );
+  await page.evaluate(({ token, record }) => {
+    localStorage.setItem("cratebase_auth", JSON.stringify({ token, record }));
+  }, auth);
 
-  const welcomeTemplateId = await findWelcomeTemplateId(request);
+  const welcomeTemplateId = await findWelcomeTemplateId(request, auth.token);
   const manifest = [];
 
   for (const shot of SHOTS) {
     const url = shot.path.replace("{{welcomeTemplateId}}", welcomeTemplateId);
     try {
-      // Not "networkidle": the dashboard opens a long-lived SSE realtime
-      // subscription on most screens (GET /api/realtime), which never
-      // goes idle and would time this out. "load" + a settle delay is
-      // the reliable option against this app. The email template editor
-      // additionally loads a third-party rich editor into an iframe
-      // (React Email Editor), so it gets a longer settle delay.
+      await page.setViewportSize({ width: VIEW_W, height: shot.h });
+      // Not "networkidle": the dashboard holds a long-lived SSE realtime
+      // subscription (GET /api/realtime) that never goes idle.
       await page.goto(`${BASE_URL}${url}`, { waitUntil: "load", timeout: 30000 });
-      const settleMs = shot.name.includes("template-editor") ? 4000 : 1200;
-      await page.waitForTimeout(settleMs);
-      if (shot.scrollTo) {
-        await page
-          .getByText(shot.scrollTo, { exact: false })
-          .first()
-          .scrollIntoViewIfNeeded({ timeout: 5000 })
-          .catch(() => {});
-        await page.waitForTimeout(300);
-      }
+      await page.waitForTimeout(shot.settle ?? 1500);
+      if (shot.steps) await shot.steps(page);
       const file = path.join(OUT_DIR, `${shot.name}.png`);
-      await page.screenshot({ path: file, fullPage: false, timeout: 45000 });
-      manifest.push({ name: shot.name, path: shot.path, file: path.basename(file) });
-      console.log(`captured ${shot.name} -> ${file}`);
+      await page.screenshot({ path: file, fullPage: false, timeout: 60000 });
+      const boxes = await page.evaluate(dumpBoxes);
+      writeFileSync(
+        path.join(OUT_DIR, `${shot.name}.boxes.json`),
+        JSON.stringify({ dpr: DPR, width: VIEW_W, height: shot.h, boxes }, null, 1),
+      );
+      manifest.push({ name: shot.name, path: shot.path, file: path.basename(file), dpr: DPR, width: VIEW_W, height: shot.h });
+      console.log(`captured ${shot.name} (${VIEW_W}x${shot.h} @${DPR}x, ${boxes.length} boxes)`);
     } catch (err) {
-      // One flaky shot (a slow third-party iframe, a transient SSE
-      // reconnect) should never sink the rest of the capture run — log
-      // it in the manifest as failed and keep going.
       console.error(`FAILED ${shot.name}: ${err.message}`);
       manifest.push({ name: shot.name, path: shot.path, failed: true, error: err.message });
     }
   }
 
-  writeFileSync(path.join(OUT_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
+  writeFileSync(path.join(OUT_DIR, "manifest-hd.json"), JSON.stringify(manifest, null, 2));
   await browser.close();
 }
 

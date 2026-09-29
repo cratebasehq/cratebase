@@ -96,4 +96,11 @@ curl -sS -X POST "$BASE_URL/api/collections/posts/records" -H "Authorization: Be
 curl -sS -X POST "$BASE_URL/api/collections/posts/records" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d "{\"title\":\"Draft: nearest-place notes\",\"body\":\"<p>PostGIS acceleration notes, not published yet.</p>\",\"published\":false,\"author\":\"$NICO\"}" > /dev/null
 
+echo "== one real welcome mail (for the dev inbox shot) =="
+# The film's Email chapter shows the real rendered template with
+# {{user.name}} resolved — sent through the same endpoint the SDK's
+# cb.mails.send({ template, to, data }) calls.
+curl -sS -X POST "$BASE_URL/api/mails/send" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"template":"welcome","to":"amara@cratebase.dev","data":{"user":{"name":"Amara"}}}' > /dev/null
+
 echo "Done. places/posts seeded, ready for capture/capture.mjs."
