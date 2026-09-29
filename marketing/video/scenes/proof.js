@@ -136,8 +136,11 @@ export default [
       if (on3) {
         const pg = Math.floor((t - 52.0) / 0.5) % 2 === 1;
         const flip = snappy(t - (52.0 + Math.floor((t - 52.0) / 0.5) * 0.5));
-        html(s.env, `DATABASE_URL=<span style="color:#ef7d3e">${pg ? "postgres://…" : "sqlite://…"}</span>`);
-        S(s.env, { fontSize: px((P ? 50 : 72) * u), transform: `translate3d(${px(L.m)},${px(P ? L.H * 0.36 : L.H * 0.44)},0)`, clipPath: `inset(0 0 ${((1 - flip) * 100).toFixed(1)}% 0)` });
+        // only the value rolls (old value up and out, new value up and in); the key stays put
+        const cur = pg ? "postgres://…" : "sqlite://…", prev = pg ? "sqlite://…" : "postgres://…";
+        const first = t < 52.5;
+        html(s.env, `DATABASE_URL=<span style="display:inline-block;overflow:hidden;vertical-align:top;height:1.2em;line-height:1.2em"><span style="display:block;color:#ef7d3e;transform:translateY(${first ? 0 : (-flip * 50).toFixed(2)}%)">${first ? cur : prev}<br>${cur}</span></span>`);
+        S(s.env, { fontSize: px((P ? 50 : 72) * u), lineHeight: "1.2em", transform: `translate3d(${px(L.m)},${px(P ? L.H * 0.36 : L.H * 0.44)},0)`, clipPath: "none" });
         html(s.res, `<span style="color:#eef1f4">cb.collection("places").list({ search: "coffee" })</span>\n\n→ Kopi Kenangan Senopati`);
         S(s.res, { fontSize: px((P ? 30 : 46) * u), transform: `translate3d(${px(L.m)},${px(P ? L.H * 0.47 : L.H * 0.58)},0) translateY(${((1 - heavy(t - 52.1)) * 40).toFixed(1)}px)` });
       }
