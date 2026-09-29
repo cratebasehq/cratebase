@@ -10,6 +10,22 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-node cron could run the same tick twice** — the guard that was
+  supposed to keep a Postgres cluster from running a scheduled tick on
+  more than one node was a transaction-scoped advisory lock
+  (`pg_try_advisory_xact_lock`), released as soon as the *checking*
+  transaction committed — before the winning node's job body had
+  necessarily finished. A slower sibling node could pass the same check
+  afterward and run the same tick again. `_cronRuns` rows now carry a
+  canonical `tickAt` (the scheduled minute, identical on every node) and
+  a run claims it with a real `UNIQUE (jobId, tickAt)` database
+  constraint (`INSERT ... ON CONFLICT DO NOTHING` / `INSERT OR IGNORE`)
+  instead of a lock, for both SQL `_cron_jobs` and JS `cronAdd` runs.
+  Existing `_cronRuns` rows are backfilled a `tickAt` where it can be
+  determined unambiguously; single-node SQLite behavior is unchanged.
+
 ## 0.6.0 — 2026-09-29
 
 Background jobs, webhooks and cron you can rely on in production, plus
