@@ -83,7 +83,7 @@ jobs — see [Crons](/docs/reference/rest-api/crons/).
 | --- | --- |
 | `enabled` | `true` |
 | `excludedIPs` | `[]` |
-| `rules` | six built-in rules, see below |
+| `rules` | eight built-in rules, see below |
 
 Each rule is `{ label, audience, duration, maxRequests }` — `label` is a
 path prefix (`/api/`), an exact path, or a `<collection-or-*>:<tag>` pair
@@ -98,6 +98,8 @@ defaults:
 | `/api/batch` | `""` | 1s | 3 |
 | `mails:send` | `""` | 60s | 20 |
 | `mails:send:user` | `@auth` | 60s | 10 |
+| `realtime:publish` | `""` | 10s | 60 |
+| `realtime:presence` | `""` | 10s | 120 |
 | `/api/` | `""` | 10s | 300 |
 
 `mails:send:user` only ever applies to a non-superuser/non-API-key caller
@@ -173,6 +175,17 @@ backends:
 | `apns.keyId` / `apns.teamId` / `apns.bundleId` | `""` | From the Apple Developer portal. |
 | `apns.production` | `false` | Picks `api.push.apple.com` over the sandbox host. |
 | `triggers` | `[]` | Record-event → push rules: `{ enabled, collection, events, title, body, targetField }`. `events` is a comma-separated subset of `create`/`update`/`delete`; `title`/`body` are `{{field}}`-templated against the triggering record; an empty `targetField` broadcasts to every enabled subscription, a non-empty one scopes delivery to subscriptions whose `recordRef` matches that field's value. |
+
+## `notifications`
+
+| Key | Default |
+| --- | --- |
+| `retentionDays` | `90` |
+
+Prunes **read** [`_notifications`](/docs/concepts/notifications/) rows
+older than `retentionDays` on the same `0 */6 * * *` cadence as
+`logs.mailLogMaxDays`; an unread notification is kept regardless of age.
+`<= 0` disables cleanup.
 
 ## `superuserIPs`
 

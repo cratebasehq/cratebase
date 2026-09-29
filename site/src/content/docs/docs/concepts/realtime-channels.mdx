@@ -1,0 +1,156 @@
+---
+title: "Realtime channels & presence"
+description: "Topics not tied to any record - chat rooms, cursors, live counters - plus who's currently connected to one."
+---
+
+[Realtime](/docs/concepts/realtime/) subscriptions are about *records*:
+a collection or a specific row, filtered by that collection's `listRule`.
+A **channel** is the opposite — a topic that exists only because an
+operator configured it, with no backing collection at all. It rides the
+exact same `GET /api/realtime` SSE connection and `LISTEN`/`NOTIFY`
+cross-node bridge, just addressed as `channel:<name>` instead of a
+collection name.
+
+## Authorization: `_channels`
+
+No collection, no `listRule` — so authorization comes from a dedicated
+system collection instead. A `_channels` row's `name` is either an exact
+channel name (`"room1"`) or a prefix pattern ending in `*`
+(`"room:*"` matches `"room:1"`, `"room:vip:2"`, ...; the longest matching
+prefix wins when more than one row could match). Its `subscribeRule` and
+`publishRule` follow the same convention as
+[`_emailTemplates.sendRule`](/docs/email/templates/#sendrule-who-else-can-send-this):
+
+| Value | Meaning |
+| --- | --- |
+| `null` (default) | Superuser/API key only |
+| `""` | Anyone, including anonymous callers |
+| a filter expression | Evaluated per caller |
+
+**No matching row at all disables the channel** — the secure default.
+Nothing is subscribable or publishable until an operator explicitly
+configures it, in the dashboard (Settings → Automation → Realtime
+channels) or via the records API against `_channels` directly.
+
+A rule expression sees `@request.auth.*` (the caller, or all-`null` when
+anonymous) and two channel-specific values: `@request.data.channel` (the
+full channel name) and `@request.data.suffix` (the part matched by a
+prefix pattern's `*` — empty for an exact-name match). A common pattern
+for a per-user private channel:
+
+```
+name: "user:*"
+subscribeRule: "@request.data.suffix = @request.auth.id"
+```
+
+`subscribeRule` is re-checked **per subscriber, on every delivery** —
+the same way a collection's `listRule` is — not just once at subscribe
+time. Revoking access (deleting the `_channels` row, tightening the
+rule, or the caller signing out) takes effect on the very next message,
+not just the next reconnect. `publishRule` is checked once,
+synchronously, when a publish call is made.
+
+## Publishing and subscribing
+
+```ts
+const room = cb.channel("room1");
+
+const unsubscribe = await room.subscribe((message) => {
+  console.log(message.event, message.data);
+});
+
+await room.publish("chat", { text: "hi", from: "Ada" });
+```
+
+Server-side, from a JS hook, at the trusted-code tier (no `publishRule`
+check — the same trust tier as `$app.save`):
+
+```js
+$realtime.publish("room1", "chat", { text: "System message" });
+```
+
+See the [REST API reference](/docs/reference/rest-api/realtime/#channels)
+for the raw `POST /realtime/channels/{name}/publish` shape and the
+413-on-oversized-payload limit.
+
+## Presence
+
+Presence answers "who's here right now" — built on the same channel,
+gated by the same `subscribeRule`:
+
+```ts
+const room = cb.channel("room1");
+
+await room.presence.track({ name: "Ada", cursor: [120, 84] });
+const members = await room.presence.list();
+const stopWatching = await room.presence.onChange((kind, member) => {
+  // kind: "join" | "update" | "leave"
+  console.log(kind, member.clientId, member.state);
+});
+```
+
+A member is **removed automatically** — no explicit "leave" call needed
+— when its `GET /realtime` connection disconnects (a closed tab, a lost
+network), or after ~45 seconds with no heartbeat. Call `presence.track`
+again periodically (`useChannel`/`usePresence` below do this for you) to
+stay listed.
+
+### React: a chat room with presence
+
+```tsx
+import { useChannel, usePresence } from "@cratebase/react";
+
+function ChatRoom({ name }: { name: string }) {
+  const { lastMessage, publish } = useChannel<{ text: string; from: string }>("room:" + name, {
+    onMessage: (m) => console.log("chat event", m.event, m.data),
+  });
+  const { members } = usePresence("room:" + name, { name: currentUserName });
+
+  return (
+    <div>
+      <p>{members.length} here: {members.map((m) => String(m.state && (m.state as any).name)).join(", ")}</p>
+      {lastMessage ? <p>{lastMessage.data.from}: {lastMessage.data.text}</p> : null}
+      <button onClick={() => void publish("chat", { text: "hi", from: currentUserName })}>Send</button>
+    </div>
+  );
+}
+```
+
+`usePresence(name, state, options?)` heartbeats `state` for as long as
+the component is mounted and `state` isn't `null` — pass `null` to
+observe a channel's presence without tracking any of your own. This is a
+different hook from the older, collection-backed `useRecordPresence` (a
+client-side heartbeat + staleness-window pattern over an ordinary
+collection, still exported, still works, just renamed so this name could
+mean the new server-authoritative presence — see the
+[SDK changelog](/docs/project/changelog/) if you're migrating from the
+old `usePresence`).
+
+## Multi-node notes
+
+Everything above works identically behind a load balancer with several
+app instances sharing one Postgres database: a publish or presence
+update always also goes out over `pg_notify` (the same bridge
+[Realtime](/docs/concepts/realtime/) uses for record events,
+distinguished by a `"kind"` field in the payload), so a subscriber
+connected to a *different* node than the publisher still receives it. A
+presence member's home node crashing (or losing network) is handled by
+the same TTL: every other node drops its replica of that member ~45
+seconds after the crashed node's last heartbeat relay, and tells its own
+subscribers with a `presence.leave` — no manual cleanup required.
+
+On SQLite (single-node by construction), channels and presence work
+identically minus the cross-node bridge, which is simply a no-op there.
+
+## Limits
+
+- A publish's `event` + `data` together may not exceed roughly 7.5KB —
+  larger than that risks exceeding Postgres's 8000-byte `NOTIFY` payload
+  cap, so it's refused outright with `413` rather than silently failing
+  cross-node delivery.
+- `realtime:publish` and `realtime:presence` are separate
+  [rate-limit](/docs/deploy/rate-limiting/) tags with their own default
+  rules, tunable like any other.
+- Presence's `GET .../stats` inspector (dashboard: Settings → Automation
+  → Realtime channels) reports one node's own counts, not a cluster-wide
+  total.
