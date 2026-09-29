@@ -45,7 +45,14 @@ export class RealtimeClient {
     handler: (event: unknown) => void,
     options: SubscribeOptions = {},
   ): Promise<() => void> {
-    const key = topicKey(collection, topic, options);
+    return this.subscribeTopic(topicKey(collection, topic, options), handler);
+  }
+
+  /** `subscribe`, minus the `"${collection}/${topic}"` key-building —
+   * used directly by `cb.channel(name)` (`cratebase-only.ts`'s
+   * `createChannel`), whose topic (`channel:<name>`) is already a
+   * complete, flat string rather than a collection/topic pair. */
+  async subscribeTopic(key: string, handler: (event: unknown) => void): Promise<() => void> {
     let set = this.listeners.get(key);
     if (!set) {
       set = new Set();
@@ -60,6 +67,19 @@ export class RealtimeClient {
       if (set && set.size === 0) this.listeners.delete(key);
       if (this.clientId) await this.syncSubscriptions();
     };
+  }
+
+  /** This connection's `GET /api/realtime` client id, connecting first if
+   * necessary. Presence tracking needs this: the server ties a presence
+   * heartbeat to a live SSE stream so it can auto-leave on disconnect
+   * (`crates/server/src/realtime.rs`'s `channel_presence_track`), so
+   * `cb.channel(name).presence.track(...)` calls this before its own
+   * `POST .../presence` rather than requiring the caller to already be
+   * subscribed to something first. */
+  async ensureClientId(): Promise<string> {
+    await this.ensureConnected();
+    if (!this.clientId) throw new Error("realtime client id is not available");
+    return this.clientId;
   }
 
   async stop(): Promise<void> {

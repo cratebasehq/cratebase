@@ -500,6 +500,42 @@ declare const $mails: {
   send(options: MailsSendOptions): MailsSendResult;
 };
 
+interface NotifySendOptions {
+  /** A recipient record id, or an array of them. */
+  to: string | string[];
+  /** The recipient auth collection; defaults to `"users"`. */
+  collection?: string;
+  type: string;
+  title: string;
+  body: string;
+  data?: Record<string, unknown>;
+  link?: string;
+  /** Defaults to every channel: `["inapp", "email", "push"]`. */
+  channels?: Array<"inapp" | "email" | "push">;
+}
+
+interface NotifySendResult {
+  sent: number;
+  recipients: string[];
+}
+
+declare const $notify: {
+  /** In-app/email/push notifications in one call — creates a
+   * `_notifications` row per recipient (so a realtime subscription on
+   * that collection sees it immediately), then best-effort delivers the
+   * `email`/`push` channels unless `channels` narrows which ones run. */
+  send(options: NotifySendOptions): NotifySendResult;
+};
+
+declare const $realtime: {
+  /** Broadcast `{event, data}` to every current subscriber of
+   * `channel:<channel>`, local and cross-node alike. The channel's
+   * `_channels` row (`publishRule`) gates this exactly as it would an
+   * HTTP `POST /api/realtime/channels/{name}/publish` — no matching row,
+   * or a rule that rejects the call, throws. */
+  publish(channel: string, event: string, data?: unknown): void;
+};
+
 declare const $filesystem: {
   fileFromPath(path: string, name?: string): FileMarker;
   fileFromBytes(bytes: number[] | Uint8Array | string, name?: string): FileMarker;

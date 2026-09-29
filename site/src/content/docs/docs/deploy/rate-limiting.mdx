@@ -11,3 +11,15 @@ you already have. `PATCH /api/settings` or the dashboard's **Network**
 page manage rules; per-collection tags fall out of the same
 `{collection}:{action}` derivation from the request's own URL shape, with
 a collection-name autocomplete in the dashboard editor.
+
+A handful of endpoints that aren't shaped like `{collection}:{action}`
+get their own hand-derived tags, each with a default rule out of the
+box:
+
+| Tag | Endpoint |
+| --- | --- |
+| `mails:send` | `POST /api/mails/send` — every caller |
+| `mails:send:user` | `POST /api/mails/send`, non-superuser callers only (tighter, per-caller) |
+| `rpc:{name}` | `POST /api/rpc/{name}` — one bucket per RPC definition |
+| `realtime:publish` | `POST /api/realtime/channels/{name}/publish` — shared by every channel, not one bucket per name |
+| `realtime:presence` | `POST /api/realtime/channels/{name}/presence` — the heartbeat, looser than `publish` |

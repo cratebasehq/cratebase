@@ -767,6 +767,23 @@
     send: (message) => hostCall("mailsSend", message || {}),
   };
 
+  // In-app/email/push notifications in one call — `crate::notify::send`
+  // (server crate) resolves `to` (a single id or an array), creates the
+  // `_notifications` row(s), and best-effort delivers the `email`/`push`
+  // channels unless `channels` narrows which ones run.
+  const $notify = {
+    send: (input) => hostCall("notifySend", input || {}),
+  };
+
+  // Realtime channels (not tied to any record/collection) —
+  // `crate::realtime::publish_channel` (server crate). Authorization is
+  // the target channel's `_channels` row (`publishRule`); no matching row
+  // means the channel is disabled and this throws, same as an HTTP
+  // `POST /api/realtime/channels/{name}/publish` would 403.
+  const $realtime = {
+    publish: (channel, event, data) => hostCall("realtimePublish", String(channel), String(event), data === undefined ? null : data),
+  };
+
   function bytesOf(value) {
     if (typeof value === "string") return Array.from(new TextEncoder().encode(value));
     if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
@@ -1166,6 +1183,8 @@
     $security,
     $tokens,
     $mails,
+    $notify,
+    $realtime,
     $filesystem,
     $apis,
     $dbx,

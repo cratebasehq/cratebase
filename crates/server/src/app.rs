@@ -949,6 +949,42 @@ impl App {
                     }
                 }
             });
+
+        let app = self.clone();
+        let _ = self
+            .inner
+            .cron
+            .add(cron::JOB_NOTIFICATIONS_CLEANUP, "0 */6 * * *", move || {
+                let app = app.clone();
+                async move {
+                    let days = app.settings().notifications.retention_days;
+                    if days <= 0 {
+                        return;
+                    }
+                    let cutoff = cratebase_core::DateTime::from_utc(
+                        chrono::Utc::now() - chrono::Duration::days(days),
+                    );
+                    // Only rows the recipient has already read: an unread
+                    // notification is kept regardless of age (see
+                    // `cratebase_core::settings::Notifications`'s doc
+                    // comment) — `readAt`'s zero value is `''`, never a
+                    // date `<` any real cutoff, so this WHERE clause
+                    // already excludes every unread row on its own.
+                    let sql =
+                        r#"DELETE FROM "_notifications" WHERE "readAt" != '' AND "readAt" < $1"#;
+                    match app
+                        .db()
+                        .execute(sql, &[Sql::Text(cutoff.to_pb_string())])
+                        .await
+                    {
+                        Ok(n) if n > 0 => {
+                            tracing::info!(removed = n, "pruned old read _notifications rows")
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "_notifications cleanup failed"),
+                    }
+                }
+            });
     }
 
     /// Add/remove the scheduled-backup job to match `settings.backups.cron`.

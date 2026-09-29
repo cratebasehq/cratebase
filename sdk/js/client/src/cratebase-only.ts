@@ -259,6 +259,187 @@ export async function previewMail(sender: Sender, options: PreviewMailOptions): 
   return sender.send<PreviewMailResult>("/api/mails/preview", { method: "POST", body: options });
 }
 
+/** A `_notifications` row (`crates/core/src/collection.rs`'s
+ * `default_system_collections` comment on `notifications`), as returned
+ * by `cb.notifications.list()`/`.markRead()`/a realtime subscription. */
+export interface NotificationRecord extends RecordModel {
+  type: string;
+  title: string;
+  body: string;
+  data: unknown;
+  link: string;
+  /** Empty string until the recipient marks this notification read. */
+  readAt: string;
+}
+
+export type NotificationChannel = "inapp" | "email" | "push";
+
+export interface SendNotificationOptions {
+  /** One recipient record id, or several. */
+  to: string | string[];
+  /** The recipient auth collection; defaults to `"users"`. */
+  collection?: string;
+  type: string;
+  title: string;
+  body: string;
+  data?: unknown;
+  link?: string;
+  /** Defaults to every channel (`["inapp", "email", "push"]`). */
+  channels?: NotificationChannel[];
+}
+
+export interface SendNotificationResult {
+  sent: number;
+  recipients: string[];
+}
+
+/** `cb.notifications.send(...)` — `POST /api/notifications/send`,
+ * superuser/API-key only (an operator/integration action that can target
+ * *any* record, same trust tier as `cb.push` — see
+ * `crate::routes::notifications`'s module doc). Fans the notification out
+ * across `options.channels` (in-app row + realtime, email via the
+ * `notification` template, push via `_push_subscriptions`) — see
+ * `crate::notify` (server crate) for the full per-channel contract. The
+ * same pipeline runs server-side as `$notify.send` in a JS hook. */
+export async function sendNotification(
+  sender: Sender,
+  options: SendNotificationOptions,
+): Promise<SendNotificationResult> {
+  return sender.send<SendNotificationResult>("/api/notifications/send", { method: "POST", body: options });
+}
+
+/** `cb.notifications.unreadCount()` — `GET /api/notifications/unread-count`,
+ * a cheap index-backed `COUNT(*)` scoped to the caller's own recipient
+ * rows (any authenticated record, not superuser-only). */
+export async function unreadNotificationCount(sender: Sender): Promise<number> {
+  const res = await sender.send<{ count: number }>("/api/notifications/unread-count");
+  return res.count;
+}
+
+export interface MarkAllNotificationsReadResult {
+  updated: number;
+}
+
+/** `cb.notifications.markAllRead()` — `POST /api/notifications/read-all`:
+ * marks every one of the caller's own unread notifications read in one
+ * call, rather than a `readAt` update per row. */
+export async function markAllNotificationsRead(sender: Sender): Promise<MarkAllNotificationsReadResult> {
+  return sender.send<MarkAllNotificationsReadResult>("/api/notifications/read-all", { method: "POST" });
+}
+
+// ---------------------------------------------------------------------
+// Realtime channels + presence (`crates/server/src/realtime.rs`'s
+// "Realtime channels + presence" section)
+// ---------------------------------------------------------------------
+
+/** One `{event, data}` message published on a channel — includes the
+ * three well-known presence events (`"presence.join"`/`.update`/`.leave`)
+ * a subscriber gets alongside whatever custom events a publisher sends;
+ * `channel.presence.onChange` is a filtered, typed convenience over the
+ * same stream for those three specifically. */
+export interface ChannelMessage<T = unknown> {
+  event: string;
+  data: T;
+}
+
+/** `{id, collectionName}` for whoever was authenticated when they
+ * published/tracked presence, or `null` when they were anonymous. */
+export interface ChannelAuth {
+  id: string;
+  collectionName: string;
+}
+
+export interface PresenceMember<T = unknown> {
+  clientId: string;
+  state: T;
+  auth: ChannelAuth | null;
+}
+
+export type PresenceEventKind = "join" | "update" | "leave";
+
+export interface ChannelPresence<T = unknown> {
+  /** `POST /api/realtime/channels/{name}/presence` — send/refresh this
+   * connection's own presence state. Ties to the current
+   * `GET /api/realtime` SSE stream (connecting first if necessary), so
+   * the server can automatically remove it if that stream disconnects
+   * without an explicit leave. Call again on a timer (a few times more
+   * often than the server's presence TTL, currently 45s — see
+   * `PRESENCE_TTL` in `crates/server/src/realtime.rs`) to stay listed;
+   * `useChannel`/`usePresence` (`@cratebase/react`) do this for you. */
+  track(state: T): Promise<void>;
+  /** `GET /api/realtime/channels/{name}/presence` — the current member
+   * list, in join order. */
+  list(): Promise<PresenceMember<T>[]>;
+  /** Fires on every `presence.join`/`.update`/`.leave` for this channel —
+   * a filtered view over the same stream `channel.subscribe` sees.
+   * Returns an unsubscribe function. */
+  onChange(handler: (kind: PresenceEventKind, member: PresenceMember<T>) => void): Promise<() => void>;
+}
+
+export interface Channel<T = unknown> {
+  readonly name: string;
+  /** `POST /api/realtime/channels/{name}/publish` — broadcast one
+   * `{event, data}` message to every current subscriber, local and
+   * cross-node alike. Refused (403) unless the channel's `_channels` row
+   * (`publishRule`) allows this caller — with no matching row, the
+   * channel is disabled by default. Oversized `data` is refused with 413
+   * rather than silently failing cross-node delivery. */
+  publish(event: string, data?: T): Promise<void>;
+  /** Subscribe to every message published on this channel (including
+   * presence events — see `ChannelMessage`'s doc comment). Requires the
+   * channel's `subscribeRule` to allow this caller; an unauthorized
+   * subscribe silently receives nothing rather than throwing (re-checked
+   * on every delivery, so a rule edit or login/logout takes effect on the
+   * very next message). Returns an unsubscribe function. */
+  subscribe(handler: (message: ChannelMessage<T>) => void): Promise<() => void>;
+  presence: ChannelPresence<T>;
+}
+
+/** `cb.channel(name)` — see `Channel`'s own doc comments for what each
+ * method does. Creating a `Channel` does no network I/O by itself; the
+ * first `subscribe`/`publish`/`presence.*` call is what actually opens
+ * the SSE connection or makes the HTTP request. */
+export function createChannel<T = unknown>(sender: Sender, realtime: RealtimeClient, name: string): Channel<T> {
+  const base = `/api/realtime/channels/${encodeURIComponent(name)}`;
+  const topic = `channel:${name}`;
+
+  const presence: ChannelPresence<T> = {
+    async track(state) {
+      const clientId = await realtime.ensureClientId();
+      await sender.send<{ event: string }>(`${base}/presence`, {
+        method: "POST",
+        body: { clientId, state },
+      });
+    },
+    async list() {
+      const res = await sender.send<{ members: PresenceMember<T>[] }>(`${base}/presence`);
+      return res.members;
+    },
+    async onChange(handler) {
+      return realtime.subscribeTopic(topic, (raw) => {
+        const msg = raw as ChannelMessage<PresenceMember<T>>;
+        if (msg.event === "presence.join") handler("join", msg.data);
+        else if (msg.event === "presence.update") handler("update", msg.data);
+        else if (msg.event === "presence.leave") handler("leave", msg.data);
+      });
+    },
+  };
+
+  return {
+    name,
+    async publish(event, data) {
+      await sender.send<void>(`${base}/publish`, {
+        method: "POST",
+        body: { event, data: data ?? null },
+      });
+    },
+    async subscribe(handler) {
+      return realtime.subscribeTopic(topic, (raw) => handler(raw as ChannelMessage<T>));
+    },
+    presence,
+  };
+}
+
 /** Reads a magic-link token out of the current page's URL (or an
  * explicitly-passed one), matching the default
  * `authOptions.magicLink.urlTemplate` (`.../auth/magic-link?token=...`).

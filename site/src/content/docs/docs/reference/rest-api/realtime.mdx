@@ -33,3 +33,57 @@ Two realtime event kinds outside this pub/sub model ride the same `GET
 /realtime` connection: `llm_chunk`/`llm_done`/`llm_error` from the
 [LLM chat gateway](/docs/reference/rest-api/llm/), keyed by `clientId`
 rather than a collection subscription.
+
+## Channels
+
+See [Concepts → Realtime channels & presence](/docs/concepts/realtime-channels/)
+for the full authorization model. A channel is a topic not tied to any
+record: subscribe to it the same way as a collection, with the literal
+string `channel:<name>` in `POST /realtime`'s `subscriptions` array —
+e.g. `{ "clientId": "...", "subscriptions": ["channel:room1"] }`.
+
+### `POST /realtime/channels/{name}/publish`
+
+```json
+{ "event": "chat", "data": { "text": "hi" } }
+```
+
+Broadcasts `{event, data}` to every current subscriber of `channel:{name}`,
+on every node sharing this database. `204` on success. Requires the
+channel's `_channels` row to have a `publishRule` that allows this
+caller — with no matching row at all, the channel is disabled and this
+is `403`. `data` (plus `event`) is capped at ~7.5KB; a larger publish is
+refused with `413` rather than silently failing cross-node delivery
+(Postgres's own `NOTIFY` payload cap is 8000 bytes).
+
+### `POST /realtime/channels/{name}/presence`
+
+```json
+{ "clientId": "abc123...", "state": { "name": "Ada", "cursor": [120, 84] } }
+```
+
+A presence heartbeat: `clientId` must be a connection already open via
+`GET /realtime`. Every subscriber of `channel:{name}` receives a
+`presence.join` (first heartbeat) or `presence.update` (later ones) event
+with `{ clientId, state, auth }`. Call this again on an interval (a few
+times more often than 45s) to stay listed — a member is automatically
+removed, and every subscriber gets a `presence.leave`, when its `GET
+/realtime` connection disconnects or 45 seconds pass with no heartbeat.
+`200` with `{ "event": "presence.join" | "presence.update" }` on
+success; `404` if `clientId` isn't a live connection; `403` if this
+channel's `subscribeRule` doesn't allow this caller.
+
+### `GET /realtime/channels/{name}/presence`
+
+```json
+{ "members": [{ "clientId": "abc123...", "state": { "name": "Ada" }, "auth": { "id": "u1", "collectionName": "users" } }] }
+```
+
+The channel's current members, gated by the same `subscribeRule` as
+tracking presence.
+
+### `GET /realtime/channels/{name}/stats`
+
+Superuser/API-key only: `{ "subscribers": 3, "presence": 1 }` — this
+node's own live counts, for the dashboard's Realtime channels inspector.
+Node-local, not a cluster-wide total.

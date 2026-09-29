@@ -1,0 +1,130 @@
+---
+title: "Notifications"
+description: "In-app, email, and push notifications from one call — $notify.send or POST /api/notifications/send."
+---
+
+`_notifications` is a system collection like any other: `recipient` is
+stored as `collectionRef`/`recordRef` (an auth record in *any* auth
+collection, not just `users`), plus `type`, `title`, `body`, `data`
+(arbitrary JSON), an optional `link`, and `readAt` (`null` until read).
+Rules let a recipient list/view/delete their own rows, and update only
+`readAt` — every other field is server-authored.
+
+## Sending
+
+One call fans a notification out across up to three channels:
+
+```js
+// JS hook (pb_hooks/*.pb.js)
+$notify.send({
+  to: record.get("authorId"),
+  type: "comment",
+  title: "New comment",
+  body: `${author.name} replied to your post`,
+  link: `/posts/${record.get("postId")}`,
+  data: { postId: record.get("postId") },
+});
+```
+
+```ts
+// From a trusted server (or a dashboard/tooling call) — superuser/API key
+await cb.notifications.send({
+  to: userId,
+  type: "comment",
+  title: "New comment",
+  body: `${author.name} replied to your post`,
+  link: `/posts/${postId}`,
+});
+```
+
+Both call the same pipeline (`POST /api/notifications/send` — see its
+[REST reference](/docs/reference/rest-api/notifications/) for the full
+body shape). `channels` defaults to every channel; narrow it with e.g.
+`channels: ["inapp"]` to skip email/push for a low-priority notification.
+
+- **In-app** always creates a `_notifications` row and announces it over
+  realtime — a client subscribed to `_notifications` (or using
+  `cb.notifications.subscribe`/`useNotifications`, below) sees it
+  immediately.
+- **Email** renders the `notification` `_emailTemplates` row (seeded by
+  default, editable like any other template — see
+  [Email → Templates](/docs/email/templates/)) with `{ title, body, link }`,
+  and is skipped for a recipient with no `email` value.
+- **Push** delivers to every one of the recipient's enabled
+  `_push_subscriptions` rows — see
+  [Push notifications](/docs/reference/rest-api/push/).
+
+Called from a JS hook bound to a record write (`onRecordAfterCreateSuccess`,
+say), `$notify.send` defers the email/push delivery and the `_notifications`
+write until *after* that hook's own transaction commits — the same
+pattern `$mails.send` uses — so a notification is never sent for a write
+that ends up rolling back.
+
+## Reading
+
+```ts
+const { items } = await cb.notifications.list({ sort: "-created" });
+const unread = await cb.notifications.unreadCount();
+await cb.notifications.markRead(notificationId);
+await cb.notifications.markAllRead();
+
+const unsubscribe = await cb.notifications.subscribe((event) => {
+  console.log(event.action, event.record);
+});
+```
+
+`list`/`fullList`/`subscribe` are the ordinary records API against
+`_notifications` — `owner_rule` already scopes every call to the
+signed-in caller's own rows. `unreadCount`/`markAllRead` are the two
+Cratebase-only endpoints that don't fit that shape (a `COUNT(*)` and a
+bulk update, respectively).
+
+## React: a notification bell with an unread badge
+
+```tsx
+import { useNotifications } from "@cratebase/react";
+
+function NotificationBell() {
+  const { items, unreadCount, loading, markRead, markAllRead } = useNotifications();
+
+  return (
+    <div className="relative">
+      <button aria-label="Notifications">
+        🔔
+        {unreadCount > 0 ? (
+          <span className="badge">{unreadCount > 99 ? "99+" : unreadCount}</span>
+        ) : null}
+      </button>
+      {!loading ? (
+        <div className="dropdown">
+          {unreadCount > 0 ? <button onClick={() => void markAllRead()}>Mark all read</button> : null}
+          <ul>
+            {items.map((n) => (
+              <li key={n.id} className={n.readAt ? "read" : "unread"} onClick={() => void markRead(n.id)}>
+                <strong>{n.title}</strong>
+                <p>{n.body}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+```
+
+`useNotifications()` fetches the caller's own notifications and unread
+count, keeps both live via a realtime subscription (debounced, so a
+burst of sends only refetches once), and exposes `markRead`/`markAllRead`
+already wired to refresh afterward. Pass an explicit client
+(`useNotifications(cb)`) instead of `<CratebaseProvider>` if you're not
+using the context form — see [React SDK](/docs/sdk/react/).
+
+## Retention
+
+`settings.notifications.retentionDays` (default 90; dashboard: Settings
+→ Integrations → Notifications) auto-deletes **read** notifications
+older than N days on a background cron, same cadence as the mail log's
+own retention. An unread notification is kept regardless of age — it's
+never silently deleted out from under a recipient who hasn't seen it
+yet. Set to `0` to disable cleanup entirely.

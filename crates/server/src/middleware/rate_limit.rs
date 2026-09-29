@@ -344,6 +344,20 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             }
             return tags;
         }
+        // `POST /api/realtime/channels/{name}/publish` and
+        // `.../presence` (`crate::realtime`) — one bucket per action,
+        // shared by every channel (a per-channel tag would let an
+        // attacker just rotate channel names to dodge the limit).
+        Some("realtime") => {
+            if segments.next() == Some("channels") && segments.next().is_some() {
+                match segments.next() {
+                    Some("publish") => tags.push("realtime:publish".into()),
+                    Some("presence") => tags.push("realtime:presence".into()),
+                    _ => {}
+                }
+            }
+            return tags;
+        }
         _ => return tags,
     }
     let (Some(collection), Some(action)) = (segments.next(), segments.next()) else {

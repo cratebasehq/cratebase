@@ -743,7 +743,12 @@ async fn dispatch_trigger(app: App, event: String, collection_name: String, reco
     }
 }
 
-async fn deliver_and_cleanup(
+/// Send one subscription's payload and disable it on a dead-token
+/// response. `pub(crate)` so `crate::notify`'s push channel (`$notify.send`/
+/// `POST /api/notifications/send`) can reuse the exact same delivery/
+/// cleanup behavior as a `settings.push.triggers` dispatch, rather than a
+/// second copy that could drift (e.g. forget to disable a dead token).
+pub(crate) async fn deliver_and_cleanup(
     app: App,
     service: PushService,
     id: String,

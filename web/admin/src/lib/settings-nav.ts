@@ -211,6 +211,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         description: "Custom server-side JavaScript hooks and the routes they register.",
         legacyPath: "/settings/functions",
       },
+      {
+        value: "realtime",
+        label: "Realtime channels",
+        description: "Topics not tied to any record - chat rooms, cursors, live counters - and who may subscribe/publish/presence-track each one.",
+        legacyPath: "/settings/realtime",
+        collection: "_channels",
+      },
     ],
   },
   {
@@ -238,6 +245,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         label: "MCP server",
         description: "Every non-system collection exposed to Model Context Protocol clients.",
         legacyPath: "/settings/mcp",
+      },
+      {
+        value: "notifications",
+        label: "Notifications",
+        description: "Retention for in-app notifications sent via $notify.send / POST /api/notifications/send.",
+        legacyPath: "/settings/notifications",
+        collection: "_notifications",
       },
     ],
   },
