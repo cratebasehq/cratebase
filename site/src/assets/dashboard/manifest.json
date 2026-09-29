@@ -1,0 +1,17 @@
+{
+  "source": "Real pixel captures of the Cratebase v0.4.0 admin dashboard (cratebase 0.4.0, x86_64-unknown-linux-musl), via Playwright against a locally seeded `cratebase dev` instance. Viewport 1600x1000, deviceScaleFactor 2 (3200x2000 PNGs).",
+  "capturedAt": "2026-09-29",
+  "shots": [
+    { "name": "01-dashboard-home", "route": "/_/", "light": "light/01-dashboard-home.png", "dark": "dark/01-dashboard-home.png", "failed": false, "note": "Includes the default onboarding checklist (fresh browser profile, never dismissed)." },
+    { "name": "02-collections-places-records", "route": "/_/collections/places", "light": "light/02-collections-places-records.png", "dark": "dark/02-collections-places-records.png", "failed": false },
+    { "name": "03-collections-places-schema-rules", "route": "/_/collections/places?tab=schema", "light": "light/03-collections-places-schema-rules.png", "dark": "dark/03-collections-places-schema-rules.png", "failed": false },
+    { "name": "04-collections-places-api-docs", "route": "/_/collections/places?tab=api", "light": "light/04-collections-places-api-docs.png", "dark": "dark/04-collections-places-api-docs.png", "failed": false },
+    { "name": "05-settings-index", "route": "/_/settings", "light": "light/05-settings-index.png", "dark": "dark/05-settings-index.png", "failed": false },
+    { "name": "06-users-auth-options", "route": "/_/collections/users?tab=schema", "light": "light/06-users-auth-options.png", "dark": "dark/06-users-auth-options.png", "failed": false, "note": "users auth collection's schema tab, scrolled to the OAuth2/TOTP/magic-link auth-options panel." },
+    { "name": "07-settings-email-templates", "route": "/_/settings/email?tab=templates", "light": "light/07-settings-email-templates.png", "dark": "dark/07-settings-email-templates.png", "failed": false },
+    { "name": "08-settings-email-template-editor", "route": "/_/settings/email-templates/{welcomeTemplateId}", "light": "light/08-settings-email-template-editor.png", "dark": "dark/08-settings-email-template-editor.png", "failed": false, "note": "Welcome email template, switched to the rich Visual editor mode (tiptap-based; the HTML/Visual toggle defaults to HTML)." },
+    { "name": "09-settings-rpc", "route": "/_/settings/rpc", "light": "light/09-settings-rpc.png", "dark": "dark/09-settings-rpc.png", "failed": false },
+    { "name": "10-settings-mail-inbox", "route": "/_/settings/mail-inbox", "light": "light/10-settings-mail-inbox.png", "dark": "dark/10-settings-mail-inbox.png", "failed": false },
+    { "name": "11-collections-posts-records-search", "route": "/_/collections/posts", "light": "light/11-collections-posts-records-search.png", "dark": "dark/11-collections-posts-records-search.png", "failed": false }
+  ]
+}
