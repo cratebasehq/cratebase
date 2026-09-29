@@ -256,6 +256,28 @@ impl Runner {
             Box::new(|db| Box::pin(add_notifications_and_channels_up(db))),
             Box::new(|db| Box::pin(add_notifications_and_channels_down(db))),
         ));
+        // `_webhookDeliveries`/`_cronRuns` follow the same story as every
+        // migration above: added to `default_system_collections()` after
+        // `ADD_NOTIFICATIONS_AND_CHANNELS` shipped, so an existing
+        // database needs this follow-up migration to retroactively get
+        // both tables. Also adds `_webhooks.maxAttempts`/`.consecutiveFailures`
+        // (same "alter an existing collection" story as `ADD_SUPERUSER_ROLE`/
+        // `ADD_API_KEY_SCOPING` above) and, if `_queue_jobs` already
+        // exists — it's provisioned on demand by
+        // `crate::queue::ensure_collection` in the server crate, not by
+        // any migration, so it may or may not be present here — its new
+        // `dedupeKey`/`priority` columns too. A fresh database already has
+        // every piece of this and every step is a no-op there; no
+        // backfill is needed anywhere, since every new column's physical
+        // zero default (`''`/`0`/`NULL`) already preserves today's
+        // behavior (no dedupe key, default priority, zero consecutive
+        // failures). Named `21_...`: the next core migration number after
+        // `ADD_NOTIFICATIONS_AND_CHANNELS` (`20_...`).
+        r.register(Migration::new(
+            ADD_JOBS_AND_WEBHOOKS_RELIABILITY,
+            Box::new(|db| Box::pin(add_jobs_and_webhooks_reliability_up(db))),
+            Box::new(|db| Box::pin(add_jobs_and_webhooks_reliability_down(db))),
+        ));
         r
     }
 
@@ -1285,6 +1307,147 @@ async fn add_notifications_and_channels_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_JOBS_AND_WEBHOOKS_RELIABILITY: &str = "21_add_jobs_and_webhooks_reliability.rs";
+
+/// `dedupeKey`/`priority`, matching what `crate::queue::build_collection`
+/// (server crate) gives a fresh `_queue_jobs`. Duplicated here — rather
+/// than imported, since `crates/db` doesn't depend on `crates/server` —
+/// kept deliberately tiny (two fields, one match arm) so the duplication
+/// stays cheap to keep in sync if that shape ever changes.
+fn queue_job_field(name: &str) -> Field {
+    match name {
+        "dedupeKey" => {
+            let mut f = Field::new(
+                "dedupeKey",
+                cratebase_core::FieldKind::Text {
+                    min: 0,
+                    max: 0,
+                    pattern: String::new(),
+                    autogenerate_pattern: String::new(),
+                    primary_key: false,
+                },
+            );
+            f.system = true;
+            f.required = false;
+            f
+        }
+        "priority" => {
+            let mut f = Field::new(
+                "priority",
+                cratebase_core::FieldKind::Number {
+                    min: None,
+                    max: None,
+                    only_int: true,
+                },
+            );
+            f.system = true;
+            f.required = false;
+            f
+        }
+        other => unreachable!("unknown _queue_jobs field {other}"),
+    }
+}
+
+/// Adds any of `fields` (by name) that `previous` is missing, inserting
+/// each right before `created`/`updated` — the same insertion point
+/// `default_system_collections` itself uses — and updates the collection
+/// if at least one was actually missing. A no-op (no `collections.update`
+/// call at all) when `previous` already has every field, so re-running
+/// this against an already-migrated database costs nothing beyond the
+/// lookups.
+async fn add_missing_fields(
+    db: &Db,
+    previous: &Collection,
+    fields: impl IntoIterator<Item = Field>,
+) -> DbResult<()> {
+    let mut next = previous.clone();
+    let mut pos = next.fields.len() - 2;
+    let mut changed = false;
+    for field in fields {
+        if next.fields.iter().any(|f| f.name == field.name) {
+            continue;
+        }
+        next.fields.insert(pos, field);
+        pos += 1;
+        changed = true;
+    }
+    if changed {
+        db.collections.update(&*db.engine, &next).await?;
+    }
+    Ok(())
+}
+
+async fn add_jobs_and_webhooks_reliability_up(db: &Db) -> DbResult<()> {
+    for name in ["_webhookDeliveries", "_cronRuns"] {
+        if db.collections.get_by_name(name).is_some() {
+            continue;
+        }
+        let collection = Collection::default_system_collections()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} is a default system collection"));
+        db.collections.insert(&*db.engine, &collection).await?;
+    }
+
+    if let Some(previous) = db.collections.get_by_name("_webhooks") {
+        let template = Collection::default_system_collections()
+            .into_iter()
+            .find(|c| c.name == "_webhooks")
+            .expect("_webhooks is a default system collection");
+        let fields = ["maxAttempts", "consecutiveFailures"].into_iter().map(|name| {
+            template
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("_webhooks template has {name}"))
+                .clone()
+        });
+        add_missing_fields(db, &previous, fields).await?;
+    }
+
+    if let Some(previous) = db.collections.get_by_name("_queue_jobs") {
+        let fields = ["dedupeKey", "priority"].into_iter().map(queue_job_field);
+        add_missing_fields(db, &previous, fields).await?;
+    }
+
+    Ok(())
+}
+
+/// Drops `_webhookDeliveries`/`_cronRuns` and the `_webhooks`/`_queue_jobs`
+/// fields added by the `up` side above.
+async fn add_jobs_and_webhooks_reliability_down(db: &Db) -> DbResult<()> {
+    for name in ["_webhookDeliveries", "_cronRuns"] {
+        if db.collections.get_by_name(name).is_some() {
+            db.collections.delete(&*db.engine, name).await?;
+        }
+    }
+    if let Some(previous) = db.collections.get_by_name("_webhooks") {
+        if previous
+            .fields
+            .iter()
+            .any(|f| f.name == "maxAttempts" || f.name == "consecutiveFailures")
+        {
+            let mut next = (*previous).clone();
+            next.fields
+                .retain(|f| f.name != "maxAttempts" && f.name != "consecutiveFailures");
+            db.collections.update(&*db.engine, &next).await?;
+        }
+    }
+    if let Some(previous) = db.collections.get_by_name("_queue_jobs") {
+        if previous
+            .fields
+            .iter()
+            .any(|f| f.name == "dedupeKey" || f.name == "priority")
+        {
+            let mut next = (*previous).clone();
+            next.fields
+                .retain(|f| f.name != "dedupeKey" && f.name != "priority");
+            db.collections.update(&*db.engine, &next).await?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,6 +1489,7 @@ mod tests {
                 REFRESH_EMAIL_TEMPLATES.to_string(),
                 ADD_PENDING_UPLOADS.to_string(),
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
+                ADD_JOBS_AND_WEBHOOKS_RELIABILITY.to_string(),
             ]
         );
         assert_eq!(
@@ -1405,10 +1569,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 20).await.unwrap();
+        let reverted = Runner::core().down(&db, 21).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_JOBS_AND_WEBHOOKS_RELIABILITY.to_string(),
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
                 ADD_PENDING_UPLOADS.to_string(),
                 REFRESH_EMAIL_TEMPLATES.to_string(),
