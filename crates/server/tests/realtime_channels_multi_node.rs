@@ -18,6 +18,15 @@ use cratebase_server::config::Config;
 use futures::{Stream, StreamExt};
 use serde_json::{json, Value};
 
+/// Both tests below wipe and rebuild the shared `TEST_POSTGRES_URL`
+/// database's `public` schema in `two_nodes` — same race `postgres_geo.rs`
+/// documents on its own copy of this mutex. Without this, the default
+/// test harness running both `#[tokio::test]` functions in this file
+/// concurrently can have one test's `DROP SCHEMA public CASCADE` run
+/// while the other is mid-bootstrap, surfacing as a spurious "schema
+/// \"public\" does not exist" or "relation ... does not exist" error.
+static ONE_TEST_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn node_config(url: &str, dir: &std::path::Path) -> Config {
     Config {
         database_url: url.to_string(),
@@ -178,6 +187,7 @@ async fn two_nodes(url: &str) -> (std::net::SocketAddr, std::net::SocketAddr, re
 
 #[tokio::test]
 async fn cross_node_channel_publish_round_trips_through_postgres_listen_notify() {
+    let _guard = ONE_TEST_AT_A_TIME.lock().await;
     let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
         eprintln!(
             "skipping cross_node_channel_publish_round_trips_through_postgres_listen_notify: \
@@ -214,6 +224,7 @@ async fn cross_node_channel_publish_round_trips_through_postgres_listen_notify()
 
 #[tokio::test]
 async fn cross_node_presence_join_and_crash_expiry() {
+    let _guard = ONE_TEST_AT_A_TIME.lock().await;
     let Ok(url) = std::env::var("TEST_POSTGRES_URL") else {
         eprintln!("skipping cross_node_presence_join_and_crash_expiry: TEST_POSTGRES_URL not set");
         return;
