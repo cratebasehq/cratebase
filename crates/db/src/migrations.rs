@@ -278,6 +278,19 @@ impl Runner {
             Box::new(|db| Box::pin(add_jobs_and_webhooks_reliability_up(db))),
             Box::new(|db| Box::pin(add_jobs_and_webhooks_reliability_down(db))),
         ));
+        // Closes the multi-node cron race: gives every `_cronRuns` row a
+        // canonical `tickAt` and a `(jobId, tickAt)` UNIQUE index so a
+        // scheduled tick is claimed with a real, atomic constraint
+        // instead of a transaction-scoped advisory lock that could (and
+        // did) let two nodes both win the same tick. See
+        // `add_cron_tick_claim_up`'s doc. Named `22_...`: the next core
+        // migration number after `ADD_JOBS_AND_WEBHOOKS_RELIABILITY`
+        // (`21_...`).
+        r.register(Migration::new(
+            ADD_CRON_TICK_CLAIM,
+            Box::new(|db| Box::pin(add_cron_tick_claim_up(db))),
+            Box::new(|db| Box::pin(add_cron_tick_claim_down(db))),
+        ));
         r
     }
 
@@ -1450,6 +1463,184 @@ async fn add_jobs_and_webhooks_reliability_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_CRON_TICK_CLAIM: &str = "22_cron_tick_claim.rs";
+
+/// See `crate::migrations`'s `_cronRuns` template
+/// (`cratebase_core::Collection::default_system_collections`) for the
+/// full doc on why this field exists and why it stays optional.
+fn cron_runs_tick_at_field() -> Field {
+    let mut f = Field::new(
+        "tickAt",
+        cratebase_core::FieldKind::Date {
+            min: None,
+            max: None,
+        },
+    );
+    f.system = true;
+    f.required = false;
+    f
+}
+
+/// The multi-node claim guard: partial so a legacy row left with
+/// `tickAt = NULL` by [`backfill_cron_runs_tick_at`] never collides with
+/// anything.
+const CRON_RUNS_TICK_INDEX: &str =
+    "CREATE UNIQUE INDEX `idx_cronRuns_job_tick` ON `_cronRuns` (jobId, tickAt) WHERE `tickAt` IS NOT NULL";
+
+/// Fixes the multi-node cron bug at its root: the old guard
+/// (`pg_try_advisory_xact_lock(hashtext(job_id))`, transaction-scoped and
+/// keyed on the job alone, not the specific tick) could and did let two
+/// nodes run the same scheduled minute — the lock released at the
+/// checking transaction's commit, before the winning node's job body (or
+/// its own history row) had necessarily finished, so a slower sibling
+/// passed the same check afterward. This migration gives every run a
+/// canonical `tickAt` (see [`cron_runs_tick_at_field`]) and a UNIQUE
+/// index on `(jobId, tickAt)` that `crate::cron_history` (server crate)
+/// now claims with an `INSERT ... ON CONFLICT DO NOTHING` /
+/// `INSERT OR IGNORE` instead of a lock — a real constraint the database
+/// enforces atomically, with no timing window to lose.
+///
+/// Three separate steps, deliberately not one `collections.update` call:
+/// adding the column and the unique index together would apply the
+/// index — and fail on any table with existing duplicate `(jobId,
+/// tickAt)` values — before step 2 gets a chance to make room for it.
+async fn add_cron_tick_claim_up(db: &Db) -> DbResult<()> {
+    let Some(previous) = db.collections.get_by_name("_cronRuns") else {
+        // Never true once `ADD_JOBS_AND_WEBHOOKS_RELIABILITY` (migration
+        // `21_...`, already applied by the time this one runs) has
+        // created `_cronRuns` — guarded anyway rather than panicking on
+        // some hand-rolled database that skipped it.
+        return Ok(());
+    };
+
+    // Step 1: add the `tickAt` column if missing. Every physical column
+    // is nullable regardless of the framework's zero-default convention
+    // (see `crate::schema`'s doc) — but the convention itself means the
+    // instant this `ALTER TABLE` runs, every existing row's new `tickAt`
+    // is `''`, not `NULL`. Step 2 corrects that before step 3 adds an
+    // index that treats `NULL` specially.
+    if !previous.fields.iter().any(|f| f.name == "tickAt") {
+        let mut next = (*previous).clone();
+        let pos = next.fields.len() - 2;
+        next.fields.insert(pos, cron_runs_tick_at_field());
+        db.collections.update(&*db.engine, &next).await?;
+    }
+
+    backfill_cron_runs_tick_at(db).await?;
+
+    // Step 3: the actual claim guard, now safe to add.
+    if let Some(previous) = db.collections.get_by_name("_cronRuns") {
+        if !previous
+            .indexes
+            .iter()
+            .any(|i| i.contains("idx_cronRuns_job_tick"))
+        {
+            let mut next = (*previous).clone();
+            next.indexes.push(CRON_RUNS_TICK_INDEX.to_string());
+            db.collections.update(&*db.engine, &next).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Sets every existing `_cronRuns` row's `tickAt` from its `startedAt`
+/// (or, failing that, `created`) floored to the minute — the same
+/// normalization `crate::cron::CronService::tick` (server crate) now
+/// applies to a scheduled tick's timestamp before it ever reaches
+/// `crate::cron_history` — *except* when two or more existing rows for
+/// the same job already land on the same floored minute: backfilling
+/// those would immediately violate the unique index step 3 (in
+/// [`add_cron_tick_claim_up`]) is about to add, so that ambiguous group
+/// is left `tickAt = NULL` instead (a real value on such an old,
+/// already-run row would only ever be a guess, and the partial index
+/// ignores `NULL` entirely). Idempotent: always starts by clearing every
+/// row back to `NULL`, so re-running it (a second `up()` call against an
+/// already-migrated database, say) recomputes cleanly rather than
+/// compounding.
+async fn backfill_cron_runs_tick_at(db: &Db) -> DbResult<()> {
+    db.execute(r#"UPDATE "_cronRuns" SET "tickAt" = NULL"#, &[])
+        .await?;
+
+    let rows = db
+        .query(
+            r#"SELECT "id", "jobId", "startedAt", "created" FROM "_cronRuns""#,
+            &[],
+        )
+        .await?;
+
+    let mut by_key: std::collections::HashMap<(String, String), Vec<String>> =
+        std::collections::HashMap::new();
+    for row in &rows {
+        let id = row.get_str("id").unwrap_or_default().to_string();
+        let job_id = row.get_str("jobId").unwrap_or_default().to_string();
+        let basis = row
+            .get_str("startedAt")
+            .filter(|s| !s.is_empty())
+            .or_else(|| row.get_str("created"))
+            .unwrap_or_default();
+        let tick = floor_to_minute(basis);
+        by_key.entry((job_id, tick)).or_default().push(id);
+    }
+
+    for ((_job_id, tick), ids) in by_key {
+        let [id] = ids.as_slice() else {
+            // Zero (unparseable basis) or more than one (a real historical
+            // double-run, or two jobs' rows that happen to floor to the
+            // same minute — impossible, since `jobId` is part of the key,
+            // but written defensively) row shares this tick: ambiguous,
+            // leave `tickAt = NULL`.
+            continue;
+        };
+        if tick.is_empty() {
+            continue;
+        }
+        db.execute(
+            r#"UPDATE "_cronRuns" SET "tickAt" = $1 WHERE "id" = $2"#,
+            &[Sql::from(tick), Sql::from(id.clone())],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// `"2026-09-03 12:44:06.146Z"` -> `"2026-09-03 12:44:00.000Z"`: the
+/// first 16 characters (`YYYY-MM-DD HH:MM`, see `cratebase_core::DateTime`'s
+/// `FORMAT`) plus a canonical `:00.000Z` tail. Empty or too-short input
+/// yields `""`, treated as unparseable (ambiguous) by the caller.
+fn floor_to_minute(pb_string: &str) -> String {
+    if pb_string.len() < 16 {
+        return String::new();
+    }
+    format!("{}:00.000Z", &pb_string[..16])
+}
+
+/// Drops the `tickAt` field and its unique index — the reverse of
+/// [`add_cron_tick_claim_up`]'s steps 1 and 3 (step 2, the backfill, has
+/// nothing to revert: dropping the column drops its data with it).
+async fn add_cron_tick_claim_down(db: &Db) -> DbResult<()> {
+    if let Some(previous) = db.collections.get_by_name("_cronRuns") {
+        let mut next = (*previous).clone();
+        let mut changed = false;
+        if next
+            .indexes
+            .iter()
+            .any(|i| i.contains("idx_cronRuns_job_tick"))
+        {
+            next.indexes
+                .retain(|i| !i.contains("idx_cronRuns_job_tick"));
+            changed = true;
+        }
+        if let Some(pos) = next.fields.iter().position(|f| f.name == "tickAt") {
+            next.fields.remove(pos);
+            changed = true;
+        }
+        if changed {
+            db.collections.update(&*db.engine, &next).await?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1492,6 +1683,7 @@ mod tests {
                 ADD_PENDING_UPLOADS.to_string(),
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
                 ADD_JOBS_AND_WEBHOOKS_RELIABILITY.to_string(),
+                ADD_CRON_TICK_CLAIM.to_string(),
             ]
         );
         assert_eq!(
@@ -1571,10 +1763,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 21).await.unwrap();
+        let reverted = Runner::core().down(&db, 22).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_CRON_TICK_CLAIM.to_string(),
                 ADD_JOBS_AND_WEBHOOKS_RELIABILITY.to_string(),
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
                 ADD_PENDING_UPLOADS.to_string(),
@@ -1601,6 +1794,111 @@ mod tests {
         assert!(db.collections.is_empty());
         assert!(!db.engine.table_exists("users").await.unwrap());
         assert!(!is_applied(&db, INIT_SYSTEM).await.unwrap());
+    }
+
+    /// Inserts one raw `_cronRuns` row with no `tickAt` (as every row
+    /// looked before migration `22_...`), for
+    /// [`cron_tick_claim_backfills_unambiguous_rows_and_nulls_duplicates`].
+    async fn insert_legacy_cron_run(db: &Db, id: &str, job_id: &str, started_at: &str) {
+        db.execute(
+            r#"INSERT INTO "_cronRuns"
+                   ("id", "jobId", "source", "status", "startedAt", "durationMs", "message", "created", "updated")
+               VALUES ($1, $2, 'sql', 'success', $3, 0, '', $3, $3)"#,
+            &[Sql::from(id), Sql::from(job_id), Sql::from(started_at)],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cron_tick_claim_backfills_unambiguous_rows_and_nulls_duplicates() {
+        let db = fresh().await;
+        Runner::core().up(&db).await.unwrap();
+
+        // Roll back to exactly the pre-`22_...` shape: `_cronRuns` with no
+        // `tickAt` column or index, as a database migrated only through
+        // `21_...` would be.
+        assert_eq!(
+            Runner::core().down(&db, 1).await.unwrap(),
+            vec![ADD_CRON_TICK_CLAIM.to_string()]
+        );
+        assert!(!db
+            .collections
+            .get_by_name("_cronRuns")
+            .unwrap()
+            .fields
+            .iter()
+            .any(|f| f.name == "tickAt"));
+
+        // `job-a` ran twice in the same minute -- exactly the historical
+        // trace the old advisory-lock race could leave behind -- and once
+        // more a minute later. `job-b` only ever ran once.
+        insert_legacy_cron_run(&db, "cronrun0000000a", "job-a", "2026-09-03 12:00:06.000Z").await;
+        insert_legacy_cron_run(&db, "cronrun0000000b", "job-a", "2026-09-03 12:00:41.500Z").await;
+        insert_legacy_cron_run(&db, "cronrun0000000c", "job-a", "2026-09-03 12:01:02.000Z").await;
+        insert_legacy_cron_run(&db, "cronrun0000000d", "job-b", "2026-09-03 09:30:00.000Z").await;
+
+        // Re-applying must succeed even though `job-a`'s first two rows
+        // would collide if both were backfilled to the same tick -- the
+        // whole point of leaving ambiguous rows `NULL`.
+        assert_eq!(
+            Runner::core().up(&db).await.unwrap(),
+            vec![ADD_CRON_TICK_CLAIM.to_string()]
+        );
+
+        async fn tick_at(db: &Db, id: &str) -> Option<String> {
+            db.query_one(
+                r#"SELECT "tickAt" FROM "_cronRuns" WHERE "id" = $1"#,
+                &[Sql::from(id)],
+            )
+            .await
+            .unwrap()
+            .and_then(|r| r.get_str("tickAt").map(str::to_string))
+        }
+        assert_eq!(
+            tick_at(&db, "cronrun0000000a").await,
+            None,
+            "ambiguous: left NULL"
+        );
+        assert_eq!(
+            tick_at(&db, "cronrun0000000b").await,
+            None,
+            "ambiguous: left NULL"
+        );
+        assert_eq!(
+            tick_at(&db, "cronrun0000000c").await,
+            Some("2026-09-03 12:01:00.000Z".to_string()),
+            "unambiguous: backfilled"
+        );
+        assert_eq!(
+            tick_at(&db, "cronrun0000000d").await,
+            Some("2026-09-03 09:30:00.000Z".to_string()),
+            "unambiguous: backfilled"
+        );
+
+        // The unique index is real: two more rows for `job-a` at the same
+        // new tick cannot both claim it.
+        db.execute(
+            r#"INSERT INTO "_cronRuns"
+                   ("id", "jobId", "source", "status", "startedAt", "tickAt", "durationMs", "message", "created", "updated")
+               VALUES ('cronrun0000000e', 'job-a', 'sql', 'running', $1, $1, 0, '', $1, $1)"#,
+            &[Sql::from("2026-09-03 12:02:00.000Z")],
+        )
+        .await
+        .unwrap();
+        let err = db
+            .execute(
+                r#"INSERT INTO "_cronRuns"
+                       ("id", "jobId", "source", "status", "startedAt", "tickAt", "durationMs", "message", "created", "updated")
+                   VALUES ('cronrun0000000f', 'job-a', 'sql', 'running', $1, $1, 0, '', $1, $1)"#,
+                &[Sql::from("2026-09-03 12:02:00.000Z")],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DbError::UniqueViolation(_)),
+            "expected a unique violation, got {err:?}"
+        );
     }
 
     /// Reads one `_emailTemplates` row's `html` by key, for the refresh

@@ -1948,6 +1948,22 @@ impl Collection {
             },
         );
         cr_started_at.system = true;
+        // The scheduled tick this run claims (see `crate::cron_history`,
+        // server crate) — `now` floored to the minute, identical on every
+        // node ticking the same scheduled minute, which is what the
+        // `idx_cronRuns_job_tick` unique index below keys on. `None` for
+        // rows written before this column existed (migration
+        // `22_cron_tick_claim.rs`'s backfill leaves an ambiguous legacy
+        // row's tick unset rather than guess wrong), so it stays optional.
+        let mut cr_tick_at = Field::new(
+            "tickAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        cr_tick_at.system = true;
+        cr_tick_at.required = false;
         let mut cr_duration_ms = Field::new(
             "durationMs",
             FieldKind::Number {
@@ -1967,12 +1983,18 @@ impl Collection {
                 cr_source,
                 cr_status,
                 cr_started_at,
+                cr_tick_at,
                 cr_duration_ms,
                 cr_message,
             ],
         );
         cron_runs.indexes = vec![
             "CREATE INDEX `idx_cronRuns_jobId_startedAt` ON `_cronRuns` (jobId, startedAt)".into(),
+            // The multi-node claim guard (see `crate::cron_history`, server
+            // crate): partial so legacy rows with no `tickAt` (`NULL`,
+            // never `''` — see that field's doc) never collide with each
+            // other or with a real claim.
+            "CREATE UNIQUE INDEX `idx_cronRuns_job_tick` ON `_cronRuns` (jobId, tickAt) WHERE `tickAt` IS NOT NULL".into(),
         ];
 
         vec![
