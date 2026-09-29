@@ -1,0 +1,19 @@
+---
+title: "Webhooks"
+description: "Replay a webhook delivery. Superuser only."
+sidebar:
+  order: 29
+---
+
+Configuring `_webhooks` and reading `_webhookDeliveries` is the generic
+Records API — see [Outgoing webhooks](/docs/extending/outgoing-webhooks/)
+for the full delivery model (durable retries with a fixed backoff
+schedule, the `X-Cratebase-Delivery`/`-Timestamp`/`-Signature` headers,
+auto-disable, retention). The one endpoint with dedicated REST surface:
+
+### `POST /webhooks/deliveries/{id}/replay`
+
+Resets a delivery back to `pending` with `attempts` cleared to `0` and
+`error` cleared. Works on a `failed` delivery (the usual case) or even
+one that already succeeded — replaying a successful delivery is a
+legitimate "send it again" action. `404` for an unknown id.
