@@ -295,8 +295,11 @@ pub(crate) async fn finish(
             app,
             QUEUE_NAME,
             payload,
-            QUEUE_MAX_ATTEMPTS,
-            DateTime::now(),
+            crate::queue::EnqueueOptions {
+                max_attempts: QUEUE_MAX_ATTEMPTS,
+                run_after: DateTime::now(),
+                ..Default::default()
+            },
         )
         .await?;
         return Ok(SendOutcome {

@@ -36,6 +36,14 @@ pub struct RouteHandlerId(pub String);
 #[serde(transparent)]
 pub struct CronHandlerId(pub String);
 
+/// Identifies a JavaScript queue handler registered through
+/// `onQueueJob(queue, handler)`. This is the queue name itself
+/// (`onQueueJob("send-welcome-email", ...)`), the same "the user's own
+/// stable name is the id" shape as [`CronHandlerId`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct QueueHandlerId(pub String);
+
 impl std::fmt::Display for HookHandlerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -47,6 +55,11 @@ impl std::fmt::Display for RouteHandlerId {
     }
 }
 impl std::fmt::Display for CronHandlerId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::fmt::Display for QueueHandlerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
@@ -315,6 +328,23 @@ pub trait HostApi: Send + Sync + 'static {
     /// [`HostApi::mails_send`] does.
     async fn notify_send(&self, input: Map<String, Value>) -> Result<Value, AppError>;
 
+    /// `$queue.enqueue(queue, payload, opts)` —
+    /// `crate::queue::enqueue_job` (server crate): insert one durable
+    /// `_queue_jobs` row. `input` is `{ queue, payload, runAt, delay,
+    /// maxAttempts, dedupeKey, priority }` (`payload` defaults to `null`,
+    /// every option is optional); the returned value is `{ id, queue,
+    /// status, runAfter, deduped }`. Deferred past commit when called
+    /// from inside a record-write hook's still-open transaction, same
+    /// reasoning as [`HostApi::mails_send`]/[`HostApi::notify_send`]: a
+    /// job enqueued from a hook that ends up rolling back must never run.
+    /// Default: not available (a host with no queue, e.g. a bare test
+    /// double).
+    async fn queue_enqueue(&self, _input: Map<String, Value>) -> Result<Value, AppError> {
+        Err(AppError::internal(
+            "the queue is not available in this runtime",
+        ))
+    }
+
     /// `$realtime.publish(channel, event, data)` —
     /// `crate::realtime::publish_channel` (server crate): broadcast one
     /// `{event, data}` message to every current subscriber of
@@ -350,6 +380,29 @@ pub trait HostApi: Send + Sync + 'static {
 
     fn register_cron(&self, id: &str, expr: &str, handler: CronHandlerId);
     fn remove_cron(&self, id: &str);
+
+    /// Register (or replace) a JavaScript `onQueueJob(queue, handler)`
+    /// registration. Unlike [`HostApi::register_cron`]/[`HostApi::register_route`],
+    /// this has no corresponding "unregister by id" — a queue name, like a
+    /// route path, has no per-registration identity to retract
+    /// individually; [`HostApi::clear_queue_handlers`] drops the lot at
+    /// once instead (see that method's doc). Default no-op: a host with
+    /// no queue (a test double, a WASM plugin host) has nothing to
+    /// register with.
+    fn register_queue_handler(&self, _queue: &str, _handler: QueueHandlerId) {}
+
+    /// Forget every JS-registered queue handler — mirrors
+    /// [`HostApi::clear_routes`]'s "whole table dropped, rebuilt by
+    /// re-evaluating the reloaded files" story, for the same reason: a
+    /// queue name has no per-registration id `crate::Runtime`'s reload
+    /// path could retract individually the way it does for
+    /// hooks/crons. Called once (worker 0 only) at the start of a
+    /// `--dev` hooks reload, right before the hook files are evaluated
+    /// again. A Rust-registered handler (`crate::queue::QueueHandle::register_handler`
+    /// in the server crate) is never affected — "Rust handlers still take
+    /// precedence for their names" holds across a reload too. Default
+    /// no-op.
+    fn clear_queue_handlers(&self) {}
 
     /// Forget every `routerAdd` registration reported so far. Called once
     /// (worker 0 only) at the start of a hooks reload, right before the

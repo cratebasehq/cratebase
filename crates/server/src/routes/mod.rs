@@ -30,6 +30,7 @@ pub mod notifications;
 pub mod oauth2_flow;
 pub mod oidc;
 pub mod push;
+pub mod queue;
 pub mod records;
 pub mod schema;
 pub mod session;
@@ -82,6 +83,8 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(push::router())
         .merge(mails::router())
         .merge(notifications::router())
+        .merge(queue::router())
+        .merge(crate::webhook_deliveries::router())
         // MCP lives in its own top-level module (like `realtime`), not
         // under `routes`, because it is a protocol server (JSON-RPC +
         // SSE) rather than a plain REST route table.

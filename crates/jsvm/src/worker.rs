@@ -18,7 +18,7 @@ use tokio::task::JoinHandle as TaskHandle;
 
 use crate::bridge;
 use crate::convert::{from_js, js_error_to_app_error, to_js};
-use crate::host::{CronHandlerId, HookHandlerId, HostApi, RouteHandlerId};
+use crate::host::{CronHandlerId, HookHandlerId, HostApi, QueueHandlerId, RouteHandlerId};
 use crate::runtime::{
     file_name, list_files, JsEvent, JsEventOutcome, JsRequest, JsResponse, RuntimeConfig,
 };
@@ -37,6 +37,11 @@ pub(crate) enum Job {
     },
     Cron {
         id: CronHandlerId,
+        reply: oneshot::Sender<Result<(), AppError>>,
+    },
+    QueueJob {
+        id: QueueHandlerId,
+        payload: Value,
         reply: oneshot::Sender<Result<(), AppError>>,
     },
     Migration {
@@ -267,6 +272,9 @@ impl Worker {
             Job::Cron { id, reply } => {
                 let _ = reply.send(self.run_cron(&id));
             }
+            Job::QueueJob { id, payload, reply } => {
+                let _ = reply.send(self.run_queue_job(&id, payload));
+            }
             Job::Migration {
                 file,
                 direction,
@@ -309,6 +317,20 @@ impl Worker {
         self.timed(|ctx| {
             let invoke: Function = Self::cb(ctx)?.get("invokeCron")?;
             invoke.call::<_, ()>((id.0.as_str(),))
+        })
+    }
+
+    /// Invoke an `onQueueJob` handler. A thrown JS error becomes
+    /// `Err(AppError)` here; `crate::jsvm_host::HostApi::register_queue_handler`
+    /// (server crate) turns that into the `Err(String)` `crate::queue::HandlerFn`
+    /// expects, which the queue's own retry/backoff machinery treats
+    /// exactly like a Rust handler's `Err` — same failure/retry path
+    /// either way.
+    fn run_queue_job(&self, id: &QueueHandlerId, payload: Value) -> Result<(), AppError> {
+        self.timed(|ctx| {
+            let invoke: Function = Self::cb(ctx)?.get("invokeQueueJob")?;
+            let payload_js = to_js(ctx, &payload)?;
+            invoke.call::<_, ()>((id.0.as_str(), payload_js))
         })
     }
 
@@ -371,6 +393,10 @@ impl Worker {
             // files, so a route a changed file no longer registers is
             // gone rather than stale.
             self.state.host.clear_routes();
+            // Same "whole table dropped, rebuilt by re-evaluating the
+            // reloaded files" story as routes above, and for the same
+            // reason — see `HostApi::clear_queue_handlers`'s doc.
+            self.state.host.clear_queue_handlers();
         }
         self.with_ctx(|ctx| {
             let reset: Function = Self::cb(ctx)?.get("reset")?;

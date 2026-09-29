@@ -775,6 +775,16 @@
     send: (input) => hostCall("notifySend", input || {}),
   };
 
+  // Durable background jobs — `crate::queue` (server crate). `enqueue`
+  // inserts one `_queue_jobs` row and returns `{ id, queue, status,
+  // runAfter, deduped }` (`deduped: true` when `opts.dedupeKey` matched
+  // an already pending/in-progress job and nothing new was inserted). See
+  // `onQueueJob` above for the handler side.
+  const $queue = {
+    enqueue: (queue, payload, opts) =>
+      hostCall("queueEnqueue", Object.assign({}, opts, { queue: String(queue), payload: payload === undefined ? null : payload })),
+  };
+
   // Realtime channels (not tied to any record/collection) —
   // `crate::realtime::publish_channel` (server crate). Authorization is
   // the target channel's `_channels` row (`publishRule`); no matching row
@@ -849,6 +859,7 @@
   const hooks = new Map(); // id -> {fn, kind, tags}
   const routes = new Map(); // id -> {fn, method, path, middlewares}
   const crons = new Map(); // id -> fn
+  const queueJobs = new Map(); // queue name -> fn
   const counters = new Map();
   let globalMiddlewares = [];
   let moduleCache = new Map();
@@ -891,6 +902,23 @@
   function cronRemove(id) {
     crons.delete(String(id));
     hostCall("removeCron", String(id));
+  }
+
+  // `onQueueJob(queue, handler)`: `handler(e)` runs once per claimed
+  // `_queue_jobs` row whose `queue` matches — `e.payload` is whatever
+  // `$queue.enqueue`/`cb.queue.enqueue` (SDK) was called with. Returning
+  // normally marks the job `completed`; a thrown error marks it `pending`
+  // again with a bumped `attempts` and exponential backoff (or `failed`
+  // once `maxAttempts` is reached) — the exact same outcome a Rust
+  // `QueueHandle::register_handler` handler gets, since both are routed
+  // through the one worker loop in `crate::queue` (server crate). A Rust
+  // handler already registered for `queue` always wins; see
+  // `crate::queue::QueueHandle::register_js_handler`'s doc in the server
+  // crate.
+  function onQueueJob(queue, fn) {
+    if (typeof fn !== "function") throw new TypeError("onQueueJob expects a function");
+    queueJobs.set(String(queue), fn);
+    hostCall("registerQueueHandler", String(queue));
   }
 
   // ---------------------------------------------------------------------
@@ -1140,6 +1168,12 @@
     fn();
   };
 
+  __cb.invokeQueueJob = (queue, payload) => {
+    const fn = queueJobs.get(queue);
+    if (!fn) throw new InternalServerError("unknown queue job handler " + queue);
+    fn({ payload, queue });
+  };
+
   __cb.runMigration = (direction) => {
     const m = __cb.pendingMigration;
     if (!m) throw new BadRequestError("migration file did not call migrate()");
@@ -1152,6 +1186,7 @@
     hooks.clear();
     routes.clear();
     crons.clear();
+    queueJobs.clear();
     counters.clear();
     globalMiddlewares = [];
     moduleCache = new Map();
@@ -1185,6 +1220,7 @@
     $mails,
     $notify,
     $realtime,
+    $queue,
     $filesystem,
     $apis,
     $dbx,
@@ -1193,6 +1229,7 @@
     routerUse,
     cronAdd,
     cronRemove,
+    onQueueJob,
     migrate,
     sleep: (ms) => hostCall("sleep", Number(ms) || 0),
     toString: (v) => (v === undefined || v === null ? "" : typeof v === "string" ? v : Array.isArray(v) ? String.fromCharCode(...v) : String(v)),

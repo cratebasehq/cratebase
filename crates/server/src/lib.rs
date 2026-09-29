@@ -30,6 +30,7 @@ pub mod automigrate;
 pub mod config;
 pub mod cookie;
 pub mod cron;
+pub mod cron_history;
 pub mod cron_jobs;
 mod dashboard;
 pub mod dev;
@@ -66,6 +67,7 @@ pub mod sessions;
 pub mod store;
 pub mod teams;
 pub mod typegen;
+pub mod webhook_deliveries;
 pub mod webhooks;
 pub mod zip_export;
 

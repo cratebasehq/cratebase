@@ -81,6 +81,12 @@ pub struct AppInner {
     /// files are still being evaluated (see `register_hook`) can hold a
     /// handle to it before `Runtime::start` has returned.
     jsvm: Arc<OnceLock<cratebase_jsvm::Runtime>>,
+    /// Set once, during `bootstrap`, right before the JS runtime starts —
+    /// see that call site's doc for why the Queue plugin is registered
+    /// unconditionally and this early. `crate::jsvm_host`'s `HostApi`
+    /// impl reads this to wire a JS `onQueueJob` registration into the
+    /// same handler map `crate::queue::tick` dispatches from.
+    queue_handle: OnceLock<crate::queue::QueueHandle>,
     /// Routes a `pb_hooks` file mounted with `routerAdd`, collected while
     /// the runtime starts and turned into real axum routes by
     /// `crate::jsvm_host::js_router` once `crate::router` assembles the
@@ -185,6 +191,7 @@ impl App {
                 bootstrapped: std::sync::atomic::AtomicBool::new(false),
                 auth_resolutions: std::sync::atomic::AtomicU64::new(0),
                 jsvm: Arc::new(OnceLock::new()),
+                queue_handle: OnceLock::new(),
                 js_routes: std::sync::Mutex::new(Vec::new()),
                 revoked_sessions: parking_lot::RwLock::new(std::collections::HashSet::new()),
                 revoked_len: std::sync::atomic::AtomicUsize::new(0),
@@ -317,6 +324,17 @@ impl App {
     /// the `Runtime` value it returns exists.
     pub(crate) fn jsvm_cell(&self) -> Arc<OnceLock<cratebase_jsvm::Runtime>> {
         self.inner.jsvm.clone()
+    }
+
+    /// The Queue plugin's handler-registration handle, set once during
+    /// `bootstrap` (see that call site's doc). `crate::jsvm_host`'s
+    /// `HostApi::register_queue_handler` uses this to wire a JS
+    /// `onQueueJob` registration into the same map `crate::queue::tick`
+    /// dispatches from; a Rust caller wanting the same thing should
+    /// instead hold the `QueueHandle` `QueuePlugin::handle` gave it
+    /// directly, the way `crate::mails::register_queue_handler` does.
+    pub(crate) fn queue_handle(&self) -> Option<crate::queue::QueueHandle> {
+        self.inner.queue_handle.get().cloned()
     }
 
     /// Record a `routerAdd` registration. Turned into a real route by
@@ -570,6 +588,20 @@ impl App {
         };
         self.apply_settings(Arc::new(settings))?;
 
+        // Registered unconditionally, *before* the JS runtime starts just
+        // below — unlike every other toggle-gated plugin in this function
+        // (`zip_export`), so that: (1) a `pb_hooks/*.pb.js` file's
+        // `onQueueJob(...)` calls have a real handler registry to add
+        // themselves to the moment the runtime evaluates them, rather than
+        // needing the plugin to exist first; and (2) `settings.queue.enabled`
+        // can flip on a running server with no restart — see
+        // `QueuePlugin::setup`'s doc for how the worker loop itself stays
+        // idle (and never provisions `_queue_jobs`) until that happens.
+        let queue_plugin = crate::queue::QueuePlugin::new();
+        crate::mails::register_queue_handler(self, queue_plugin.handle());
+        let _ = self.inner.queue_handle.set(queue_plugin.handle());
+        self.register_plugin(queue_plugin)?;
+
         // Starts the JS runtime when `pb_hooks/` exists and has at least
         // one `*.pb.js` file; a no-op otherwise (spec: absent `pb_hooks`
         // must cost nothing). Must run before `register_system_crons` /
@@ -623,19 +655,8 @@ impl App {
         crate::audit::bind_hooks(self);
         crate::automigrate::bind_hooks(self);
 
-        // Toggle-gated built-in Queue plugin: `settings.queue.enabled`
-        // defaults `false`. Registering it only when enabled means an
-        // idle install never provisions `_queue_jobs` and never spawns the
-        // worker tick — the same "hooks/routes simply aren't bound" cost
-        // model as Teams/LLM above, just expressed as a plugin instead of
-        // a hook or a route merge.
-        if self.settings().queue.enabled {
-            crate::queue::ensure_collection(self).await?;
-            let queue_plugin = crate::queue::QueuePlugin::new();
-            crate::mails::register_queue_handler(self, queue_plugin.handle());
-            self.register_plugin(queue_plugin)?;
-        }
-        // Same toggle-gated pattern as Queue above:
+        // Same toggle-gated pattern the Queue plugin used to follow (see
+        // its registration above, now unconditional):
         // `settings.zipExport.enabled` defaults `false`.
         if self.settings().zip_export.enabled {
             crate::zip_export::ensure_collection(self).await?;

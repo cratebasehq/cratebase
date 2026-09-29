@@ -50,7 +50,8 @@ use cratebase_db::engine::{Executor, Sql};
 use cratebase_db::{query, records};
 use cratebase_jsvm::{
     CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, HttpResponse, JsBody, JsRequest,
-    JsResponse, RecordTokenKind, Runtime, RuntimeConfig, TransactionFn, JS_RECORD_OPTIONS,
+    JsResponse, QueueHandlerId, RecordTokenKind, Runtime, RuntimeConfig, TransactionFn,
+    JS_RECORD_OPTIONS,
 };
 use cratebase_mailer::Message;
 use serde_json::{Map, Value};
@@ -559,6 +560,79 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         Ok(result)
     }
 
+    async fn queue_enqueue(&self, input: Map<String, Value>) -> Result<Value, AppError> {
+        let queue = input
+            .get("queue")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| AppError::bad_request("queue must not be empty."))?
+            .to_string();
+        let payload = input.get("payload").cloned().unwrap_or(Value::Null);
+        let get_str = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
+        let run_after = crate::queue::resolve_run_after(
+            get_str("runAt").as_deref(),
+            get_str("runAfter").as_deref(),
+            input.get("delay").and_then(Value::as_i64),
+        )
+        .map_err(AppError::bad_request)?;
+        let opts = crate::queue::EnqueueOptions {
+            max_attempts: input
+                .get("maxAttempts")
+                .and_then(Value::as_i64)
+                .unwrap_or(5)
+                .max(1),
+            run_after,
+            dedupe_key: get_str("dedupeKey").filter(|s| !s.trim().is_empty()),
+            priority: input.get("priority").and_then(Value::as_i64).unwrap_or(0),
+        };
+
+        // Same "resolve/validate now, do the actual write after commit"
+        // split as `mails_send`/`notify_send` above, and for the same
+        // reason: a job enqueued from inside a still-open write-hook
+        // transaction must never run for a write that ends up rolling
+        // back, and `crate::queue::enqueue_job` opens its own transaction
+        // internally (for the dedupe check), which this scope's already-open
+        // one can't nest into on SQLite (a guaranteed self-deadlock — see
+        // `crate::mails`'s module doc for the identical constraint).
+        if !self.0.is_transactional() {
+            let outcome = crate::queue::enqueue_job(self.0.app(), &queue, payload, opts).await?;
+            return Ok(serde_json::json!({
+                "id": outcome.id,
+                "queue": queue,
+                "status": outcome.status,
+                "runAfter": outcome.run_after.to_pb_string(),
+                "deduped": outcome.deduped,
+            }));
+        }
+        let app = self.0.app().clone();
+        let result = serde_json::json!({
+            "id": cratebase_core::record_id(),
+            "queue": queue,
+            "status": crate::queue::STATUS_PENDING,
+            "runAfter": opts.run_after.to_pb_string(),
+            "deduped": false,
+        });
+        // The id above is provisional (never written anywhere) purely so
+        // JS gets a same-shaped response either way; the real id
+        // `enqueue_job` generates after commit is not reported back —
+        // same tradeoff `mails_send`'s deferred path makes for `log_id`.
+        // Unlike that path, `crate::queue::enqueue_job`'s own dedupe check
+        // (which can turn this into a no-op) also only happens after
+        // commit, so a caller relying on `deduped` from *this* branch
+        // should not — it is always `false` here regardless of the
+        // eventual outcome.
+        self.0.after_commit(Box::pin(async move {
+            if let Err(e) = crate::queue::enqueue_job(&app, &queue, payload, opts).await {
+                tracing::warn!(
+                    error = %e,
+                    queue = %queue,
+                    "deferred $queue.enqueue failed after its transaction committed"
+                );
+            }
+        }));
+        Ok(result)
+    }
+
     async fn realtime_publish(
         &self,
         channel: String,
@@ -701,6 +775,37 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
 
     fn remove_cron(&self, id: &str) {
         self.0.app().cron().remove(id);
+    }
+
+    fn register_queue_handler(&self, queue: &str, handler: QueueHandlerId) {
+        let Some(qh) = self.0.app().queue_handle() else {
+            // No Queue plugin registered — unreachable in a real boot
+            // (see `crate::app::App::bootstrap`, which always registers
+            // it before the JS runtime starts) but harmless to no-op in a
+            // test double that builds a bare `App`/`HostApi` pair without
+            // going through `bootstrap`.
+            return;
+        };
+        let app = self.0.app().clone();
+        let took = qh.register_js_handler(queue, move |payload| {
+            let app = app.clone();
+            let handler = handler.clone();
+            async move {
+                let Some(rt) = app.jsvm() else {
+                    return Err("jsvm runtime not available".to_string());
+                };
+                rt.call_queue_job(&handler, payload)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        });
+        let _ = took;
+    }
+
+    fn clear_queue_handlers(&self) {
+        if let Some(qh) = self.0.app().queue_handle() {
+            qh.clear_js_handlers();
+        }
     }
 
     fn register_hook(
