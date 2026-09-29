@@ -2649,4 +2649,365 @@ mod hot_reload_tests {
         assert_eq!(rows[0].get_str("type"), Some("widget.created"));
         assert_eq!(rows[0].get_str("title"), Some("Widget created"));
     }
+
+    // -----------------------------------------------------------------
+    // $queue.enqueue / onQueueJob
+    // -----------------------------------------------------------------
+
+    /// `crate::queue::QueueHandle::run_one_tick` with a short, test-sized
+    /// backoff/stale-timeout, against the real app-wide handle.
+    async fn tick_now(app: &App) {
+        app.queue_handle()
+            .expect("queue plugin is always registered")
+            .run_one_tick(
+                app,
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(300),
+            )
+            .await;
+    }
+
+    async fn queue_job_row(app: &App, id: &str) -> cratebase_db::engine::Row {
+        app.db()
+            .query_one(
+                r#"SELECT * FROM "_queue_jobs" WHERE "id" = $1"#,
+                &[cratebase_db::engine::Sql::from(id)],
+            )
+            .await
+            .expect("query _queue_jobs")
+            .expect("job row present")
+    }
+
+    #[tokio::test]
+    async fn onqueuejob_handler_runs_and_receives_the_payload() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"routerAdd("GET", "/probe", (e) => e.json(200, { seen: null }));
+            onQueueJob("greet", (e) => {
+                $app.store().set("queueSeen", e.payload);
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "greet",
+            serde_json::json!({ "name": "ada" }),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue");
+        tick_now(&app).await;
+
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(
+            row.get_str("status"),
+            Some(crate::queue::STATUS_COMPLETED),
+            "a JS onQueueJob handler that returns normally must complete the job"
+        );
+    }
+
+    #[tokio::test]
+    async fn onqueuejob_handler_throwing_retries_with_backoff_then_fails() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("flaky", (e) => { throw new Error("boom from JS"); });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "flaky",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions {
+                max_attempts: 2,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        // Attempt 1: fails, scheduled a short backoff out, still pending.
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(1));
+        assert!(
+            row.get_str("lastError").unwrap_or_default().contains("boom from JS"),
+            "{:?}",
+            row.get_str("lastError")
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        // Attempt 2 == maxAttempts: gives up for good.
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_FAILED));
+        assert_eq!(row.get_i64("attempts"), Some(2));
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_respects_run_at() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(hooks_dir.join("main.pb.js"), "onQueueJob(\"later\", (e) => {});").unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let future = cratebase_core::DateTime::from_utc(
+            cratebase_core::DateTime::now().inner() + chrono::Duration::seconds(60),
+        );
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "later",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions {
+                run_after: future,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(
+            row.get_str("status"),
+            Some(crate::queue::STATUS_PENDING),
+            "a job scheduled a minute out must not run yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_dedupe_key_ignores_a_duplicate_while_pending() {
+        let (app, _dir) = {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let app = App::new(Config::memory(dir.path().join("pb_data")));
+            app.bootstrap().await.expect("bootstrap");
+            (app, dir)
+        };
+        crate::queue::ensure_collection(&app).await.expect("ensure collection");
+
+        let first = crate::queue::enqueue_job(
+            &app,
+            "welcome-email",
+            serde_json::json!({ "n": 1 }),
+            crate::queue::EnqueueOptions {
+                dedupe_key: Some("user-42".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first enqueue");
+        assert!(!first.deduped);
+
+        let second = crate::queue::enqueue_job(
+            &app,
+            "welcome-email",
+            serde_json::json!({ "n": 2 }),
+            crate::queue::EnqueueOptions {
+                dedupe_key: Some("user-42".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("second enqueue");
+        assert!(second.deduped, "a matching dedupeKey must not insert a second row");
+        assert_eq!(second.id, first.id);
+
+        let count = app
+            .db()
+            .query(
+                r#"SELECT "id" FROM "_queue_jobs" WHERE "dedupeKey" = $1"#,
+                &[cratebase_db::engine::Sql::from("user-42")],
+            )
+            .await
+            .expect("query")
+            .len();
+        assert_eq!(count, 1, "exactly one row for the deduped key");
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_in_after_success_hook_does_not_deadlock() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        crate::queue::ensure_collection(&app)
+            .await
+            .expect("ensure _queue_jobs");
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterCreateSuccess((e) => {
+                $queue.enqueue("widget-created", { id: e.record.get("id") });
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("a create whose after-success hook calls $queue.enqueue must not deadlock")
+        .unwrap();
+        assert_eq!(created.status(), StatusCode::OK, "{:?}", body_json(created).await);
+
+        let queued = poll_until(std::time::Duration::from_secs(5), || async {
+            app.db()
+                .query(r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'widget-created'"#, &[])
+                .await
+                .map(|rows| !rows.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(
+            queued,
+            "the deferred $queue.enqueue must still insert its row once the triggering \
+             transaction commits"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_in_after_success_hook_is_not_enqueued_when_the_write_rolls_back() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        crate::queue::ensure_collection(&app)
+            .await
+            .expect("ensure _queue_jobs");
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterCreateSuccess((e) => {
+                $queue.enqueue("should-never-run", { id: e.record.get("id") });
+                e.next();
+            }, "widgets");
+            onRecordAfterCreateSuccess((e) => {
+                throw new Error("force rollback after the job was queued");
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("must not deadlock even though the write ultimately fails")
+        .unwrap();
+        assert_ne!(created.status(), StatusCode::OK);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let rows = app
+            .db()
+            .query(r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'should-never-run'"#, &[])
+            .await
+            .expect("query _queue_jobs");
+        assert!(
+            rows.is_empty(),
+            "a job queued before a later handler rolled back the write must never exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rust_handler_takes_precedence_over_a_js_onqueuejob_for_the_same_name() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let ran_rust = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ran_rust.clone();
+        app.queue_handle()
+            .expect("queue plugin registered")
+            .register_handler("shared-name", move |_payload| {
+                let flag = flag.clone();
+                async move {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("shared-name", (e) => {
+                $app.store().set("jsRanInstead", true);
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "shared-name",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue");
+        tick_now(&app).await;
+
+        assert!(
+            ran_rust.load(std::sync::atomic::Ordering::SeqCst),
+            "the Rust handler registered first must run, not the JS one"
+        );
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_COMPLETED));
+    }
 }

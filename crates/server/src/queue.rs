@@ -173,6 +173,34 @@ impl QueueHandle {
         let claimed = self.1.read().clone();
         self.0.write().retain(|name, _| claimed.contains(name));
     }
+
+    /// Force one [`reclaim_stale`] + [`claim_next`] + run pass right now,
+    /// against whatever handlers (Rust or JS) are currently registered —
+    /// the same work `QueuePlugin`'s live 1-second ticker does, just
+    /// on demand rather than waited out. Useful for an integration test
+    /// holding the real, app-wide `QueueHandle` (`crate::app::App::queue_handle`)
+    /// that wants determinism (and a much shorter backoff than the
+    /// production defaults) instead of a real sleep, and equally usable
+    /// as the "process now" primitive behind a future dashboard action —
+    /// same idea as `crate::cron::CronService::run`'s "run this job now".
+    pub async fn run_one_tick(
+        &self,
+        app: &App,
+        base_delay: Duration,
+        max_delay: Duration,
+        stale_timeout: Duration,
+    ) {
+        tick(
+            app,
+            &self.0,
+            TickConfig {
+                base_delay,
+                max_delay,
+                stale_timeout,
+            },
+        )
+        .await;
+    }
 }
 
 /// Backoff/timing knobs, `Copy` so a reference to the owning
@@ -300,7 +328,23 @@ impl Plugin for QueuePlugin {
 /// `_cron_jobs`/`_webhooks`: a queued job's payload is handed verbatim to
 /// whatever handler its `queue` name resolves to, with no rule
 /// enforcement in between.
+/// Serializes [`ensure_collection`] process-wide. Now that the live queue
+/// toggle (`QueuePlugin::setup`'s tick loop) and `enqueue_job`'s own lazy
+/// provisioning can both reach `ensure_collection` around the same
+/// moment, a plain "check, then insert" has a real TOCTOU window: both
+/// callers can see the collection missing before either one's insert
+/// lands. A process-wide lock (rather than a per-`App` one) is fine here
+/// — provisioning happens at most once per process lifetime, never a hot
+/// path, so contention is a non-issue.
+static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn ensure_collection(app: &App) -> Result<(), AppError> {
+    if app.db().collections.get_by_name(COLLECTION).is_some() {
+        return Ok(());
+    }
+    let _guard = ENSURE_LOCK.lock().await;
+    // Re-check now that we hold the lock: a concurrent caller may have
+    // just finished provisioning it while this one was waiting.
     if app.db().collections.get_by_name(COLLECTION).is_some() {
         return Ok(());
     }

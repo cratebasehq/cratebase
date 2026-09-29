@@ -333,7 +333,7 @@ impl App {
     /// dispatches from; a Rust caller wanting the same thing should
     /// instead hold the `QueueHandle` `QueuePlugin::handle` gave it
     /// directly, the way `crate::mails::register_queue_handler` does.
-    pub(crate) fn queue_handle(&self) -> Option<crate::queue::QueueHandle> {
+    pub fn queue_handle(&self) -> Option<crate::queue::QueueHandle> {
         self.inner.queue_handle.get().cloned()
     }
 

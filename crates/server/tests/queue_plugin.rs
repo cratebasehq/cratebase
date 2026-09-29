@@ -13,8 +13,6 @@ use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use cratebase_server::app::App;
 use cratebase_server::config::Config;
-use cratebase_server::plugin::Plugin;
-use cratebase_server::queue::{self, QueuePlugin};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -47,35 +45,28 @@ impl Harness {
         }
     }
 
-    /// Flip `settings.queue.enabled` on and do exactly what
-    /// `App::bootstrap_inner` does for an *already*-enabled boot
-    /// (`queue::ensure_collection` then `register_plugin`) — a real
-    /// operator flips the flag and restarts, which re-runs bootstrap from
-    /// scratch; this reproduces the same two steps against a live `App`
-    /// instead of requiring a second process. `calls` is bumped by a
-    /// `"count"` handler registered on the plugin before it goes live.
+    /// Flip `settings.queue.enabled` on — the Queue plugin itself is now
+    /// registered unconditionally by `App::bootstrap` (before the JS
+    /// runtime even starts; see that call site's doc), so there is no
+    /// second plugin to register here: the worker loop it already
+    /// started is idle (reads the live setting every tick and does
+    /// nothing while it's `false`) until this flips it. `calls` is bumped
+    /// by a `"count"` handler registered on the app-wide `QueueHandle`.
     async fn enable_queue(&self, calls: Arc<AtomicUsize>) {
+        self.app
+            .queue_handle()
+            .expect("the queue plugin is always registered")
+            .register_handler("count", move |_payload| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+
         let mut settings = (*self.app.settings()).clone();
         settings.queue.enabled = true;
         self.app.set_settings(settings).await.expect("enable queue");
-
-        queue::ensure_collection(&self.app)
-            .await
-            .expect("ensure _queue_jobs");
-
-        let plugin = QueuePlugin::new().with_tick_interval(Duration::from_millis(20));
-        let handle = plugin.handle();
-        handle.register_handler("count", move |_payload| {
-            let calls = calls.clone();
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        });
-        plugin.setup(&self.app).expect("start queue worker");
-        self.app
-            .register_plugin(plugin)
-            .expect("register queue plugin");
     }
 
     async fn send(&self, request: Request<Body>) -> (StatusCode, Value) {
@@ -138,27 +129,29 @@ async fn enqueue_over_http_runs_and_updates_status() {
         .to_string();
     assert_eq!(enqueued["status"], "pending");
 
-    // Poll `_queue_jobs` through the ordinary Records API (superuser-only
-    // rules, same as `_cron_jobs`/`_webhooks`) until the worker tick picks
-    // the job up and marks it completed.
-    let mut final_status = None;
-    for _ in 0..50 {
-        let (status, row) = harness
-            .admin(
-                "GET",
-                &format!("/api/collections/_queue_jobs/records/{id}"),
-                None,
-            )
-            .await;
-        assert_eq!(status, 200, "{row}");
-        if row["status"] == "completed" {
-            final_status = Some(row);
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    // Force one worker pass right now rather than waiting out the live
+    // plugin's production 1s tick interval — `QueueHandle::run_one_tick`
+    // runs the exact same claim/run logic on demand.
+    harness
+        .app
+        .queue_handle()
+        .expect("queue plugin registered")
+        .run_one_tick(
+            &harness.app,
+            Duration::from_millis(20),
+            Duration::from_secs(1),
+            Duration::from_secs(300),
+        )
+        .await;
 
-    let row = final_status.expect("job should complete within the poll window");
+    let (status, row) = harness
+        .admin(
+            "GET",
+            &format!("/api/collections/_queue_jobs/records/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{row}");
     assert_eq!(row["status"], "completed");
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -167,21 +160,67 @@ async fn enqueue_over_http_runs_and_updates_status() {
     );
 }
 
-/// A disabled queue (the default) never mounts the plugin route at all.
+/// Enqueueing (and the dead-letter API) works even while
+/// `settings.queue.enabled` is off (the default) — a job just sits
+/// `pending` until an operator turns processing on, live, with no
+/// restart. This is deliberately different from the old
+/// "route absent while disabled" behavior: the toggle now only ever
+/// gates whether the worker loop *processes* `_queue_jobs`, never
+/// whether the collection/API exists — see `crate::queue::QueuePlugin::setup`'s
+/// doc.
 #[tokio::test]
-async fn the_enqueue_route_is_absent_when_the_queue_is_disabled() {
+async fn enqueueing_works_while_disabled_but_the_job_is_never_processed() {
     let harness = Harness::new().await;
     assert!(
         !harness.app.settings().queue.enabled,
         "queue.enabled defaults to false"
     );
 
-    let (status, _) = harness
+    let (status, enqueued) = harness
         .admin(
             "POST",
             "/api/plugins/queue/enqueue",
             Some(json!({"queue": "count", "payload": {}})),
         )
         .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, 200, "{enqueued}");
+    assert_eq!(enqueued["status"], "pending");
+    let id = enqueued["id"].as_str().expect("id").to_string();
+
+    // The live plugin's ticker checks `settings.queue.enabled` on every
+    // pass and does nothing at all while it's off (see
+    // `QueuePlugin::setup`'s doc) — well under its 1s interval is enough
+    // margin to be confident no tick has run yet.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (status, row) = harness
+        .admin(
+            "GET",
+            &format!("/api/collections/_queue_jobs/records/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{row}");
+    assert_eq!(
+        row["status"], "pending",
+        "a disabled queue must never process a job, even on a forced tick"
+    );
+
+    // Now the canonical route (superuser/API key, not just the plugin
+    // alias) can retry/delete it regardless of the toggle too.
+    let (status, _) = harness
+        .admin(
+            "DELETE",
+            &format!("/api/queue/jobs/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = harness
+        .admin(
+            "GET",
+            &format!("/api/collections/_queue_jobs/records/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "deleted");
 }
