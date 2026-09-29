@@ -1,0 +1,250 @@
+---
+/**
+ * Dashboard tour: three real screens, one large legible crop at a time.
+ * Tabs swap the crop; each crop is a camera-style cut of a real capture
+ * (scripts/crop-dashboard.mjs) shown near 1:1 so its text actually reads.
+ */
+import Shot from "./Shot.astro";
+import emailLight from "../assets/crops/light/tour-email.png";
+import emailDark from "../assets/crops/dark/tour-email.png";
+import authLight from "../assets/crops/light/tour-auth.png";
+import authDark from "../assets/crops/dark/tour-auth.png";
+import settingsLight from "../assets/crops/light/tour-settings.png";
+import settingsDark from "../assets/crops/dark/tour-settings.png";
+
+const tabs = [
+  {
+    id: "email",
+    label: "Email templates",
+    line: "A visual editor with variables, themes and live preview.",
+    path: "Settings / Email templates / welcome",
+    light: emailLight,
+    dark: emailDark,
+    alt: "The Cratebase visual email template editor, editing the welcome email with {{user.name}} and {{appName}} variables and a theme panel.",
+    href: "/docs/email/templates/",
+  },
+  {
+    id: "auth",
+    label: "Sign-in methods",
+    line: "Password, OAuth2, one-time codes, magic links and MFA, each a toggle.",
+    path: "Collections / users / Schema",
+    light: authLight,
+    dark: authDark,
+    alt: "The users collection's authentication options in the Cratebase dashboard: password, OAuth2, multi-factor, one-time password and magic link toggles.",
+    href: "/docs/concepts/authentication/overview/",
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    line: "Every setting in seven groups. Nothing is API-only.",
+    path: "Settings / Application",
+    light: settingsLight,
+    dark: settingsDark,
+    alt: "Cratebase settings: seven groups (Application, Email, Auth & security, Database, Automation, Integrations, Logs) with the Application form open.",
+    href: "/docs/dashboard/settings-pages/",
+  },
+];
+---
+
+<div class="tour" data-tour>
+  <div class="tour-tabs" role="tablist" aria-label="Dashboard screens">
+    {
+      tabs.map((t, i) => (
+        <button
+          type="button"
+          role="tab"
+          class="tour-tab"
+          id={`tour-tab-${t.id}`}
+          aria-controls={`tour-panel-${t.id}`}
+          aria-selected={i === 0 ? "true" : "false"}
+          tabindex={i === 0 ? 0 : -1}
+        >
+          <span class="tour-label">{t.label}</span>
+          <span class="tour-line">{t.line}</span>
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="tour-stage">
+    {
+      tabs.map((t, i) => (
+        <figure class="tour-panel" id={`tour-panel-${t.id}`} role="tabpanel" aria-labelledby={`tour-tab-${t.id}`} hidden={i !== 0}>
+          <div class="tour-bar">
+            <span class="tour-dots" aria-hidden="true"><i /><i /><i /></span>
+            <span class="tour-path">{t.path}</span>
+            <a class="tour-doc" href={t.href}>Docs</a>
+          </div>
+          <div class="tour-crop">
+            <Shot light={t.light} dark={t.dark} alt={t.alt} widths={[640, 960, 1280, 1920, 2400]} sizes="(min-width: 1280px) 1180px, 96vw" />
+          </div>
+        </figure>
+      ))
+    }
+  </div>
+</div>
+
+<style>
+  .tour {
+    display: grid;
+    gap: 1.5rem;
+  }
+  .tour-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  .tour-tab {
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.95rem 1.1rem 1rem;
+    text-align: left;
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.9rem;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font: inherit;
+    cursor: pointer;
+    transition:
+      border-color 180ms var(--ease-house),
+      background 180ms var(--ease-house),
+      color 180ms var(--ease-house);
+  }
+  :root[data-theme="dark"] .tour-tab {
+    border-color: var(--color-border);
+  }
+  .tour-tab:hover {
+    color: var(--color-text);
+  }
+  .tour-tab[aria-selected="true"] {
+    background: var(--color-white);
+    border-color: var(--color-ink);
+    color: var(--color-text);
+  }
+  :root[data-theme="dark"] .tour-tab[aria-selected="true"] {
+    background: var(--color-panel);
+  }
+  .tour-tab:focus-visible {
+    outline: 2px solid var(--color-crate);
+    outline-offset: 2px;
+  }
+  .tour-label {
+    font-weight: 700;
+    font-size: 1rem;
+  }
+  .tour-line {
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+
+  .tour-panel {
+    margin: 0;
+    border-radius: 1.1rem;
+    overflow: hidden;
+    background: #fff;
+    box-shadow:
+      0 0 0 1px var(--color-hairline),
+      0 40px 80px -50px rgba(14, 34, 56, 0.5);
+  }
+  :root[data-theme="dark"] .tour-panel {
+    background: #0a0a0a;
+    box-shadow:
+      0 0 0 1px var(--color-border),
+      0 40px 80px -40px rgba(0, 0, 0, 0.8);
+  }
+  .tour-bar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    height: 2.6rem;
+    padding-inline: 1rem;
+    border-bottom: 1px solid #e6e6e6;
+    font-size: 0.82rem;
+    color: #52525b;
+  }
+  :root[data-theme="dark"] .tour-bar {
+    border-color: #1f1f22;
+    color: #a1a1aa;
+  }
+  .tour-dots {
+    display: flex;
+    gap: 0.35rem;
+  }
+  .tour-dots i {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: #d4d4d8;
+  }
+  :root[data-theme="dark"] .tour-dots i {
+    background: #3f3f46;
+  }
+  .tour-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tour-doc {
+    font-weight: 600;
+    color: inherit;
+  }
+  .tour-crop {
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+  }
+  .tour-crop :global(.shot),
+  .tour-crop :global(picture) {
+    height: 100%;
+  }
+  .tour-crop :global(img) {
+    height: 100%;
+    object-fit: cover;
+    object-position: left top;
+  }
+
+  @media (max-width: 760px) {
+    .tour-tabs {
+      grid-template-columns: 1fr;
+      gap: 0.4rem;
+    }
+    .tour-tab {
+      padding: 0.7rem 0.9rem;
+    }
+    .tour-tab:not([aria-selected="true"]) .tour-line {
+      display: none;
+    }
+    .tour-crop {
+      aspect-ratio: 4 / 3.2;
+    }
+    .tour-crop :global(img) {
+      width: 180%;
+      max-width: none;
+    }
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-tour]").forEach((root) => {
+    const tabs = Array.from(root.querySelectorAll<HTMLButtonElement>(".tour-tab"));
+    const panels = Array.from(root.querySelectorAll<HTMLElement>(".tour-panel"));
+    const select = (i: number, focus = false) => {
+      tabs.forEach((t, j) => {
+        t.setAttribute("aria-selected", String(j === i));
+        t.tabIndex = j === i ? 0 : -1;
+      });
+      panels.forEach((p, j) => (p.hidden = j !== i));
+      if (focus) tabs[i].focus();
+    };
+    tabs.forEach((t, i) => t.addEventListener("click", () => select(i)));
+    root.querySelector(".tour-tabs")?.addEventListener("keydown", (e) => {
+      const k = (e as KeyboardEvent).key;
+      const cur = tabs.findIndex((t) => t.getAttribute("aria-selected") === "true");
+      if (k === "ArrowRight" || k === "ArrowDown") select((cur + 1) % tabs.length, true);
+      else if (k === "ArrowLeft" || k === "ArrowUp") select((cur - 1 + tabs.length) % tabs.length, true);
+      else return;
+      e.preventDefault();
+    });
+  });
+</script>

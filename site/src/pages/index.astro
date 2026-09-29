@@ -1,147 +1,34 @@
 ---
 import LandingLayout from "../layouts/LandingLayout.astro";
 import HeroMedia from "../components/HeroMedia.astro";
-import CodeTabs from "../components/CodeTabs.astro";
-import DeviceFrame from "../components/DeviceFrame.astro";
+import RulePlayground from "../components/RulePlayground.astro";
+import TypedFlow from "../components/TypedFlow.astro";
+import DashboardTour from "../components/DashboardTour.astro";
 import BenchChart from "../components/BenchChart.astro";
-import CrateSignal from "../components/illustrations/CrateSignal.astro";
+import Mark from "../components/Mark.astro";
 import Warehouses from "../components/illustrations/Warehouses.astro";
 import Dolly from "../components/illustrations/Dolly.astro";
-import CrateLocked from "../components/illustrations/CrateLocked.astro";
+import HeroUnpack from "../components/illustrations/HeroUnpack.astro";
+import CrateStack from "../components/illustrations/CrateStack.astro";
 
-import dashboardHomeLight from "../assets/dashboard/light/01-dashboard-home.png";
-import dashboardHomeDark from "../assets/dashboard/dark/01-dashboard-home.png";
-import authOptionsLight from "../assets/dashboard/light/06-users-auth-options.png";
-import authOptionsDark from "../assets/dashboard/dark/06-users-auth-options.png";
-import schemaRulesLight from "../assets/dashboard/light/03-collections-places-schema-rules.png";
-import schemaRulesDark from "../assets/dashboard/dark/03-collections-places-schema-rules.png";
-import templateEditorLight from "../assets/dashboard/light/08-settings-email-template-editor.png";
-import templateEditorDark from "../assets/dashboard/dark/08-settings-email-template-editor.png";
-import settingsIndexLight from "../assets/dashboard/light/05-settings-index.png";
-import settingsIndexDark from "../assets/dashboard/dark/05-settings-index.png";
-import emailTemplatesLight from "../assets/dashboard/light/07-settings-email-templates.png";
-import emailTemplatesDark from "../assets/dashboard/dark/07-settings-email-templates.png";
-import rpcLight from "../assets/dashboard/light/09-settings-rpc.png";
-import rpcDark from "../assets/dashboard/dark/09-settings-rpc.png";
-import recordsSearchLight from "../assets/dashboard/light/11-collections-posts-records-search.png";
-import recordsSearchDark from "../assets/dashboard/dark/11-collections-posts-records-search.png";
-
-const zeroToBackendSteps = [
-  {
-    n: "01",
-    title: "Start the dev server",
-    body: "One command provisions a superuser, seeds pb_seed/, writes types, and starts listening — no setup form to click through.",
-    tabs: [
-      { label: "Local", code: `$ curl -fsSL https://cratebase.dev/install.sh | sh\n$ cratebase dev\n\nsuperuser: admin@localhost / a1B2c3D4...\ndashboard: http://127.0.0.1:8090/_/\napi:       http://127.0.0.1:8090/api/` },
-      { label: "Docker", code: `$ docker run -p 8090:8090 -v cratebase_data:/app/data \\\n    ghcr.io/cratebasehq/cratebase:latest` },
-    ],
-  },
-  {
-    n: "02",
-    title: "Define a collection",
-    body: "From the dashboard, or check a schema.json into your repo and push it — a dry run flags anything destructive before it touches data.",
-    tabs: [
-      { label: "CLI", code: `$ cratebase schema push schema.json --dry-run\n\n+ posts (new)\n    title      text, required, searchable\n    published  bool\n    author     relation -> users` },
-    ],
-  },
-  {
-    n: "03",
-    title: "Generate types from it",
-    body: "Typegen ships in the binary — no separate package, no Node toolchain. An unknown collection name becomes a compile error, not a 404 in production.",
-    tabs: [
-      { label: "One-off", code: `$ cratebase typegen -o cratebase-types.d.ts` },
-      { label: "Watch mode", code: `$ cratebase dev --typegen-watch\n\n# rewrites cratebase-types.d.ts on every schema change` },
-    ],
-  },
-  {
-    n: "04",
-    title: "Wire it into your app, live",
-    body: "useRecords fetches the list once, then keeps it current — a write from any client lands here with no refresh and no polling.",
-    tabs: [
-      { label: "React", code: `import { useRecords } from "@cratebase/react";\nimport { cb } from "./cratebase";\n\nfunction PostList() {\n  const { records: posts } = useRecords(cb, "posts", { sort: "-created" });\n  return posts.map((p) => &lt;Post key={p.id} post={p} /&gt;);\n}` },
-      { label: "Vanilla TS", code: `import { createClient } from "@cratebase/client";\n\nconst cb = createClient("http://localhost:8090");\nconst posts = await cb.collection("posts").list({ sort: "-created" });\ncb.collection("posts").subscribe("*", (e) => render(e.record));` },
-    ],
-  },
+const proof = [
+  "One binary, dashboard included",
+  "SQLite or Postgres",
+  "Works with the official PocketBase SDKs",
+  "MIT licensed",
 ];
 
-const pillars = [
-  {
-    id: "auth",
-    eyebrow: "Auth",
-    title: "Sign-in your users will actually use",
-    body: "Password, email OTP, magic link, TOTP 2FA with backup codes, and twelve OAuth2 presets plus generic OIDC — all on the same session model, none of it hand-rolled.",
-    bullets: [
-      "Google, Apple, GitHub, Microsoft, Discord, GitLab, Facebook, X, LinkedIn, Slack, Twitch, Spotify — built in, plus a generic OIDC issuer for anything else.",
-      "Email OTP and magic-link sign-in ship as no-code toggles, not custom flows to build and maintain.",
-      "TOTP 2FA layers onto any first factor — password, OTP, magic link, or OAuth — with backup codes issued once.",
-      "New-location login alerts and superuser impersonation are already wired in, not a feature you build later.",
-    ],
-    code: `const { secret, uri } = await cb.auth.totp.setup();
-// uri -> render as a QR code; user scans it in their app
-
-const { backupCodes } = await cb.auth.totp.confirm(codeFromApp);
-// show these 10 codes once -- hashed server-side, never shown again
-
-await cb.collection("users").requestMagicLink({ email });
-// -> POST .../auth-with-magic-link on click, no password involved`,
-    visual: { light: authOptionsLight, dark: authOptionsDark, path: "localhost:8090/_/collections/users?tab=schema", alt: "The users collection's Auth options panel in the Cratebase dashboard, showing OAuth2 providers and sign-in methods." },
-    href: "/docs/concepts/authentication/overview/",
-  },
-  {
-    id: "data",
-    eyebrow: "Data",
-    title: "Rules enforced in SQL, not in code you have to trust",
-    body: "A small filter-expression language compiles straight into the query plan — list/view/create/update/delete access lives next to the schema, not scattered across route handlers.",
-    bullets: [
-      "API rules (owner = @request.auth.id) enforced in SQL for every list/view/create/update/delete call.",
-      "Full-text search (?search=) on any collection — SQLite FTS5 or Postgres tsvector, kept in sync automatically.",
-      "Custom SQL RPC (cb.rpc(name, params)) for the GROUP BY, window function, or PostGIS query a filter can't express.",
-      "sort=geoDistance(...) nearest-first queries, GiST-indexed automatically once PostGIS is installed.",
-      "Realtime subscriptions over SSE — cross-node on Postgres via LISTEN/NOTIFY — plus presence and in-app notifications.",
-    ],
-    code: `// API rule, enforced in SQL on every request:
-updateRule: "owner = @request.auth.id"
-
-// nearest 5 open stores within 10km, PostGIS-accelerated:
-GET /api/collections/stores/records
-  ?filter=geoDistance(loc.lon,loc.lat,-122.42,37.77)<10 && open=true
-  &sort=geoDistance(loc.lon,loc.lat,-122.42,37.77)
-  &perPage=5`,
-    visual: { light: schemaRulesLight, dark: schemaRulesDark, path: "localhost:8090/_/collections/places?tab=schema", alt: "A collection's schema and API rules editor in the Cratebase dashboard." },
-    href: "/docs/concepts/api-rules/",
-  },
-  {
-    id: "email-files",
-    eyebrow: "Email & files",
-    title: "Send mail and store files without a second vendor",
-    body: "A visual template editor, a send API your frontend can call directly, and file storage that moves from local disk to S3 with three environment variables.",
-    bullets: [
-      "Templates use {{variables}}, layouts, and locales, edited in a full visual builder — not an HTML textarea.",
-      "cb.mails.send(...) is callable from a signed-in (or anonymous) app user when a template's sendRule allows it — transactional mail with no backend of its own.",
-      "No-code triggers fire a template on a record create/update/delete; every send is logged to the mail log.",
-      "Presigned direct uploads (cb.files.upload) skip the multipart round trip; local disk or any S3-compatible bucket, one driver swap.",
-      "Image transforms (?w=&h=&fit=&format=) on the files route, independent of the existing thumbnail sizes.",
-    ],
-    code: `// callable from the frontend -- no backend of its own:
-await cb.mails.send({
-  to: recipientEmail,
-  template: "invite",
-  data: { invitedBy: currentUser.name, teamName: "Acme" },
-});
-
-const upload = await cb.files.upload(file, { collection: "posts", field: "cover" });
-await cb.collection("posts").create({ id: upload.recordId, title, cover: upload.token });`,
-    visual: { light: templateEditorLight, dark: templateEditorDark, path: "localhost:8090/_/settings/email-templates/welcome", alt: "The visual email template editor in the Cratebase dashboard, with a live preview." },
-    href: "/docs/email/overview/",
-  },
-];
-
-const dashboardShots = [
-  { light: dashboardHomeLight, dark: dashboardHomeDark, alt: "Cratebase dashboard home, with the onboarding checklist guiding a fresh install through app identity, mail delivery, auth, backups, and rate limiting.", path: "localhost:8090/_/", caption: "Onboarding checklist", href: "/docs/dashboard/tour/" },
-  { light: settingsIndexLight, dark: settingsIndexDark, alt: "Cratebase settings, consolidated into seven tabbed groups.", path: "localhost:8090/_/settings", caption: "Every setting, 7 tabbed groups", href: "/docs/dashboard/settings-pages/" },
-  { light: emailTemplatesLight, dark: emailTemplatesDark, alt: "The list of email templates in the Cratebase dashboard.", path: "localhost:8090/_/settings/email?tab=templates", caption: "Email templates", href: "/docs/email/templates/" },
-  { light: rpcLight, dark: rpcDark, alt: "The RPC functions screen in the Cratebase dashboard, defining a named SQL endpoint.", path: "localhost:8090/_/settings/rpc", caption: "Custom SQL RPC", href: "/docs/database/custom-sql-rpc/" },
-  { light: recordsSearchLight, dark: recordsSearchDark, alt: "A collection's records list in the Cratebase dashboard, with full-text search.", path: "localhost:8090/_/collections/posts", caption: "Records + full-text search", href: "/docs/database/full-text-search/" },
+// The packing list: one line per capability, each linking to its docs.
+// Everything else lives on /features.
+const packing = [
+  { item: "Auth", line: "Password, email OTP, magic links, TOTP 2FA, 12 OAuth2 presets and generic OIDC.", href: "/docs/concepts/authentication/overview/" },
+  { item: "Realtime", line: "Live subscriptions, presence and in-app notifications. Cross-node on Postgres.", href: "/docs/concepts/realtime/" },
+  { item: "Files", line: "Local disk or any S3 bucket, presigned uploads, image transforms on the fly.", href: "/docs/concepts/files/" },
+  { item: "Search", line: "?search= on any collection. FTS5 on SQLite, tsvector on Postgres.", href: "/docs/database/full-text-search/" },
+  { item: "Email", line: "Visual templates your frontend can send with cb.mails.send().", href: "/docs/email/overview/" },
+  { item: "SQL", line: "Custom RPC endpoints, geo queries and Postgres extensions.", href: "/docs/database/custom-sql-rpc/" },
+  { item: "Hooks", line: "JavaScript hooks, custom routes and cron jobs, hot-reloaded in dev.", href: "/docs/extending/js-hooks/" },
+  { item: "Defaults", line: "Rate limits, a one-time setup token and security headers, on from the first run.", href: "/docs/deploy/security-hardening/" },
 ];
 ---
 
@@ -151,237 +38,241 @@ const dashboardShots = [
 >
   <!-- ============================== HERO ============================== -->
   <section class="hero">
-    <div class="wrap hero-grid">
-      <div class="hero-copy">
-        <a class="announce" href="https://github.com/cratebasehq/cratebase/releases/tag/v0.4.0">
-          <span class="announce-dot" aria-hidden="true"></span>
-          New in v0.4.0: email platform, custom SQL RPC &amp; TOTP 2FA
-        </a>
-        <h1>A backend in one crate.</h1>
-        <p class="lede">Collections, auth, files, and realtime — one self-hostable Rust binary, SQLite today, Postgres when you need it.</p>
-
-        <div class="install-row" role="group" aria-label="Install command">
-          <pre class="install-cmd mono" id="install-command"><code>curl -fsSL https://cratebase.dev/install.sh | sh</code></pre>
-          <button type="button" class="copy-btn" data-copy="install-command" aria-label="Copy install command">
-            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
-              <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
-              <path d="M2.5 10.5v-7A1 1 0 0 1 3.5 2.5h7" />
-            </svg>
-            <span class="copy-label">Copy</span>
-          </button>
-        </div>
-
-        <div class="hero-actions">
-          <a class="btn btn-primary" href="/docs/getting-started/install/">Get started</a>
-          <a class="btn btn-secondary" href="https://codespaces.new/cratebasehq/cratebase">Open in GitHub Codespaces</a>
-        </div>
-      </div>
-      <div class="hero-art" data-reveal>
-        <HeroMedia
-          fallbackLight={dashboardHomeLight}
-          fallbackDark={dashboardHomeDark}
-          fallbackAlt="The Cratebase admin dashboard home screen, running locally."
-        />
-      </div>
-    </div>
-  </section>
-
-  <!-- ===================== ZERO TO TYPED BACKEND ======================= -->
-  <section class="wrap section" id="zero-to-backend">
-    <div class="section-head" data-reveal>
-      <span class="eyebrow">From zero to backend</span>
-      <h2>Thirty seconds, start to typed client</h2>
-      <p>Define a collection's shape once, and everything downstream — generated types, the typed client, your React components — stays in sync with it.</p>
-    </div>
-    <ol class="steps">
-      {zeroToBackendSteps.map((step, i) => (
-        <li data-reveal data-reveal-group="steps" data-reveal-index={i}>
-          <span class="step-n mono">{step.n}</span>
-          <h3>{step.title}</h3>
-          <p>{step.body}</p>
-          <CodeTabs groupId={`step-${step.n}`} tabs={step.tabs} />
-        </li>
-      ))}
-    </ol>
-  </section>
-
-  <!-- ============================= PILLARS ============================= -->
-  {pillars.map((pillar, i) => (
-    <section class={`wrap section pillar ${i % 2 === 1 ? "pillar-reverse" : ""}`} id={pillar.id}>
-      <div class="pillar-copy" data-reveal>
-        <span class="eyebrow">{pillar.eyebrow}</span>
-        <h2>{pillar.title}</h2>
-        <p class="pillar-body">{pillar.body}</p>
-        <pre class="pillar-code mono"><code set:html={pillar.code} /></pre>
-        <ul class="pillar-bullets">
-          {pillar.bullets.map((b) => <li>{b}</li>)}
-        </ul>
-        <a class="pillar-link" href={pillar.href}>Read the docs →</a>
-      </div>
-      <div class="pillar-visual" data-reveal data-parallax data-parallax-strength="0.035">
-        <DeviceFrame light={pillar.visual.light} dark={pillar.visual.dark} alt={pillar.visual.alt} path={pillar.visual.path} />
-      </div>
-    </section>
-  ))}
-
-  <!-- ==================== PERFORMANCE & PORTABILITY ==================== -->
-  <section class="band">
-    <div class="wrap section">
-      <div class="section-head" data-reveal>
-        <span class="eyebrow">Performance &amp; portability</span>
-        <h2>Fast by default, portable by design</h2>
-        <p>22 of 24 benchmark cells were faster on Cratebase in the latest idle-host run, several by an order of magnitude — measured HTTP-level, back to back, on the same machine.</p>
-      </div>
-
-      <div class="perf-panel" data-reveal>
-        <BenchChart />
-        <p class="footnote">
-          The <code>auth</code> win (not charted above) is a security-parameter difference — Argon2id vs. PocketBase's bcrypt cost-12 — not throughput work.
-          <a href="/docs/benchmarks/">Full methodology, caveats, and results →</a>
-        </p>
-      </div>
-
-      <div class="portability-grid">
-        <div class="portability-card" data-reveal data-reveal-group="port" data-reveal-index="0">
-          <div class="portability-art"><Warehouses label="Two warehouses sharing one rail, a crate crossing between them" /></div>
-          <h3>SQLite or Postgres, zero code change</h3>
-          <p>Same API, same filter syntax, same rules — switch with one environment variable:</p>
-          <div class="diff-blocks">
-            <pre class="mono"><code>DATABASE_URL=sqlite://./data.db</code></pre>
-            <pre class="mono"><code>DATABASE_URL=postgres://user:pass@host/db</code></pre>
+    <div class="wrap">
+      <a class="announce" href="https://github.com/cratebasehq/cratebase/releases/tag/v0.5.0">
+        <span class="announce-dot" aria-hidden="true"></span>
+        New in v0.5.0: full-text search, notifications &amp; realtime presence
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" /></svg>
+      </a>
+      <div class="hero-head">
+        <h1><span>A backend in</span> <span>one crate.</span></h1>
+        <div class="hero-side">
+          <p class="lede">Collections, auth, files and realtime in one self-hostable Rust binary. SQLite today, Postgres when you need it.</p>
+          <div class="install-row" role="group" aria-label="Install command">
+            <pre class="install-cmd" id="install-command"><code><span class="install-prompt" aria-hidden="true">$ </span>curl -fsSL https://cratebase.dev/install.sh | sh</code></pre>
+            <button type="button" class="copy-btn" data-copy="install-command" aria-label="Copy install command">
+              <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
+                <path d="M2.5 10.5v-7A1 1 0 0 1 3.5 2.5h7" />
+              </svg>
+              <span class="copy-label">Copy</span>
+            </button>
           </div>
-          <p class="small">On Postgres, realtime becomes cross-node via <code>LISTEN</code>/<code>NOTIFY</code> — a write on one instance reaches a subscriber on another in ~95&ndash;100ms measured, HTTP-in to SSE-out.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="/docs/getting-started/install/">Get started</a>
+            <a class="btn btn-secondary" href="https://codespaces.new/cratebasehq/cratebase">Open in Codespaces</a>
+          </div>
         </div>
-        <div class="portability-card" data-reveal data-reveal-group="port" data-reveal-index="1">
-          <div class="portability-art"><CrateSignal label="A crate broadcasting to listening terminals" /></div>
-          <h3>One binary, everywhere</h3>
-          <p>The admin dashboard is embedded at compile time — deploying is copying one file, or running one Docker image:</p>
-          <pre class="mono"><code>docker run -p 8090:8090 -v cratebase_data:/app/data \
-  ghcr.io/cratebasehq/cratebase:latest</code></pre>
-          <p class="small">No Rust toolchain, no build step, and no separate auth service, database, or object store to stand up first.</p>
+      </div>
+    </div>
+    <div class="wrap wrap-wide hero-stage">
+      <HeroMedia />
+    </div>
+    <ul class="wrap proof" aria-label="At a glance">
+      {proof.map((p) => <li><Mark size={14} />{p}</li>)}
+    </ul>
+  </section>
+
+  <!-- ========================= RULE PLAYGROUND ========================= -->
+  <section class="wrap section" id="rules">
+    <div class="head head-split">
+      <h2>Access rules run inside the&nbsp;query.</h2>
+      <p>
+        Write one expression per action. Cratebase compiles it into SQL, so a row a user can't see never leaves the database.
+        Try it: change the rule, or who's asking.
+      </p>
+    </div>
+    <RulePlayground />
+  </section>
+
+  <!-- ======================= SCHEMA → TYPED CLIENT ===================== -->
+  <section class="band-dark" id="typed">
+    <div class="wrap section">
+      <div class="head">
+        <h2>From schema to typed client in one command.</h2>
+        <p><code>cratebase dev</code> writes the types and keeps them current. No codegen package, no Node toolchain.</p>
+      </div>
+      <TypedFlow />
+    </div>
+  </section>
+
+  <!-- ============================ PACKING LIST ========================== -->
+  <section class="wrap section" id="inside">
+    <div class="label">
+      <div class="label-head">
+        <div>
+          <h2>Everything else is already in the crate.</h2>
+          <p>No second vendor for mail, storage, search or auth.</p>
         </div>
+        <div class="label-stamp" aria-hidden="true"><CrateStack /></div>
+      </div>
+      <ul class="packing">
+        {
+          packing.map((p) => (
+            <li>
+              <a href={p.href}>
+                <span class="packing-item">{p.item}</span>
+                <span class="packing-line">{p.line}</span>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+      <a class="label-foot" href="/features/">See every feature</a>
+    </div>
+  </section>
+
+  <!-- ========================= DASHBOARD TOUR =========================== -->
+  <section class="wrap section" id="dashboard">
+    <div class="head head-center">
+      <h2>A dashboard for every setting.</h2>
+      <p>Embedded in the binary. Real screens from a running instance.</p>
+    </div>
+    <DashboardTour />
+  </section>
+
+  <!-- ========================== PERFORMANCE ============================ -->
+  <section class="band-paper" id="performance">
+    <div class="wrap section perf">
+      <div class="perf-head">
+        <h2>10× PocketBase's search throughput, on the same machine.</h2>
+        <p>22 of 24 benchmark cells faster in the latest idle-host run, measured over HTTP, back to back.</p>
+        <a class="more" href="/docs/benchmarks/">Methodology and every result</a>
+      </div>
+      <div class="perf-chart">
+        <BenchChart />
+      </div>
+      <div class="perf-port">
+        <div class="perf-port-art"><Warehouses label="Two warehouses sharing one rail, a crate crossing between them" /></div>
+        <div>
+          <h3>SQLite or Postgres, same code.</h3>
+          <p>Same API, filters and rules. One variable switches it; on Postgres, realtime goes cross-node.</p>
+        </div>
+        <pre class="env"><code><span class="c">DATABASE_URL=</span>sqlite://./data.db
+<span class="c">DATABASE_URL=</span>postgres://user:pass@host/db</code></pre>
       </div>
     </div>
   </section>
 
   <!-- ======================= MOVING FROM POCKETBASE ==================== -->
-  <section class="wrap section">
-    <div class="migrate-panel">
-      <div class="migrate-art" data-reveal data-parallax data-parallax-strength="0.04"><Dolly label="A hand truck carrying two crates: the migration tool" /></div>
-      <div data-reveal>
-        <span class="eyebrow">Compatibility</span>
-        <h2>Moving from PocketBase</h2>
-        <p>
-          Cratebase speaks the same wire protocol: the official <code>pocketbase</code>
-          JS/TS client (and PocketBase's other official SDKs) work against it unchanged —
-          verified against the real SDK, 180 of 181 conformance tests pass. Already running
-          PocketBase? Bring your data over in one command:
-        </p>
-        <pre class="mono"><code>cratebase migrate-from-pocketbase pb_data --dir cratebase_data</code></pre>
-        <pre class="mono report"><code>{`collections created: 2
-  + categories
-  + books
-collections updated (existing schema, fields merged): 1
-  ~ users
-records migrated:
-  _superusers: 1
-  books: 3
-  categories: 2
-  users: 1
-files copied: 4`}</code></pre>
-        <ul class="checklist">
-          <li>Passwords keep working — bcrypt hashes verify directly, re-hashed to Argon2id on next login.</li>
-          <li>Collection and record ids are preserved (deterministic id derivation, verified identical to PocketBase's own).</li>
-          <li>Not migrated: sessions, OAuth2 secrets, <code>_mfas</code>/<code>_otps</code>/<code>_externalAuths</code>/<code>_authOrigins</code>, <code>pb_hooks</code>.</li>
-        </ul>
-        <pre class="mono diff"><code>{`- const pb = new PocketBase("https://pocketbase.example.com");
-+ const pb = new PocketBase("https://cratebase.example.com");`}</code></pre>
-        <a class="pillar-link" href="/docs/migrating/compatibility/">Read the full migration guide →</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- ========================= DASHBOARD SHOWCASE ======================= -->
-  <section class="band">
-    <div class="wrap section">
-      <div class="section-head" data-reveal>
-        <span class="eyebrow">The dashboard</span>
-        <h2>Every setting configurable, nothing left to the API</h2>
-        <p>Settings organized into seven tabbed groups, a visual email builder, a SQL/RPC console, and an onboarding checklist that walks a fresh install through the parts that matter — all real screens from a running instance.</p>
-      </div>
-      <div class="shot-grid">
-        {dashboardShots.map((shot, i) => (
-          <a class="shot-card" href={shot.href} data-reveal data-reveal-group="shots" data-reveal-index={i}>
-            <DeviceFrame light={shot.light} dark={shot.dark} alt={shot.alt} path={shot.path} widths={[360, 560, 760]} sizes="(min-width: 900px) 30vw, 90vw" />
-            <span class="shot-caption">{shot.caption}</span>
-          </a>
-        ))}
-      </div>
-    </div>
-  </section>
-
-  <!-- ==================== PRODUCTION DEFAULTS =========================== -->
-  <section class="wrap section">
-    <div class="prod-panel">
-      <div class="prod-art" data-reveal><CrateLocked label="A crate with a padlock: security defaults" /></div>
-      <div data-reveal>
-        <span class="eyebrow">Production defaults</span>
-        <h2>Not opt-ins — the default the day you run <code>cratebase serve</code></h2>
-        <ul class="checklist">
-          <li>Rate limiting is on out of the box — auth, create, and batch endpoints each get their own limit before you've configured anything.</li>
-          <li>A fresh instance can't be claimed by whoever finds the port first: the one-time setup URL's token is what turns "found this instance" into "owns it."</li>
-          <li>File serving is sandboxed to the configured storage root — no request path can walk outside it.</li>
-          <li>Standard security headers ship on every response.</li>
-          <li>Streaming backups, to local disk or S3 — <code>VACUUM INTO</code> on SQLite, the real <code>pg_dump</code>/<code>pg_restore</code> on Postgres.</li>
-        </ul>
-        <a class="pillar-link" href="/docs/deploy/security-hardening/">Security hardening →</a>
-      </div>
+  <section class="wrap section migrate">
+    <div class="migrate-art"><Dolly label="A hand truck carrying two crates: the migration tool" /></div>
+    <div class="migrate-copy">
+      <h2>Coming from PocketBase? Your SDK already works.</h2>
+      <p>Same wire protocol: 180 of 181 conformance tests pass against the official SDK. Bring your data in one command; passwords keep working.</p>
+      <pre class="migrate-code"><code><span class="p">$</span> cratebase migrate-from-pocketbase pb_data --dir cratebase_data
+<span class="del">- const pb = new PocketBase("https://pocketbase.example.com");</span>
+<span class="add">+ const pb = new PocketBase("https://cratebase.example.com");</span></code></pre>
+      <a class="more" href="/docs/migrating/compatibility/">Migration guide</a>
     </div>
   </section>
 
   <!-- ============================= FINAL CTA ============================ -->
-  <section class="wrap section final-cta" data-reveal>
+  <section class="wrap final">
+    <div class="final-art" aria-hidden="true"><HeroUnpack /></div>
     <h2>Ship the next one in one binary.</h2>
-    <p>Install it, read the docs, or open it in a browser right now.</p>
-    <div class="final-cta-actions">
-      <a class="btn btn-primary" href="/docs/">Read the docs</a>
-      <a class="btn btn-secondary" href="https://codespaces.new/cratebasehq/cratebase">Open in GitHub Codespaces</a>
-      <a class="btn btn-secondary" href="https://github.com/cratebasehq/cratebase">View on GitHub</a>
+    <div class="final-actions">
+      <a class="btn btn-primary btn-lg" href="/docs/getting-started/install/">Get started</a>
+      <a class="btn btn-secondary btn-lg" href="https://github.com/cratebasehq/cratebase">View on GitHub</a>
     </div>
-    <p class="license-note">MIT licensed. Self-host it, fork it, ship it.</p>
+    <p class="final-note">MIT licensed. Self-host it, fork it, ship it.</p>
   </section>
 </LandingLayout>
 
 <style>
-  .hero {
-    padding-block: 3rem 4.5rem;
+  /* ---------------- shared ---------------- */
+  .wrap-wide {
+    max-width: 82rem;
   }
-  .hero-grid {
+  .section {
+    padding-block: clamp(3.5rem, 6.5vw, 6rem);
+  }
+  .head {
+    max-width: 42rem;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+  .head h2,
+  .label h2,
+  .perf-head h2,
+  .migrate h2,
+  .final h2 {
+    font-family: var(--font-display);
+    font-weight: 750;
+    font-size: var(--text-3xl);
+    line-height: 1.02;
+    letter-spacing: -0.028em;
+    margin: 0 0 1rem;
+    color: var(--color-ink);
+    text-wrap: balance;
+  }
+  .head p,
+  .label-head p,
+  .perf-head p,
+  .migrate p {
+    font-size: var(--text-lg);
+    line-height: 1.5;
+    color: var(--color-text-secondary);
+    margin: 0;
+    max-width: 36rem;
+    text-wrap: pretty;
+  }
+  .head-split {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 3.5rem;
-    align-items: center;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 2rem 4rem;
+    align-items: end;
+    max-width: none;
+  }
+  .head-split h2 {
+    margin: 0;
+  }
+  .head-split p {
+    font-size: var(--text-base);
+  }
+  .head-center {
+    text-align: center;
+    margin-inline: auto;
+  }
+  .head-center p {
+    margin-inline: auto;
+  }
+  .more {
+    display: inline-block;
+    margin-top: 1.25rem;
+    font-weight: 600;
+    color: var(--color-ink);
+    text-underline-offset: 0.25em;
+  }
+  code {
+    font-size: 0.92em;
+  }
+
+  /* ---------------- hero ---------------- */
+  .hero {
+    padding-top: clamp(2.5rem, 5vw, 4.5rem);
   }
   .announce {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.4rem 0.9rem;
-    margin-bottom: 1.4rem;
-    border: 1px solid var(--color-hairline);
+    gap: 0.55rem;
+    padding: 0.4rem 0.8rem 0.4rem 0.7rem;
+    border: 1px solid var(--color-border);
     border-radius: 999px;
-    background: var(--color-white);
+    background: var(--color-panel);
     font-size: var(--text-xs);
     color: var(--color-text-secondary);
     text-decoration: none;
-    transition: border-color 160ms var(--ease-house), color 160ms var(--ease-house);
+    transition:
+      border-color 160ms var(--ease-house),
+      color 160ms var(--ease-house);
   }
   .announce:hover {
     border-color: var(--color-ink);
-    color: var(--color-ink);
+    color: var(--color-text);
   }
-  :root[data-theme="dark"] .announce {
-    background: var(--color-panel);
+  .announce:focus-visible {
+    outline: 2px solid var(--color-crate);
+    outline-offset: 2px;
   }
   .announce-dot {
     width: 0.5rem;
@@ -390,48 +281,61 @@ files copied: 4`}</code></pre>
     background: var(--color-crate);
     flex-shrink: 0;
   }
+  .hero-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 25rem);
+    gap: 2rem clamp(2rem, 4vw, 4rem);
+    align-items: end;
+    margin-top: 1.5rem;
+    margin-bottom: clamp(2.5rem, 5vw, 4rem);
+  }
   h1 {
     font-family: var(--font-display);
     font-weight: 800;
-    font-size: var(--text-4xl);
-    line-height: 0.98;
-    letter-spacing: -0.03em;
-    margin: 0 0 1.1rem;
-    color: var(--color-harbor);
+    font-size: clamp(2.8rem, 0.9rem + 6.2vw, 6.2rem);
+    line-height: 0.92;
+    letter-spacing: -0.045em;
+    margin: 0;
+    color: var(--color-ink);
   }
-  :root[data-theme="dark"] h1 {
-    color: var(--color-fog);
+  h1 span {
+    display: block;
+    white-space: nowrap;
   }
   .lede {
     font-size: var(--text-lg);
     line-height: 1.5;
     color: var(--color-text-secondary);
-    max-width: 34rem;
-    margin: 0 0 2rem;
+    margin: 0 0 1.5rem;
+    max-width: 30rem;
   }
-
   .install-row {
     display: flex;
     align-items: stretch;
-    max-width: 30rem;
     min-width: 0;
-    margin-bottom: 1.75rem;
+    margin-bottom: 1rem;
     border-radius: var(--radius);
     overflow: hidden;
     background: var(--color-harbor);
   }
   :root[data-theme="dark"] .install-row {
-    box-shadow: inset 0 0 0 1px rgba(238, 241, 244, 0.1);
+    background: #06101a;
+    box-shadow: inset 0 0 0 1px var(--color-border);
   }
   .install-cmd {
     margin: 0;
-    padding: 0.85rem 1.1rem;
+    padding: 0.85rem 1rem;
     color: #eef1f4;
-    font-size: 0.88rem;
+    font-size: 0.86rem;
     flex: 1;
     min-width: 0;
     overflow-x: auto;
     white-space: nowrap;
+    scrollbar-width: none;
+  }
+  .install-prompt {
+    color: var(--color-crate);
+    user-select: none;
   }
   .copy-btn {
     display: inline-flex;
@@ -450,378 +354,296 @@ files copied: 4`}</code></pre>
   .copy-btn:hover {
     background: rgba(255, 255, 255, 0.14);
   }
+  .copy-btn:focus-visible {
+    outline: 2px solid var(--color-crate);
+    outline-offset: -2px;
+  }
   .copy-btn.is-copied {
     color: #ffbe93;
   }
-
   .hero-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.75rem;
+    gap: 0.6rem;
   }
-
-  .band {
-    background: var(--color-fog);
-  }
-  :root[data-theme="dark"] .band {
-    background: #0d1c2b;
-  }
-  .section {
-    padding-block: var(--space-2xl);
-  }
-
-  .eyebrow {
-    display: inline-block;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
+  .proof {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem 2.5rem;
+    margin: 0 auto;
+    padding-block: 2rem 0;
+    font-size: var(--text-sm);
     color: var(--color-text-secondary);
-    margin-bottom: 0.6rem;
   }
-  .section-head {
-    max-width: 40rem;
-    margin-bottom: var(--space-xl);
+  .proof li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
   }
-  .section-head h2,
-  .pillar-copy h2,
-  .migrate-panel h2,
-  .prod-panel h2 {
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: var(--text-2xl);
-    letter-spacing: -0.015em;
-    line-height: 1.1;
-    margin: 0 0 0.9rem;
-    color: var(--color-harbor);
-  }
-  :root[data-theme="dark"] .section-head h2,
-  :root[data-theme="dark"] .pillar-copy h2,
-  :root[data-theme="dark"] .migrate-panel h2,
-  :root[data-theme="dark"] .prod-panel h2 {
-    color: var(--color-fog);
-  }
-  .section-head p {
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-    margin: 0;
+  .proof li :global(svg) {
+    color: var(--color-crate);
   }
 
-  /* ---- steps ---- */
-  .steps {
+  /* ---------------- typed band ---------------- */
+  .band-dark {
+    background:
+      radial-gradient(50% 60% at 80% 0%, rgba(88, 132, 180, 0.22), transparent 70%),
+      var(--color-harbor);
+    color: #eef1f4;
+  }
+  :root[data-theme="dark"] .band-dark {
+    background:
+      radial-gradient(50% 60% at 80% 0%, rgba(88, 132, 180, 0.14), transparent 70%),
+      #0c1c2e;
+    box-shadow:
+      inset 0 1px 0 var(--color-border),
+      inset 0 -1px 0 var(--color-border);
+  }
+  .band-dark .head h2 {
+    color: #eef1f4;
+  }
+  .band-dark .head p {
+    color: #b3c1cf;
+  }
+
+  /* ---------------- packing list ---------------- */
+  .label {
+    position: relative;
+    border: 1.5px solid var(--color-ink);
+    border-radius: 1.25rem;
+    padding: clamp(1.5rem, 4vw, 3rem);
+    background: var(--color-panel);
+  }
+  .label-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2rem;
+    align-items: start;
+    padding-bottom: clamp(1.25rem, 3vw, 2rem);
+    border-bottom: 1.5px dashed var(--color-ink);
+  }
+  .label-head h2 {
+    max-width: 38rem;
+  }
+  .label-stamp {
+    width: clamp(4.5rem, 9vw, 7.5rem);
+  }
+  .packing {
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-md);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: clamp(2rem, 4vw, 3.5rem);
   }
-  .steps li {
-    border-top: 2px solid var(--color-hairline);
-    padding-top: var(--space-sm);
-    display: flex;
-    flex-direction: column;
+  .packing li {
+    border-bottom: 1px solid var(--color-border);
   }
-  .step-n {
-    display: block;
-    font-size: 0.8rem;
-    font-weight: 700;
-    color: var(--color-ink);
-    margin-bottom: 0.6rem;
-  }
-  .steps h3 {
-    font-family: var(--font-display);
-    font-size: 1.05rem;
-    margin: 0 0 0.5rem;
-  }
-  .steps p {
-    color: var(--color-text-secondary);
-    font-size: 0.88rem;
-    line-height: 1.55;
-    margin: 0 0 1rem;
-    flex: 1;
-  }
-
-  /* ---- pillars ---- */
-  .pillar {
+  .packing a {
     display: grid;
-    grid-template-columns: 1.05fr 0.95fr;
-    gap: var(--space-xl);
-    align-items: center;
-  }
-  .pillar-reverse {
-    direction: rtl;
-  }
-  .pillar-reverse > * {
-    direction: ltr;
-  }
-  .pillar-copy h2 {
-    font-size: var(--text-xl);
-  }
-  .pillar-body {
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-    margin: 0 0 1.25rem;
-    max-width: 32rem;
-  }
-  .pillar-code {
-    background: var(--color-harbor);
-    color: #eef1f4;
-    padding: 1.1rem 1.3rem;
-    border-radius: var(--radius);
-    font-size: 0.8rem;
-    line-height: 1.6;
-    overflow-x: auto;
-    margin: 0 0 1.25rem;
-  }
-  :root[data-theme="dark"] .pillar-code {
-    box-shadow: inset 0 0 0 1px rgba(238, 241, 244, 0.08);
-  }
-  .pillar-bullets {
-    margin: 0 0 1.25rem;
-    padding-left: 1.1rem;
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-    display: grid;
-    gap: 0.5rem;
-  }
-  .pillar-link {
-    font-weight: 600;
-    font-size: 0.92rem;
-  }
-
-  /* ---- performance ---- */
-  .perf-panel {
-    background: var(--color-white);
-    border: 1px solid var(--color-hairline);
-    border-radius: var(--radius-lg);
-    padding: var(--space-lg);
-    margin-bottom: var(--space-lg);
-  }
-  :root[data-theme="dark"] .perf-panel {
-    background: var(--color-panel);
-  }
-  .footnote {
-    font-size: 0.85rem;
-    color: var(--color-text-secondary);
-    margin: 1.25rem 0 0;
-  }
-  .footnote a {
-    color: var(--color-ink);
-  }
-  .portability-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-md);
-  }
-  .portability-card {
-    background: var(--color-white);
-    border: 1px solid var(--color-hairline);
-    border-radius: var(--radius-lg);
-    padding: var(--space-md);
-  }
-  :root[data-theme="dark"] .portability-card {
-    background: var(--color-panel);
-  }
-  .portability-art {
-    max-width: 9rem;
-    margin-bottom: 1rem;
-  }
-  .portability-card h3 {
-    font-family: var(--font-display);
-    font-size: 1.15rem;
-    margin: 0 0 0.6rem;
-  }
-  .portability-card p {
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-    margin: 0 0 0.75rem;
-  }
-  .portability-card p.small {
-    font-size: 0.82rem;
-  }
-  .diff-blocks pre {
-    background: var(--color-fog);
-    padding: 0.7rem 0.9rem;
-    border-radius: 0.4rem;
-    margin: 0.35rem 0;
-    font-size: 0.78rem;
-    overflow-x: auto;
-  }
-  :root[data-theme="dark"] .diff-blocks pre {
-    background: #101f30;
-  }
-  .portability-card > pre {
-    background: var(--color-fog);
-    padding: 0.7rem 0.9rem;
-    border-radius: 0.4rem;
-    font-size: 0.75rem;
-    overflow-x: auto;
-    margin: 0 0 0.75rem;
-  }
-  :root[data-theme="dark"] .portability-card > pre {
-    background: #101f30;
-  }
-
-  /* ---- migrate ---- */
-  .migrate-art {
-    max-width: 16rem;
-    margin-top: 1rem;
-    justify-self: center;
-  }
-  .migrate-panel {
-    display: grid;
-    grid-template-columns: 0.75fr 1.25fr;
-    gap: var(--space-xl);
-    align-items: start;
-  }
-  .migrate-panel p {
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-  }
-  .migrate-panel pre {
-    background: var(--color-harbor);
-    color: #eef1f4;
-    padding: 1rem 1.25rem;
-    border-radius: var(--radius);
-    overflow-x: auto;
-    font-size: 0.82rem;
-    margin: 0.75rem 0;
-  }
-  .migrate-panel .diff {
-    background: #101f30;
-  }
-  .checklist {
-    padding-left: 1.1rem;
-    color: var(--color-text-secondary);
-    line-height: 1.6;
-  }
-  .checklist li {
-    margin-bottom: 0.4rem;
-  }
-
-  /* ---- dashboard showcase ---- */
-  .shot-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: var(--space-md);
-  }
-  .shot-card {
-    display: block;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    gap: 1rem;
+    padding: 1.1rem 0;
     text-decoration: none;
     color: inherit;
-    transition: transform 220ms var(--ease-out);
   }
-  .shot-card:hover {
-    transform: translateY(-3px);
-  }
-  .shot-caption {
-    display: block;
-    margin-top: 0.65rem;
-    font-family: var(--font-mono);
-    font-size: 0.8rem;
-    color: var(--color-text-secondary);
-  }
-  .shot-card:hover .shot-caption {
+  .packing a:hover .packing-line {
     color: var(--color-text);
   }
-
-  /* ---- production defaults ---- */
-  .prod-art {
-    max-width: 11rem;
-    margin-top: 0.25rem;
-    justify-self: center;
+  .packing a:hover .packing-item {
+    text-decoration: underline;
+    text-underline-offset: 0.25em;
   }
-  .prod-panel {
+  .packing a:focus-visible {
+    outline: 2px solid var(--color-crate);
+    outline-offset: 2px;
+  }
+  .packing-item {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 0.92rem;
+    color: var(--color-ink);
+  }
+  .packing-line {
+    color: var(--color-text-secondary);
+    line-height: 1.5;
+    transition: color 160ms var(--ease-house);
+  }
+  .label-foot {
+    display: inline-block;
+    margin-top: 1.5rem;
+    font-weight: 600;
+    color: var(--color-ink);
+    text-underline-offset: 0.25em;
+  }
+
+  /* ---------------- performance ---------------- */
+  .band-paper {
+    background: var(--color-white);
+    border-block: 1px solid var(--color-hairline);
+  }
+  :root[data-theme="dark"] .band-paper {
+    background: var(--color-panel);
+    border-color: var(--color-border);
+  }
+  .perf {
     display: grid;
-    grid-template-columns: 0.5fr 1.5fr;
-    gap: var(--space-xl);
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.4fr);
+    gap: clamp(2rem, 5vw, 4.5rem);
     align-items: start;
   }
-  .prod-panel .checklist {
-    margin: 0 0 1.25rem;
+  .perf-head h2 {
+    font-size: var(--text-2xl);
+  }
+  .perf-head p {
+    font-size: var(--text-base);
+  }
+  .perf-port {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 8.5rem minmax(0, 1fr) auto;
+    gap: 1.5rem 2rem;
+    align-items: center;
+    padding-top: 2rem;
+    border-top: 1px solid var(--color-border);
+  }
+  .perf-port h3 {
+    font-family: var(--font-display);
+    font-size: var(--text-xl);
+    letter-spacing: -0.015em;
+    margin: 0 0 0.35rem;
+  }
+  .perf-port p {
+    margin: 0;
+    color: var(--color-text-secondary);
+    max-width: 30rem;
+  }
+  .env {
+    margin: 0;
+    padding: 0.9rem 1.1rem;
+    border-radius: var(--radius);
+    background: var(--color-harbor);
+    color: #eef1f4;
+    font-size: 0.8rem;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+  :root[data-theme="dark"] .env {
+    background: #06101a;
+    box-shadow: inset 0 0 0 1px var(--color-border);
+  }
+  .env .c {
+    color: #8fa3b7;
   }
 
-  /* ---- final cta ---- */
-  .final-cta {
-    text-align: center;
-    padding-block: var(--space-xl) var(--space-3xl);
+  /* ---------------- migrate ---------------- */
+  .migrate {
+    display: grid;
+    grid-template-columns: minmax(0, 0.55fr) minmax(0, 1.45fr);
+    gap: clamp(2rem, 5vw, 5rem);
+    align-items: center;
   }
-  .final-cta h2 {
-    font-family: var(--font-display);
+  .migrate-art {
+    max-width: 15rem;
+    justify-self: center;
+  }
+  .migrate h2 {
     font-size: var(--text-2xl);
-    letter-spacing: -0.015em;
-    margin: 0 0 0.6rem;
-    color: var(--color-harbor);
   }
-  :root[data-theme="dark"] .final-cta h2 {
-    color: var(--color-fog);
+  .migrate-code {
+    margin: 1.5rem 0 0;
+    padding: 1.1rem 1.25rem;
+    border-radius: var(--radius);
+    background: var(--color-harbor);
+    color: #eef1f4;
+    font-size: 0.82rem;
+    line-height: 1.8;
+    overflow-x: auto;
   }
-  .final-cta p {
-    color: var(--color-text-secondary);
-    margin: 0 0 1.75rem;
+  :root[data-theme="dark"] .migrate-code {
+    background: #06101a;
+    box-shadow: inset 0 0 0 1px var(--color-border);
   }
-  .final-cta-actions {
+  .migrate-code .p {
+    color: var(--color-crate);
+  }
+  .migrate-code .del {
+    color: #ffaaa6;
+  }
+  .migrate-code .add {
+    color: #9ed9b5;
+  }
+
+  /* ---------------- final ---------------- */
+  .final {
+    text-align: center;
+    padding-block: clamp(2rem, 4vw, 3rem) clamp(4rem, 8vw, 6rem);
+  }
+  .final-art {
+    width: min(19rem, 70%);
+    margin: 0 auto 1.5rem;
+  }
+  .final h2 {
+    font-size: var(--text-4xl);
+    margin-bottom: 1.75rem;
+  }
+  .final-actions {
     display: flex;
     justify-content: center;
     flex-wrap: wrap;
     gap: 0.75rem;
   }
-  .license-note {
-    margin-top: 1.5rem !important;
-    font-size: 0.82rem;
+  .btn-lg {
+    padding: 0.8rem 1.4rem;
+    font-size: 1rem;
+  }
+  .final-note {
+    margin: 1.25rem 0 0;
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
   }
 
-  .mono {
-    font-family: var(--font-mono);
+  /* ---------------- responsive ---------------- */
+  @media (max-width: 1000px) {
+    .hero-head,
+    .head-split,
+    .perf {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .hero-head {
+      align-items: start;
+    }
+    .perf-port {
+      grid-template-columns: 6rem minmax(0, 1fr);
+    }
+    .env {
+      grid-column: 1 / -1;
+    }
   }
-
-  /* Grid/flex items never grow past their track to fit an unbreakable
-     child (a long pre/code line) — each such item scrolls internally
-     instead of widening the whole page. */
-  .hero-grid > *,
-  .pillar > *,
-  .steps > li,
-  .migrate-panel > *,
-  .prod-panel > *,
-  .portability-grid > *,
-  .shot-grid > *,
-  .bench-row > * {
-    min-width: 0;
-  }
-
-  @media (max-width: 900px) {
-    .hero-grid,
-    .pillar,
-    .migrate-panel,
-    .prod-panel,
-    .portability-grid {
+  @media (max-width: 760px) {
+    .packing {
       grid-template-columns: 1fr;
     }
-    .pillar-reverse {
-      direction: ltr;
+    .packing a {
+      grid-template-columns: 1fr;
+      gap: 0.2rem;
+      padding: 0.9rem 0;
     }
-    .hero-art {
-      max-height: 20rem;
-      overflow: hidden;
+    .migrate {
+      grid-template-columns: minmax(0, 1fr);
     }
-    .prod-art,
     .migrate-art {
+      max-width: 8rem;
       justify-self: start;
-      max-width: 9rem;
     }
-    .steps {
-      grid-template-columns: repeat(2, 1fr);
+    .proof {
+      justify-content: flex-start;
+      gap: 0.6rem 1.5rem;
     }
-    .shot-grid {
-      grid-template-columns: repeat(2, 1fr);
-    }
-  }
-
-  @media (max-width: 600px) {
-    .steps {
-      grid-template-columns: 1fr;
-    }
-    .shot-grid {
-      grid-template-columns: 1fr;
+    .label-stamp {
+      width: 3.5rem;
     }
   }
 </style>

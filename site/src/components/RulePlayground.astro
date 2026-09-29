@@ -1,0 +1,456 @@
+---
+/**
+ * Interactive API-rule playground. Pick a list rule and who's asking; the
+ * records response updates the way Cratebase would answer it, with the
+ * rule's (simplified) SQL WHERE clause shown underneath.
+ *
+ * Semantics mirrored from the real server: a list rule is a filter (rows
+ * that don't match are simply absent, the request still answers 200), an
+ * anonymous caller's @request.auth.id is "", and superusers bypass rules.
+ *
+ * Progressive enhancement: without JS the default state (rule 2, viewing as
+ * Nico) is server-rendered and correct; the radios just don't re-filter.
+ */
+const rules = [
+  { id: "published", label: "Published only", expr: `published = true`, sql: `published = TRUE` },
+  {
+    id: "owner-or-published",
+    label: "Owner or published",
+    expr: `published = true || author = @request.auth.id`,
+    sql: `published = TRUE OR author = :auth_id`,
+  },
+  { id: "owner", label: "Owner only", expr: `author = @request.auth.id`, sql: `author = :auth_id` },
+];
+const viewers = [
+  { id: "anon", label: "Anonymous", authId: "" },
+  { id: "amara", label: "Amara Chen", authId: "u_amara" },
+  { id: "nico", label: "Nico Audy", authId: "u_nico" },
+  { id: "super", label: "Superuser", authId: "_superuser" },
+];
+const rows = [
+  { title: "Shipping the places search feature", author: "u_amara", authorName: "Amara Chen", published: true },
+  { title: "Why we moved off three services", author: "u_nico", authorName: "Nico Audy", published: true },
+  { title: "Draft: nearest-place notes", author: "u_nico", authorName: "Nico Audy", published: false },
+];
+const defaults = { rule: "owner-or-published", viewer: "nico" };
+
+// Server-side evaluation of the default state (JS mirrors this).
+const visible = (ruleId: string, viewerId: string, row: (typeof rows)[number]) => {
+  if (viewerId === "super") return true;
+  const auth = viewers.find((v) => v.id === viewerId)!.authId;
+  if (ruleId === "published") return row.published;
+  if (ruleId === "owner") return auth !== "" && row.author === auth;
+  return row.published || (auth !== "" && row.author === auth);
+};
+const initialCount = rows.filter((r) => visible(defaults.rule, defaults.viewer, r)).length;
+const defaultRule = rules.find((r) => r.id === defaults.rule)!;
+---
+
+<div class="pg" data-playground data-rule={defaults.rule} data-viewer={defaults.viewer}>
+  <div class="pg-controls">
+    <fieldset class="pg-group">
+      <legend>List rule on <code>posts</code></legend>
+      <div class="pg-seg">
+        {
+          rules.map((r) => (
+            <label class="pg-opt">
+              <input type="radio" name="pg-rule" value={r.id} checked={r.id === defaults.rule} data-expr={r.expr} data-sql={r.sql} />
+              <span>{r.label}</span>
+            </label>
+          ))
+        }
+      </div>
+      <pre class="pg-expr"><code data-pg-expr>{defaultRule.expr}</code></pre>
+    </fieldset>
+
+    <fieldset class="pg-group">
+      <legend>Signed in as</legend>
+      <div class="pg-people">
+        {
+          viewers.map((v) => (
+            <label class="pg-person">
+              <input type="radio" name="pg-viewer" value={v.id} checked={v.id === defaults.viewer} data-auth={v.authId} />
+              <span class="pg-avatar" aria-hidden="true">{v.id === "anon" ? "?" : v.id === "super" ? "S" : v.label[0]}</span>
+              <span>{v.label}</span>
+            </label>
+          ))
+        }
+      </div>
+    </fieldset>
+  </div>
+
+  <div class="pg-result">
+    <div class="pg-req">
+      <code><span class="pg-verb">GET</span> /api/collections/posts/records</code>
+      <span class="pg-status" aria-live="polite"><span class="pg-ok">200</span> <span data-pg-count>{initialCount}</span> of {rows.length} rows</span>
+    </div>
+    <ul class="pg-rows">
+      {
+        rows.map((r) => (
+          <li class:list={["pg-row", { "is-hidden": !visible(defaults.rule, defaults.viewer, r) }]} data-author={r.author} data-published={String(r.published)}>
+            <span class="pg-title">{r.title}</span>
+            <span class="pg-author">{r.authorName}</span>
+            <span class:list={["pg-pub", { off: !r.published }]}>{r.published ? "published" : "draft"}</span>
+            <span class="pg-filtered">not returned</span>
+          </li>
+        ))
+      }
+    </ul>
+    <div class="pg-sql">
+      <span class="pg-sql-label">Simplified SQL</span>
+      <code data-pg-sql>
+        SELECT * FROM posts WHERE {defaultRule.sql}
+      </code>
+      <code class="pg-bind" data-pg-bind>:auth_id = "u_nico"</code>
+    </div>
+  </div>
+</div>
+
+<style>
+  .pg {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.25fr);
+    border: 1px solid var(--color-hairline);
+    border-radius: 1.25rem;
+    background: var(--color-white);
+    overflow: hidden;
+    box-shadow: 0 30px 60px -40px rgba(14, 34, 56, 0.35);
+  }
+  :root[data-theme="dark"] .pg {
+    background: var(--color-panel);
+    border-color: var(--color-border);
+    box-shadow: 0 30px 60px -40px rgba(0, 0, 0, 0.7);
+  }
+  .pg-controls {
+    padding: 1.75rem;
+    display: grid;
+    gap: 1.75rem;
+    align-content: start;
+    border-right: 1px solid var(--color-hairline);
+  }
+  :root[data-theme="dark"] .pg-controls {
+    border-color: var(--color-border);
+  }
+  .pg-group {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+  }
+  .pg-group legend {
+    padding: 0;
+    margin-bottom: 0.7rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .pg-group legend code {
+    font-size: 0.85em;
+  }
+  .pg-seg {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .pg-opt,
+  .pg-person {
+    position: relative;
+    cursor: pointer;
+  }
+  .pg-opt input,
+  .pg-person input {
+    position: absolute;
+    opacity: 0;
+    inset: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  .pg-opt span {
+    display: inline-block;
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--color-hairline);
+    border-radius: 999px;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+    transition: all 160ms var(--ease-house);
+  }
+  :root[data-theme="dark"] .pg-opt span {
+    border-color: var(--color-border);
+  }
+  .pg-opt input:checked + span {
+    background: var(--color-ink);
+    border-color: var(--color-ink);
+    color: var(--color-button-text);
+  }
+  .pg-opt input:focus-visible + span,
+  .pg-person input:focus-visible ~ span:last-child {
+    outline: 2px solid var(--color-crate);
+    outline-offset: 2px;
+  }
+  .pg-expr {
+    margin: 0.85rem 0 0;
+    padding: 0.8rem 1rem;
+    background: var(--color-harbor);
+    color: #eef1f4;
+    border-radius: 0.6rem;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  :root[data-theme="dark"] .pg-expr {
+    background: #0a1622;
+    box-shadow: inset 0 0 0 1px var(--color-border);
+  }
+  .pg-people {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+  }
+  .pg-person {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.65rem;
+    font-size: 0.88rem;
+    color: var(--color-text-secondary);
+    transition: all 160ms var(--ease-house);
+  }
+  :root[data-theme="dark"] .pg-person {
+    border-color: var(--color-border);
+  }
+  .pg-person:has(input:checked) {
+    border-color: var(--color-ink);
+    color: var(--color-text);
+    box-shadow: inset 0 0 0 1px var(--color-ink);
+  }
+  .pg-avatar {
+    display: grid;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 50%;
+    background: var(--color-fog);
+    color: var(--color-harbor);
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  :root[data-theme="dark"] .pg-avatar {
+    background: rgba(238, 241, 244, 0.12);
+    color: var(--color-fog);
+  }
+  .pg-person:has(input:checked) .pg-avatar {
+    background: var(--color-crate);
+    color: var(--color-harbor);
+  }
+
+  .pg-result {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: color-mix(in srgb, var(--color-fog) 45%, var(--color-white));
+  }
+  :root[data-theme="dark"] .pg-result {
+    background: #0d1b2a;
+  }
+  .pg-req {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    padding: 1.1rem 1.5rem;
+    border-bottom: 1px solid var(--color-hairline);
+    font-size: 0.82rem;
+  }
+  :root[data-theme="dark"] .pg-req {
+    border-color: var(--color-border);
+  }
+  .pg-verb {
+    font-weight: 700;
+    margin-right: 0.3rem;
+  }
+  .pg-status {
+    font-family: var(--font-mono);
+    color: var(--color-text-secondary);
+  }
+  .pg-ok {
+    color: #1d7a4d;
+    font-weight: 700;
+  }
+  :root[data-theme="dark"] .pg-ok {
+    color: #5fd39a;
+  }
+  .pg-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0.5rem 0;
+    flex: 1;
+  }
+  .pg-row {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.9rem 1.5rem;
+    font-size: 0.95rem;
+    transition:
+      opacity 280ms var(--ease-house),
+      filter 280ms var(--ease-house);
+  }
+  .pg-row + .pg-row {
+    border-top: 1px dashed var(--color-hairline);
+  }
+  :root[data-theme="dark"] .pg-row + .pg-row {
+    border-color: var(--color-border);
+  }
+  .pg-title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pg-author {
+    font-size: 0.82rem;
+    color: var(--color-text-secondary);
+  }
+  .pg-pub {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(29, 122, 77, 0.12);
+    color: #16603c;
+  }
+  :root[data-theme="dark"] .pg-pub {
+    background: rgba(95, 211, 154, 0.12);
+    color: #7fe0b0;
+  }
+  .pg-pub.off {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--color-hairline);
+    color: var(--color-text-secondary);
+  }
+  .pg-filtered {
+    position: absolute;
+    right: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--color-text-secondary);
+    opacity: 0;
+    transition: opacity 280ms var(--ease-house);
+  }
+  .pg-row.is-hidden > :not(.pg-filtered) {
+    opacity: 0.22;
+    filter: blur(1.5px);
+    text-decoration: line-through;
+  }
+  .pg-row.is-hidden .pg-pub,
+  .pg-row.is-hidden .pg-author {
+    visibility: hidden;
+  }
+  .pg-row.is-hidden .pg-filtered {
+    opacity: 1;
+  }
+  .pg-row > * {
+    transition:
+      opacity 280ms var(--ease-house),
+      filter 280ms var(--ease-house);
+  }
+
+  .pg-sql {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem 0.9rem;
+    padding: 1rem 1.5rem 1.2rem;
+    border-top: 1px solid var(--color-hairline);
+    font-size: 0.8rem;
+  }
+  :root[data-theme="dark"] .pg-sql {
+    border-color: var(--color-border);
+  }
+  .pg-sql-label {
+    width: 100%;
+    font-size: 0.75rem;
+    color: var(--color-text-secondary);
+  }
+  .pg-bind {
+    color: var(--color-text-secondary);
+  }
+  .pg-bind:empty {
+    display: none;
+  }
+
+  @media (max-width: 860px) {
+    .pg {
+      grid-template-columns: 1fr;
+    }
+    .pg-controls {
+      border-right: 0;
+      border-bottom: 1px solid var(--color-hairline);
+      padding: 1.25rem;
+      gap: 1.25rem;
+    }
+    .pg-req,
+    .pg-row,
+    .pg-sql {
+      padding-inline: 1.1rem;
+    }
+    .pg-author {
+      display: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pg-row,
+    .pg-row > *,
+    .pg-filtered {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-playground]").forEach((root) => {
+    const exprEl = root.querySelector<HTMLElement>("[data-pg-expr]")!;
+    const sqlEl = root.querySelector<HTMLElement>("[data-pg-sql]")!;
+    const bindEl = root.querySelector<HTMLElement>("[data-pg-bind]")!;
+    const countEl = root.querySelector<HTMLElement>("[data-pg-count]")!;
+    const rows = Array.from(root.querySelectorAll<HTMLElement>(".pg-row"));
+
+    const update = () => {
+      const rule = root.querySelector<HTMLInputElement>('input[name="pg-rule"]:checked')!;
+      const viewer = root.querySelector<HTMLInputElement>('input[name="pg-viewer"]:checked')!;
+      const auth = viewer.dataset.auth ?? "";
+      const isSuper = viewer.value === "super";
+      let count = 0;
+      for (const row of rows) {
+        const published = row.dataset.published === "true";
+        const mine = auth !== "" && row.dataset.author === auth;
+        const ok = isSuper
+          ? true
+          : rule.value === "published"
+            ? published
+            : rule.value === "owner"
+              ? mine
+              : published || mine;
+        row.classList.toggle("is-hidden", !ok);
+        if (ok) count++;
+      }
+      exprEl.textContent = rule.dataset.expr ?? "";
+      countEl.textContent = String(count);
+      if (isSuper) {
+        sqlEl.textContent = "SELECT * FROM posts  -- superusers bypass API rules";
+        bindEl.textContent = "";
+      } else {
+        const sql = rule.dataset.sql ?? "";
+        sqlEl.textContent = `SELECT * FROM posts WHERE ${sql}`;
+        bindEl.textContent = sql.includes(":auth_id") ? `:auth_id = "${auth}"` : "";
+      }
+    };
+    root.addEventListener("change", update);
+  });
+</script>

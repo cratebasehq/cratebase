@@ -30,7 +30,7 @@ const max = Math.max(...rows.flatMap((r) => [r.cb, r.pb]));
 const fmt = (n: number) => n.toLocaleString("en-US");
 ---
 
-<div class="bench-chart" data-reveal>
+<div class="bench-chart">
   <div class="bench-legend">
     <span class="legend-item"><i class="swatch swatch-cb"></i>Cratebase</span>
     <span class="legend-item"><i class="swatch swatch-pb"></i>PocketBase</span>
@@ -47,14 +47,12 @@ const fmt = (n: number) => n.toLocaleString("en-US");
           </div>
           <div class="bench-bars">
             <div class="bar-track">
-              <div class="bar bar-cb" style={`width:${(r.cb / max) * 100}%`} title={`Cratebase: ${fmt(r.cb)} req/s`}>
-                <span class="bar-value mono">{fmt(r.cb)}</span>
-              </div>
+              <div class="bar bar-cb" style={`--v:${r.cb / max}`} title={`Cratebase: ${fmt(r.cb)} req/s`}></div>
+              <span class="bar-value mono">{fmt(r.cb)}</span>
             </div>
             <div class="bar-track">
-              <div class="bar bar-pb" style={`width:${(r.pb / max) * 100}%`} title={`PocketBase: ${fmt(r.pb)} req/s`}>
-                <span class="bar-value mono muted">{fmt(r.pb)}</span>
-              </div>
+              <div class="bar bar-pb" style={`--v:${r.pb / max}`} title={`PocketBase: ${fmt(r.pb)} req/s`}></div>
+              <span class="bar-value mono muted">{fmt(r.pb)}</span>
             </div>
           </div>
           <div class="bench-ratio mono">{r.ratio}</div>
@@ -112,11 +110,16 @@ const fmt = (n: number) => n.toLocaleString("en-US");
     display: inline-block;
   }
   .swatch-cb {
-    background: var(--color-ink);
+    background: #e0692a;
   }
   .swatch-pb {
-    background: transparent;
-    border: 1.5px solid var(--color-text-secondary);
+    background: #a3afbc;
+  }
+  :root[data-theme="dark"] .swatch-cb {
+    background: #d9652a;
+  }
+  :root[data-theme="dark"] .swatch-pb {
+    background: #5f7389;
   }
   .legend-note {
     color: var(--color-text-secondary);
@@ -129,7 +132,7 @@ const fmt = (n: number) => n.toLocaleString("en-US");
   }
   .bench-row {
     display: grid;
-    grid-template-columns: 9rem 1fr 3.5rem;
+    grid-template-columns: 10rem 1fr 4.5rem;
     gap: 1rem;
     align-items: center;
   }
@@ -151,40 +154,45 @@ const fmt = (n: number) => n.toLocaleString("en-US");
     gap: 0.3rem;
   }
   .bar-track {
-    background: var(--color-fog);
-    border-radius: 0.3rem;
-    height: 1.35rem;
-    overflow: hidden;
-  }
-  :root[data-theme="dark"] .bar-track {
-    background: #101f30;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    height: 1.25rem;
   }
   .bar {
     height: 100%;
-    display: flex;
-    align-items: center;
-    border-radius: 0.3rem;
-    min-width: 2.4rem;
+    width: calc((100% - 4.5rem) * var(--v));
+    min-width: 4px;
+    border-radius: 2px 4px 4px 2px;
     transition: width 700ms var(--ease-out);
   }
   .bar-cb {
-    background: var(--color-ink);
+    background: #e0692a;
   }
   .bar-pb {
-    background: transparent;
-    box-shadow: inset 0 0 0 1.5px var(--color-text-secondary);
+    background: #a3afbc;
+  }
+  :root[data-theme="dark"] .bar-cb {
+    background: #d9652a;
+  }
+  :root[data-theme="dark"] .bar-pb {
+    background: #5f7389;
   }
   .bar-value {
-    padding-inline: 0.5rem;
-    font-size: 0.72rem;
-    color: var(--color-button-text);
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--color-text);
     white-space: nowrap;
   }
   .bar-value.muted {
+    font-weight: 400;
     color: var(--color-text-secondary);
   }
   .bench-ratio {
-    font-weight: 700;
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
     text-align: right;
     color: var(--color-ink);
   }
