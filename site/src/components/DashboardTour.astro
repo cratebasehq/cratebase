@@ -87,6 +87,7 @@ const tabs = [
 <style>
   .tour {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 1.5rem;
   }
   .tour-tabs {
@@ -191,7 +192,7 @@ const tabs = [
     color: inherit;
   }
   .tour-crop {
-    aspect-ratio: 16 / 9;
+    aspect-ratio: 16 / 8.6;
     overflow: hidden;
   }
   .tour-crop :global(.shot),
@@ -218,8 +219,8 @@ const tabs = [
     .tour-crop {
       aspect-ratio: 4 / 3.2;
     }
-    .tour-crop :global(img) {
-      width: 180%;
+    .tour-crop :global(.shot img) {
+      width: 190%;
       max-width: none;
     }
   }

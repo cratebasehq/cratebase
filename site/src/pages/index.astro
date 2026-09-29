@@ -6,7 +6,7 @@ import TypedFlow from "../components/TypedFlow.astro";
 import DashboardTour from "../components/DashboardTour.astro";
 import BenchChart from "../components/BenchChart.astro";
 import Mark from "../components/Mark.astro";
-import Warehouses from "../components/illustrations/Warehouses.astro";
+import LoadedPallet from "../components/illustrations/LoadedPallet.astro";
 import Dolly from "../components/illustrations/Dolly.astro";
 import HeroUnpack from "../components/illustrations/HeroUnpack.astro";
 import CrateStack from "../components/illustrations/CrateStack.astro";
@@ -88,7 +88,7 @@ const packing = [
   <!-- ======================= SCHEMA → TYPED CLIENT ===================== -->
   <section class="band-dark" id="typed">
     <div class="wrap section">
-      <div class="head">
+      <div class="head head-split">
         <h2>From schema to typed client in one command.</h2>
         <p><code>cratebase dev</code> writes the types and keeps them current. No codegen package, no Node toolchain.</p>
       </div>
@@ -124,9 +124,9 @@ const packing = [
 
   <!-- ========================= DASHBOARD TOUR =========================== -->
   <section class="wrap section" id="dashboard">
-    <div class="head head-center">
+    <div class="head head-split">
       <h2>A dashboard for every setting.</h2>
-      <p>Embedded in the binary. Real screens from a running instance.</p>
+      <p>Embedded in the binary. Real screens from a running<p>Embedded in the binary. Real screens from a running instance.</p>nbsp;instance.</p>
     </div>
     <DashboardTour />
   </section>
@@ -138,18 +138,10 @@ const packing = [
         <h2>10× PocketBase's search throughput, on the same machine.</h2>
         <p>22 of 24 benchmark cells faster in the latest idle-host run, measured over HTTP, back to back.</p>
         <a class="more" href="/docs/benchmarks/">Methodology and every result</a>
+        <div class="perf-art"><LoadedPallet label="A pallet stacked with crates, moving fast" /></div>
       </div>
       <div class="perf-chart">
         <BenchChart />
-      </div>
-      <div class="perf-port">
-        <div class="perf-port-art"><Warehouses label="Two warehouses sharing one rail, a crate crossing between them" /></div>
-        <div>
-          <h3>SQLite or Postgres, same code.</h3>
-          <p>Same API, filters and rules. One variable switches it; on Postgres, realtime goes cross-node.</p>
-        </div>
-        <pre class="env"><code><span class="c">DATABASE_URL=</span>sqlite://./data.db
-<span class="c">DATABASE_URL=</span>postgres://user:pass@host/db</code></pre>
       </div>
     </div>
   </section>
@@ -159,12 +151,14 @@ const packing = [
     <div class="migrate-art"><Dolly label="A hand truck carrying two crates: the migration tool" /></div>
     <div class="migrate-copy">
       <h2>Coming from PocketBase? Your SDK already works.</h2>
-      <p>Same wire protocol: 180 of 181 conformance tests pass against the official SDK. Bring your data in one command; passwords keep working.</p>
-      <pre class="migrate-code"><code><span class="p">$</span> cratebase migrate-from-pocketbase pb_data --dir cratebase_data
-<span class="del">- const pb = new PocketBase("https://pocketbase.example.com");</span>
-<span class="add">+ const pb = new PocketBase("https://cratebase.example.com");</span></code></pre>
+      <p>Same wire protocol: 180 of 181 conformance tests pass against the official SDK. Your data moves in one command, and passwords keep working.</p>
       <a class="more" href="/docs/migrating/compatibility/">Migration guide</a>
     </div>
+    <pre class="migrate-code"><code><span class="p">$</span> cratebase migrate-from-pocketbase pb_data \
+    --dir cratebase_data
+
+<span class="del">- new PocketBase("https://pocketbase.example.com")</span>
+<span class="add">+ new PocketBase("https://cratebase.example.com")</span></code></pre>
   </section>
 
   <!-- ============================= FINAL CTA ============================ -->
@@ -185,7 +179,7 @@ const packing = [
     max-width: 82rem;
   }
   .section {
-    padding-block: clamp(3.5rem, 6.5vw, 6rem);
+    padding-block: clamp(3.25rem, 5.5vw, 4.75rem);
   }
   .head {
     max-width: 42rem;
@@ -232,9 +226,11 @@ const packing = [
   .head-center {
     text-align: center;
     margin-inline: auto;
+    max-width: 52rem;
   }
   .head-center p {
     margin-inline: auto;
+    max-width: 44rem;
   }
   .more {
     display: inline-block;
@@ -421,7 +417,7 @@ const packing = [
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 2rem;
     align-items: start;
-    padding-bottom: clamp(1.25rem, 3vw, 2rem);
+    padding-bottom: clamp(1rem, 2.5vw, 1.5rem);
     border-bottom: 1.5px dashed var(--color-ink);
   }
   .label-head h2 {
@@ -445,7 +441,7 @@ const packing = [
     display: grid;
     grid-template-columns: 5.5rem minmax(0, 1fr);
     gap: 1rem;
-    padding: 1.1rem 0;
+    padding: 0.9rem 0;
     text-decoration: none;
     color: inherit;
   }
@@ -500,60 +496,29 @@ const packing = [
   .perf-head p {
     font-size: var(--text-base);
   }
-  .perf-port {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: 8.5rem minmax(0, 1fr) auto;
-    gap: 1.5rem 2rem;
-    align-items: center;
-    padding-top: 2rem;
-    border-top: 1px solid var(--color-border);
-  }
-  .perf-port h3 {
-    font-family: var(--font-display);
-    font-size: var(--text-xl);
-    letter-spacing: -0.015em;
-    margin: 0 0 0.35rem;
-  }
-  .perf-port p {
-    margin: 0;
-    color: var(--color-text-secondary);
-    max-width: 30rem;
-  }
-  .env {
-    margin: 0;
-    padding: 0.9rem 1.1rem;
-    border-radius: var(--radius);
-    background: var(--color-harbor);
-    color: #eef1f4;
-    font-size: 0.8rem;
-    line-height: 1.7;
-    overflow-x: auto;
-  }
-  :root[data-theme="dark"] .env {
-    background: #06101a;
-    box-shadow: inset 0 0 0 1px var(--color-border);
-  }
-  .env .c {
-    color: #8fa3b7;
+  .perf-art {
+    width: min(15rem, 60%);
+    margin-top: clamp(1.5rem, 4vw, 3rem);
   }
 
   /* ---------------- migrate ---------------- */
   .migrate {
     display: grid;
-    grid-template-columns: minmax(0, 0.55fr) minmax(0, 1.45fr);
-    gap: clamp(2rem, 5vw, 5rem);
+    grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 4vw, 3.5rem);
     align-items: center;
   }
   .migrate-art {
-    max-width: 15rem;
-    justify-self: center;
+    width: 100%;
   }
   .migrate h2 {
     font-size: var(--text-2xl);
   }
+  .migrate p {
+    font-size: var(--text-base);
+  }
   .migrate-code {
-    margin: 1.5rem 0 0;
+    margin: 0;
     padding: 1.1rem 1.25rem;
     border-radius: var(--radius);
     background: var(--color-harbor);
@@ -579,11 +544,11 @@ const packing = [
   /* ---------------- final ---------------- */
   .final {
     text-align: center;
-    padding-block: clamp(2rem, 4vw, 3rem) clamp(4rem, 8vw, 6rem);
+    padding-block: clamp(1rem, 3vw, 2rem) clamp(4rem, 7vw, 5.5rem);
   }
   .final-art {
-    width: min(19rem, 70%);
-    margin: 0 auto 1.5rem;
+    width: min(12.5rem, 55%);
+    margin: 0 auto 1.25rem;
   }
   .final h2 {
     font-size: var(--text-4xl);
@@ -615,10 +580,13 @@ const packing = [
     .hero-head {
       align-items: start;
     }
-    .perf-port {
+    .perf-art {
+      display: none;
+    }
+    .migrate {
       grid-template-columns: 6rem minmax(0, 1fr);
     }
-    .env {
+    .migrate-code {
       grid-column: 1 / -1;
     }
   }
@@ -635,8 +603,7 @@ const packing = [
       grid-template-columns: minmax(0, 1fr);
     }
     .migrate-art {
-      max-width: 8rem;
-      justify-self: start;
+      width: 5.5rem;
     }
     .proof {
       justify-content: flex-start;

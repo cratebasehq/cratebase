@@ -218,7 +218,7 @@ const steps = [
     background: rgba(238, 241, 244, 0.18);
   }
   .tf-pane {
-    min-height: 23.5rem;
+    min-height: 20.5rem;
   }
   .tf-pane pre {
     margin: 0;
@@ -403,7 +403,7 @@ const steps = [
     const tabs = Array.from(root.querySelectorAll<HTMLButtonElement>(".tf-step"));
     const panes = Array.from(root.querySelectorAll<HTMLElement>(".tf-pane"));
     const fileEl = root.querySelector<HTMLElement>("[data-tf-file]");
-    const dwell = [5200, 5200, 9000];
+    const dwell = [5200, 5200, 11500];
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
     let current = 0;
     let timer: number | undefined;

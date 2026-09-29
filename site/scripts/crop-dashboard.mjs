@@ -17,12 +17,12 @@ const crops = [
   { out: "hero-schema", src: "03-collections-places-schema-rules", x: 412, y: 330, w: 1016, h: 590 },
   // Hero overlay: the posts records table, title/body/published columns.
   { out: "hero-records", src: "11-collections-posts-records-search", x: 456, y: 124, w: 610, h: 132 },
-  // Tour: visual email template editor.
-  { out: "tour-email", src: "08-settings-email-template-editor", x: 0, y: 0, w: 1600, h: 900 },
-  // Tour: users auth collection, sign-in methods.
-  { out: "tour-auth", src: "06-users-auth-options", x: 240, y: 216, w: 1200, h: 675 },
+  // Tour: visual email template editor (app sidebar trimmed).
+  { out: "tour-email", src: "08-settings-email-template-editor", x: 240, y: 40, w: 1360, h: 765 },
+  // Tour: users auth collection, fields and sign-in methods (content column).
+  { out: "tour-auth", src: "06-users-auth-options", x: 412, y: 216, w: 1016, h: 571 },
   // Tour: settings, grouped into seven sections.
-  { out: "tour-settings", src: "05-settings-index", x: 0, y: 0, w: 1320, h: 742 },
+  { out: "tour-settings", src: "05-settings-index", x: 0, y: 0, w: 1300, h: 731 },
 ];
 
 for (const theme of ["light", "dark"]) {
