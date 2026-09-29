@@ -14,8 +14,9 @@ const { title, description, ogImage = "/og.png" } = Astro.props;
 
 // Star count is fetched once, at build time — this is a static site, so
 // there's no client-side request and nothing to rate-limit per visitor.
-// Falls back to a plain "GitHub" link (no number) if the API is
-// unreachable or rate-limited at build time.
+// The number is only shown once it's meaningful (>= 50); below that, or if
+// the API is unreachable at build time, the nav shows a plain GitHub link.
+const STAR_THRESHOLD = 50;
 let stars: string | null = null;
 try {
   const res = await fetch("https://api.github.com/repos/cratebasehq/cratebase", {
@@ -24,11 +25,9 @@ try {
   });
   if (res.ok) {
     const data = (await res.json()) as { stargazers_count?: number };
-    if (typeof data.stargazers_count === "number") {
-      stars =
-        data.stargazers_count >= 1000
-          ? `${(data.stargazers_count / 1000).toFixed(1).replace(/\.0$/, "")}k`
-          : String(data.stargazers_count);
+    const n = data.stargazers_count;
+    if (typeof n === "number" && n >= STAR_THRESHOLD) {
+      stars = n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
     }
   }
 } catch {
@@ -113,8 +112,8 @@ const navLinks = [
             {stars && <span class="gh-stars">{stars}</span>}
           </a>
           <button id="theme-toggle" type="button" aria-label="Toggle color theme">
-            <span class="theme-icon-light" aria-hidden="true">&#9728;</span>
-            <span class="theme-icon-dark" aria-hidden="true">&#9789;</span>
+            <svg class="theme-icon-light" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3" /><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" /></svg>
+            <svg class="theme-icon-dark" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 0 1 6.4 2.5a5.5 5.5 0 1 0 7.1 7.1Z" /></svg>
           </button>
           <a class="btn btn-primary" href="/docs/getting-started/install/">Get started</a>
         </div>
@@ -293,7 +292,7 @@ const navLinks = [
       }
 
       .wrap {
-        max-width: 72rem;
+        max-width: 76rem;
         margin: 0 auto;
         padding-inline: 1.5rem;
       }
@@ -302,11 +301,13 @@ const navLinks = [
         position: sticky;
         top: 0;
         z-index: 20;
-        background: var(--color-white);
-        border-bottom: 1px solid var(--color-hairline);
+        background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+        -webkit-backdrop-filter: saturate(1.4) blur(14px);
+        backdrop-filter: saturate(1.4) blur(14px);
+        border-bottom: 1px solid color-mix(in srgb, var(--color-hairline) 70%, transparent);
       }
       :root[data-theme="dark"] .site-nav {
-        background: var(--color-panel);
+        border-color: var(--color-border);
       }
       .site-nav .wrap {
         display: flex;
@@ -367,7 +368,7 @@ const navLinks = [
       }
       #theme-toggle {
         background: transparent;
-        border: 1px solid var(--color-hairline);
+        border: 1px solid var(--color-border);
         border-radius: 999px;
         width: 2.25rem;
         height: 2.25rem;
@@ -383,7 +384,7 @@ const navLinks = [
         display: none;
       }
       :root[data-theme="dark"] .theme-icon-dark {
-        display: inline;
+        display: block;
       }
 
       .btn {
@@ -408,7 +409,17 @@ const navLinks = [
       .btn-secondary {
         background: transparent;
         color: var(--color-text);
-        border-color: var(--color-hairline);
+        border-color: var(--color-border);
+      }
+      .btn-secondary:hover {
+        border-color: var(--color-ink);
+        opacity: 1;
+      }
+      .btn:focus-visible,
+      .site-nav a:focus-visible,
+      #theme-toggle:focus-visible {
+        outline: 2px solid var(--color-crate);
+        outline-offset: 2px;
       }
 
       .site-footer {
