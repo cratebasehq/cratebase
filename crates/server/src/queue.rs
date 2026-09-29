@@ -555,8 +555,12 @@ pub async fn enqueue_from_body(app: &App, body: EnqueueBody) -> ApiResult<Enqueu
     if body.queue.trim().is_empty() {
         return Err(ApiError::bad_request("queue must not be empty."));
     }
-    let run_after = resolve_run_after(body.run_at.as_deref(), body.run_after.as_deref(), body.delay)
-        .map_err(ApiError::bad_request)?;
+    let run_after = resolve_run_after(
+        body.run_at.as_deref(),
+        body.run_after.as_deref(),
+        body.delay,
+    )
+    .map_err(ApiError::bad_request)?;
     let max_attempts = body.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS).max(1);
     let opts = EnqueueOptions {
         max_attempts,
@@ -564,7 +568,7 @@ pub async fn enqueue_from_body(app: &App, body: EnqueueBody) -> ApiResult<Enqueu
         dedupe_key: body.dedupe_key.filter(|s| !s.trim().is_empty()),
         priority: body.priority.unwrap_or(0),
     };
-    let outcome = enqueue_job(&app, &body.queue, body.payload, opts)
+    let outcome = enqueue_job(app, &body.queue, body.payload, opts)
         .await
         .map_err(ApiError)?;
 
@@ -962,9 +966,7 @@ pub async fn retry_job(app: &App, id: &str) -> Result<(), AppError> {
         .map_err(AppError::from)?
         .ok_or_else(|| AppError::not_found("Missing or invalid queue job."))?;
     if row.get_str("status") != Some(STATUS_FAILED) {
-        return Err(AppError::bad_request(
-            "only a failed job can be retried.",
-        ));
+        return Err(AppError::bad_request("only a failed job can be retried."));
     }
     app.db()
         .execute(

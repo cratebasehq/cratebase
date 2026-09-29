@@ -465,7 +465,7 @@ impl Runtime {
         payload: Value,
     ) -> Result<(), AppError> {
         let id = handler.clone();
-        self.submit(move |reply| Job::QueueJob { id, payload, reply })
+        self.submit(move |reply| Job::Queue { id, payload, reply })
             .await
     }
 

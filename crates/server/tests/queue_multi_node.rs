@@ -30,7 +30,11 @@ fn node_config(url: &str, dir: &std::path::Path) -> Config {
     }
 }
 
-async fn enable_queue_with_handler(app: &App, seen: Arc<Mutex<HashSet<String>>>, calls: Arc<AtomicUsize>) {
+async fn enable_queue_with_handler(
+    app: &App,
+    seen: Arc<Mutex<HashSet<String>>>,
+    calls: Arc<AtomicUsize>,
+) {
     app.queue_handle()
         .expect("queue plugin is always registered")
         .register_handler("multi-node-job", move |payload| {

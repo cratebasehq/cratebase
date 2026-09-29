@@ -1394,14 +1394,16 @@ async fn add_jobs_and_webhooks_reliability_up(db: &Db) -> DbResult<()> {
             .into_iter()
             .find(|c| c.name == "_webhooks")
             .expect("_webhooks is a default system collection");
-        let fields = ["maxAttempts", "consecutiveFailures"].into_iter().map(|name| {
-            template
-                .fields
-                .iter()
-                .find(|f| f.name == name)
-                .unwrap_or_else(|| panic!("_webhooks template has {name}"))
-                .clone()
-        });
+        let fields = ["maxAttempts", "consecutiveFailures"]
+            .into_iter()
+            .map(|name| {
+                template
+                    .fields
+                    .iter()
+                    .find(|f| f.name == name)
+                    .unwrap_or_else(|| panic!("_webhooks template has {name}"))
+                    .clone()
+            });
         add_missing_fields(db, &previous, fields).await?;
     }
 

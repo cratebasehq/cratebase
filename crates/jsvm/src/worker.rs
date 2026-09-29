@@ -39,7 +39,7 @@ pub(crate) enum Job {
         id: CronHandlerId,
         reply: oneshot::Sender<Result<(), AppError>>,
     },
-    QueueJob {
+    Queue {
         id: QueueHandlerId,
         payload: Value,
         reply: oneshot::Sender<Result<(), AppError>>,
@@ -272,7 +272,7 @@ impl Worker {
             Job::Cron { id, reply } => {
                 let _ = reply.send(self.run_cron(&id));
             }
-            Job::QueueJob { id, payload, reply } => {
+            Job::Queue { id, payload, reply } => {
                 let _ = reply.send(self.run_queue_job(&id, payload));
             }
             Job::Migration {

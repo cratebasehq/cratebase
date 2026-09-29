@@ -208,11 +208,7 @@ async fn enqueueing_works_while_disabled_but_the_job_is_never_processed() {
     // Now the canonical route (superuser/API key, not just the plugin
     // alias) can retry/delete it regardless of the toggle too.
     let (status, _) = harness
-        .admin(
-            "DELETE",
-            &format!("/api/queue/jobs/{id}"),
-            None,
-        )
+        .admin("DELETE", &format!("/api/queue/jobs/{id}"), None)
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = harness

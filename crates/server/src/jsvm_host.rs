@@ -2738,7 +2738,9 @@ mod hot_reload_tests {
         assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_PENDING));
         assert_eq!(row.get_i64("attempts"), Some(1));
         assert!(
-            row.get_str("lastError").unwrap_or_default().contains("boom from JS"),
+            row.get_str("lastError")
+                .unwrap_or_default()
+                .contains("boom from JS"),
             "{:?}",
             row.get_str("lastError")
         );
@@ -2755,7 +2757,11 @@ mod hot_reload_tests {
     #[tokio::test]
     async fn queue_enqueue_respects_run_at() {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
-        std::fs::write(hooks_dir.join("main.pb.js"), "onQueueJob(\"later\", (e) => {});").unwrap();
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            "onQueueJob(\"later\", (e) => {});",
+        )
+        .unwrap();
         app.jsvm().unwrap().reload().await.expect("reload");
 
         let future = cratebase_core::DateTime::from_utc(
@@ -2790,7 +2796,9 @@ mod hot_reload_tests {
             app.bootstrap().await.expect("bootstrap");
             (app, dir)
         };
-        crate::queue::ensure_collection(&app).await.expect("ensure collection");
+        crate::queue::ensure_collection(&app)
+            .await
+            .expect("ensure collection");
 
         let first = crate::queue::enqueue_job(
             &app,
@@ -2816,7 +2824,10 @@ mod hot_reload_tests {
         )
         .await
         .expect("second enqueue");
-        assert!(second.deduped, "a matching dedupeKey must not insert a second row");
+        assert!(
+            second.deduped,
+            "a matching dedupeKey must not insert a second row"
+        );
         assert_eq!(second.id, first.id);
 
         let count = app
@@ -2883,11 +2894,19 @@ mod hot_reload_tests {
         .await
         .expect("a create whose after-success hook calls $queue.enqueue must not deadlock")
         .unwrap();
-        assert_eq!(created.status(), StatusCode::OK, "{:?}", body_json(created).await);
+        assert_eq!(
+            created.status(),
+            StatusCode::OK,
+            "{:?}",
+            body_json(created).await
+        );
 
         let queued = poll_until(std::time::Duration::from_secs(5), || async {
             app.db()
-                .query(r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'widget-created'"#, &[])
+                .query(
+                    r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'widget-created'"#,
+                    &[],
+                )
                 .await
                 .map(|rows| !rows.is_empty())
                 .unwrap_or(false)
@@ -2960,7 +2979,10 @@ mod hot_reload_tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let rows = app
             .db()
-            .query(r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'should-never-run'"#, &[])
+            .query(
+                r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'should-never-run'"#,
+                &[],
+            )
             .await
             .expect("query _queue_jobs");
         assert!(

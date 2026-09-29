@@ -1888,6 +1888,19 @@ impl Collection {
             },
         );
         wd_delivered_at.required = false;
+        // Mirrors `_queue_jobs.startedAt`: set when a row is claimed
+        // (`status` becomes `in_progress`), so a worker that crashed
+        // mid-delivery doesn't strand the row forever — see
+        // `crate::webhook_deliveries::reclaim_stale` (server crate).
+        let mut wd_started_at = Field::new(
+            "startedAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        wd_started_at.system = true;
+        wd_started_at.required = false;
         let pos = webhook_deliveries.fields.len() - 2;
         webhook_deliveries.fields.splice(
             pos..pos,
@@ -1904,6 +1917,7 @@ impl Collection {
                 wd_response_body,
                 wd_duration_ms,
                 wd_next_attempt_at,
+                wd_started_at,
                 wd_error,
                 wd_delivered_at,
             ],

@@ -627,6 +627,10 @@ impl App {
         crate::geo::bind_hooks(self);
         crate::geo::sync_all(self).await;
         crate::webhooks::bind_hooks(self);
+        // Always on, unlike the Queue plugin just above — see
+        // `crate::webhook_deliveries`'s module doc for why outgoing
+        // webhook delivery has no toggle of its own to gate this behind.
+        crate::webhook_deliveries::start(self);
         crate::email_triggers::bind_hooks(self);
         // Always bound, unlike `settings.llm.enabled`'s route-merge gate:
         // `settings.teams.enabled` can flip on a *running* server via
