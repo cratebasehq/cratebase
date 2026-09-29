@@ -9,7 +9,9 @@ point `CB_HOOKS_DIR` at it) and get PocketBase's own hook API:
 for custom HTTP endpoints, both backed by an embedded QuickJS runtime
 (`crates/jsvm`) — no separate process to manage. `cronAdd` lets a hook
 file define its own cron jobs alongside the dashboard's SQL-based [cron
-jobs](/docs/extending/cron-jobs/). A hook's own `$app.save`/`$app.delete`
+jobs](/docs/extending/cron-jobs/), and `onQueueJob`/`$queue.enqueue` do
+the same for the [job queue](/docs/extending/queue/) — a background job
+handled entirely in JavaScript, no Rust code required. A hook's own `$app.save`/`$app.delete`
 inside a record-write-path hook joins that write's own transaction, so a
 hook that aborts rolls the triggering write back too. [`$mails.send`](/docs/email/sending/)
 called from the same kind of hook (e.g. `onRecordAfterCreateSuccess`) is
@@ -25,10 +27,10 @@ currently registered.
 server started with `--dev` always runs the JS runtime, even against an
 empty `pb_hooks/`, and polls the directory once a second: adding,
 editing or deleting a `*.pb.js` file — lifecycle hooks, `routerAdd`
-routes (including path params and middleware-style ordering) and
-`cronAdd` jobs alike — takes effect on the next reload with no restart,
-and a removed `routerAdd`/`cronAdd` registration stops matching/firing
-rather than lingering. Outside `--dev` (a production boot), the runtime
+routes (including path params and middleware-style ordering),
+`cronAdd` jobs, and `onQueueJob` handlers alike — takes effect on the
+next reload with no restart, and a removed `routerAdd`/`cronAdd`/
+`onQueueJob` registration stops matching/firing rather than lingering. Outside `--dev` (a production boot), the runtime
 only starts when `pb_hooks/` or `pb_migrations/` actually has a file, and
 changes to `pb_hooks/*.pb.js` need a restart to take effect, same as any
 other config file.
@@ -51,6 +53,10 @@ routerAdd("GET", "/api/stats/posts", (e) => {
 
 cronAdd("nightly-cleanup", "0 3 * * *", () => {
   $app.db().collection("_logs").deleteOld({ days: 30 });
+});
+
+onQueueJob("send-welcome-email", (e) => {
+  sendEmail(e.payload.userId); // throw to retry; return to mark it completed
 });
 ```
 
