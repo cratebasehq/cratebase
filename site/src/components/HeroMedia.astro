@@ -19,7 +19,6 @@
  * editor, front and centre, with the records table layered over it.
  */
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import Shot from "./Shot.astro";
 import HeroYard from "./illustrations/HeroYard.astro";
 
@@ -28,7 +27,9 @@ import schemaDark from "../assets/crops/dark/hero-schema.png";
 import recordsLight from "../assets/crops/light/hero-records.png";
 import recordsDark from "../assets/crops/dark/hero-records.png";
 
-const publicVideoDir = fileURLToPath(new URL("../../public/video/", import.meta.url));
+// Resolved from the site root (Astro builds with cwd = site/): `import.meta.url`
+// points at the bundled chunk during `astro build`, not at src/components.
+const publicVideoDir = `${process.cwd()}/public/video/`;
 const hasMp4 = existsSync(`${publicVideoDir}cratebase-launch.mp4`);
 const hasWebm = existsSync(`${publicVideoDir}cratebase-launch.webm`);
 const hasPoster = existsSync(`${publicVideoDir}poster.png`);
