@@ -1,170 +1,133 @@
 # Cratebase launch film
 
-"Stop rebuilding your backend." — a 66s product film built entirely from
-code (route A from `motion-course.md`: one `index.html`, `window.seek(t)`,
-Playwright frame capture, ffmpeg encode). See `docs/style_guide.md` and
-`docs/shotlist.md` for the direction, `docs/critique.md` for the review
-log. This is a **multi-session production** — see "Status" below for
-exactly what's done and what isn't yet.
+A 64-second launch film rendered entirely from code: one page with a pure
+`window.seek(t)` render contract, a virtual 3D camera over real DPR-4
+dashboard captures, closed-form springs, a 120 BPM beat grid, and a score +
+SFX synthesized in Node from the same cue sheet the picture uses. The
+16:9 master and the 9:16 cut are the same timeline laid out by `layout(W, H)`;
+vertical is a reflow, not a crop.
 
-## Everything runs in Docker
+Direction: `docs/style_guide.md` · beats: `docs/shotlist.md` · review
+rounds and scores: `docs/critique.md`.
 
-This machine's own Chromium is missing system libs and there's no sudo,
-so Playwright (capture and render both) always runs inside the image
-built from `Dockerfile`, never on the host. `render.sh` wraps every
-command below.
+## Deliverables (in `out/delivery/`, gitignored)
+
+| File | What |
+|---|---|
+| `cratebase-launch-16x9.mp4` | 1920×1080, 60 fps, H.264 High yuv420p, AAC, < 20 MB |
+| `cratebase-launch-16x9.webm` | same, VP9 + Opus |
+| `cratebase-launch-9x16.mp4` | 1080×1920 vertical reflow, 60 fps, H.264 |
+| `cratebase-teaser-15s-16x9.mp4` | 15 s cut on beat boundaries from the master |
+| `poster-16x9.png`, `poster-9x16.png` | clean last frame |
+| `still-1..6-*.png` | key stills |
+| `contact-sheet-16x9.png` | final contact sheet (2 fps, 6 across) |
+
+## Pipeline — exact commands
+
+Everything that needs Chromium runs in Docker (the host Chromium lacks
+system libs). `render.sh` mounts this folder at `/work` and runs as your
+user, so code edits need no image rebuild. ffmpeg and Node 22 are also
+used directly on the host (encode, audio, critique sheets).
 
 ```bash
 cd marketing/video
-docker build -t cb-video-engine -f Dockerfile .
+./fetch-fonts.sh                 # vendor brand + product fonts into assets/fonts/ (once)
+./render.sh build                # Docker image: Playwright 1.48 + ffmpeg (once)
 ```
 
-## 1. Stand up the real demo instance
+### 1. Real UI captures (only when the product UI changes)
+
+Never compile the Rust workspace for this — use the released binary.
 
 ```bash
-curl -fsSL https://cratebase.dev/install.sh | sh    # real v0.4.0 binary, not built from source
-cratebase dev --dir /tmp/cb-film-demo                # note the printed superuser email/password
-
-CRATEBASE_SUPERUSER_EMAIL=admin@localhost \
-CRATEBASE_SUPERUSER_PASSWORD=<printed password> \
-marketing/video/capture/seed.sh                       # creates places/posts, seeds demo data,
-                                                       # configures all 12 OAuth presets + magic
-                                                       # link/OTP/TOTP on the users collection
+curl -fsSL https://cratebase.dev/install.sh | sh
+mkdir -p /tmp/cbfilm/run && cd /tmp/cbfilm/run     # empty cwd: dev resolves pb_hooks/pb_migrations from cwd
+cratebase dev --http 127.0.0.1:8097 --dir /tmp/cbfilm/data   # note the printed superuser password
+# in marketing/video:
+CRATEBASE_URL=http://127.0.0.1:8097 CRATEBASE_SUPERUSER_EMAIL=admin@localhost \
+  CRATEBASE_SUPERUSER_PASSWORD=<printed> sh capture/seed.sh    # places/posts schema, records, one real welcome mail
+docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$(pwd):/work" -w /work \
+  -e CRATEBASE_URL=http://127.0.0.1:8097 -e CRATEBASE_SUPERUSER_EMAIL=admin@localhost \
+  -e CRATEBASE_SUPERUSER_PASSWORD=<printed> cb-video-engine node capture/capture.mjs
+node capture/boxes.mjs hd-places-schema "owner|Geo point"     # measured element rects, for ROIs/callouts
 ```
 
-Known gotcha: `cratebase dev`/`serve` resolve `pb_hooks`/`pb_migrations`
-relative to the **current working directory**, not `--dir` — always `cd`
-into an empty directory first, or a stray `pb_migrations` elsewhere on
-the machine will collide.
+Captures are `capture/shots/hd-*.png` (1280 px CSS wide at DPR 4) plus
+`hd-*.boxes.json` with the rect of every input, button and text run.
 
-Also known: background shells in some automation harnesses don't survive
-between tool calls even with `nohup`/`disown` — if the server keeps
-disappearing, run it in a real background job / a separate terminal.
-
-## 2. Capture the real UI
+### 2. Stills (look before you animate)
 
 ```bash
-docker run --rm --network host \
-  -e CRATEBASE_URL=http://127.0.0.1:8090 \
-  -e CRATEBASE_SUPERUSER_EMAIL=admin@localhost \
-  -e CRATEBASE_SUPERUSER_PASSWORD=<printed password> \
-  -v "$(pwd)/marketing/video/capture/shots:/app/capture/shots" \
-  cb-video-engine node capture/capture.mjs
+./render.sh stills --dir out/stills/a 4.05 17.3 27.0 42.9          # 16:9 PNGs
+./render.sh stills --w 1080 --h 1920 --dir out/stills/v 17.3 42.9  # 9:16 PNGs
+./render.sh stills --every 0.5 --dir out/stills/all                # one per beat
 ```
 
-Produces `capture/shots/*.png` (gitignored — regenerate, don't commit)
-at `deviceScaleFactor: 2`. See that script's header for the two real
-API-shape gotchas it works around (`fields` not `schema`; a relation's
-`collectionId` is flat, not nested under `options`).
+Live preview in a desktop browser: serve this folder (`npx serve .`) and open
+`index.html?play&t=36` (or `?w=1080&h=1920&play`).
 
-Optional: the real tabbed sign-in card from `examples/team-board` (used
-in Auth, shot 4.2) needs that example running separately:
+### 3. Score and SFX
 
 ```bash
-cd examples/team-board && bun install
-CRATEBASE_BIN="$HOME/.local/bin/cratebase" CRATEBASE_PORT=8095 \
-  CB_DATA_DIR=/tmp/cb-team-board-demo/pb_data bun run scripts/dev.ts
-# in another shell, once it prints its Vite URL:
-docker run --rm --network host \
-  -v "$(pwd)/marketing/video/capture/shots:/app/capture/shots" \
-  -v "$(pwd)/marketing/video/capture/capture-team-board.mjs:/app/capture/capture-team-board.mjs" \
-  cb-video-engine node capture/capture-team-board.mjs
+node audio/score.mjs --out out/score.wav --stems   # ~2 s; imports every scene's cues via lib/cues.mjs
+sh audio/master.sh                                 # -> out/score-master.wav, -14 LUFS, <= -1 dBTP (linear)
+node audio/sync-check.mjs out/stem-sfx.wav         # onset-vs-cue sync report
 ```
 
-Note `CRATEBASE_BIN` explicitly: without it, `examples/team-board`'s dev
-script falls back to building `target/debug/cratebase` with `cargo
-build` if that binary is missing — this repo's rule is **never compile
-the Rust workspace** here (another agent may be building it), so always
-point `CRATEBASE_BIN` at the installed release binary.
-
-## 3. Render
+### 4. Masters and deliverables
 
 ```bash
-# Stills — one PNG per beat, fast (no ffmpeg encode)
-docker run --rm -v "$(pwd)/marketing/video/out:/app/out" cb-video-engine node stills.mjs
-
-# Animatic — low fps, full timeline, for the critique loop
-docker run --rm -v "$(pwd)/marketing/video/out:/app/out" \
-  cb-video-engine node render.mjs --fps 8 --out out/animatic.mp4
-
-# Full render (later gate — polish + audio pass not done yet, see Status)
-docker run --rm -v "$(pwd)/marketing/video/out:/app/out" \
-  cb-video-engine node render.mjs --fps 30 --sub 4 --out out/cratebase-launch-16x9.mp4
+./render.sh node render.mjs --w 1920 --h 1080 --fps 60 --sub 2 --workers 4 --out out/master-16x9.mp4
+./render.sh node render.mjs --w 1080 --h 1920 --fps 60 --sub 2 --workers 4 --out out/master-9x16.mp4
+./encode.sh      # delivery MP4s/WebM, teaser, posters, stills, final contact sheet + ffprobe report
 ```
 
-`--sub 4` averages 4 subframes per output frame for motion blur (the
-course's `tmix` pattern) — expensive, so left off (`--sub 1`) for
-stills/animatic and only turned on for the final render.
+`render.mjs` splits the frame range across `--workers` browser contexts,
+encodes near-lossless segments (CRF 10) and concatenates them; `--sub 2`
+renders two subframes per output frame and averages them (motion blur).
+`encode.sh` does the size-tuned delivery encodes from those masters.
 
-Docker writes `out/` as root (Playwright base image runs as root); clean
-up with `docker run --rm -v "$(pwd)/marketing/video/out:/shots" cb-video-engine rm -rf /shots/*`
-if the host user can't delete a file directly.
-
-## Critique loop (course step 11)
+### 5. Critique loop (after stills, animatic and full pass — until every score ≥ 8)
 
 ```bash
-ffmpeg -i out/animatic.mp4 -vf "fps=2,scale=270:-1,tile=6x9" -frames:v 1 out/contact.png
-ffmpeg -ss <fastest-action-timestamp> -i out/animatic.mp4 -vf "scale=320:-1,tile=12x1" -frames:v 1 out/strip.png
-ffmpeg -i out/animatic.mp4 -vf "fps=1,scale=360:-1,tile=5x3" -frames:v 1 out/phone.png
+./render.sh node render.mjs --fps 12 --out out/animatic.mp4      # quick full-timeline pass
+./encode.sh mux out/animatic.mp4 out/animatic-av.mp4             # add the score
+./critique.sh out/animatic-av.mp4 36.2 r1   # out/critique/r1-{contact,strip,phone}.png
 ```
 
-Look at all three, score 1-10 on hook / phone-size readability / motion
-quality / variety / composition / brand accuracy / sound sync, log in
-`docs/critique.md`, fix the 3 worst problems, repeat until every score
-is 8+. See `docs/critique.md` for the rounds run so far.
+Open all three sheets, score hook / phone readability / motion / variety /
+composition / brand / sound sync, log the 3 worst problems with timestamps
+in `docs/critique.md`, fix, repeat.
 
-## Determinism check
+### Determinism
 
 ```bash
-docker run --rm -v "$(pwd)/marketing/video/out:/app/out" cb-video-engine node render.mjs --dur 5 --fps 30 --out out/det-a.mp4
-docker run --rm -v "$(pwd)/marketing/video/out:/app/out" cb-video-engine node render.mjs --dur 5 --fps 30 --out out/det-b.mp4
-md5sum out/det-a.mp4 out/det-b.mp4   # must match — no Math.random, no timers, no carried state
+./render.sh stills --dir out/stills/detA 13.1 36.9 44.4 60.9
+./render.sh stills --dir out/stills/detB 60.9 44.4 36.9 13.1     # reverse order
+(cd out/stills/detA && md5sum *.png) > /tmp/a.md5 && (cd out/stills/detB && md5sum -c /tmp/a.md5)
 ```
 
-## Repo layout
+No `Math.random`, timers, CSS transitions or carried animation state. Known
+residue: Chromium's compositor may rasterize a transformed text layer at a
+cached scale, so a few frames differ by ≤ 2/255 on ~0.02 % of channels
+(anti-aliasing only) depending on render order.
+
+## Layout
 
 ```
-marketing/video/
-  index.html, main.js        # the render contract: window.seek(t)
-  lib/motion.js               # spring(), track(), presets, mulberry32, isoProject
-  lib/motion.test.mjs          # numeric checks (node lib/motion.test.mjs)
-  render.mjs, stills.mjs      # Playwright -> ffmpeg pipelines
-  capture/                    # asset capture against the real dashboard + examples/team-board
-  docs/style_guide.md         # palette, type, shot lengths, transition grammar, camera, texture
-  docs/shotlist.md            # every shot: frames, camera, text, SFX, with corrections logged
-  docs/critique.md            # review rounds, scores, fixes
-  Dockerfile, render.sh       # everything above runs in here
-  out/                        # rendered output (gitignored)
+index.html            stage + vendored @font-face; main.js boots scenes, window.seek(t)
+main.js               scene registry, impact dips, ?w=&h= layout, ?play preview
+scenes/*.js           one module per chapter: build(root, L) once, draw(t, state, L) per frame,
+                      plus top-level addCue() calls on the beat grid
+lib/timeline.js       BPM, bars, chapters, arrangement sections, chords, cue sheet
+lib/cues.mjs          Node aggregator: imports scenes so the score sees every cue
+lib/motion.js         closed-form spring(), track(), indicator(), mulberry32, iso projection
+lib/cam.js            matrix3d camera: shotMatrix, frame(roi, region), camTrack, project()
+lib/ui.js             UIPlane: a capture + its boxes.json, spotlight, reveal masks
+lib/kit.js            layout(W,H), mask-rise type, statements, cursor, callouts, code cards, crate SVG
+lib/serve.mjs         static server + page opener shared by render/stills
+audio/                score.mjs (synth + mix), dsp.mjs, theory.mjs, wav.mjs, master.sh, sync-check.mjs
+capture/              capture.mjs (DPR 4 + boxes), seed.sh, boxes.mjs, capture-team-board.mjs (v1)
+render.mjs stills.mjs render.sh encode.sh critique.sh fetch-fonts.sh Dockerfile
+docs/                 style_guide.md, shotlist.md, critique.md
 ```
-
-## Status (as of this session)
-
-Done: plan gate (style guide + shot list), asset capture gate (real
-v0.4.0 dashboard + `examples/team-board`, 14 screenshots, demo schema
-seeded and reproducible), render engine (springs/track/determinism
-tested, full 66s timeline wired end to end covering all 8 chapters),
-stills gate (`out/stills/01..08-*.png`), one critique round on a low-fps
-animatic with a verified fix pass (see `docs/critique.md` — Search went
-from a static screenshot to a real re-rank animation; the four
-Superpowers recreations went from near-empty to labeled and captioned),
-and the reusable `.claude/skills/motion-reel/SKILL.md` pipeline skill.
-
-Not done yet (left for the next session, deliberately — "don't rush to a
-final render"):
-- A full round 2/3 critique (fresh problem hunt + rescoring on all seven
-  axes) — round 1 only reached 8+ on brand accuracy; sound sync can't
-  score honestly until there's audio.
-- TOTP (25.5-28.0s) is still the weakest single shot — round 1's
-  problem #3, not yet fixed.
-- Screenshot crop framing — several real captures show more whitespace
-  than signal at scale and shrink to illegible at phone size; needs
-  per-shot `object-position`/zoom, not a global fix.
-- Audio: no score or SFX synthesized yet. The whole film is currently
-  silent; every beat is still readable without sound (the brief's
-  silent-friendly requirement), but the beat grid isn't sonically locked
-  to anything yet.
-- Multi-format reflow: only the 16:9 master layout exists. 9:16 and 1:1
-  need their own `frame(w,h)` layout per scene, not a crop.
-- Deliverables not yet produced: final MP4s in both codecs, the vertical
-  cut, the 15s teaser, the poster PNG, the final contact sheet, key
-  stills for delivery (as opposed to critique).

@@ -1,110 +1,91 @@
 ---
 name: motion-reel
-description: Make a Cratebase launch/feature/release video rendered from code — real dashboard UI, no licensed music, closed-form springs. Use when the user asks for a launch video, release reel, product demo video, or animated explainer for this repo.
+description: Make a Cratebase launch, release or feature film rendered from code — real dashboard captures under a virtual 3D camera, mega kinetic type, synthesized score locked to a beat grid, 16:9 + 9:16 from one timeline. Use when the user asks for a launch video, release reel, feature clip, product demo video or animated explainer for this repo.
 ---
 
 # Motion reel (Cratebase)
 
-This is `marketing/video/` turned into a repeatable pipeline, built while
-producing the first launch film (see `marketing/video/docs/` for that
-film's own style guide, shot list and critique log — read them for a
-worked example before starting a new one). The method is
-`motion-course.md`'s: a pure `window.seek(t)` render contract, closed-form
-springs, a beat grid, synthesized sound, and a critique loop that looks
-at its own frames instead of trusting the first pass.
+The engine lives in `marketing/video/` (read its README for exact commands,
+`docs/style_guide.md` for the look, `docs/shotlist.md` and
+`docs/critique.md` for a worked film). The method is `motion-course.md`'s:
+pure `window.seek(t)`, closed-form springs, a beat grid, synthesized sound,
+and a critique loop that looks at its own frames.
 
-## Inputs to collect first
+**One-sentence use:** "Make a 20 s film for <feature> from the v0.X
+release notes" → collect inputs below, add a shot list, write one or two
+`scenes/*.js`, run the gates.
 
-- What's this video for (a release, a specific feature, a full launch)
-  and how long (a launch film is ~60-70s; a single-feature clip can be
-  15-20s).
-- Format(s): 16:9 always; 9:16/1:1 only if asked.
-- Which real screens it needs — cross-check against `README.md`,
-  `CHANGELOG.md`, `site/src/content/docs/`, `benchmarks/README.md` for
-  what's actually shipped vs. still on a feature branch (see "Ground
-  every claim" below).
-- Anything from the previous film's `docs/style_guide.md` that should
-  change (new brand token, new named look) — default to reusing it
-  unchanged, since brand consistency across releases matters more than
-  novelty per video.
+## Inputs (ask only for what you can't find)
 
-## Hard rules (carried over from this repo's own film)
+Purpose + length (launch ≈ 64 s = 32 bars; feature clip 16–24 s), formats
+(16:9 always, 9:16 almost always), which shipped features — verify each in
+`CHANGELOG.md` / `README.md` / `benchmarks/README.md`, and check unreleased
+feature branches so those get a "Coming in vX" label, never a silent claim.
 
-- **Real UI only.** Never invent a screen. If a screen doesn't exist as
-  shown, either it isn't in the video, or it's a clearly-labeled
-  recreation built from the real API/SDK shape (see "Ground every claim"
-  and `docs/shotlist.md`'s "RECREATE" convention from the first film).
-- **Ground every on-screen claim** in `README.md`, `CHANGELOG.md`,
-  `site/src/content/docs/`, or `benchmarks/README.md` — never a
-  remembered or estimated number.
-- **No licensed music.** Synthesize score + SFX in code, locked to a beat
-  grid (120 BPM is this repo's default; see `sfx/` once it exists).
-- **Never compile the Rust workspace** from this skill. Use the released
-  binary (`curl -fsSL https://cratebase.dev/install.sh | sh`) for the
-  demo server, and pass `CRATEBASE_BIN` explicitly to any example app's
-  dev script (several fall back to `cargo build` when it's unset — see
-  `marketing/video/README.md`).
-- **Everything renders in Docker** (`marketing/video/Dockerfile`) — this
-  environment's own Chromium is missing system libs and there's no sudo.
-- Render contract: pure function of time, no CSS transitions/timers, no
-  `Math.random` (seeded noise only), springs from
-  `marketing/video/lib/motion.js`, never a restarted animation for a
-  value with more than one target (`track()`).
-- Banned looks (do not reproduce): centered title on a gradient,
-  everything fading in, corner labels/frame borders, glows on UI chrome,
-  generic particle bursts, bouncy overshoot on type.
+## What makes it look expensive (learned the hard way on v1 → v2)
 
-## Pipeline
+- **Scale is the whole game.** v1 failed at 30 % frame fill. Every shot is
+  full-bleed; UI planes are bigger than the frame; hook words are 400 px+
+  condensed Bricolage (`font-stretch: 75%`).
+- **The camera does the telling.** Frame a region of interest measured from
+  `capture/shots/*.boxes.json` (`ui.box("owner = @request.auth.id")`,
+  `frame(roi, L.below)`), push in until the detail's glyphs are ≥ 52 px at
+  1080p (DPR-4 captures make that crisp), rack between ROIs with `camTrack`
+  (log-zoom), tilt 4–16°, dim the rest with `plane.spot()`.
+- **Callouts live outside the 3D plane** (`project(m, x, y)` → crisp DOM),
+  so they never blur and stay pinned to the detail.
+- **Statements go in a top band over a dimmed plane** for UI chapters (a
+  side band caps zoom below the readability floor); side band for type-only
+  beats.
+- **Density target**: a state change every beat in the busy chapter,
+  nothing static > 1.5 s anywhere (end on a build, e.g. chips per beat).
+- **Honesty is part of the brand**: label benchmark workloads by what they
+  measure (the `search` workload is paged listing, not FTS), cite the run,
+  mark unreleased features.
 
-1. **Assets.** Install the real released binary, run `cratebase dev`
-   against a demo schema that exercises whatever this video is about
-   (reuse `marketing/video/capture/seed.sh`'s `places`/`posts` schema if
-   generic CRUD/auth/search is enough; write a new one if the video is
-   about a specific feature that schema doesn't touch). Capture with
-   `marketing/video/capture/capture.mjs` (extend its `SHOTS` list, don't
-   fork the file, unless the target is a different app entirely like
-   `examples/team-board` — then add a sibling script the way
-   `capture-team-board.mjs` did).
-2. **Plan.** Reuse `marketing/video/docs/style_guide.md` as-is unless the
-   brief calls for a new look. Write a **new** `docs/shotlist.md` (or a
-   dated variant, e.g. `docs/shotlist-v0.5.0.md`) for this video's own
-   beats — don't overwrite the previous film's shot list, it's the
-   worked example and the record of what shipped.
-3. **Stills.** One key frame per beat via `node stills.mjs` (edit its
-   `BEATS` array first). Look at every one before writing more scene
-   code.
-4. **Animatic.** `node render.mjs --fps 8 --out out/animatic.mp4` (or
-   `./render.sh animatic`). Fix pacing before polish.
-5. **Full pass + polish + audio.** Wire up SFX/score once picture pacing
-   is right, not before — audio synced to placeholder timing gets
-   re-synced for free when it's built against the beat grid, not against
-   specific frame numbers.
-6. **Critique loop, minimum 3 rounds** (see
-   `marketing/video/docs/critique.md` for the format this repo uses):
-   contact sheet (`fps=2,scale=270:-1,tile=6xN`), a 12-frame strip around
-   the fastest action, a 360px-wide phone test. Score 1-10 on hook /
-   phone-size readability / motion quality / variety / composition /
-   brand accuracy / sound sync. List the 3 worst problems with
-   timestamps. Fix. Repeat until every score is 8+.
-7. **Render every format from the one timeline**, `./render.sh final`
-   equivalent per format — reflow (a scene's own `frame(w,h)` layout),
-   never crop a 16:9 render to 9:16.
-8. **Deliver**: MP4 (H.264 yuv420p) + WebM (VP9), poster PNG, final
-   contact sheet, key stills, and say in your final report what's left
-   undone if this is a multi-session job — don't imply "done" if a gate
-   was skipped.
+## Pipeline (gates — don't skip)
 
-## Files this skill expects to find (and update as the pipeline evolves)
+1. **Plan**: new `docs/shotlist-<name>.md` on the 120 BPM grid (beat 0.5 s,
+   bar 2 s); every cut on a beat, chapter changes on bar lines.
+2. **Capture**: released binary only (`curl … install.sh | sh`; never
+   compile the workspace), `cratebase dev --http 127.0.0.1:<free port>` from
+   an empty cwd, `capture/seed.sh`, then `capture/capture.mjs` (add SHOTS
+   with `steps` for interaction states, e.g. scrolling an editor to a token).
+   Example apps with morphing UI (sign-in cards) are better **rebuilt as DOM
+   from their source** (same copy, tokens, fonts) than screenshotted.
+3. **Scenes**: `scenes/<chapter>.js` exports `[{ id, from, to, z, build(root, L), draw(t, s, L) }]`
+   and calls `addCue(t, type, params)` at top level for every sound. Build
+   measures text (fitWidth, offsetWidth) once; draw sets styles through
+   `S()` (cached writes). Anything with several targets uses `track()`.
+4. **Stills** for every beat in both formats → look → fix.
+5. **Animatic** (`--fps 12`) + score → `critique.sh` → round 1.
+6. **Full pass** (30 fps) → round 2 → fixes; **vertical** full render gets
+   its own round.
+7. **Audio**: `node audio/score.mjs --stems && sh audio/master.sh &&
+   node audio/sync-check.mjs out/stem-sfx.wav` (typing cues: `n` = number of
+   picture reveal steps).
+8. **Masters** at 60 fps `--sub 2`, then `./encode.sh` for every deliverable.
 
-```
-marketing/video/
-  index.html, main.js         # edit main.js's SCENES/timeline for a new video;
-                               # index.html's DOM/CSS structure is reusable as-is
-  lib/motion.js                # springs/track/mulberry32/isoProject — stable, don't fork
-  render.mjs, stills.mjs       # generic — take --dur/--fps/--out, don't fork per video
-  capture/                     # extend capture.mjs's SHOTS list; add a sibling script
-                                # only for a genuinely different app (see capture-team-board.mjs)
-  docs/                        # style_guide.md is reusable; shotlist.md and critique.md
-                                # are per-video (name the new ones, don't overwrite)
-  Dockerfile, render.sh        # reusable as-is
-```
+## Critique loop (minimum 3 rounds, every score ≥ 8)
+
+`./critique.sh <render> <fastest-action-time> <tag>` → contact (2 fps, 6
+across), strip (12 frames), phone (360 px). Actually open them. Score hook,
+phone readability, motion, variety, composition, brand, sound sync; log the
+3 worst problems with timestamps in `docs/critique.md`; fix; repeat. Sound
+sync without listening = onset analysis — say so in the log.
+
+## Gotchas
+
+- `.abs` sets `left:0` — use `left:"auto"` when positioning with `right`.
+- Never use `clip-path` on a zero-size absolute container (clips everything).
+- Don't measure with `getBoundingClientRect` inside draw for layout that
+  must be deterministic (transforms leak in); measure `offset*` at build.
+- Different worker splits change H.264 keyframes: check determinism on PNG
+  stills, not on encoded segments.
+- Docker images can get pruned between sessions: `./render.sh build`.
+- Glob `rm` of output folders can be blocked by safety checks: write each
+  still batch to its own `--dir` instead of deleting.
+- zsh doesn't word-split `$VAR` — pass times literally.
+- Banned: centered title on gradient, everything fading in, corner labels,
+  glows on UI chrome, particle bursts, overshoot on type, dead beats,
+  text < 52 px at 1080p that the viewer must read.
