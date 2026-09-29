@@ -95,7 +95,15 @@ source. Everything referenced below is real and current, not aspirational.
   - `GET /collections/{c}/records/{id}/external-auths`, `DELETE /collections/{c}/records/{id}/external-auths/{provider}`
     — list/unlink a record's linked OAuth2 providers (owner or superuser); unlink refuses if it would strand the account
 - `GET /realtime` (SSE; first event carries a `clientId`),
-  `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`
+  `POST /realtime` with `{clientId, subscriptions: ["collection", "collection/recordId"]}`.
+  A topic can also be `"channel:<name>"` — a channel not tied to any record, gated by a
+  `_channels` row (`name`: exact or `prefix:*`; `subscribeRule`/`publishRule`: same null/""/expr
+  convention as `_emailTemplates.sendRule`; no matching row disables it by default).
+  `POST /realtime/channels/{name}/publish {event, data}` broadcasts to subscribers
+  (413 past ~7.5KB); `POST/GET /realtime/channels/{name}/presence` is a heartbeat/member-list
+  pair (auto-leave on disconnect or 45s with no heartbeat); `GET .../stats` (superuser only)
+  reports this node's own subscriber/presence counts. `$realtime.publish(channel, event, data)`
+  in JS hooks runs at the trusted-hook tier (no publishRule check).
 - JS hooks: a `pb_hooks/*.pb.js` file next to the data directory can add
   native-style lifecycle hooks (`onRecordCreate`, ...) and mount extra
   root-level HTTP routes via `routerAdd` — see
@@ -149,6 +157,18 @@ source. Everything referenced below is real and current, not aspirational.
   `{ record }` template data). Fires from an after-success hook — never
   fails the triggering request; a bad `toField` logs a `_mailLog`
   failure instead.
+
+- `_notifications` (system collection) + `POST /notifications/send` (superuser/API key) — fan a
+  notification out across up to three channels in one call: `inapp` (a `_notifications` row,
+  announced over realtime), `email` (the `notification` `_emailTemplates` row, `{title, body,
+  link}`), `push` (every enabled `_push_subscriptions` row for the recipient). `to` is one id or
+  an array (any auth collection via `collection`, default `users`); `channels` defaults to all
+  three. `_notifications` rules: recipient may list/view/delete their own rows and update only
+  `readAt` (any other field change is rejected even from an otherwise-allowed row); creation is
+  superuser/API-key only. `GET /notifications/unread-count` (any authenticated record, index-backed
+  `COUNT(*)`) and `POST /notifications/read-all` round out the surface `_notifications`'s own
+  records-API endpoints don't cover. `settings.notifications.retentionDays` (default 90) prunes
+  *read* rows only. Same pipeline as JS hooks' `$notify.send(...)`.
 
 Full machine-readable spec: [openapi.yaml](./openapi.yaml).
 Error bodies are always `{ "code": 400, "message": "...", "data": { field: { code, message } } }`.
