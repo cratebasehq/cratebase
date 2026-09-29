@@ -154,9 +154,16 @@ async fn two_nodes(url: &str) -> (std::net::SocketAddr, std::net::SocketAddr, re
         record.set("name", Value::String(name.to_string()));
         // Double-JSON-encoded `""` (public) — see
         // `crate::routes::records::normalize_json_rule_fields`'s doc
-        // comment for why a plain empty string isn't enough.
-        record.set("subscribeRule", Value::String("\"\"".to_string()));
-        record.set("publishRule", Value::String("\"\"".to_string()));
+        // comment for exactly why: `coerce_record` (run by `records::create`
+        // itself, not just the HTTP route) JSON-parses any submitted string
+        // for a `Json`-kind field before storage, so a *single* level of
+        // encoding (`"\"\""`) round-trips back down to a plain empty
+        // string and is indistinguishable from never having been set. Two
+        // levels survive that one unwrap.
+        let public =
+            Value::String(serde_json::to_string(&serde_json::to_string("").unwrap()).unwrap());
+        record.set("subscribeRule", public.clone());
+        record.set("publishRule", public);
         cratebase_db::records::create(app_a.db(), &app_a.db().collections, &mut record)
             .await
             .expect("seed _channels row");
