@@ -3010,4 +3010,93 @@ mod hot_reload_tests {
         let row = queue_job_row(&app, &outcome.id).await;
         assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_COMPLETED));
     }
+
+    /// A `--dev` hot reload re-registers `onQueueJob` handlers from the
+    /// reloaded files: a changed handler body takes effect, and a queue
+    /// name a new version of the file no longer registers goes back to
+    /// having no handler at all — same "whole table dropped, rebuilt"
+    /// story as `routerAdd` (see `QueueHandle::clear_js_handlers`'s doc).
+    #[tokio::test]
+    async fn dev_reload_re_registers_onqueuejob_handlers() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("versioned", (e) => {
+                $app.store().set("version", "v1");
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload v1");
+
+        let first = crate::queue::enqueue_job(
+            &app,
+            "versioned",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue v1");
+        tick_now(&app).await;
+        assert_eq!(
+            queue_job_row(&app, &first.id).await.get_str("status"),
+            Some(crate::queue::STATUS_COMPLETED)
+        );
+
+        // v2: the handler body changes.
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("versioned", (e) => {
+                $app.store().set("version", "v2");
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload v2");
+
+        let second = crate::queue::enqueue_job(
+            &app,
+            "versioned",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue v2");
+        tick_now(&app).await;
+        assert_eq!(
+            queue_job_row(&app, &second.id).await.get_str("status"),
+            Some(crate::queue::STATUS_COMPLETED),
+            "the reloaded file's handler must still run for the same queue name"
+        );
+
+        // v3: the file stops registering it at all.
+        std::fs::write(hooks_dir.join("main.pb.js"), "// no more onQueueJob here\n").unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload v3");
+
+        let third = crate::queue::enqueue_job(
+            &app,
+            "versioned",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions {
+                max_attempts: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enqueue v3");
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &third.id).await;
+        assert_eq!(
+            row.get_str("status"),
+            Some(crate::queue::STATUS_FAILED),
+            "a queue name the reloaded files no longer register must go back to \
+             having no handler, exactly like it never had one"
+        );
+        assert!(
+            row.get_str("lastError")
+                .unwrap_or_default()
+                .contains("no handler registered"),
+            "{:?}",
+            row.get_str("lastError")
+        );
+    }
 }
