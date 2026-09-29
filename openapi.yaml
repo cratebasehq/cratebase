@@ -1160,6 +1160,119 @@ paths:
         "204": { description: OK }
         "404": { description: Unknown clientId (connection already closed) }
 
+  /realtime/channels/{name}/publish:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Broadcast a message to every current subscriber of a realtime channel
+      description: >
+        A channel is a topic not tied to any record — subscribe to it via
+        `POST /realtime` with `"channel:<name>"` in `subscriptions`.
+        Authorization comes from a `_channels` row matching `name` (exact,
+        or the longest matching `prefix:*` pattern); no matching row
+        disables the channel by default. `event`+`data` together may not
+        exceed roughly 7.5KB, since this also goes out over Postgres
+        `NOTIFY` (8000-byte cap) for cross-node delivery.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event]
+              properties:
+                event: { type: string }
+                data: {}
+      responses:
+        "204": { description: Broadcast }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error", description: "No matching _channels row, or its publishRule denied this caller" }
+        "413": { $ref: "#/components/responses/Error", description: "event+data too large" }
+
+  /realtime/channels/{name}/presence:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Presence heartbeat — join or refresh this connection's membership on a channel
+      description: >
+        `clientId` must be a connection already open via `GET /realtime`.
+        A member is automatically removed (and every subscriber told via
+        a `presence.leave` event) when that connection disconnects, or
+        after ~45s with no heartbeat — call this again on an interval to
+        stay listed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId]
+              properties:
+                clientId: { type: string }
+                state: {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event: { type: string, enum: [presence.join, presence.update] }
+        "403": { $ref: "#/components/responses/Error", description: "No matching _channels row, or its subscribeRule denied this caller" }
+        "404": { description: clientId is not a live GET /realtime connection }
+    get:
+      summary: Current presence members of a channel
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        clientId: { type: string }
+                        state: {}
+                        auth:
+                          type: object
+                          nullable: true
+                          properties:
+                            id: { type: string }
+                            collectionName: { type: string }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /realtime/channels/{name}/stats:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: This node's own live subscriber/presence counts for a channel (superuser only)
+      description: Node-local, not a cluster-wide total — backs the dashboard's Realtime channels inspector.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subscribers: { type: integer }
+                  presence: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+
   /collections/import:
     put:
       summary: Create/update every collection in the payload in one transaction (superuser only)
@@ -1456,6 +1569,82 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+
+  /notifications/send:
+    post:
+      summary: Fan a notification out across in-app/email/push channels (superuser or API key only)
+      description: >
+        `_notifications` itself is an ordinary system collection — use
+        `/collections/_notifications/records` (list/view/update
+        readAt/delete, and a realtime subscription) for reading. This
+        endpoint exists for sending, which is superuser/API-key only. The
+        same pipeline runs server-side as JS hooks' `$notify.send(...)`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, type, title, body]
+              properties:
+                to:
+                  description: One recipient record id, or an array of ids
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items: { type: string }
+                collection: { type: string, default: users, description: "Must be an auth collection" }
+                type: { type: string }
+                title: { type: string }
+                body: { type: string }
+                data: {}
+                link: { type: string }
+                channels:
+                  type: array
+                  items: { type: string, enum: [inapp, email, push] }
+                  description: Defaults to every channel
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: integer }
+                  recipients: { type: array, items: { type: string } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /notifications/unread-count:
+    get:
+      summary: Count of the caller's own unread notifications (any authenticated record)
+      description: A single index-backed COUNT(*), scoped to the caller's own recipient rows.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /notifications/read-all:
+    post:
+      summary: Mark every one of the caller's own unread notifications read (any authenticated record)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
 
   /llm/chat:
     post:
