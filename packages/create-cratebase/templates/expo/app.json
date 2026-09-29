@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "{{PROJECT_NAME}}",
+    "slug": "{{PROJECT_NAME}}",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "cratebaseapp",
+    "userInterfaceStyle": "automatic",
+    "web": {
+      "output": "single",
+      "bundler": "metro"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
