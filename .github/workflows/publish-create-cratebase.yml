@@ -1,0 +1,77 @@
+name: Publish create-cratebase
+
+# create-cratebase versions independently from the server binary and from
+# the SDK packages: it's a scaffolding CLI, not a build artifact of the
+# Rust workspace or a runtime dependency of anything else. Tying it to the
+# server's `v*` release tags would force a new npm publish (and a version
+# bump) every time the server ships a release that touches nothing under
+# packages/create-cratebase, and would block a hotfix to this package
+# behind an unrelated server release. `create-cratebase-v*` keeps this
+# release train independent while still using the same "push a tag"
+# mechanism as the server's own release.yml and the SDK packages'
+# publish-*.yml workflows.
+on:
+  push:
+    tags: ["create-cratebase-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (for a dry run)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/create-cratebase
+    steps:
+      - uses: actions/checkout@v4
+
+      # `npm publish` (not `bun publish`) so that credentials come from
+      # this standard action's generated `.npmrc` (reading
+      # `NODE_AUTH_TOKEN`), the same mechanism every other npm-registry
+      # publish action expects.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+
+      # The package version must match the tag, or a publish could
+      # silently ship the wrong version (e.g. a stale package.json left
+      # over from a forgotten bump).
+      - name: Verify package.json version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#create-cratebase-v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag create-cratebase-v$tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      # `workflow_dispatch` (no real tag) always dry-runs; a real
+      # `create-cratebase-v*` tag push does a real publish, gated on the
+      # NPM_TOKEN secret below.
+      - name: Publish (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        run: npm publish --dry-run
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
