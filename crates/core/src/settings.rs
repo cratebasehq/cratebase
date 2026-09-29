@@ -406,6 +406,32 @@ pub struct Queue {
     pub enabled: bool,
 }
 
+/// Settings for `crate::webhook_deliveries` (server crate) — unlike
+/// [`Queue`]/[`ZipExport`] above, outgoing webhook delivery is always on
+/// (see that module's doc for why), so this has no `enabled` toggle, just
+/// its two tunables. `Default` matches the spec's own defaults exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Webhooks {
+    /// How many days a `_webhookDeliveries` row is kept after it was
+    /// created, regardless of its final status. `<= 0` disables the
+    /// cleanup cron entirely (same convention as `Logs::max_days`).
+    pub delivery_retention_days: i64,
+    /// Consecutive delivery failures (reset to `0` by any success) after
+    /// which a `_webhooks` row is automatically flipped to `enabled:
+    /// false`, with an `_audit_log` entry recording why.
+    pub disable_after_failures: i64,
+}
+
+impl Default for Webhooks {
+    fn default() -> Self {
+        Webhooks {
+            delivery_retention_days: 14,
+            disable_after_failures: 50,
+        }
+    }
+}
+
 /// Toggle for the built-in ZIP-export module
 /// (`crates/server/src/zip_export.rs`), a `Plugin` shipped in-tree rather
 /// than a third-party one. Off by default: `App::bootstrap` only calls
@@ -490,6 +516,7 @@ pub struct Settings {
     pub push: Push,
     pub teams: Teams,
     pub queue: Queue,
+    pub webhooks: Webhooks,
     pub zip_export: ZipExport,
     pub notifications: Notifications,
     pub storage: Storage,
