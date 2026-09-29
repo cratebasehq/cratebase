@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.5.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.6.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
@@ -10,7 +10,10 @@ first real tagged release.
 
 ## [Unreleased]
 
-Background jobs, webhooks and cron you can rely on in production.
+## 0.6.0 — 2026-09-29
+
+Background jobs, webhooks and cron you can rely on in production, plus
+one-command starter kits (`bun create cratebase`).
 
 ### Added
 
@@ -49,8 +52,6 @@ Background jobs, webhooks and cron you can rely on in production.
   only processing; enqueueing, retrying and deleting always work.
 - Cron jobs (SQL and JS) take a Postgres advisory lock per tick, so a
   multi-node cluster runs each tick on exactly one node. No-op on SQLite.
-### Added
-
 - **`create-cratebase`** — a scaffolding CLI (`bun create cratebase my-app` /
   `npm create cratebase@latest my-app`) with three templates (`nextjs`,
   `vite-react`, `expo`), each shipping a `schema.json`, `pb_seed/` demo
@@ -61,6 +62,14 @@ Background jobs, webhooks and cron you can rely on in production.
   search, notifications); `expo` is a lean password/OTP + realtime-list
   starter. See [`packages/create-cratebase`](./packages/create-cratebase)
   and [Starter kits](https://cratebase.dev/docs/getting-started/starter-kits/).
+
+### Upgrading from 0.5.0
+
+- Migration `21` runs automatically (`_webhookDeliveries`, `_cronRuns`, new
+  `_webhooks` fields). Existing webhooks start recording deliveries and
+  retrying on failure.
+- Webhook receivers can now verify `X-Cratebase-Signature: sha256=…` over
+  `"{X-Cratebase-Timestamp}.{body}"` and dedupe on `X-Cratebase-Delivery`.
 
 ## 0.5.0 — 2026-09-29
 
