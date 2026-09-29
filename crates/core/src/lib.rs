@@ -60,6 +60,27 @@ pub const CRON_JOBS_COLLECTION: &str = "_cron_jobs";
 /// gated at *call* time by its own `rule`, not by a rule on this
 /// collection.
 pub const RPC_COLLECTION: &str = "_rpc";
+/// Name of the in-app notifications system collection
+/// (`crate::routes::notifications`/`$notify.send` in the server crate).
+/// Rule-gated per row exactly like `_sessions`/`_externalAuths` above
+/// (`collectionRef`/`recordRef` name the recipient, any auth collection),
+/// with one extra wrinkle: a non-superuser may only ever change its own
+/// `readAt` — enforced in `crates/server/src/routes/records.rs`'s
+/// `update_record`, not expressible through the rule language alone. See
+/// `Collection::is_notifications` and `Collection::default_system_collections`'s
+/// comment on `notifications` for the full rule/field contract.
+pub const NOTIFICATIONS_COLLECTION: &str = "_notifications";
+/// Name of the realtime-channel config system collection
+/// (`crate::realtime` in the server crate): one row per channel name (or
+/// `prefix:*` pattern) with a `subscribeRule`/`publishRule` pair gating
+/// `channel:<name>` SSE topics and `POST /api/realtime/channels/{name}/
+/// publish` — no row matching a name means that channel is disabled
+/// (secure default). Superuser-only end to end, same trust tier as
+/// `_cron_jobs`/`_rpc`: it configures who may reach an endpoint, not
+/// something a non-superuser record should read or edit. See
+/// `Collection::is_channels` and `Collection::default_system_collections`'s
+/// comment on `channels`.
+pub const CHANNELS_COLLECTION: &str = "_channels";
 /// PocketBase's literal id for the built-in `users` collection.
 pub const USERS_COLLECTION_ID: &str = "_pb_users_auth_";
 

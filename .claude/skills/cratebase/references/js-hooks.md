@@ -163,6 +163,20 @@ record write), `e.next()` to continue the hook chain.
   full pipeline instead — resolves a `_emailTemplates` key (or raw
   content), logs to `_mailLog`, and delivers inline or via the queue
   exactly like `POST /api/mails/send`; returns `{ id, status, error }`.
+- **`$notify`** — `send({ to, collection?, type, title, body, data?,
+  link?, channels? })` fans a notification out across `inapp` (a
+  `_notifications` row, announced over realtime), `email` (the
+  `notification` `_emailTemplates` row), and `push` (the recipient's
+  `_push_subscriptions`) — `channels` defaults to all three. `to` is one
+  record id or an array; `collection` defaults to `"users"`. Same
+  deferred-past-commit pattern as `$mails.send` when called from a
+  record-write hook (validates synchronously, delivers after the
+  transaction commits). Returns `{ sent, recipients }`.
+- **`$realtime`** — `publish(channel, event, data?)` broadcasts to every
+  subscriber of `channel:<channel>`, local and cross-node. Runs at the
+  trusted-hook tier — no `_channels.publishRule` check, same as
+  `$app.save` — and, like `$notify.send`, is deferred past commit when
+  called from inside a record-write hook's transaction.
 - **`$filesystem`** — build file markers to attach to a `file` field:
   `fileFromPath(path, name?)`, `fileFromBytes(bytes, name?)`,
   `fileFromURL(url, name?)`.

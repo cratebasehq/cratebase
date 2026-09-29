@@ -42,6 +42,15 @@ export type { UseMutationResult, MutationWriteOptions, OptimisticOptions } from 
 export { useSubscription } from "./useSubscription.js";
 export type { SubscriptionEvent } from "./useSubscription.js";
 
+export { useRecordPresence } from "./useRecordPresence.js";
+export type { UseRecordPresenceOptions, UseRecordPresenceResult } from "./useRecordPresence.js";
+
+export { useNotifications } from "./useNotifications.js";
+export type { UseNotificationsOptions, UseNotificationsResult } from "./useNotifications.js";
+
+export { useChannel } from "./useChannel.js";
+export type { UseChannelOptions, UseChannelResult } from "./useChannel.js";
+
 export { usePresence } from "./usePresence.js";
 export type { UsePresenceOptions, UsePresenceResult } from "./usePresence.js";
 

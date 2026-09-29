@@ -517,7 +517,7 @@ pub(crate) async fn create_record(
         return Err(ApiError::bad_request(UNSUPPORTED_TYPE));
     }
     let mut body = read_body(&app, &collection, request).await?;
-    normalize_email_template_send_rule(&collection, &mut body.data);
+    normalize_json_rule_fields(&collection, &mut body.data);
     // A presigned-upload token (`POST /api/files/presign`) in a file
     // field is resolved to its real file name *before* `input`/`Record`
     // are built from `body.data` below, so the rest of this handler sees
@@ -645,7 +645,7 @@ pub(crate) async fn update_record(
         return Err(ApiError::bad_request(UNSUPPORTED_TYPE));
     }
     let mut body = read_body(&app, &collection, request).await?;
-    normalize_email_template_send_rule(&collection, &mut body.data);
+    normalize_json_rule_fields(&collection, &mut body.data);
     // See the matching call in `create_record`; here the record already
     // has an id, so the ticket must have been presigned against it.
     crate::presign::resolve_body_tokens(&app, &collection, &id, &mut body).await?;
@@ -695,6 +695,20 @@ pub(crate) async fn update_record(
     };
     if collection.is_cron_jobs() {
         require_owner(info.auth.as_ref(), "edit a custom SQL cron job")?;
+    }
+    // `_notifications`: `update_rule` (`owner_rule`) only decides which
+    // *rows* a non-superuser recipient may touch, same as any other rule
+    // — it has no way to also restrict which *fields* of an allowed row
+    // may change. `readAt` is the one field a recipient is meant to be
+    // able to flip (marking their own notification read/unread); every
+    // other column is server-authored (`$notify.send`/
+    // `POST /api/notifications/send`) and must not become client-writable
+    // just because the row itself passed `owner_rule`. A superuser (or an
+    // API key, which always resolves to a superuser identity — see
+    // `crate::extract`'s module doc) is exempt, same as every other
+    // rule-shaped restriction in this file.
+    if collection.is_notifications() && !info.auth.as_ref().is_some_and(|a| a.is_superuser) {
+        reject_non_readat_notification_fields(&body.data)?;
     }
     let previous_was_owner = previous.get_string("role") == cratebase_core::SUPERUSER_ROLE_OWNER;
 
@@ -1493,14 +1507,77 @@ async fn read_body(
 /// string that was submitted, and `""` stays distinct from `null`
 /// (`serde_json::to_string("")` is `"\"\""`, never empty text, so it
 /// never collides with `decode_column`'s "empty text means unset" case).
-fn normalize_email_template_send_rule(collection: &Collection, data: &mut Map<String, Value>) {
-    if collection.name != "_emailTemplates" {
-        return;
+/// `_notifications`: a non-superuser recipient may submit `readAt` (and
+/// harmlessly re-submit `id`, since some clients always include it) —
+/// anything else in the body is refused outright rather than silently
+/// ignored, so a client relying on some other field actually changing
+/// finds out immediately instead of being quietly no-op'd. See
+/// `update_record`'s call site for why this can't be a rule instead.
+fn reject_non_readat_notification_fields(data: &Map<String, Value>) -> Result<(), ApiError> {
+    if data.keys().any(|k| k != "readAt" && k != "id") {
+        return Err(ApiError(AppError::bad_request(
+            "Only readAt may be updated on a notification.",
+        )));
     }
-    if let Some(Value::String(s)) = data.get("sendRule").cloned() {
-        let once = serde_json::to_string(&s).unwrap_or_default();
-        let twice = serde_json::to_string(&once).unwrap_or_default();
-        data.insert("sendRule".into(), Value::String(twice));
+    Ok(())
+}
+
+/// `_emailTemplates.sendRule` is a `Json`-kind column specifically so
+/// `NULL` and `""` stay distinct (superuser-only vs "anyone" — see
+/// `cratebase_core::Collection::default_system_collections`'s comment on
+/// the field), but callers write and read it as an ordinary nullable
+/// string — `null`, `""`, or a filter-rule expression — never as
+/// JSON-encoded text themselves. Getting a plain string to round-trip
+/// through a `Json`-kind column here needs two layers of JSON-string
+/// encoding, not one or zero, because of how the generic `Json`-field
+/// write path treats a submitted string:
+///
+/// 1. `cratebase_db::validate::coerce_record` (`cratebase_db::validate::
+///    coerce_changed`) runs *before* validation and, for every
+///    `Json`-kind field, unconditionally tries to JSON-parse a submitted
+///    string and — if it parses — replaces the field with the parsed
+///    result. This exists so a client that can only send text (a
+///    multipart form field) can still submit a JSON object/array; the
+///    cost is that it also silently strips one layer of "this string
+///    happens to be valid JSON" from *any* submission, string or not.
+/// 2. `cratebase_db::validate::json` then requires the field's value, if
+///    it is *still* a string at that point, to itself be valid JSON on
+///    its own (matching PocketBase's `json.Valid`) — a plain filter
+///    expression like `status = "paid"` is not, and is rejected as
+///    `validation_invalid_json`.
+///
+/// A plain rule string submitted as-is never survives both: step 1
+/// leaves it untouched (it isn't valid JSON), then step 2 rejects it for
+/// exactly that reason. JSON-encoding it once has the same fate: step 1
+/// *does* parse a once-encoded string successfully and unwraps it back to
+/// the plain rule text, which step 2 then rejects the same way. Encoding
+/// it **twice** is what survives: step 1 unwraps one layer, landing on
+/// the once-encoded text, which step 2 accepts because that text is
+/// itself valid JSON; `cratebase_db::records::column_value` then stores
+/// that once-encoded text verbatim, and
+/// `cratebase_db::records::decode_column` unwraps that one remaining
+/// layer on the next read — so a decoder sees exactly the string that was
+/// submitted, and `""` stays distinct from `null`
+/// (`serde_json::to_string("")` is `"\"\""`, never empty text, so it
+/// never collides with `decode_column`'s "empty text means unset" case).
+///
+/// `_channels.subscribeRule`/`.publishRule` are the same `Json`-kind
+/// null/""/expr convention (see `Collection::default_system_collections`'s
+/// comment on `channels`), so they need the identical double-encode.
+fn normalize_json_rule_fields(collection: &Collection, data: &mut Map<String, Value>) {
+    let fields: &[&str] = if collection.name == "_emailTemplates" {
+        &["sendRule"]
+    } else if collection.name == "_channels" {
+        &["subscribeRule", "publishRule"]
+    } else {
+        return;
+    };
+    for field in fields {
+        if let Some(Value::String(s)) = data.get(*field).cloned() {
+            let once = serde_json::to_string(&s).unwrap_or_default();
+            let twice = serde_json::to_string(&once).unwrap_or_default();
+            data.insert((*field).into(), Value::String(twice));
+        }
     }
 }
 
@@ -1591,7 +1668,7 @@ mod tests {
         for rule in ["", "status = \"paid\"", "@request.auth.id != ''"] {
             let mut data = Map::new();
             data.insert("sendRule".into(), Value::String(rule.into()));
-            normalize_email_template_send_rule(&templates, &mut data);
+            normalize_json_rule_fields(&templates, &mut data);
             let post_coerce = coerce_then_validate(&data["sendRule"]);
             // What `validate::json` sees must itself be valid JSON...
             let Value::String(s) = &post_coerce else {
@@ -1611,17 +1688,47 @@ mod tests {
 
         let mut data = Map::new();
         data.insert("sendRule".into(), Value::Null);
-        normalize_email_template_send_rule(&templates, &mut data);
+        normalize_json_rule_fields(&templates, &mut data);
         assert_eq!(data["sendRule"], Value::Null, "null is left alone");
 
         let mut data = Map::new();
         data.insert("sendRule".into(), Value::String(String::new()));
-        normalize_email_template_send_rule(&other, &mut data);
+        normalize_json_rule_fields(&other, &mut data);
         assert_eq!(
             data["sendRule"],
             Value::String(String::new()),
             "only _emailTemplates is special-cased"
         );
+    }
+
+    #[test]
+    fn normalize_json_rule_fields_covers_both_channels_rule_columns() {
+        let channels = Collection::new("_channels", cratebase_core::CollectionType::Base);
+        let mut data = Map::new();
+        data.insert("subscribeRule".into(), Value::String("".into()));
+        data.insert(
+            "publishRule".into(),
+            Value::String("@request.auth.id != ''".into()),
+        );
+        normalize_json_rule_fields(&channels, &mut data);
+        for field in ["subscribeRule", "publishRule"] {
+            let Value::String(s) = &data[field] else {
+                panic!("expected a string for {field}");
+            };
+            assert!(serde_json::from_str::<Value>(s).is_ok());
+        }
+    }
+
+    #[test]
+    fn reject_non_readat_notification_fields_allows_only_readat_and_id() {
+        let mut ok = Map::new();
+        ok.insert("readAt".into(), Value::String("2024-01-01".into()));
+        ok.insert("id".into(), Value::String("abc".into()));
+        assert!(reject_non_readat_notification_fields(&ok).is_ok());
+
+        let mut disallowed = Map::new();
+        disallowed.insert("title".into(), Value::String("hacked".into()));
+        assert!(reject_non_readat_notification_fields(&disallowed).is_err());
     }
 }
 

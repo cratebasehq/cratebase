@@ -2,13 +2,87 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.4.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.5.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
 first real tagged release.
 
 ## [Unreleased]
+
+## 0.5.0 — 2026-09-29
+
+Full-text search, storage upgrades, in-app notifications, and realtime
+channels with presence — the pieces every consumer app needs next.
+
+### Added
+
+- **Full-text search** — a `searchable` option on text/editor/email/url
+  fields and a per-collection search language. Cratebase keeps an index
+  in sync automatically (SQLite FTS5 external-content table; Postgres
+  `tsvector` + GIN). `GET /api/collections/{c}/records?search=…` combines
+  with `filter` (rules still enforced in SQL) and ranks by relevance
+  unless `sort` is given; `search("…")` is also available in the filter
+  language. Query text is sanitized (prefixes and phrases supported). At
+  50k rows a selective query is ~31x faster than `~` LIKE on SQLite and
+  ~10x faster than ILIKE on Postgres. SDK `list({ search })`; dashboard
+  search box, "Searchable" checkbox and language picker.
+- **Presigned direct uploads** — `POST /api/files/presign` validates the
+  field's rules, `maxSize` and `mimeTypes`, returns a direct S3 PUT URL
+  (same-origin URL on local storage) and a token that a normal
+  create/update attaches after the server verifies the object.
+  `_pendingUploads` + hourly expiry sweep. SDK `cb.files.upload()`, React
+  `useUpload()` with progress.
+- **Image transforms** — `?w=&h=&fit=&format=&q=` on the files route
+  (`?thumb=` unchanged), cached, with allow-lists and limits against
+  cache-busting.
+- **Per-user storage quota** (off by default), scoped to presigned
+  uploads via a per-collection owner field. Storage settings (S3, limits,
+  quota) now live in Settings → Application → Storage.
+- **Notifications** — `_notifications` system collection (recipient in
+  any auth collection, rule-scoped to "my own", `readAt`-only updates
+  for non-superusers) plus `$notify.send(...)`/`POST /api/notifications/send`:
+  one call fans a notification out across in-app (realtime), email (the
+  `notification` `_emailTemplates` row), and push (`_push_subscriptions`)
+  channels. `GET /api/notifications/unread-count` (index-backed) and
+  `POST /api/notifications/read-all` round out the surface the generic
+  records API doesn't cover. Retention: `settings.notifications.retentionDays`
+  (default 90, prunes read rows only).
+- **Realtime channels & presence** — topics not tied to any record
+  (`channel:<name>` on the existing `GET /api/realtime` SSE connection),
+  authorized by `_channels` config rows (exact name or `prefix:*`
+  pattern; `subscribeRule`/`publishRule` follow the same null/""/expr
+  convention as `_emailTemplates.sendRule`; no matching row disables a
+  channel by default). `POST /api/realtime/channels/{name}/publish`
+  broadcasts `{event, data}` (413 past ~7.5KB, to stay under Postgres's
+  8000-byte `NOTIFY` cap); `POST`/`GET .../presence` is a heartbeat/
+  member-list pair with automatic leave on disconnect or a 45s TTL;
+  `GET .../stats` backs a dashboard live inspector. Works across nodes on
+  Postgres over the same `LISTEN`/`NOTIFY` bridge record events use,
+  distinguished by a `"kind"` field. `$realtime.publish(...)` in JS
+  hooks runs at the trusted-hook tier (no `publishRule` check).
+- **Dashboard** — Settings → Automation → Realtime channels (CRUD
+  `_channels` plus the live subscriber/presence-count inspector);
+  Settings → Integrations → Notifications (retention); `_notifications`/
+  `_channels` visible under System collections.
+- **SDK** — `cb.notifications.{list,fullList,subscribe,unreadCount,markRead,markAllRead,send}`;
+  `cb.channel(name).{subscribe,publish,presence.{track,list,onChange}}`;
+  React `useNotifications()`, `useChannel(name)`, `usePresence(name, state)`.
+  The previous collection-backed `usePresence` is renamed
+  `useRecordPresence` (same implementation, still exported) now that
+  `usePresence` means the new server-authoritative channel presence.
+
+### Upgrading
+
+- Migrations `19_add_pending_uploads` and
+  `20_add_notifications_and_channels` run automatically, adding
+  `_pendingUploads`, `_notifications`/`_channels` and seeding the
+  `notification` email template.
+- Channels are disabled until you add a `_channels` row, so nothing is
+  exposed by default.
+- `@cratebase/react`: if you used the old `usePresence(collection, data, options)`,
+  rename the import to `useRecordPresence` — `usePresence` now takes
+  `(channelName, state, options?)` instead.
 
 ### Fixed
 

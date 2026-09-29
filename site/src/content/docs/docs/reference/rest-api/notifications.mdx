@@ -1,0 +1,82 @@
+---
+title: "Notifications"
+description: "POST /api/notifications/send (superuser/API key), GET /api/notifications/unread-count, POST /api/notifications/read-all."
+sidebar:
+  order: 27
+---
+
+See [Notifications](/docs/concepts/notifications/) for the full
+in-app/email/push contract. `_notifications` itself is an ordinary
+system collection, so `GET /collections/_notifications/records`, its
+`view`/`update`/`delete` endpoints, and a realtime subscription to it all
+work exactly like any other collection — scoped by `owner_rule` to "my
+own notifications" — and aren't repeated here. The three endpoints below
+exist because they don't fit that shape.
+
+### `POST /notifications/send`
+
+Superuser/API key only.
+
+```json
+{
+  "to": "user_123",
+  "collection": "users",
+  "type": "comment",
+  "title": "New comment",
+  "body": "Ada replied to your post.",
+  "data": { "postId": "post_1" },
+  "link": "/posts/post_1",
+  "channels": ["inapp", "email", "push"]
+}
+```
+
+`to` is one recipient id or an array; `collection` defaults to `"users"`
+and must name an auth collection. `type`/`title`/`body` are required;
+`data`/`link` are optional. `channels` defaults to every channel:
+
+- **`inapp`** — one `_notifications` row per recipient, announced over
+  realtime exactly like any other collection write.
+- **`email`** — delivered through the same pipeline as `POST /mails/send`,
+  rendering the `notification` `_emailTemplates` row (`{ title, body,
+  link }`); skipped for a recipient with no `email` value.
+- **`push`** — delivered to every enabled `_push_subscriptions` row
+  belonging to the recipient (see [Push notifications](/docs/reference/rest-api/push/)).
+
+Up to 500 recipients per call. A recipient id that doesn't resolve to a
+real row is skipped, not an error.
+
+```json
+{ "sent": 1, "recipients": ["user_123"] }
+```
+
+The same pipeline runs server-side as JS hooks' `$notify.send(...)` —
+see [Extending → Hooks](/docs/extending/hooks/).
+
+### `GET /notifications/unread-count`
+
+Any authenticated record (not superuser-only) — scoped to the caller's
+own recipient rows.
+
+```json
+{ "count": 3 }
+```
+
+A single `COUNT(*)` against `idx_notifications_recipient`
+(`collectionRef, recordRef, readAt, created`), so this stays cheap
+however large `_notifications` grows.
+
+### `POST /notifications/read-all`
+
+Marks every one of the caller's own unread notifications read in one
+call, rather than a `PATCH` per row.
+
+```json
+{ "updated": 3 }
+```
+
+### Retention
+
+`settings.notifications.retentionDays` (default 90, dashboard: Settings
+→ Integrations → Notifications) prunes *read* `_notifications` rows
+older than N days on the same cron cadence as the mail log. An unread
+notification is never pruned regardless of age. `0` disables cleanup.

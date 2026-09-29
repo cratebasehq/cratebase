@@ -3,10 +3,11 @@
  * hook in this package only ever calls a handful of methods
  * (`collection(name).{list,fullList,one,create,update,delete,subscribe}`,
  * `auth.{record,token,isValid,isSuperuser,onChange,signIn,signOut}`,
- * `presence.track`), so a fake that implements exactly that surface, with
- * an in-memory store and a synchronous fake pub/sub the test can drive
- * directly (`emit`), is both simpler and faster than spinning up the real
- * client against a real or mocked HTTP transport. */
+ * `presence.track`, `notifications.{list,unreadCount,markRead,
+ * markAllRead,subscribe}`), so a fake that implements exactly that
+ * surface, with an in-memory store and a synchronous fake pub/sub the
+ * test can drive directly (`emit`), is both simpler and faster than
+ * spinning up the real client against a real or mocked HTTP transport. */
 
 import type { RecordModel } from "@cratebase/client";
 
@@ -205,6 +206,97 @@ export function createFakeAuth(): FakeAuth {
   return auth;
 }
 
+export interface FakePresenceMember {
+  clientId: string;
+  state: unknown;
+  auth: null;
+}
+
+type PresenceKind = "join" | "update" | "leave";
+
+/** A minimal fake `Channel` (`@cratebase/client`'s realtime-channel
+ * handle): `subscribe`/`publish` are a synchronous in-memory pub/sub
+ * (like `FakeCollection`'s `emit`), and `presence` tracks members in a
+ * `Map` with test-only `_simulateJoin`/`_simulateLeave` for exercising a
+ * *second* peer's presence without a second real connection. */
+export interface FakeChannel {
+  subscribe(handler: (message: { event: string; data: unknown }) => void): Promise<() => void>;
+  publish(event: string, data?: unknown): Promise<void>;
+  presence: {
+    track(state: unknown): Promise<void>;
+    list(): Promise<FakePresenceMember[]>;
+    onChange(handler: (kind: PresenceKind, member: FakePresenceMember) => void): Promise<() => void>;
+  };
+  /** This fake channel's own "self" client id, used by `presence.track`. */
+  readonly selfClientId: string;
+  /** Test-only: simulate a *different* client joining/updating presence. */
+  _simulateJoin(clientId: string, state: unknown): void;
+  /** Test-only: simulate a *different* client's presence expiring/leaving. */
+  _simulateLeave(clientId: string): void;
+  /** Test-only: current subscriber counts, for asserting cleanup. */
+  listenerCount(): { messages: number; presence: number };
+}
+
+export function createFakeChannel(name: string): FakeChannel {
+  const messageListeners = new Set<(m: { event: string; data: unknown }) => void>();
+  const presenceListeners = new Set<(kind: PresenceKind, member: FakePresenceMember) => void>();
+  const members = new Map<string, FakePresenceMember>();
+  const selfClientId = `fake_${name}_self`;
+
+  function dispatchMessage(event: string, data: unknown) {
+    for (const l of [...messageListeners]) l({ event, data });
+  }
+  function dispatchPresence(kind: PresenceKind, member: FakePresenceMember) {
+    for (const l of [...presenceListeners]) l(kind, member);
+    dispatchMessage(`presence.${kind}`, member);
+  }
+
+  return {
+    selfClientId,
+    async subscribe(handler) {
+      messageListeners.add(handler);
+      return () => {
+        messageListeners.delete(handler);
+      };
+    },
+    async publish(event, data) {
+      dispatchMessage(event, data ?? null);
+    },
+    presence: {
+      async track(state) {
+        const isNew = !members.has(selfClientId);
+        const member: FakePresenceMember = { clientId: selfClientId, state, auth: null };
+        members.set(selfClientId, member);
+        dispatchPresence(isNew ? "join" : "update", member);
+      },
+      async list() {
+        return [...members.values()];
+      },
+      async onChange(handler) {
+        presenceListeners.add(handler);
+        return () => {
+          presenceListeners.delete(handler);
+        };
+      },
+    },
+    _simulateJoin(clientId, state) {
+      const member: FakePresenceMember = { clientId, state, auth: null };
+      const isNew = !members.has(clientId);
+      members.set(clientId, member);
+      dispatchPresence(isNew ? "join" : "update", member);
+    },
+    _simulateLeave(clientId) {
+      const member = members.get(clientId);
+      if (!member) return;
+      members.delete(clientId);
+      dispatchPresence("leave", member);
+    },
+    listenerCount() {
+      return { messages: messageListeners.size, presence: presenceListeners.size };
+    },
+  };
+}
+
 export interface FakePresenceHandle {
   online: Set<string>;
   subscribe(cb: (online: Set<string>) => void): () => void;
@@ -242,17 +334,46 @@ export function createFakeClient(
   const files = extras.files ?? createFakeFiles();
 
   const presenceHandles: FakePresenceHandle[] = [];
+  const channelMap = new Map<string, FakeChannel>();
+
+  const getCollection = (name: string): FakeCollection<any> => {
+    let c = collectionMap.get(name);
+    if (!c) {
+      c = createFakeCollection([]);
+      collectionMap.set(name, c);
+    }
+    return c;
+  };
+
+  const getChannel = (name: string): FakeChannel => {
+    let c = channelMap.get(name);
+    if (!c) {
+      c = createFakeChannel(name);
+      channelMap.set(name, c);
+    }
+    return c;
+  };
 
   return {
     auth,
+    collection: getCollection,
+    channel: getChannel,
+    _channels: channelMap,
     files,
-    collection(name: string): FakeCollection<any> {
-      let c = collectionMap.get(name);
-      if (!c) {
-        c = createFakeCollection([]);
-        collectionMap.set(name, c);
-      }
-      return c;
+    notifications: {
+      list: (options: any = {}) => getCollection("_notifications").list(options),
+      fullList: (options: any = {}) => getCollection("_notifications").fullList(options),
+      async unreadCount() {
+        const rows = await getCollection("_notifications").fullList();
+        return rows.filter((r: any) => !r.readAt).length;
+      },
+      markRead: (id: string) => getCollection("_notifications").update(id, { readAt: new Date().toISOString() }),
+      async markAllRead() {
+        const unread = (await getCollection("_notifications").fullList()).filter((r: any) => !r.readAt);
+        for (const r of unread) await getCollection("_notifications").update(r.id, { readAt: new Date().toISOString() });
+        return { updated: unread.length };
+      },
+      subscribe: (handler: any, topic = "*") => getCollection("_notifications").subscribe(topic, handler),
     },
     presence: {
       async track(_collectionName: string, data: Record<string, unknown> & { id?: string }): Promise<FakePresenceHandle> {

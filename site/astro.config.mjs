@@ -91,6 +91,8 @@ export default defineConfig({
             { label: "Filter syntax", slug: "docs/concepts/filter-syntax" },
             { label: "Batch API", slug: "docs/concepts/batch-api" },
             { label: "Realtime", slug: "docs/concepts/realtime" },
+            { label: "Realtime channels & presence", slug: "docs/concepts/realtime-channels" },
+            { label: "Notifications", slug: "docs/concepts/notifications" },
             { label: "Files", slug: "docs/concepts/files" },
             {
               label: "Authentication",

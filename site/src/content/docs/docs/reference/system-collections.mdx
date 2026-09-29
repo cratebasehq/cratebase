@@ -6,7 +6,8 @@ description: "Names, fixed ids, and rules for every built-in collection."
 `_superusers`, `_mfas`, `_otps`, `_totps`, `_magicLinks`, `_externalAuths`,
 `_authOrigins`, `_teams`, `_team_members`, `_cron_jobs`, `_rpc`, `_webhooks`,
 `_audit_log`, `_push_subscriptions`, `_sessions`, `_bans`,
-`_emailTemplates`, `_mailLog`, `_emailTriggers`, `_emailAssets`, and the
+`_emailTemplates`, `_mailLog`, `_emailTriggers`, `_emailAssets`,
+`_notifications`, `_channels`, and the
 default `users` auth collection all ship with fixed, deterministic ids
 shared with
 PocketBase's own equivalents where one exists — see
@@ -85,3 +86,19 @@ other system collection here, but the field itself is **not**
 serves it to anyone with the URL regardless of a viewer's session, which
 an emailed `<img src>` needs, since the recipient has no session to
 present at all.
+
+`_notifications` is [in-app notifications](/docs/concepts/notifications/)'
+store: `collectionRef`/`recordRef` (the recipient, any auth collection),
+`type`, `title`, `body`, `data` (json), `link`, `readAt` (nullable),
+indexed on `(collectionRef, recordRef, readAt, created)`. `listRule`/
+`viewRule`/`updateRule`/`deleteRule` let a recipient see and act on their
+own rows; a non-superuser may only ever change `readAt` through the
+generic records API (enforced at the route layer, not expressible as a
+rule). `createRule` stays superuser/API-key only — the only intended
+writer is `$notify.send`/`POST /api/notifications/send`.
+
+`_channels` configures [realtime channels](/docs/concepts/realtime-channels/):
+`name` (an exact channel name or a `prefix:*` pattern), `subscribeRule`,
+`publishRule` (both nullable json, same null/""/expr convention as
+`_emailTemplates.sendRule`). Superuser-only end to end. No row matching a
+given channel name disables it — the secure default.

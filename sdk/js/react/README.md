@@ -191,14 +191,56 @@ await create(
 );
 ```
 
-## `usePresence` — who's online
+## `useChannel` — a realtime channel, not tied to any record
 
-Wraps `client.presence.track` (heartbeat + realtime + client-side staleness, no server-side
-presence concept needed):
+Subscribes to `channel:<name>` for the component's lifetime and exposes a bound `publish`. Gated
+server-side by a `_channels` row (`subscribeRule`/`publishRule`; no matching row disables the
+channel by default) — see the [channels & presence docs](https://cratebase.dev/docs/concepts/realtime-channels/).
 
 ```tsx
-const { online, loading } = usePresence(cb, "presence", { userRef: user.id });
+const { lastMessage, publish, connected } = useChannel<{ text: string }>(cb, "room1", {
+  onMessage: (m) => console.log(m.event, m.data), // fires for every message, not just the latest
+});
+
+await publish("chat", { text: "hi" });
 ```
+
+## `usePresence` — who's on a channel right now
+
+Heartbeats `state` on a realtime channel for as long as the component is mounted and `state` isn't
+`null`, and keeps a live `members` list. Server-authoritative: a member is removed automatically
+when its connection drops or after ~45s with no heartbeat — no staleness window to tune.
+
+```tsx
+const { members, loading } = usePresence(cb, "room1", { name: user.name, cursor });
+// pass `null` as `state` to observe without tracking your own presence
+```
+
+> This is a different hook from the pre-realtime-channels `useRecordPresence` (this package's old
+> `usePresence` — a client-side heartbeat + realtime + staleness-window pattern over an ordinary
+> collection, still exported under its new name, still works, just no longer named `usePresence`
+> now that this name means the server-authoritative version above):
+>
+> ```tsx
+> const { online, loading } = useRecordPresence(cb, "presence", { userRef: user.id });
+> ```
+>
+> Prefer `usePresence`/`useChannel` for anything new — no backing collection to create. Reach for
+> `useRecordPresence` only if you already have a natural "peers" collection you'd rather use as the
+> source of truth.
+
+## `useNotifications` — in-app notification bell
+
+Live list of the signed-in caller's own `_notifications`, plus unread count and the two bulk
+actions a bell needs — refetches on realtime event (debounced), same shape as `useRecords`.
+
+```tsx
+const { items, unreadCount, markRead, markAllRead } = useNotifications(cb);
+```
+
+Sending (`cb.notifications.send(...)`, superuser/API key only) and reading are independent — a
+frontend typically only ever calls this hook; sending happens server-side via `$notify.send(...)`
+in a JS hook or from trusted backend code.
 
 ## `useUpload` — presigned direct uploads with progress
 

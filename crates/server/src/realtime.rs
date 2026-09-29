@@ -87,18 +87,19 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use cratebase_core::{Collection, Record};
-use cratebase_db::context::{CollectionResolver, RequestContext};
+use cratebase_core::{AppError, Collection, Record};
+use cratebase_db::context::{AuthContext, CollectionResolver, RequestContext};
+use cratebase_db::engine::Executor;
 use cratebase_db::records::find_by_id_raw;
 use futures::stream::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
@@ -121,6 +122,22 @@ const SEND_QUEUE_LIMIT: usize = 512;
 /// `@request.context` during realtime rule evaluation, which rules can
 /// branch on exactly as PocketBase's do.
 const CONTEXT_REALTIME: &str = "realtime";
+
+/// A member's presence entry is dropped this long after its most recent
+/// heartbeat/update — see the module doc's "Channels and presence"
+/// section. Deliberately a few multiples of a reasonable client
+/// heartbeat cadence (the SDK's `presence.track` re-POSTs roughly every
+/// `PRESENCE_TTL / 3`), so one missed beat from a slow network never
+/// flaps a member's join/leave state.
+const PRESENCE_TTL: Duration = Duration::from_secs(45);
+/// How often [`App::bootstrap`]'s sweep task calls [`RealtimeService::sweep_presence`].
+const PRESENCE_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
+/// Channel names are a topic segment (`channel:<name>`), never a full
+/// path: no `/` (would collide with `Subscription::parse`'s record-id
+/// split), no whitespace, and bounded length. `*` is reserved for a
+/// `_channels` config row's own prefix-pattern suffix, not something a
+/// caller ever passes.
+const MAX_CHANNEL_NAME_LEN: usize = 150;
 
 /// One connected SSE client.
 struct Client {
@@ -231,6 +248,31 @@ pub struct RealtimeService {
     /// mistake every other instance's writes for its own echo and
     /// silently drop them.
     origin: String,
+    /// Channel presence: `channel -> client_id -> member`. A member whose
+    /// [`PresenceMember::origin`] is this instance's own [`Self::origin`]
+    /// is one of *this* node's connected clients (removed the moment its
+    /// SSE stream disconnects, via [`disconnect_client`]); any other
+    /// origin is a replica of another node's member, kept fresh by that
+    /// node's own heartbeats/updates riding the cross-node `"presence"`
+    /// payload and expired locally by [`Self::sweep_presence`] if that
+    /// node goes quiet (crashes, network partition, ...) — see the
+    /// module doc's "Channels and presence" section.
+    presence: parking_lot::RwLock<HashMap<String, HashMap<String, PresenceMember>>>,
+    /// Reverse index of *this node's own* presence members, so a
+    /// disconnecting client's channels can be found without scanning
+    /// every channel in [`Self::presence`]. Never holds a replica entry.
+    presence_by_client: parking_lot::RwLock<HashMap<String, HashSet<String>>>,
+}
+
+/// One channel's presence entry for one client. See [`RealtimeService::presence`].
+#[derive(Clone)]
+struct PresenceMember {
+    state: Value,
+    /// `{id, collectionName}` snapshot, or `Value::Null` when anonymous —
+    /// never the full auth record (no reason for every subscriber to see
+    /// more than that).
+    auth: Value,
+    updated_at: Instant,
 }
 
 impl RealtimeService {
@@ -239,6 +281,8 @@ impl RealtimeService {
             clients: parking_lot::RwLock::new(HashMap::new()),
             by_collection: parking_lot::RwLock::new(HashMap::new()),
             origin: cratebase_core::ids::random_string(20, CLIENT_ID_ALPHABET),
+            presence: parking_lot::RwLock::new(HashMap::new()),
+            presence_by_client: parking_lot::RwLock::new(HashMap::new()),
         }
     }
 
@@ -314,6 +358,170 @@ impl RealtimeService {
             .collect()
     }
 
+    /// Whether `id` is a currently-connected `GET /api/realtime` client —
+    /// used by `channel_presence_track` to require a live SSE stream
+    /// before accepting a presence heartbeat for it (see that handler's
+    /// doc comment).
+    fn is_connected(&self, id: &str) -> bool {
+        self.clients.read().contains_key(id)
+    }
+
+    /// Clients subscribed to exactly this topic string — the channel
+    /// equivalent of [`Self::watchers`], which is keyed by a
+    /// [`Collection`]'s name/id instead. `key` is `"channel:<name>"`; see
+    /// the module doc's "Channels and presence" section for why a bare
+    /// `channel:<name>` topic (no `?options=`) reuses [`Self::by_collection`]
+    /// unmodified rather than needing a second index.
+    fn watchers_by_key(&self, key: &str) -> Vec<(String, Arc<Client>)> {
+        let index = self.by_collection.read();
+        let Some(set) = index.get(key) else {
+            return Vec::new();
+        };
+        let clients = self.clients.read();
+        set.iter()
+            .filter_map(|id| clients.get(id).map(|c| (id.clone(), c.clone())))
+            .collect()
+    }
+
+    /// This node's own subscriber/presence counts for one channel — the
+    /// dashboard's "Realtime channels" tab live inspector
+    /// (`GET /api/realtime/channels/{name}/stats`). Node-local only (no
+    /// cross-node aggregation): an operator watching the dashboard is
+    /// typically looking at the node they're connected to, and summing
+    /// every node's counts would need a request fan-out this endpoint
+    /// deliberately doesn't do for a debug/inspector affordance.
+    fn channel_stats(&self, channel: &str) -> (usize, usize) {
+        let subscribers = self
+            .by_collection
+            .read()
+            .get(&format!("channel:{channel}"))
+            .map(HashSet::len)
+            .unwrap_or(0);
+        let presence = self
+            .presence
+            .read()
+            .get(channel)
+            .map(HashMap::len)
+            .unwrap_or(0);
+        (subscribers, presence)
+    }
+
+    /// Insert/refresh one channel's presence member. Returns `true` when
+    /// this is a brand-new member (a "join"), `false` for a heartbeat/
+    /// state update on an already-present one.
+    fn presence_upsert(
+        &self,
+        channel: &str,
+        client_id: &str,
+        origin: &str,
+        state: Value,
+        auth: Value,
+    ) -> bool {
+        let is_own = origin == self.origin;
+        let mut presence = self.presence.write();
+        let members = presence.entry(channel.to_string()).or_default();
+        let is_new = !members.contains_key(client_id);
+        members.insert(
+            client_id.to_string(),
+            PresenceMember {
+                state,
+                auth,
+                updated_at: Instant::now(),
+            },
+        );
+        drop(presence);
+        if is_own {
+            self.presence_by_client
+                .write()
+                .entry(client_id.to_string())
+                .or_default()
+                .insert(channel.to_string());
+        }
+        is_new
+    }
+
+    /// Remove one channel's presence member. Returns `true` if it existed.
+    fn presence_remove(&self, channel: &str, client_id: &str) -> bool {
+        let mut presence = self.presence.write();
+        let existed = presence
+            .get_mut(channel)
+            .map(|members| members.remove(client_id).is_some())
+            .unwrap_or(false);
+        presence.retain(|_, members| !members.is_empty());
+        drop(presence);
+        if let Some(set) = self.presence_by_client.write().get_mut(client_id) {
+            set.remove(channel);
+        }
+        existed
+    }
+
+    /// Every channel this node's *own* client is currently tracked in
+    /// (never a replica — see [`Self::presence`]'s doc comment), removing
+    /// the reverse-index entry as it goes. Called once, from
+    /// [`disconnect_client`].
+    fn presence_take_client_channels(&self, client_id: &str) -> Vec<String> {
+        self.presence_by_client
+            .write()
+            .remove(client_id)
+            .map(|set| set.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// `GET .../presence`'s member list: `{clientId, state, auth}` per
+    /// current member, oldest first. Does not itself expire anything —
+    /// [`Self::sweep_presence`] is what removes a stale replica, on its
+    /// own schedule — so two calls a few seconds apart, both before a
+    /// sweep runs, agree with each other.
+    fn presence_list(&self, channel: &str) -> Vec<(String, Value, Value)> {
+        let presence = self.presence.read();
+        let Some(members) = presence.get(channel) else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, Value, Value, Instant)> = members
+            .iter()
+            .map(|(id, m)| (id.clone(), m.state.clone(), m.auth.clone(), m.updated_at))
+            .collect();
+        out.sort_by_key(|(_, _, _, at)| *at);
+        out.into_iter().map(|(id, s, a, _)| (id, s, a)).collect()
+    }
+
+    /// Drop every *replica* presence member (an [`PresenceMember::origin`]
+    /// other than this node's own) whose last heartbeat/update is older
+    /// than [`PRESENCE_TTL`] — the mechanism that makes a crashed node's
+    /// members eventually disappear everywhere else, since a dead node
+    /// sends no more `"presence"` cross-node payloads to refresh them.
+    /// This node's *own* members are governed by real disconnects
+    /// ([`disconnect_client`]), not this sweep, though a stale one here
+    /// (a `Drop` that somehow ran without reaching
+    /// [`disconnect_client`]) is still cleaned up defensively. Returns
+    /// the `(channel, client_id)` pairs removed, so the caller can
+    /// broadcast a `presence.leave` for each.
+    fn sweep_presence(&self) -> Vec<(String, String)> {
+        let now = Instant::now();
+        let mut removed = Vec::new();
+        let mut presence = self.presence.write();
+        presence.retain(|channel, members| {
+            members.retain(|client_id, member| {
+                let stale = now.duration_since(member.updated_at) > PRESENCE_TTL;
+                if stale {
+                    removed.push((channel.clone(), client_id.clone()));
+                }
+                !stale
+            });
+            !members.is_empty()
+        });
+        drop(presence);
+        if !removed.is_empty() {
+            let mut by_client = self.presence_by_client.write();
+            for (channel, client_id) in &removed {
+                if let Some(set) = by_client.get_mut(client_id) {
+                    set.remove(channel);
+                }
+            }
+        }
+        removed
+    }
+
     /// Push one addressed frame straight to a connected client, by its
     /// `GET /api/realtime` client id — the same registry `publish`/
     /// `fan_out` above use for collection-scoped record events, reused
@@ -374,7 +582,14 @@ fn percent_decode(s: &str) -> String {
 }
 
 pub fn router() -> Router<App> {
-    Router::new().route("/realtime", get(connect).post(submit))
+    Router::new()
+        .route("/realtime", get(connect).post(submit))
+        .route("/realtime/channels/{name}/publish", post(channel_publish))
+        .route(
+            "/realtime/channels/{name}/presence",
+            get(channel_presence_list).post(channel_presence_track),
+        )
+        .route("/realtime/channels/{name}/stats", get(channel_stats))
 }
 
 /// `GET /api/realtime` — open the stream and hand back a client id.
@@ -429,8 +644,38 @@ impl Stream for ClientStream {
 
 impl Drop for ClientStream {
     fn drop(&mut self) {
-        self.app.realtime().unregister(&self.id);
+        // Also leaves every channel this client had presence in — see
+        // `disconnect_client`'s doc comment.
+        disconnect_client(&self.app, &self.id);
     }
+}
+
+/// Unregister an SSE client and broadcast `presence.leave` for every
+/// channel it was tracked in — the "automatic leave on SSE disconnect"
+/// half of the module doc's "Channels and presence" section. Spawns the
+/// actual broadcast rather than doing it inline, since [`Drop`] cannot be
+/// `async` and this runs from [`ClientStream`]'s `Drop` impl.
+fn disconnect_client(app: &App, client_id: &str) {
+    let channels = app.realtime().presence_take_client_channels(client_id);
+    app.realtime().unregister(client_id);
+    if channels.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    let client_id = client_id.to_string();
+    tokio::spawn(async move {
+        for channel in channels {
+            broadcast_presence(
+                &app,
+                &channel,
+                "presence.leave",
+                &client_id,
+                &Value::Null,
+                &Value::Null,
+            )
+            .await;
+        }
+    });
 }
 
 #[derive(Debug, Deserialize)]
@@ -615,6 +860,11 @@ async fn notify_cross_node(
     record: &Record,
 ) {
     let mut payload = serde_json::json!({
+        // Explicit for symmetry with the `"channel"`/`"presence"` kinds
+        // below `dispatch_cross_node` also handles; a payload with no
+        // `kind` at all (predating this field) is still read as `"record"`
+        // — see `dispatch_cross_node`'s doc comment.
+        "kind": "record",
         "origin": app.realtime().origin(),
         "collection": collection.id,
         "action": action.as_str(),
@@ -671,11 +921,7 @@ async fn notify_cross_node(
 /// local write uses — so rule evaluation happens fresh, here, against
 /// this process's own settings and rule text, never anything the writer
 /// serialized (see the module doc).
-async fn receive_cross_node(app: &App, payload: &str) {
-    let Ok(Value::Object(msg)) = serde_json::from_str::<Value>(payload) else {
-        tracing::warn!("cross-node realtime payload was not a JSON object; dropping");
-        return;
-    };
+async fn receive_cross_node_record(app: &App, msg: &Map<String, Value>) {
     if msg.get("origin").and_then(Value::as_str) == Some(app.realtime().origin()) {
         return;
     }
@@ -731,13 +977,65 @@ async fn receive_cross_node(app: &App, payload: &str) {
 /// at all.
 pub fn start_cross_node_listener(app: &App) {
     let engine = app.db().engine.clone();
-    let app = app.clone();
+    let app2 = app.clone();
     engine.subscribe_realtime(Arc::new(move |payload: String| {
-        let app = app.clone();
+        let app = app2.clone();
         tokio::spawn(async move {
-            receive_cross_node(&app, &payload).await;
+            dispatch_cross_node(&app, &payload).await;
         });
     }));
+
+    // The presence TTL sweep (see `RealtimeService::sweep_presence`'s doc
+    // comment): runs on every node regardless of backend, not just
+    // Postgres — a node's own disconnects are handled synchronously by
+    // `disconnect_client`, but this is the safety net for a replica whose
+    // origin node went away without a clean `"presence.leave"` ever
+    // arriving (a crash, a network partition). Started once per process,
+    // right alongside the cross-node listener rather than needing its own
+    // call from `App::bootstrap`.
+    let app = app.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(PRESENCE_SWEEP_INTERVAL);
+        loop {
+            ticker.tick().await;
+            for (channel, client_id) in app.realtime().sweep_presence() {
+                broadcast_presence(
+                    &app,
+                    &channel,
+                    "presence.leave",
+                    &client_id,
+                    &Value::Null,
+                    &Value::Null,
+                )
+                .await;
+            }
+        }
+    });
+}
+
+/// One payload from [`start_cross_node_listener`]'s `LISTEN` subscription,
+/// routed by its `"kind"` discriminator (see the module doc's "Cross-node
+/// fan-out" section for why this exists at all: `notify_realtime`/
+/// `subscribe_realtime` carry one untyped string channel, shared by every
+/// kind of realtime event so a single `LISTEN cratebase_realtime` covers
+/// all of them). A payload with no `kind` field predates this
+/// discriminator — every payload `notify_cross_node` ever sent before
+/// channels/presence existed — and is read as `"record"` for backward
+/// compatibility with a rolling upgrade where an old node is still
+/// sending the original shape.
+async fn dispatch_cross_node(app: &App, payload: &str) {
+    let Ok(Value::Object(msg)) = serde_json::from_str::<Value>(payload) else {
+        tracing::warn!("cross-node realtime payload was not a JSON object; dropping");
+        return;
+    };
+    match msg.get("kind").and_then(Value::as_str) {
+        Some("channel") => receive_cross_node_channel(app, &msg).await,
+        Some("presence") => receive_cross_node_presence(app, &msg).await,
+        None | Some("record") => receive_cross_node_record(app, &msg).await,
+        Some(other) => {
+            tracing::warn!(kind = %other, "unknown cross-node realtime payload kind; dropping")
+        }
+    }
 }
 
 /// Whether this subscriber may see this record: the collection's
@@ -877,6 +1175,558 @@ async fn render(
     .ok()?;
     crate::routes::common::project(&mut value, sub.fields.as_deref());
     Some(value)
+}
+
+// ---------------------------------------------------------------------
+// Realtime channels + presence
+// ---------------------------------------------------------------------
+//
+// `channel:<name>` is an ordinary topic string with no `/`, so
+// `Subscription::parse`/`RealtimeService::by_collection` already index
+// and match it correctly with no changes — see `watchers_by_key`. What's
+// genuinely new here is: the `_channels` authorization lookup (no
+// `Collection`/rule-on-a-row concept applies, since a channel isn't a
+// record), the publish/presence HTTP endpoints, and presence bookkeeping.
+// Both publish and presence events ride the exact same cross-node
+// `LISTEN`/`NOTIFY` path record writes use (see [`dispatch_cross_node`]),
+// distinguished by their `"kind"` field.
+
+/// `Value::to_string()` of a publish's `data` plus its `event` name may
+/// not exceed this many bytes — see [`channel_publish`]'s doc comment:
+/// left as headroom under Postgres's own `NOTIFY` payload cap
+/// (`cratebase_db::postgres::NOTIFY_PAYLOAD_LIMIT`, 8000 bytes) for the
+/// envelope fields (`kind`/`origin`/`channel`/`event`) wrapped around it.
+const MAX_PUBLISH_PAYLOAD: usize = cratebase_db::postgres::NOTIFY_PAYLOAD_LIMIT - 500;
+
+/// A channel name is a topic segment, not a path: no `/` (would collide
+/// with `Subscription::parse`'s record-id split on a bare `channel:foo/bar`
+/// topic), no `*` (reserved for a `_channels` row's own prefix pattern,
+/// never something a caller passes), no whitespace, and bounded length.
+pub(crate) fn is_valid_channel_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CHANNEL_NAME_LEN
+        && name
+            .chars()
+            .all(|c| c.is_ascii_graphic() && c != '/' && c != '*')
+}
+
+/// One `_channels` row's authorization for a given channel name — see
+/// `Collection::default_system_collections`'s comment on `channels` for
+/// the null/""/expr convention `subscribe_rule`/`publish_rule` follow.
+struct ChannelConfig {
+    subscribe_rule: Option<String>,
+    publish_rule: Option<String>,
+    /// The part of the channel name past a prefix pattern's `*` (`""` for
+    /// an exact-name match) — exposed to rules as `@request.data.suffix`.
+    suffix: String,
+}
+
+/// Resolves `channel` against every `_channels` row: an exact `name`
+/// match wins outright; otherwise the *longest* `"prefix*"` row whose
+/// `prefix` is a prefix of `channel` (so `"room:vip:*"` outranks a
+/// broader `"room:*"` for `"room:vip:1"`). `None` means no row configures
+/// this channel at all — the secure default, channel disabled.
+///
+/// One query covering every row rather than one filtered by `name`:
+/// `_channels` is operator-configured (expected to be small — tens, not
+/// millions, of rows) and prefix matching can't be expressed as a single
+/// indexed lookup anyway, so this trades a full-table scan of a tiny
+/// table for not having to maintain a second, denormalized lookup path.
+async fn resolve_channel_config(app: &App, channel: &str) -> Option<ChannelConfig> {
+    let rows = app
+        .db()
+        .query(
+            r#"SELECT "name", "subscribeRule", "publishRule" FROM "_channels""#,
+            &[],
+        )
+        .await
+        .map_err(|e| tracing::warn!(error = %e, "failed to load _channels config"))
+        .ok()?;
+
+    let mut best: Option<(usize, ChannelConfig)> = None;
+    for row in &rows {
+        let Some(name) = row.get_str("name").filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        let candidate = if name == channel {
+            Some((usize::MAX, String::new()))
+        } else if let Some(prefix) = name.strip_suffix('*') {
+            channel
+                .starts_with(prefix)
+                .then(|| (prefix.len(), channel[prefix.len()..].to_string()))
+        } else {
+            None
+        };
+        let Some((specificity, suffix)) = candidate else {
+            continue;
+        };
+        if best.as_ref().is_some_and(|(s, _)| *s >= specificity) {
+            continue;
+        }
+        best = Some((
+            specificity,
+            ChannelConfig {
+                subscribe_rule: decode_json_rule_text(row.get_str("subscribeRule")),
+                publish_rule: decode_json_rule_text(row.get_str("publishRule")),
+                suffix,
+            },
+        ));
+    }
+    best.map(|(_, cfg)| cfg)
+}
+
+/// Reads a `_channels.subscribeRule`/`.publishRule` raw column value the
+/// way `crate::mail_templates::decode_send_rule` reads
+/// `_emailTemplates.sendRule` off an already-decoded `Record` — except
+/// this runs against the *raw* SQL text from `resolve_channel_config`'s
+/// single query covering every row, so it re-derives that same JSON
+/// decode step by hand instead: the column is `Json`-kind precisely so
+/// `NULL` and `""` stay distinct, stored as the submitted rule string
+/// JSON-encoded *twice* (see
+/// `crate::routes::records::normalize_json_rule_fields`'s doc comment for
+/// exactly why). `NULL`/empty/anything that doesn't decode to a JSON
+/// string is `None` — the safe, deny reading, never a rule that could
+/// evaluate to `true`.
+fn decode_json_rule_text(raw: Option<&str>) -> Option<String> {
+    let raw = raw?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::String(s)) => Some(s),
+        _ => None,
+    }
+}
+
+/// Evaluates a non-empty channel `subscribeRule`/`publishRule` — mirrors
+/// `crate::mail_templates::eval_send_rule`'s doc comment exactly, except
+/// for what's bound: `@request.auth.*` (the caller, or all-null when
+/// anonymous) and `@request.data.channel`/`@request.data.suffix` (the
+/// full channel name, and the part matched by a prefix pattern's `*` —
+/// `""` for an exact match). No bare field reference: there is no
+/// "record" a channel operation is about. A rule that cannot be
+/// evaluated in-process (a relation path, `@collection.X`, ...) or fails
+/// to parse is a deny — fails closed, never open.
+async fn eval_channel_rule(
+    app: &App,
+    rule: &str,
+    auth: Option<&AuthContext>,
+    channel: &str,
+    suffix: &str,
+) -> bool {
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return true;
+    }
+    let Ok(ast) = cratebase_filter::parse_cached(rule) else {
+        return false;
+    };
+    let Some(collection) = app
+        .db()
+        .collections
+        .get_by_name(cratebase_core::CHANNELS_COLLECTION)
+    else {
+        return false;
+    };
+    let mut body = Map::new();
+    body.insert("channel".into(), Value::String(channel.to_string()));
+    body.insert("suffix".into(), Value::String(suffix.to_string()));
+    let ctx = RequestContext {
+        auth: auth.cloned(),
+        body,
+        ..RequestContext::default()
+    };
+    let resolver =
+        CollectionResolver::new(collection, &app.db().collections, &ctx, app.db().dialect());
+    matches!(
+        cratebase_filter::evaluate(&ast, &Map::new(), &resolver),
+        Ok(true)
+    )
+}
+
+/// Shared allow/deny decision for one rule field (`subscribeRule` or
+/// `publishRule`) against one caller: a superuser always passes (even a
+/// syntactically broken rule — same as every other rule in this
+/// codebase), `None` (no matching `_channels` row, or the matched row's
+/// rule field is `null`) denies non-superusers outright, `Some("")`
+/// allows anyone, and `Some(expr)` defers to [`eval_channel_rule`].
+async fn rule_allows(
+    app: &App,
+    rule: &Option<String>,
+    auth: Option<&Auth>,
+    channel: &str,
+    suffix: &str,
+) -> bool {
+    if auth.is_some_and(|a| a.is_superuser) {
+        return true;
+    }
+    match rule {
+        None => false,
+        Some(r) if r.trim().is_empty() => true,
+        Some(r) => {
+            let ctx = auth.map(Auth::to_auth_context);
+            eval_channel_rule(app, r, ctx.as_ref(), channel, suffix).await
+        }
+    }
+}
+
+/// Whether `auth` may subscribe to (or track presence on) `channel` —
+/// re-checked per subscriber at every delivery, exactly like a
+/// collection's `listRule` (see [`deliver_decision`]), so a rule edit or
+/// a login/logout takes effect on the very next message rather than only
+/// at the next `POST /api/realtime` resubscribe.
+async fn channel_subscribe_allowed(app: &App, auth: Option<&Auth>, channel: &str) -> bool {
+    match resolve_channel_config(app, channel).await {
+        Some(cfg) => rule_allows(app, &cfg.subscribe_rule, auth, channel, &cfg.suffix).await,
+        None => auth.is_some_and(|a| a.is_superuser),
+    }
+}
+
+/// Whether `auth` may publish on `channel` — checked once, synchronously,
+/// by [`channel_publish`] itself (unlike [`channel_subscribe_allowed`],
+/// there is no per-recipient re-check: publishing is a single action, not
+/// an ongoing subscription).
+async fn channel_publish_allowed(app: &App, auth: Option<&Auth>, channel: &str) -> bool {
+    match resolve_channel_config(app, channel).await {
+        Some(cfg) => rule_allows(app, &cfg.publish_rule, auth, channel, &cfg.suffix).await,
+        None => auth.is_some_and(|a| a.is_superuser),
+    }
+}
+
+fn channel_denied() -> AppError {
+    AppError::forbidden("You are not allowed to access this channel.")
+}
+
+/// Broadcast `{event, data}` to every current subscriber of
+/// `channel:<name>` — `crate::jsvm_host`'s `$realtime.publish` and
+/// `channel_publish` (`POST /api/realtime/channels/{name}/publish`) both
+/// call this after their own authorization check. Local subscribers are
+/// reached via a spawned [`channel_fan_out`]; every other node sharing
+/// this database is reached via `notify_realtime`, exactly like
+/// [`publish`]'s "Cross-node fan-out" (see the module doc) — unconditional
+/// on a backend that supports it, since this process has no way to know
+/// whether some *other* process has subscribers for this channel.
+pub fn publish_channel(app: &App, channel: &str, event: &str, data: Value) {
+    if app.db().engine.supports_cross_node() {
+        let payload = serde_json::json!({
+            "kind": "channel",
+            "origin": app.realtime().origin(),
+            "channel": channel,
+            "event": event,
+            "data": data.clone(),
+        })
+        .to_string();
+        let app2 = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = app2.db().engine.notify_realtime(&payload).await {
+                tracing::warn!(error = %e, "cross-node channel publish notify failed");
+            }
+        });
+    }
+    let app2 = app.clone();
+    let channel2 = channel.to_string();
+    let event2 = event.to_string();
+    tokio::spawn(async move {
+        channel_fan_out(&app2, &channel2, &event2, &data).await;
+    });
+}
+
+/// Deliver one channel message to this node's own subscribers of
+/// `channel:<name>`, re-checking [`channel_subscribe_allowed`] per
+/// subscriber's own current auth (see that function's doc comment for
+/// why per-delivery, not per-subscribe). Shared by a local
+/// [`publish_channel`] call, [`receive_cross_node_channel`], and every
+/// presence event (`join`/`update`/`leave` are just channel messages
+/// with a well-known event name — see [`broadcast_presence`]).
+async fn channel_fan_out(app: &App, channel: &str, event: &str, data: &Value) {
+    let key = format!("channel:{channel}");
+    let watchers = app.realtime().watchers_by_key(&key);
+    if watchers.is_empty() {
+        return;
+    }
+    let payload = serde_json::json!({ "event": event, "data": data }).to_string();
+    for (client_id, client) in watchers {
+        let auth = client.auth.read().clone();
+        if !channel_subscribe_allowed(app, auth.as_ref(), channel).await {
+            continue;
+        }
+        let subs = client.subscriptions.read().clone();
+        for sub in subs {
+            if sub.collection != key {
+                continue;
+            }
+            let frame = Event::default().event(&sub.key).data(payload.clone());
+            if client.queued.fetch_add(1, Ordering::Relaxed) as usize >= SEND_QUEUE_LIMIT {
+                tracing::debug!(client = %client_id, "realtime client too far behind; dropping");
+                app.realtime().unregister(&client_id);
+                break;
+            }
+            if client.tx.send(frame).is_err() {
+                app.realtime().unregister(&client_id);
+                break;
+            }
+        }
+    }
+}
+
+/// One channel's presence entry, as `GET .../presence` and every
+/// `presence.*` event report it.
+#[derive(Serialize)]
+struct PresenceEntry {
+    #[serde(rename = "clientId")]
+    client_id: String,
+    state: Value,
+    auth: Value,
+}
+
+/// Authorizes and records one presence heartbeat, broadcasting the
+/// resulting `presence.join`/`presence.update`. Returns the event name
+/// that fired, or `Err` when `auth` isn't allowed to subscribe to (and
+/// therefore track presence on) `channel`.
+async fn presence_track(
+    app: &App,
+    channel: &str,
+    client_id: &str,
+    auth: Option<&Auth>,
+    state: Value,
+) -> Result<&'static str, AppError> {
+    if !channel_subscribe_allowed(app, auth, channel).await {
+        return Err(channel_denied());
+    }
+    let auth_snapshot = auth
+        .map(|a| serde_json::json!({ "id": a.id, "collectionName": a.collection_name }))
+        .unwrap_or(Value::Null);
+    let origin = app.realtime().origin().to_string();
+    let is_new = app.realtime().presence_upsert(
+        channel,
+        client_id,
+        &origin,
+        state.clone(),
+        auth_snapshot.clone(),
+    );
+    let kind = if is_new {
+        "presence.join"
+    } else {
+        "presence.update"
+    };
+    broadcast_presence(app, channel, kind, client_id, &state, &auth_snapshot).await;
+    Ok(kind)
+}
+
+/// Broadcasts one presence event — `join`/`update` (from [`presence_track`])
+/// or `leave` (from [`disconnect_client`] or the TTL sweep in
+/// [`start_cross_node_listener`]) — to this node's own subscribers via
+/// [`channel_fan_out`] and to every other node via the same cross-node
+/// `"presence"` payload kind [`receive_cross_node_presence`] reads back.
+async fn broadcast_presence(
+    app: &App,
+    channel: &str,
+    kind: &str,
+    client_id: &str,
+    state: &Value,
+    auth: &Value,
+) {
+    // The actual membership change: `presence_track` already upserted a
+    // join/update before calling this, but a `"presence.leave"` has no
+    // earlier write to piggyback on — this is the one place that removes
+    // the local (possibly already-swept, in which case this is a
+    // harmless no-op) entry before telling anyone about it.
+    if kind == "presence.leave" {
+        app.realtime().presence_remove(channel, client_id);
+    }
+    if app.db().engine.supports_cross_node() {
+        let payload = serde_json::json!({
+            "kind": "presence",
+            "origin": app.realtime().origin(),
+            "channel": channel,
+            "event": kind,
+            "clientId": client_id,
+            "state": state,
+            "auth": auth,
+        })
+        .to_string();
+        let app2 = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = app2.db().engine.notify_realtime(&payload).await {
+                tracing::warn!(error = %e, "cross-node presence notify failed");
+            }
+        });
+    }
+    let data = serde_json::json!({ "clientId": client_id, "state": state, "auth": auth });
+    channel_fan_out(app, channel, kind, &data).await;
+}
+
+/// [`dispatch_cross_node`]'s `"channel"` handler: re-fan-out a publish
+/// from another node to this node's own subscribers. Skips its own
+/// origin (already delivered synchronously by [`publish_channel`]'s
+/// local half).
+async fn receive_cross_node_channel(app: &App, msg: &Map<String, Value>) {
+    if msg.get("origin").and_then(Value::as_str) == Some(app.realtime().origin()) {
+        return;
+    }
+    let (Some(channel), Some(event)) = (
+        msg.get("channel").and_then(Value::as_str),
+        msg.get("event").and_then(Value::as_str),
+    ) else {
+        return;
+    };
+    let data = msg.get("data").cloned().unwrap_or(Value::Null);
+    channel_fan_out(app, channel, event, &data).await;
+}
+
+/// [`dispatch_cross_node`]'s `"presence"` handler: applies the join/
+/// update/leave to this node's own replica of that member (see
+/// [`RealtimeService::presence`]'s doc comment) and re-fans it out to
+/// this node's own subscribers. Skips its own origin, same reasoning as
+/// [`receive_cross_node_channel`].
+async fn receive_cross_node_presence(app: &App, msg: &Map<String, Value>) {
+    let Some(origin) = msg.get("origin").and_then(Value::as_str) else {
+        return;
+    };
+    if origin == app.realtime().origin() {
+        return;
+    }
+    let (Some(channel), Some(client_id), Some(kind)) = (
+        msg.get("channel").and_then(Value::as_str),
+        msg.get("clientId").and_then(Value::as_str),
+        msg.get("event").and_then(Value::as_str),
+    ) else {
+        return;
+    };
+    let state = msg.get("state").cloned().unwrap_or(Value::Null);
+    let auth = msg.get("auth").cloned().unwrap_or(Value::Null);
+    if kind == "presence.leave" {
+        app.realtime().presence_remove(channel, client_id);
+    } else {
+        app.realtime()
+            .presence_upsert(channel, client_id, origin, state.clone(), auth.clone());
+    }
+    let data = serde_json::json!({ "clientId": client_id, "state": state, "auth": auth });
+    channel_fan_out(app, channel, kind, &data).await;
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PublishBody {
+    event: String,
+    #[serde(default)]
+    data: Value,
+}
+
+/// `POST /api/realtime/channels/{name}/publish` — see the module doc.
+/// Authorization is `channel_publish_allowed`, checked once here (not
+/// per-recipient — see that function's doc comment); size is capped at
+/// [`MAX_PUBLISH_PAYLOAD`] bytes, answered `413` rather than silently
+/// dropping the cross-node half of delivery (see that constant's doc
+/// comment) or truncating the message.
+async fn channel_publish(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    MaybeAuth(auth): MaybeAuth,
+    Json(body): Json<PublishBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !is_valid_channel_name(&name) {
+        return Err(ApiError::bad_request("Invalid channel name."));
+    }
+    if body.event.trim().is_empty() {
+        return Err(ApiError::bad_request("event is required."));
+    }
+    let size = body.event.len() + body.data.to_string().len();
+    if size > MAX_PUBLISH_PAYLOAD {
+        return Err(ApiError(AppError::payload_too_large(format!(
+            "publish payload is too large ({size} bytes; the limit is {MAX_PUBLISH_PAYLOAD} bytes)."
+        ))));
+    }
+    if !channel_publish_allowed(&app, auth.as_ref(), &name).await {
+        return Err(ApiError(channel_denied()));
+    }
+    publish_channel(&app, &name, &body.event, body.data);
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PresenceBody {
+    #[serde(default)]
+    client_id: String,
+    #[serde(default)]
+    state: Value,
+}
+
+/// `POST /api/realtime/channels/{name}/presence` — the presence
+/// heartbeat. `clientId` must be a currently-connected `GET /api/realtime`
+/// stream's id (same requirement as `POST /api/realtime` itself): presence
+/// is tied to a live SSE connection so it can be automatically left on
+/// disconnect (see [`disconnect_client`]), not a standalone resource a
+/// caller could create without ever opening a stream.
+async fn channel_presence_track(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    MaybeAuth(auth): MaybeAuth,
+    Json(body): Json<PresenceBody>,
+) -> ApiResult<impl IntoResponse> {
+    if !is_valid_channel_name(&name) {
+        return Err(ApiError::bad_request("Invalid channel name."));
+    }
+    if body.client_id.is_empty() {
+        return Err(ApiError::bad_request("Missing or invalid client id."));
+    }
+    if !app.realtime().is_connected(&body.client_id) {
+        return Err(ApiError::not_found("Missing or invalid client id."));
+    }
+    let kind = presence_track(&app, &name, &body.client_id, auth.as_ref(), body.state)
+        .await
+        .map_err(ApiError)?;
+    Ok(Json(serde_json::json!({ "event": kind })))
+}
+
+/// `GET /api/realtime/channels/{name}/presence` — the current member
+/// list. Authorized the same way subscribing is (`channel_subscribe_allowed`):
+/// presence membership is only ever visible to someone who could also
+/// subscribe to the channel itself.
+async fn channel_presence_list(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    MaybeAuth(auth): MaybeAuth,
+) -> ApiResult<impl IntoResponse> {
+    if !is_valid_channel_name(&name) {
+        return Err(ApiError::bad_request("Invalid channel name."));
+    }
+    if !channel_subscribe_allowed(&app, auth.as_ref(), &name).await {
+        return Err(ApiError(channel_denied()));
+    }
+    let members: Vec<PresenceEntry> = app
+        .realtime()
+        .presence_list(&name)
+        .into_iter()
+        .map(|(client_id, state, auth)| PresenceEntry {
+            client_id,
+            state,
+            auth,
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "members": members })))
+}
+
+/// `GET /api/realtime/channels/{name}/stats` — superuser-only, this
+/// node's own live subscriber/presence counts for one channel (see
+/// `RealtimeService::channel_stats`'s doc comment for why this is
+/// node-local rather than cluster-wide). Doesn't require a matching
+/// `_channels` row: an operator debugging *why* a channel has no
+/// subscribers needs this to work even for a channel that's disabled or
+/// not yet configured.
+async fn channel_stats(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    crate::extract::RequireSuperuser(_): crate::extract::RequireSuperuser,
+) -> ApiResult<impl IntoResponse> {
+    if !is_valid_channel_name(&name) {
+        return Err(ApiError::bad_request("Invalid channel name."));
+    }
+    let (subscribers, presence) = app.realtime().channel_stats(&name);
+    Ok(Json(
+        serde_json::json!({ "subscribers": subscribers, "presence": presence }),
+    ))
 }
 
 #[cfg(test)]

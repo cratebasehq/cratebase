@@ -502,6 +502,98 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         Ok(result)
     }
 
+    async fn notify_send(&self, input: Map<String, Value>) -> Result<Value, AppError> {
+        let get_str = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
+        let to: Vec<String> = match input.get("to") {
+            Some(Value::String(s)) => vec![s.clone()],
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+            _ => vec![],
+        };
+        let channels = match input.get("channels") {
+            Some(Value::Array(items)) => Some(
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            _ => None,
+        };
+        let notify_input = crate::notify::NotifySendInput {
+            to,
+            collection: get_str("collection"),
+            kind: get_str("type").unwrap_or_default(),
+            title: get_str("title").unwrap_or_default(),
+            body: get_str("body").unwrap_or_default(),
+            data: input.get("data").cloned().unwrap_or(Value::Null),
+            link: get_str("link"),
+            channels,
+        };
+
+        if !self.0.is_transactional() {
+            let outcome = crate::notify::send(self.0.app(), notify_input).await?;
+            return serde_json::to_value(outcome).map_err(|e| AppError::internal(e.to_string()));
+        }
+
+        // Same "validate/resolve now, deliver after commit" split as
+        // `mails_send` above, and for the same reason (see `crate::notify`'s
+        // module doc): the `inapp` channel's `_notifications` write and the
+        // `email`/`push` channels' deliveries must not run while this
+        // hook's own transaction is still open, and must never happen at
+        // all for a write that ends up rolling back.
+        let prepared =
+            crate::notify::prepare_with(self.0.app(), self.0.executor(), notify_input).await?;
+        let recipients = prepared.recipient_ids();
+        let result = serde_json::json!({
+            "sent": recipients.len(),
+            "recipients": recipients,
+        });
+        let app = self.0.app().clone();
+        self.0.after_commit(Box::pin(async move {
+            crate::notify::finish(&app, prepared).await;
+        }));
+        Ok(result)
+    }
+
+    async fn realtime_publish(
+        &self,
+        channel: String,
+        event: String,
+        data: Value,
+    ) -> Result<(), AppError> {
+        if !crate::realtime::is_valid_channel_name(&channel) {
+            return Err(AppError::bad_request("invalid channel name."));
+        }
+        if event.trim().is_empty() {
+            return Err(AppError::bad_request("event is required."));
+        }
+        // Unlike `POST /api/realtime/channels/{name}/publish`, a JS hook
+        // is already the trusted-server tier (same as `$app.save`/a
+        // `_cron_jobs` row's SQL) — `_channels.publishRule` gates an
+        // *untrusted API caller*, not code the operator wrote and
+        // deployed themselves, so this never runs `channel_publish_allowed`.
+        //
+        // Deferred past commit when transactional, same reasoning as
+        // `mails_send`/`notify_send` above: the cross-node `NOTIFY` goes
+        // out over a separate, unpooled connection immediately,
+        // unaffected by this transaction, so publishing before the write
+        // is known to commit could announce a message for a write that
+        // never actually happened.
+        if !self.0.is_transactional() {
+            crate::realtime::publish_channel(self.0.app(), &channel, &event, data);
+            return Ok(());
+        }
+        let app = self.0.app().clone();
+        self.0.after_commit(Box::pin(async move {
+            crate::realtime::publish_channel(&app, &channel, &event, data);
+        }));
+        Ok(())
+    }
+
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError> {
         static CLIENT: std::sync::LazyLock<reqwest::Client> =
             std::sync::LazyLock::new(reqwest::Client::new);
@@ -2250,5 +2342,206 @@ mod hot_reload_tests {
             log_rows.is_empty(),
             "no _mailLog row should exist for a send that never should have fired"
         );
+    }
+
+    /// [`mails_send_from_hook_is_not_delivered_when_the_write_rolls_back`]
+    /// for `$notify.send`: a notification queued from a hook whose write
+    /// then rolls back must leave no `_notifications` row and send no mail.
+    #[tokio::test]
+    async fn notify_send_from_hook_is_not_delivered_when_the_write_rolls_back() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let users = app.db().collections.get("users").expect("users");
+        let mut recipient = cratebase_core::Record::new(users);
+        recipient.set("email", serde_json::json!("rollback@example.com"));
+        recipient.set("password", serde_json::json!("supersecret123"));
+        cratebase_db::records::create(app.db(), &app.db().collections, &mut recipient)
+            .await
+            .expect("create recipient");
+        let recipient_id = recipient.id().to_string();
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "createRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            format!(
+                r#"onRecordAfterCreateSuccess((e) => {{
+                    $notify.send({{ to: "{recipient_id}", type: "t", title: "never", body: "b" }});
+                    e.next();
+                }}, "widgets");
+                onRecordAfterCreateSuccess((e) => {{
+                    throw new Error("force rollback after the notification was queued");
+                }}, "widgets");"#
+            ),
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("must not deadlock even though the write ultimately fails")
+        .unwrap();
+        assert_ne!(created.status(), StatusCode::OK);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(app.mailer().dev_mailbox().unwrap().len(), 0);
+        let rows = app
+            .db()
+            .query(r#"SELECT * FROM "_notifications""#, &[])
+            .await
+            .expect("query _notifications");
+        assert!(rows.is_empty(), "no notification for a rolled-back write");
+    }
+
+    /// Same regression as [`mails_send_in_after_create_success_hook_does_not_deadlock`],
+    /// for `$notify.send`: called from `onRecordAfterCreateSuccess`
+    /// (`e.app` a `TxApp`, transaction still open), it must not deadlock,
+    /// and once the triggering transaction commits it must actually fan
+    /// out — here, both the `inapp` channel (a `_notifications` row) and
+    /// the `email` channel (the `notification` template, delivered to the
+    /// recipient's own `users.email`).
+    #[tokio::test]
+    async fn notify_send_in_after_create_success_hook_does_not_deadlock_and_fans_out() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_recipient = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections/users/records",
+                &token,
+                serde_json::json!({
+                    "email": "recipient@example.com",
+                    "emailVisibility": true,
+                    "password": "hunter2hunter2",
+                    "passwordConfirm": "hunter2hunter2",
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_recipient.status(), StatusCode::OK);
+        let recipient_id = body_json(create_recipient).await["id"]
+            .as_str()
+            .expect("created id")
+            .to_string();
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            format!(
+                r#"onRecordAfterCreateSuccess((e) => {{
+                    $notify.send({{
+                        to: "{recipient_id}",
+                        type: "widget.created",
+                        title: "Widget created",
+                        body: "Your widget is ready.",
+                        channels: ["inapp", "email"],
+                    }});
+                    e.next();
+                }}, "widgets");"#
+            ),
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect(
+            "a create whose after-success hook calls $notify.send must not deadlock \
+             the request",
+        )
+        .unwrap();
+        assert_eq!(
+            created.status(),
+            StatusCode::OK,
+            "{:?}",
+            body_json(created).await
+        );
+
+        let delivered = poll_until(std::time::Duration::from_secs(5), || async {
+            app.mailer()
+                .dev_mailbox()
+                .map(|mb| !mb.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(
+            delivered,
+            "the deferred $notify.send must still deliver its email channel once the \
+             triggering transaction commits"
+        );
+        let mailbox = app.mailer().dev_mailbox().unwrap();
+        assert_eq!(mailbox.list()[0].subject, "Widget created");
+
+        let rows = app
+            .db()
+            .query(
+                r#"SELECT * FROM "_notifications" WHERE "recordRef" = $1"#,
+                &[cratebase_db::engine::Sql::from(recipient_id.clone())],
+            )
+            .await
+            .expect("query _notifications");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one _notifications row for the deferred send"
+        );
+        assert_eq!(rows[0].get_str("type"), Some("widget.created"));
+        assert_eq!(rows[0].get_str("title"), Some("Widget created"));
     }
 }

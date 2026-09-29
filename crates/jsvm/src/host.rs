@@ -306,6 +306,33 @@ pub trait HostApi: Send + Sync + 'static {
     /// unaware of the server's own `SendInput`/`SendOutcome` shapes.
     async fn mails_send(&self, input: Map<String, Value>) -> Result<Value, AppError>;
 
+    /// `$notify.send(...)` — `crate::notify::send` (server crate): fan a
+    /// notification out to one or more recipients across the `inapp`/
+    /// `email`/`push` channels. `input`/the returned value are plain JSON
+    /// (`{ to, collection, type, title, body, data, link, channels }` in,
+    /// `{ sent, recipients }` out) for the same "this crate stays unaware
+    /// of the server's own request/response shapes" reason
+    /// [`HostApi::mails_send`] does.
+    async fn notify_send(&self, input: Map<String, Value>) -> Result<Value, AppError>;
+
+    /// `$realtime.publish(channel, event, data)` —
+    /// `crate::realtime::publish_channel` (server crate): broadcast one
+    /// `{event, data}` message to every current subscriber of
+    /// `channel:<channel>`, local and cross-node alike. Deferred past
+    /// commit when called from inside a record-write hook's still-open
+    /// transaction, same reasoning as [`HostApi::mails_send`]/
+    /// [`HostApi::notify_send`]: the cross-node `NOTIFY` goes out over a
+    /// separate, unpooled connection immediately, unaffected by this
+    /// transaction, so publishing before the write is known to commit
+    /// could announce a message for a write that never actually
+    /// happened.
+    async fn realtime_publish(
+        &self,
+        channel: String,
+        event: String,
+        data: Value,
+    ) -> Result<(), AppError>;
+
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError>;
 
     /// `level` follows PocketBase's slog levels: -4 debug, 0 info,

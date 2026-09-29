@@ -413,6 +413,17 @@ pub(crate) fn dispatch(
             let input = a.map(0);
             state.block_on(host.mails_send(input))
         }
+        "notifySend" => {
+            let input = a.map(0);
+            state.block_on(host.notify_send(input))
+        }
+        "realtimePublish" => {
+            let channel = a.str(0);
+            let event = a.str(1);
+            let data = a.get(2).clone();
+            state.block_on(host.realtime_publish(channel, event, data))?;
+            Ok(Value::Null)
+        }
         other => Err(AppError::internal(format!("unknown native op {other}"))),
     }
 }

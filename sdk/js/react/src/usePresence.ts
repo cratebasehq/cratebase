@@ -1,79 +1,106 @@
-/** Wraps `client.presence.track` (`crates` has no server-side presence
- * concept — this is the heartbeat + realtime + client-side staleness
- * pattern documented on `CratebaseClient["presence"]`) as a hook: tracks
- * `data` as this client's own row for as long as the component stays
- * mounted, and exposes the live `online` set of every fresh peer. */
+/** Tracks this client's own presence on a realtime channel
+ * (`crates/server/src/realtime.rs`'s `POST .../presence` heartbeat) for
+ * as long as the component stays mounted and `state` is non-`null`, and
+ * exposes the live member list. Server-authoritative: membership is
+ * removed automatically when this tab's SSE connection drops, no
+ * `staleMs` window to tune — see `@cratebase/client`'s
+ * `Channel["presence"]` for the full contract.
+ *
+ * This is a different hook from the pre-realtime-channels
+ * `useRecordPresence` (this name, `usePresence`, used to mean that one —
+ * see its own doc comment and the CHANGELOG for the rename). */
 
 import { useEffect, useRef, useState } from "react";
-import type { CratebaseClient, Presence, PresenceOptions } from "@cratebase/client";
+import type { CratebaseClient, PresenceEventKind, PresenceMember } from "@cratebase/client";
 import { useResolvedClient } from "./context.js";
 
-export interface UsePresenceOptions extends PresenceOptions {
-  /** Set to `false` to skip tracking/observing entirely (e.g. before the
-   * caller has an id to publish under). Defaults to `true`. */
+/** How often to re-send the heartbeat while `state` is non-`null` —
+ * comfortably under a third of the server's presence TTL (45s as of
+ * `crates/server/src/realtime.rs`'s `PRESENCE_TTL`), so one missed beat
+ * from a slow network never flaps this client's own membership. */
+const DEFAULT_HEARTBEAT_MS = 12_000;
+
+export interface UsePresenceOptions<T> {
+  /** Set to `false`, or leave `state` as `null`, to observe the channel's
+   * presence without tracking any of your own. Defaults to `true`. */
   enabled?: boolean;
+  heartbeatMs?: number;
+  onChange?: (kind: PresenceEventKind, member: PresenceMember<T>) => void;
 }
 
-export interface UsePresenceResult {
-  /** ids of the presence rows currently considered online, including
-   * this client's own once its first heartbeat lands. */
-  online: Set<string>;
+export interface UsePresenceResult<T> {
+  /** The channel's current members, kept live via `presence.join`/
+   * `.update`/`.leave`, seeded with a fresh `list()` on connect. */
+  members: PresenceMember<T>[];
   loading: boolean;
   error: unknown;
 }
 
-export function usePresence(
+export function usePresence<T = unknown>(
   client: CratebaseClient<any>,
-  collectionName: string,
-  data: Record<string, unknown> & { id?: string },
-  options?: UsePresenceOptions,
-): UsePresenceResult;
-export function usePresence(
-  collectionName: string,
-  data: Record<string, unknown> & { id?: string },
-  options?: UsePresenceOptions,
-): UsePresenceResult;
-export function usePresence(
+  channel: string,
+  state: T | null,
+  options?: UsePresenceOptions<T>,
+): UsePresenceResult<T>;
+export function usePresence<T = unknown>(
+  channel: string,
+  state: T | null,
+  options?: UsePresenceOptions<T>,
+): UsePresenceResult<T>;
+export function usePresence<T = unknown>(
   arg0: CratebaseClient<any> | string,
-  arg1: string | (Record<string, unknown> & { id?: string }),
-  arg2?: (Record<string, unknown> & { id?: string }) | UsePresenceOptions,
-  arg3?: UsePresenceOptions,
-): UsePresenceResult {
-  const explicitClient = typeof arg0 === "string" ? undefined : arg0;
-  const collectionName = (typeof arg0 === "string" ? arg0 : (arg1 as string))!;
-  const data = (typeof arg0 === "string" ? arg1 : arg2) as Record<string, unknown> & { id?: string };
-  const options: UsePresenceOptions = ((typeof arg0 === "string" ? arg2 : arg3) as UsePresenceOptions | undefined) ?? {};
+  arg1: string | T | null,
+  arg2?: T | null | UsePresenceOptions<T>,
+  arg3?: UsePresenceOptions<T>,
+): UsePresenceResult<T> {
+  const isClient = typeof arg0 !== "string";
+  const explicitClient = isClient ? (arg0 as CratebaseClient<any>) : undefined;
+  const channelName = (isClient ? (arg1 as string) : arg0)!;
+  const state = (isClient ? arg2 : arg1) as T | null;
+  const options = ((isClient ? arg3 : (arg2 as UsePresenceOptions<T> | undefined)) ?? {}) as UsePresenceOptions<T>;
 
   const client = useResolvedClient(explicitClient);
-  const { enabled = true, ...presenceOptions } = options;
-  const dataKey = JSON.stringify(data);
-  const presenceOptionsKey = JSON.stringify(presenceOptions);
+  const { enabled = true, heartbeatMs = DEFAULT_HEARTBEAT_MS, onChange } = options;
+  const tracking = enabled && state !== null && state !== undefined;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const stateKey = JSON.stringify(state);
 
-  const [online, setOnline] = useState<Set<string>>(new Set());
+  const [members, setMembers] = useState<PresenceMember<T>[]>([]);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<unknown>(null);
-  const presenceRef = useRef<Presence | null>(null);
 
+  // Subscribe to this channel's presence events and seed the list.
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
       return;
     }
-
     let cancelled = false;
-    let unsubscribeOnline: (() => void) | undefined;
     setLoading(true);
     setError(null);
+    const channel = client.channel<T>(channelName);
 
-    client.presence
-      .track(collectionName, JSON.parse(dataKey), JSON.parse(presenceOptionsKey))
-      .then((presence) => {
+    let unsubscribe: (() => void) | undefined;
+    channel.presence
+      .onChange((kind, member) => {
+        onChangeRef.current?.(kind, member);
+        setMembers((current) => {
+          const others = current.filter((m) => m.clientId !== member.clientId);
+          return kind === "leave" ? others : [...others, member];
+        });
+      })
+      .then((unsub) => {
         if (cancelled) {
-          void presence.stop();
-          return;
+          unsub();
+          return undefined;
         }
-        presenceRef.current = presence;
-        unsubscribeOnline = presence.subscribe(setOnline);
+        unsubscribe = unsub;
+        return channel.presence.list();
+      })
+      .then((list) => {
+        if (cancelled || !list) return;
+        setMembers(list);
         setLoading(false);
       })
       .catch((err) => {
@@ -85,12 +112,29 @@ export function usePresence(
 
     return () => {
       cancelled = true;
-      unsubscribeOnline?.();
-      void presenceRef.current?.stop();
-      presenceRef.current = null;
+      unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, collectionName, dataKey, presenceOptionsKey, enabled]);
+  }, [client, channelName, enabled]);
 
-  return { online, loading, error };
+  // Heartbeat this client's own state while `tracking`.
+  useEffect(() => {
+    if (!tracking) return;
+    let cancelled = false;
+    const channel = client.channel<T>(channelName);
+    const beat = () => {
+      channel.presence.track(state as T).catch((err) => {
+        if (!cancelled) setError(err);
+      });
+    };
+    beat();
+    const interval = setInterval(beat, heartbeatMs);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, channelName, tracking, stateKey, heartbeatMs]);
+
+  return { members, loading, error };
 }
