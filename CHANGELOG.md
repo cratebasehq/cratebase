@@ -10,22 +10,6 @@ first real tagged release.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Multi-node cron could run the same tick twice** — the guard that was
-  supposed to keep a Postgres cluster from running a scheduled tick on
-  more than one node was a transaction-scoped advisory lock
-  (`pg_try_advisory_xact_lock`), released as soon as the *checking*
-  transaction committed — before the winning node's job body had
-  necessarily finished. A slower sibling node could pass the same check
-  afterward and run the same tick again. `_cronRuns` rows now carry a
-  canonical `tickAt` (the scheduled minute, identical on every node) and
-  a run claims it with a real `UNIQUE (jobId, tickAt)` database
-  constraint (`INSERT ... ON CONFLICT DO NOTHING` / `INSERT OR IGNORE`)
-  instead of a lock, for both SQL `_cron_jobs` and JS `cronAdd` runs.
-  Existing `_cronRuns` rows are backfilled a `tickAt` where it can be
-  determined unambiguously; single-node SQLite behavior is unchanged.
-
 ## 0.6.0 — 2026-09-29
 
 Background jobs, webhooks and cron you can rely on in production, plus
@@ -66,8 +50,10 @@ one-command starter kits (`bun create cratebase`).
 
 - `settings.queue.enabled` is now a live toggle — no restart. It gates
   only processing; enqueueing, retrying and deleting always work.
-- Cron jobs (SQL and JS) take a Postgres advisory lock per tick, so a
-  multi-node cluster runs each tick on exactly one node. No-op on SQLite.
+- Cron jobs (SQL and JS) claim each scheduled tick with a
+  `UNIQUE (jobId, tickAt)` row in `_cronRuns` before running, so a
+  multi-node cluster runs each tick on exactly one node — durable, not
+  timing-dependent. Single-node SQLite behaves as before.
 - **`create-cratebase`** — a scaffolding CLI (`bun create cratebase my-app` /
   `npm create cratebase@latest my-app`) with three templates (`nextjs`,
   `vite-react`, `expo`), each shipping a `schema.json`, `pb_seed/` demo
@@ -81,8 +67,8 @@ one-command starter kits (`bun create cratebase`).
 
 ### Upgrading from 0.5.0
 
-- Migration `21` runs automatically (`_webhookDeliveries`, `_cronRuns`, new
-  `_webhooks` fields). Existing webhooks start recording deliveries and
+- Migrations `21` and `22` run automatically (`_webhookDeliveries`,
+  `_cronRuns` with a unique tick claim, new `_webhooks` fields). Existing webhooks start recording deliveries and
   retrying on failure.
 - Webhook receivers can now verify `X-Cratebase-Signature: sha256=…` over
   `"{X-Cratebase-Timestamp}.{body}"` and dedupe on `X-Cratebase-Delivery`.
