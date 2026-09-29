@@ -1126,6 +1126,34 @@ impl Collection {
         w_last_status.required = false;
         let mut w_last_message = text("lastMessage");
         w_last_message.required = false;
+        // Per-webhook override for how many delivery attempts
+        // `crate::webhook_deliveries` (server crate) makes before giving up
+        // and leaving a `_webhookDeliveries` row `failed`; `0`/absent means
+        // "use the global default" (6) — see that module's doc.
+        let mut w_max_attempts = Field::new(
+            "maxAttempts",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        w_max_attempts.required = false;
+        // How many *consecutive* failed deliveries this webhook has had in
+        // a row; reset to `0` the moment one succeeds. `crate::webhook_deliveries`
+        // flips `enabled` to `false` (and logs an `_audit_log` row) once
+        // this reaches the default-50 auto-disable threshold, so a
+        // permanently-broken endpoint stops burning delivery attempts
+        // forever.
+        let mut w_consecutive_failures = Field::new(
+            "consecutiveFailures",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        w_consecutive_failures.system = true;
         let pos = webhooks.fields.len() - 2;
         webhooks.fields.splice(
             pos..pos,
@@ -1139,6 +1167,8 @@ impl Collection {
                 w_last_triggered_at,
                 w_last_status,
                 w_last_message,
+                w_max_attempts,
+                w_consecutive_failures,
             ],
         );
 
@@ -1790,6 +1820,147 @@ impl Collection {
             "CREATE INDEX `idx_pendingUploads_expiresAt` ON `_pendingUploads` (expiresAt)".into(),
         ];
 
+        // One row per delivery *attempt series* for one `_webhooks` row on
+        // one record event — `crate::webhook_deliveries` (server crate)
+        // owns the whole lifecycle: `dispatch_after_success` in
+        // `crate::webhooks` inserts one `pending` row instead of delivering
+        // inline, a dedicated always-on ticker (independent of
+        // `settings.queue.enabled`; see that module's doc for why) claims
+        // due rows and POSTs, and each outcome is written back onto the
+        // same row (`attempts`/`status`/`responseCode`/`responseBody`/
+        // `durationMs`/`nextAttemptAt`/`error`) rather than through
+        // `records::update`, same reasoning as `_webhooks`'s own status
+        // write-back. Superuser-only end to end, same trust tier as
+        // `_webhooks` itself: a delivery's `payload`/`responseBody` can
+        // carry another collection's data verbatim.
+        let mut webhook_deliveries = Collection::new("_webhookDeliveries", CollectionType::Base);
+        webhook_deliveries.system = true;
+        let mut wd_payload = Field::new("payload", FieldKind::Json { max_size: 0 });
+        wd_payload.system = true;
+        let mut wd_attempts = Field::new(
+            "attempts",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        wd_attempts.system = true;
+        let mut wd_max_attempts = Field::new(
+            "maxAttempts",
+            FieldKind::Number {
+                min: Some(1.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        wd_max_attempts.system = true;
+        let mut wd_status = text("status");
+        wd_status.system = true;
+        let mut wd_response_code = text("responseCode");
+        wd_response_code.required = false;
+        let mut wd_response_body = text("responseBody");
+        wd_response_body.required = false;
+        let mut wd_duration_ms = Field::new(
+            "durationMs",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        wd_duration_ms.required = false;
+        let mut wd_next_attempt_at = Field::new(
+            "nextAttemptAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        wd_next_attempt_at.system = true;
+        let mut wd_error = text("error");
+        wd_error.required = false;
+        let mut wd_delivered_at = Field::new(
+            "deliveredAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        wd_delivered_at.required = false;
+        let pos = webhook_deliveries.fields.len() - 2;
+        webhook_deliveries.fields.splice(
+            pos..pos,
+            [
+                text("webhookRef"),
+                text("event"),
+                text("collectionRef"),
+                text("recordId"),
+                wd_payload,
+                wd_attempts,
+                wd_max_attempts,
+                wd_status,
+                wd_response_code,
+                wd_response_body,
+                wd_duration_ms,
+                wd_next_attempt_at,
+                wd_error,
+                wd_delivered_at,
+            ],
+        );
+        webhook_deliveries.indexes = vec![
+            "CREATE INDEX `idx_webhookDeliveries_status_nextAttemptAt` ON `_webhookDeliveries` (status, nextAttemptAt)".into(),
+            "CREATE INDEX `idx_webhookDeliveries_webhookRef` ON `_webhookDeliveries` (webhookRef)".into(),
+        ];
+
+        // One row per cron *run* — both PocketBase-style `_cron_jobs` SQL
+        // jobs and JS `cronAdd` jobs (which have no row of their own
+        // anywhere else) — so the dashboard can show a run history next to
+        // each, not just the single "last run" columns `_cron_jobs` itself
+        // carries. See `crate::cron_history` (server crate) for the writer
+        // and the multi-node advisory-lock guard that keeps a Postgres
+        // cluster from logging (and running) the same tick on every node.
+        let mut cron_runs = Collection::new("_cronRuns", CollectionType::Base);
+        cron_runs.system = true;
+        let mut cr_source = text("source");
+        cr_source.system = true;
+        let mut cr_status = text("status");
+        cr_status.system = true;
+        let mut cr_started_at = Field::new(
+            "startedAt",
+            FieldKind::Date {
+                min: None,
+                max: None,
+            },
+        );
+        cr_started_at.system = true;
+        let mut cr_duration_ms = Field::new(
+            "durationMs",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: true,
+            },
+        );
+        cr_duration_ms.required = false;
+        let mut cr_message = text("message");
+        cr_message.required = false;
+        let pos = cron_runs.fields.len() - 2;
+        cron_runs.fields.splice(
+            pos..pos,
+            [
+                text("jobId"),
+                cr_source,
+                cr_status,
+                cr_started_at,
+                cr_duration_ms,
+                cr_message,
+            ],
+        );
+        cron_runs.indexes = vec![
+            "CREATE INDEX `idx_cronRuns_jobId_startedAt` ON `_cronRuns` (jobId, startedAt)".into(),
+        ];
+
         vec![
             external,
             mfas,
@@ -1815,6 +1986,8 @@ impl Collection {
             notifications,
             channels,
             pending_uploads,
+            webhook_deliveries,
+            cron_runs,
         ]
     }
 }
@@ -2027,6 +2200,8 @@ mod tests {
                 crate::ids::collection_id("base", "_notifications").as_str(),
                 crate::ids::collection_id("base", "_channels").as_str(),
                 crate::ids::collection_id("base", "_pendingUploads").as_str(),
+                crate::ids::collection_id("base", "_webhookDeliveries").as_str(),
+                crate::ids::collection_id("base", "_cronRuns").as_str(),
             ]
         );
         assert_eq!(Collection::default_superusers().id, "pbc_3142635823");
