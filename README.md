@@ -26,6 +26,10 @@ collection's shape, get a full CRUD REST API, auth, file uploads, and
 realtime subscriptions for it immediately — from your web app, an Expo
 app, or a coding agent that just needs a backend.
 
+Starting a whole new app, not just the server? `bun create cratebase my-app`
+scaffolds a Next.js, Vite + React, or Expo app already wired up to it — see
+[Starter kits](#starter-kits) below.
+
 ## What you get in the next 30 seconds
 
 ```bash
@@ -172,6 +176,16 @@ Six runnable apps in [examples/](./examples), each with its own
 register → login → authenticated CRUD path to a realtime, drag-and-drop
 Kanban board. Full list with descriptions:
 [Examples](https://cratebase.dev/docs/getting-started/examples/).
+
+## Starter kits
+
+Want a full app, not just the server? `bun create cratebase my-app` scaffolds
+a Next.js, Vite + React, or Expo app already wired up to
+`@cratebase/client`/`@cratebase/react` — auth, a realtime dashboard, file
+upload, and search — with a `schema.json`, seed data, and a `dev` script
+that runs `cratebase dev` and the frontend together. See
+[`packages/create-cratebase`](./packages/create-cratebase) and
+[Starter kits](https://cratebase.dev/docs/getting-started/starter-kits/).
 
 ## Project layout
 
