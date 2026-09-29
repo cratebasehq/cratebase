@@ -1,0 +1,389 @@
+---
+/**
+ * Hero stage.
+ *
+ * A harbor-navy stage with the isometric loading yard (HeroYard) as its
+ * floor, and the product layered on top of it.
+ *
+ * The launch film (cratebase-launch.mp4/.webm + poster.png) is being
+ * produced separately. This checks public/video/ at BUILD TIME:
+ *
+ * ▶ TO SWAP IN THE FILM: put these files in site/public/video/ and rebuild
+ *   — nothing else to change:
+ *     - cratebase-launch.mp4   (and/or cratebase-launch.webm)
+ *     - poster.png             (strongly recommended: it's the LCP frame)
+ *
+ * With the film present, the stage plays it large and muted in a loop, with
+ * a "Watch with sound" button that opens a lightbox. Without it, the stage
+ * shows camera-style crops of real dashboard captures instead: the API rules
+ * editor, front and centre, with the records table layered over it.
+ */
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import Shot from "./Shot.astro";
+import HeroYard from "./illustrations/HeroYard.astro";
+
+import schemaLight from "../assets/crops/light/hero-schema.png";
+import schemaDark from "../assets/crops/dark/hero-schema.png";
+import recordsLight from "../assets/crops/light/hero-records.png";
+import recordsDark from "../assets/crops/dark/hero-records.png";
+
+const publicVideoDir = fileURLToPath(new URL("../../public/video/", import.meta.url));
+const hasMp4 = existsSync(`${publicVideoDir}cratebase-launch.mp4`);
+const hasWebm = existsSync(`${publicVideoDir}cratebase-launch.webm`);
+const hasPoster = existsSync(`${publicVideoDir}poster.png`);
+const hasVideo = hasMp4 || hasWebm;
+const poster = hasPoster ? "/video/poster.png" : undefined;
+---
+
+<div class:list={["stage", hasVideo ? "stage-video" : "stage-shots"]}>
+  <div class="stage-yard" aria-hidden="true"><HeroYard /></div>
+
+  {
+    hasVideo ? (
+      <div class="film">
+        <video class="film-video" autoplay muted loop playsinline preload="metadata" poster={poster} aria-label="Cratebase launch film (muted preview)">
+          {hasWebm && <source src="/video/cratebase-launch.webm" type="video/webm" />}
+          {hasMp4 && <source src="/video/cratebase-launch.mp4" type="video/mp4" />}
+        </video>
+        <button type="button" class="film-play" data-open-lightbox>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          Watch with sound
+        </button>
+        <dialog id="hero-lightbox" aria-label="Cratebase launch film">
+          <button type="button" class="lightbox-close" data-close-lightbox aria-label="Close video">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+          <video id="hero-lightbox-video" controls playsinline preload="none" poster={poster}>
+            {hasWebm && <source src="/video/cratebase-launch.webm" type="video/webm" />}
+            {hasMp4 && <source src="/video/cratebase-launch.mp4" type="video/mp4" />}
+          </video>
+        </dialog>
+      </div>
+    ) : (
+      <div class="shots">
+        <figure class="win win-main">
+          <div class="win-bar">
+            <span class="win-dots" aria-hidden="true"><i /><i /><i /></span>
+            <span class="win-crumb">places <span aria-hidden="true">/</span> Schema</span>
+          </div>
+          <div class="win-crop">
+            <Shot
+              light={schemaLight}
+              dark={schemaDark}
+              alt="The API rules editor for a collection in the Cratebase dashboard: update and delete are limited to owner = @request.auth.id."
+              widths={[640, 960, 1280, 2032]}
+              sizes="(min-width: 1280px) 860px, (min-width: 700px) 70vw, 170vw"
+              eager
+            />
+          </div>
+        </figure>
+        <figure class="win win-records">
+          <div class="win-bar">
+            <span class="win-dots" aria-hidden="true"><i /><i /><i /></span>
+            <span class="win-crumb">posts <span aria-hidden="true">/</span> Records</span>
+          </div>
+          <Shot
+            light={recordsLight}
+            dark={recordsDark}
+            alt="The posts collection's records table: three posts with title, body and published columns."
+            widths={[480, 800, 1220]}
+            sizes="(min-width: 1280px) 500px, 40vw"
+          />
+        </figure>
+        <p class="callout" aria-hidden="true">
+          <span class="callout-dot"></span>
+          Compiled into the SQL query, every request
+        </p>
+      </div>
+    )
+  }
+</div>
+
+<style>
+  .stage {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    border-radius: 1.75rem;
+    background:
+      radial-gradient(60% 70% at 58% 30%, rgba(88, 132, 180, 0.28), transparent 70%),
+      linear-gradient(180deg, #13304d 0%, var(--color-harbor) 55%, #091827 100%);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.08) inset,
+      0 40px 80px -40px rgba(14, 34, 56, 0.55);
+  }
+  :root[data-theme="dark"] .stage {
+    background:
+      radial-gradient(60% 70% at 58% 30%, rgba(88, 132, 180, 0.2), transparent 70%),
+      linear-gradient(180deg, #112a44 0%, #0c1d30 60%, #08131f 100%);
+    box-shadow:
+      0 0 0 1px rgba(238, 241, 244, 0.08) inset,
+      0 40px 90px -40px rgba(0, 0, 0, 0.8);
+  }
+  .stage-yard {
+    position: absolute;
+    inset: auto -6% -30% -6%;
+    z-index: -1;
+  }
+
+  /* ---------- screenshots fallback ---------- */
+  .shots {
+    position: relative;
+    padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1rem, 3vw, 2.5rem) clamp(4rem, 7vw, 5.5rem);
+  }
+  .win {
+    margin: 0;
+    overflow: hidden;
+    border-radius: 0.9rem;
+    background: #fff;
+    box-shadow:
+      0 0 0 1px rgba(14, 34, 56, 0.35),
+      0 2px 4px rgba(3, 10, 18, 0.2),
+      0 30px 60px -20px rgba(3, 10, 18, 0.65);
+  }
+  :root[data-theme="dark"] .win {
+    background: #0a0a0a;
+    box-shadow:
+      0 0 0 1px rgba(238, 241, 244, 0.14),
+      0 30px 70px -20px rgba(0, 0, 0, 0.85);
+  }
+  .win-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    height: 2.4rem;
+    padding-inline: 0.9rem;
+    border-bottom: 1px solid #e6e6e6;
+    font-size: 0.8rem;
+    color: #3f3f46;
+    line-height: 1;
+  }
+  :root[data-theme="dark"] .win-bar {
+    border-color: #1f1f22;
+    color: #a1a1aa;
+  }
+  .win-dots {
+    display: flex;
+    gap: 0.35rem;
+  }
+  .win-dots i {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: #d4d4d8;
+  }
+  :root[data-theme="dark"] .win-dots i {
+    background: #3f3f46;
+  }
+  .win-crumb span {
+    opacity: 0.45;
+    margin-inline: 0.2rem;
+  }
+  .win-main {
+    width: min(75%, 58rem);
+    margin-left: auto;
+    margin-right: 3%;
+  }
+  .win-crop {
+    overflow: hidden;
+  }
+  .win-records {
+    position: absolute;
+    left: clamp(1rem, 3vw, 2.5rem);
+    bottom: clamp(1.25rem, 2.6vw, 2.25rem);
+    width: min(40%, 31rem);
+  }
+  .callout {
+    position: absolute;
+    right: 1.4%;
+    top: 60%;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin: 0;
+    padding: 0.5rem 0.85rem 0.5rem 0.7rem;
+    border-radius: 999px;
+    background: var(--color-harbor);
+    color: #eef1f4;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    line-height: 1;
+    box-shadow:
+      0 0 0 1px rgba(238, 241, 244, 0.18),
+      0 12px 30px -10px rgba(0, 0, 0, 0.6);
+  }
+  .callout-dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: var(--color-crate);
+    box-shadow: 0 0 0 4px rgba(239, 125, 62, 0.25);
+  }
+
+  /* One orchestrated entrance: the camera settles onto the rules editor,
+     the records table slides in under it, then the callout lands. */
+  @media (prefers-reduced-motion: no-preference) {
+    .win-main {
+      animation: settle 1.2s var(--ease-out) both;
+    }
+    .win-records {
+      animation: slide-in 1s var(--ease-out) 0.35s both;
+    }
+    .callout {
+      animation: pop 0.6s var(--ease-out) 0.95s both;
+    }
+    .stage-yard {
+      animation: yard-in 1.6s var(--ease-out) both;
+    }
+  }
+  @keyframes settle {
+    from {
+      opacity: 0;
+      transform: translateY(28px) scale(1.04);
+    }
+  }
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translate(-24px, 16px);
+    }
+  }
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.96);
+    }
+  }
+  @keyframes yard-in {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+  }
+
+  @media (max-width: 760px) {
+    .stage {
+      border-radius: 1.1rem;
+    }
+    .shots {
+      padding: 1.25rem 0 0 1rem;
+    }
+    /* Camera crop: on a phone the window runs off the right edge at a
+       readable size instead of shrinking the whole editor to fit. */
+    .win-main {
+      width: 205%;
+      margin: 0;
+      border-radius: 0.75rem 0 0 0;
+    }
+    .win-records {
+      display: none;
+    }
+    .callout {
+      display: none;
+    }
+    .stage-yard {
+      inset: auto -40% -20% -40%;
+    }
+  }
+
+  /* ---------- film ---------- */
+  .film {
+    position: relative;
+    padding: clamp(0.75rem, 2.4vw, 2rem);
+  }
+  .film-video {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: 1.1rem;
+    background: #06101a;
+    box-shadow:
+      0 0 0 1px rgba(238, 241, 244, 0.12),
+      0 40px 80px -30px rgba(0, 0, 0, 0.8);
+  }
+  .film-play {
+    position: absolute;
+    left: clamp(1.75rem, 4.5vw, 3.5rem);
+    bottom: clamp(1.75rem, 4.5vw, 3.5rem);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.7rem 1.1rem;
+    border: none;
+    border-radius: 999px;
+    background: rgba(238, 241, 244, 0.94);
+    color: var(--color-harbor);
+    font: 600 0.92rem var(--font-display);
+    cursor: pointer;
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6);
+    transition: transform 160ms var(--ease-house);
+  }
+  .film-play:hover {
+    transform: translateY(-1px);
+  }
+  .film-play:focus-visible {
+    outline: 2px solid var(--color-crate);
+    outline-offset: 3px;
+  }
+  #hero-lightbox {
+    border: none;
+    padding: 0;
+    background: transparent;
+    max-width: min(92vw, 72rem);
+    width: 100%;
+    overflow: visible;
+  }
+  #hero-lightbox::backdrop {
+    background: rgba(6, 14, 22, 0.88);
+  }
+  #hero-lightbox video {
+    display: block;
+    width: 100%;
+    border-radius: var(--radius);
+  }
+  .lightbox-close {
+    position: absolute;
+    top: -2.75rem;
+    right: 0;
+    background: transparent;
+    border: none;
+    color: #eef1f4;
+    cursor: pointer;
+    padding: 0.4rem;
+  }
+</style>
+
+<script>
+  const trigger = document.querySelector<HTMLButtonElement>("[data-open-lightbox]");
+  const dialog = document.getElementById("hero-lightbox") as HTMLDialogElement | null;
+  const closeBtn = document.querySelector<HTMLButtonElement>("[data-close-lightbox]");
+  const lightboxVideo = document.getElementById("hero-lightbox-video") as HTMLVideoElement | null;
+  const inlineVideo = document.querySelector<HTMLVideoElement>(".film-video");
+
+  // Respect reduced motion: no autoplaying loop, the poster frame stands in.
+  if (inlineVideo && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    inlineVideo.removeAttribute("autoplay");
+    inlineVideo.pause();
+  }
+
+  trigger?.addEventListener("click", () => {
+    inlineVideo?.pause();
+    dialog?.showModal();
+    lightboxVideo?.play().catch(() => {});
+  });
+  const closeLightbox = () => {
+    lightboxVideo?.pause();
+    if (lightboxVideo) lightboxVideo.currentTime = 0;
+    if (dialog?.open) dialog.close();
+    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) inlineVideo?.play().catch(() => {});
+  };
+  closeBtn?.addEventListener("click", closeLightbox);
+  dialog?.addEventListener("click", (e) => {
+    if (e.target === dialog) closeLightbox();
+  });
+  dialog?.addEventListener("close", closeLightbox);
+</script>

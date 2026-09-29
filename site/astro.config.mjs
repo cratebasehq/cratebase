@@ -13,6 +13,12 @@ export default defineConfig({
       description:
         "A fast, self-hostable backend with dynamic collections, auth, files, and realtime, in one Rust binary.",
       customCss: ["./src/styles/starlight-theme.css"],
+      components: {
+        // Links the docs header back to the marketing site's "/" instead
+        // of Starlight's own mounted base at "/docs" — see the component
+        // for why the default override point doesn't cover this.
+        SiteTitle: "./src/components/starlight/SiteTitle.astro",
+      },
       social: [
         {
           icon: "github",

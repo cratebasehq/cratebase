@@ -7,14 +7,37 @@ import Mark from "../components/Mark.astro";
 interface Props {
   title: string;
   description: string;
+  /** Overrides the default OG image (absolute-resolved against Astro.site). */
+  ogImage?: string;
 }
-const { title, description } = Astro.props;
+const { title, description, ogImage = "/og.png" } = Astro.props;
+
+// Star count is fetched once, at build time — this is a static site, so
+// there's no client-side request and nothing to rate-limit per visitor.
+// The number is only shown once it's meaningful (>= 50); below that, or if
+// the API is unreachable at build time, the nav shows a plain GitHub link.
+const STAR_THRESHOLD = 50;
+let stars: string | null = null;
+try {
+  const res = await fetch("https://api.github.com/repos/cratebasehq/cratebase", {
+    headers: { Accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(4000),
+  });
+  if (res.ok) {
+    const data = (await res.json()) as { stargazers_count?: number };
+    const n = data.stargazers_count;
+    if (typeof n === "number" && n >= STAR_THRESHOLD) {
+      stars = n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
+    }
+  }
+} catch {
+  stars = null;
+}
 
 const navLinks = [
   { href: "/docs/", label: "Docs" },
-  { href: "/#examples", label: "Examples" },
-  { href: "/docs/migrating/compatibility/", label: "Migrate" },
-  { href: "https://github.com/cratebasehq/cratebase", label: "GitHub" },
+  { href: "/features/", label: "Features" },
+  { href: "/docs/project/changelog/", label: "Changelog" },
 ];
 ---
 
@@ -38,14 +61,14 @@ const navLinks = [
     <meta property="og:type" content="website" />
     <meta property="og:url" content={new URL(Astro.url.pathname, Astro.site).toString()} />
     <meta property="og:site_name" content="Cratebase" />
-    <meta property="og:image" content={new URL("/og.png", Astro.site).toString()} />
+    <meta property="og:image" content={new URL(ogImage, Astro.site).toString()} />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="Cratebase — a fast, self-hostable backend in one Rust binary." />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content={new URL("/og.png", Astro.site).toString()} />
+    <meta name="twitter:image" content={new URL(ogImage, Astro.site).toString()} />
 
     <script type="application/ld+json" set:html={JSON.stringify({
       "@context": "https://schema.org",
@@ -82,9 +105,15 @@ const navLinks = [
           }
         </nav>
         <div class="nav-actions">
+          <a class="gh-link" href="https://github.com/cratebasehq/cratebase" aria-label={stars ? `GitHub, ${stars} stars` : "GitHub"}>
+            <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="currentColor">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/>
+            </svg>
+            {stars && <span class="gh-stars">{stars}</span>}
+          </a>
           <button id="theme-toggle" type="button" aria-label="Toggle color theme">
-            <span class="theme-icon-light" aria-hidden="true">&#9728;</span>
-            <span class="theme-icon-dark" aria-hidden="true">&#9789;</span>
+            <svg class="theme-icon-light" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="3" /><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" /></svg>
+            <svg class="theme-icon-dark" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 0 1 6.4 2.5a5.5 5.5 0 1 0 7.1 7.1Z" /></svg>
           </button>
           <a class="btn btn-primary" href="/docs/getting-started/install/">Get started</a>
         </div>
@@ -122,6 +151,7 @@ const navLinks = [
         <div>
           <h3>Project</h3>
           <ul>
+            <li><a href="/features/">All features</a></li>
             <li><a href="https://github.com/cratebasehq/cratebase">GitHub</a></li>
             <li><a href="/docs/project/changelog/">Changelog</a></li>
             <li><a href="/docs/project/roadmap/">Roadmap</a></li>
@@ -145,6 +175,107 @@ const navLinks = [
       });
     </script>
 
+    <script>
+      // Reveal-on-scroll: every [data-reveal] element (set up per-section,
+      // not scattered on every card) fades/settles in once it crosses the
+      // viewport. One IntersectionObserver for the whole page. Elements
+      // already in view on load (short pages, or a mid-page reload) are
+      // marked visible immediately rather than waiting on a scroll event
+      // that may never come.
+      const revealEls = document.querySelectorAll<HTMLElement>("[data-reveal]");
+      if (revealEls.length) {
+        const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduced || !("IntersectionObserver" in window)) {
+          revealEls.forEach((el) => el.classList.add("is-visible"));
+        } else {
+          revealEls.forEach((el, i) => {
+            const group = el.dataset.revealGroup;
+            if (group) {
+              // Stagger siblings sharing a group id (e.g. a row of cards)
+              // by 70ms each, capped so a long row doesn't feel sluggish.
+              const idx = Number(el.dataset.revealIndex ?? i);
+              el.style.setProperty("--reveal-delay", `${Math.min(idx * 70, 420)}ms`);
+            }
+          });
+          const io = new IntersectionObserver(
+            (entries) => {
+              for (const entry of entries) {
+                if (entry.isIntersecting) {
+                  entry.target.classList.add("is-visible");
+                  io.unobserve(entry.target);
+                }
+              }
+            },
+            { threshold: 0.15, rootMargin: "0px 0px -8% 0px" },
+          );
+          revealEls.forEach((el) => io.observe(el));
+        }
+      }
+
+      // Parallax: [data-parallax] elements drift a few px against scroll,
+      // scaled by data-parallax-strength (default 0.08). Read via
+      // requestAnimationFrame so it never fights the browser's own scroll
+      // compositing. Skipped entirely under reduced motion via the
+      // --parallax-strength token (zeroed in tokens.css).
+      const parallaxEls = document.querySelectorAll<HTMLElement>("[data-parallax]");
+      if (parallaxEls.length && matchMedia("(prefers-reduced-motion: no-preference)").matches) {
+        let ticking = false;
+        const update = () => {
+          const vh = window.innerHeight;
+          for (const el of parallaxEls) {
+            const rect = el.getBoundingClientRect();
+            const center = rect.top + rect.height / 2 - vh / 2;
+            const strength = Number(el.dataset.parallaxStrength ?? 0.08);
+            el.style.transform = `translateY(${(-center * strength).toFixed(2)}px)`;
+          }
+          ticking = false;
+        };
+        addEventListener(
+          "scroll",
+          () => {
+            if (!ticking) {
+              requestAnimationFrame(update);
+              ticking = true;
+            }
+          },
+          { passive: true },
+        );
+        update();
+      }
+
+      // Copy-to-clipboard for any [data-copy] button: copies the text of
+      // the element its "for" attribute points to, and flips its own
+      // label to "Copied" for 1.6s. Shared by the hero install command
+      // and anywhere else a one-liner needs a copy button.
+      document.querySelectorAll<HTMLButtonElement>("[data-copy]").forEach((btn) => {
+        const targetId = btn.getAttribute("data-copy");
+        const target = targetId ? document.getElementById(targetId) : null;
+        if (!target) return;
+        const defaultLabel = btn.querySelector(".copy-label")?.textContent ?? "Copy";
+        btn.addEventListener("click", async () => {
+          const text = target.textContent?.trim() ?? "";
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch {
+            const range = document.createRange();
+            range.selectNode(target);
+            getSelection()?.removeAllRanges();
+            getSelection()?.addRange(range);
+            document.execCommand("copy");
+            getSelection()?.removeAllRanges();
+          }
+          btn.classList.add("is-copied");
+          const label = btn.querySelector(".copy-label");
+          if (label) label.textContent = "Copied";
+          window.clearTimeout((btn as any)._copyTimer);
+          (btn as any)._copyTimer = window.setTimeout(() => {
+            btn.classList.remove("is-copied");
+            if (label) label.textContent = defaultLabel;
+          }, 1600);
+        });
+      });
+    </script>
+
     <style is:global>
       .skip-link {
         position: absolute;
@@ -161,7 +292,7 @@ const navLinks = [
       }
 
       .wrap {
-        max-width: 72rem;
+        max-width: 76rem;
         margin: 0 auto;
         padding-inline: 1.5rem;
       }
@@ -170,11 +301,13 @@ const navLinks = [
         position: sticky;
         top: 0;
         z-index: 20;
-        background: var(--color-white);
-        border-bottom: 1px solid var(--color-hairline);
+        background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+        -webkit-backdrop-filter: saturate(1.4) blur(14px);
+        backdrop-filter: saturate(1.4) blur(14px);
+        border-bottom: 1px solid color-mix(in srgb, var(--color-hairline) 70%, transparent);
       }
       :root[data-theme="dark"] .site-nav {
-        background: var(--color-panel);
+        border-color: var(--color-border);
       }
       .site-nav .wrap {
         display: flex;
@@ -214,9 +347,28 @@ const navLinks = [
         align-items: center;
         gap: 0.75rem;
       }
+      .gh-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        color: var(--color-text-secondary);
+        text-decoration: none;
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        padding: 0.4rem 0.55rem;
+        border-radius: var(--radius);
+        transition: color 160ms var(--ease-house), background 160ms var(--ease-house);
+      }
+      .gh-link:hover {
+        color: var(--color-text);
+        background: var(--color-fog);
+      }
+      :root[data-theme="dark"] .gh-link:hover {
+        background: var(--color-panel);
+      }
       #theme-toggle {
         background: transparent;
-        border: 1px solid var(--color-hairline);
+        border: 1px solid var(--color-border);
         border-radius: 999px;
         width: 2.25rem;
         height: 2.25rem;
@@ -232,7 +384,7 @@ const navLinks = [
         display: none;
       }
       :root[data-theme="dark"] .theme-icon-dark {
-        display: inline;
+        display: block;
       }
 
       .btn {
@@ -257,11 +409,21 @@ const navLinks = [
       .btn-secondary {
         background: transparent;
         color: var(--color-text);
-        border-color: var(--color-hairline);
+        border-color: var(--color-border);
+      }
+      .btn-secondary:hover {
+        border-color: var(--color-ink);
+        opacity: 1;
+      }
+      .btn:focus-visible,
+      .site-nav a:focus-visible,
+      #theme-toggle:focus-visible {
+        outline: 2px solid var(--color-crate);
+        outline-offset: 2px;
       }
 
       .site-footer {
-        margin-top: 6rem;
+        margin-top: 2rem;
         background: var(--color-harbor);
         color: var(--color-fog);
         position: relative;
@@ -326,6 +488,22 @@ const navLinks = [
         }
         .footer-grid {
           grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .site-nav .wrap {
+          gap: 0.75rem;
+        }
+        .nav-actions {
+          gap: 0.4rem;
+        }
+        .gh-stars {
+          display: none;
+        }
+        .nav-actions .btn-primary {
+          padding: 0.55rem 0.8rem;
+          font-size: 0.88rem;
         }
       }
     </style>

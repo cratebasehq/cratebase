@@ -32,7 +32,45 @@
   --font-mono: "Red Hat Mono Variable", "Red Hat Mono", ui-monospace, monospace;
 
   --radius: 0.625rem;
+  --radius-lg: 1rem;
   --ease-house: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Fluid type scale — a major third that widens on desktop, set once and
+     reused everywhere instead of one-off clamp()s per section. */
+  --text-xs: clamp(0.78rem, 0.75rem + 0.1vw, 0.85rem);
+  --text-sm: clamp(0.88rem, 0.85rem + 0.15vw, 0.95rem);
+  --text-base: clamp(1rem, 0.97rem + 0.2vw, 1.0625rem);
+  --text-lg: clamp(1.125rem, 1.05rem + 0.4vw, 1.3rem);
+  --text-xl: clamp(1.4rem, 1.25rem + 0.8vw, 1.75rem);
+  --text-2xl: clamp(1.85rem, 1.55rem + 1.4vw, 2.5rem);
+  --text-3xl: clamp(2.4rem, 1.9rem + 2.4vw, 3.4rem);
+  --text-4xl: clamp(2.9rem, 2.1rem + 3.8vw, 4.6rem);
+
+  /* Spacing rhythm — an 8px-rooted scale used for section/vertical rhythm. */
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2.25rem;
+  --space-xl: 3.5rem;
+  --space-2xl: 5.5rem;
+  --space-3xl: 8rem;
+
+  /* Motion — one shared vocabulary for reveals/parallax, killed entirely
+     under prefers-reduced-motion (see the global rule below). */
+  --reveal-distance: 18px;
+  --reveal-duration: 640ms;
+  --parallax-strength: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --reveal-distance: 0px;
+    --reveal-duration: 1ms;
+    --parallax-strength: 0;
+  }
 }
 
 :root[data-theme="dark"],
@@ -67,8 +105,46 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-display);
+  font-size: var(--text-base);
+  line-height: 1.6;
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
+}
+
+/* A slash-joined run of inline <code> tags (e.g. _mfas/_otps/...) has no
+   natural break point for the browser's default line-breaking — without
+   this, a single such run can force horizontal overflow on narrow
+   viewports. Applies to running prose generally as a safety net. */
+p,
+li,
+dd,
+dt {
+  overflow-wrap: break-word;
+}
+
+/*
+ * Reveal-on-scroll: a single shared mechanism (see LandingLayout's
+ * IntersectionObserver script). Elements start offset/transparent and
+ * settle in once observed; reduced-motion zeroes the distance/duration
+ * tokens above so this becomes an instant, non-animated appearance.
+ */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(var(--reveal-distance));
+  transition:
+    opacity var(--reveal-duration) var(--ease-out),
+    transform var(--reveal-duration) var(--ease-out);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+[data-reveal].is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+/* Subtle scroll parallax for isometric art — see LandingLayout's scroll
+   handler. Disabled outright (strength 0) under reduced motion. */
+[data-parallax] {
+  will-change: transform;
 }
 
 code,

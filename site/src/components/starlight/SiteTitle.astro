@@ -1,0 +1,40 @@
+---
+/**
+ * Override of Starlight's default SiteTitle: the docs site is mounted at
+ * /docs (see astro.config.mjs), so Starlight's own default link target
+ * (its own base) would only ever point back at the docs index. The brief
+ * asks for the docs header to link back to the marketing site, so this
+ * points the title at "/" instead and reuses the landing page's own Mark.
+ */
+import config from "virtual:starlight/user-config";
+import Mark from "../Mark.astro";
+
+const { siteTitle } = Astro.locals.starlightRoute;
+---
+
+<a href="/" class="site-title sl-flex">
+  <Mark size={22} />
+  <span translate="no">{siteTitle ?? config.title}</span>
+</a>
+
+<style>
+  @layer starlight.core {
+    .site-title {
+      align-items: center;
+      gap: var(--sl-nav-gap);
+      font-size: var(--sl-text-h4);
+      font-weight: 700;
+      color: var(--sl-color-text-accent);
+      text-decoration: none;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .site-title :global(svg) {
+      color: var(--color-crate);
+      flex-shrink: 0;
+    }
+    span {
+      overflow: hidden;
+    }
+  }
+</style>
