@@ -41,7 +41,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
     to: "/settings/application",
     label: "Application",
     icon: SlidersHorizontal,
-    description: "How this instance identifies itself, its branding, and which optional modules are on.",
+    description: "How this instance identifies itself, its branding, which optional modules are on, and file storage.",
     tabs: [
       {
         value: "general",
@@ -61,6 +61,12 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         description: "The batch API and optional built-in modules (Teams, Queue, ZIP export).",
         legacyPath: "/settings/modules",
       },
+      {
+        value: "storage",
+        label: "Storage",
+        description: "S3-compatible file storage, image transform limits, and the per-user storage quota.",
+        legacyPath: "/settings/storage",
+      },
     ],
   },
   {
@@ -72,7 +78,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       {
         value: "delivery",
         label: "Delivery",
-        description: "SMTP for outgoing mail, and S3-compatible file storage.",
+        description: "SMTP for outgoing mail.",
         legacyPath: "/settings/mail-storage",
       },
       {

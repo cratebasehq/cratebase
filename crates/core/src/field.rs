@@ -54,6 +54,16 @@ impl FieldType {
         }
     }
 
+    /// Whether `searchable: true` is meaningful on a field of this type
+    /// (text-shaped types only — the ones a full-text index can actually
+    /// tokenize).
+    pub fn supports_search(self) -> bool {
+        matches!(
+            self,
+            FieldType::Text | FieldType::Editor | FieldType::Email | FieldType::Url
+        )
+    }
+
     pub fn all() -> &'static [FieldType] {
         &[
             FieldType::Text,
@@ -448,6 +458,13 @@ pub struct Field {
     pub required: bool,
     #[serde(default)]
     pub help: String,
+    /// Whether this field is indexed for full-text search (`?search=`,
+    /// the `search()` filter predicate). Only meaningful on
+    /// `text`/`editor`/`email`/`url` fields — see
+    /// [`FieldType::supports_search`]; ignored (and rejected at
+    /// validation time) on every other type.
+    #[serde(default)]
+    pub searchable: bool,
     #[serde(flatten)]
     pub kind: FieldKind,
 }
@@ -463,6 +480,7 @@ impl Field {
             presentable: false,
             required: false,
             help: String::new(),
+            searchable: false,
             kind,
         }
     }
@@ -504,6 +522,15 @@ impl Field {
             | FieldKind::Relation { max_select, .. } => Some(*max_select),
             _ => None,
         }
+    }
+
+    /// Whether this field actually participates in the collection's
+    /// full-text index: `searchable` is set *and* the field's type
+    /// supports it (the latter is also enforced at validation time, but
+    /// checked again here so a stale/hand-edited schema can't silently
+    /// index a type it shouldn't).
+    pub fn is_searchable(&self) -> bool {
+        self.searchable && self.field_type().supports_search()
     }
 
     pub fn is_primary_key(&self) -> bool {
@@ -685,6 +712,58 @@ mod tests {
             FieldKind::File { mime_types, .. } => assert_eq!(mime_types, vec!["image/jpeg"]),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn searchable_flat_option_round_trips_and_defaults_to_false() {
+        let mut f = Field::new(
+            "title",
+            FieldKind::Text {
+                min: 0,
+                max: 0,
+                pattern: String::new(),
+                autogenerate_pattern: String::new(),
+                primary_key: false,
+            },
+        );
+        assert!(!f.searchable);
+        assert!(!f.is_searchable());
+        f.searchable = true;
+        assert!(f.is_searchable());
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["searchable"], true);
+        let back: Field = serde_json::from_value(v).unwrap();
+        assert!(back.searchable);
+
+        // Absent in the input entirely (older/hand-written schema JSON)
+        // defaults to false rather than erroring.
+        let f: Field = serde_json::from_str(r#"{"name":"title","type":"text"}"#).unwrap();
+        assert!(!f.searchable);
+    }
+
+    #[test]
+    fn only_text_shaped_types_support_search() {
+        assert!(FieldType::Text.supports_search());
+        assert!(FieldType::Editor.supports_search());
+        assert!(FieldType::Email.supports_search());
+        assert!(FieldType::Url.supports_search());
+        assert!(!FieldType::Number.supports_search());
+        assert!(!FieldType::Bool.supports_search());
+        assert!(!FieldType::Json.supports_search());
+        assert!(!FieldType::Select.supports_search());
+
+        // `is_searchable()` refuses to trust a stray `searchable: true`
+        // on a type that can't support it.
+        let mut f = Field::new(
+            "count",
+            FieldKind::Number {
+                min: None,
+                max: None,
+                only_int: false,
+            },
+        );
+        f.searchable = true;
+        assert!(!f.is_searchable());
     }
 
     #[test]

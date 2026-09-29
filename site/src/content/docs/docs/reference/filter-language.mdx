@@ -113,6 +113,17 @@ a nearest sort always agree on distance. See
 [Geo queries](/docs/database/geo-queries/) for the PostGIS-accelerated
 path on Postgres.
 
+`search("query") = true` — a full-text-search predicate over a
+collection's `searchable` fields, usable anywhere a boolean comparison
+is (combined with `&&`/`||`, inside an API rule, ...). The equality is
+implicit: `search("query")` alone (no `= true`) parses the same way.
+Requires the collection to have at least one `searchable` field, or this
+is a compile error rather than an always-false predicate. This is also
+what the records list endpoint's `?search=` query parameter compiles to
+internally — see [Full-text search](/docs/database/full-text-search/)
+for the query syntax, relevance ordering, and SQLite-vs-Postgres
+performance.
+
 ## Semantics worth knowing before writing a rule
 
 - A failing `listRule` yields an empty list, never an error. A failing

@@ -30,8 +30,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SortableFieldRow } from "@/components/collections/sortable-field-row";
+import { OptionField } from "@/components/collections/schema-field-row";
 import { RuleField } from "@/components/collections/rule-field";
 import { IndexEditor } from "@/components/collections/index-editor";
 import { AuthOptionsEditor } from "@/components/collections/auth-options-editor";
@@ -41,6 +43,42 @@ import { AuthOptionsEditor } from "@/components/collections/auth-options-editor"
  * shown until the field has been blurred once, and after that a newly
  * introduced error settles in rather than flashing on every keystroke. */
 const VALIDATION_DEBOUNCE_MS = 400;
+
+/** Mirrors `cratebase_core::search::KNOWN_TS_CONFIGS` — every Postgres
+ * text-search config `searchLanguage` can name. An unrecognized value
+ * falls back to `"simple"` server-side, so this list only needs to match
+ * for the picker to be meaningful; it isn't itself a validation boundary. */
+const SEARCH_LANGUAGES = [
+  "simple",
+  "arabic",
+  "armenian",
+  "basque",
+  "catalan",
+  "danish",
+  "dutch",
+  "english",
+  "finnish",
+  "french",
+  "german",
+  "greek",
+  "hindi",
+  "hungarian",
+  "indonesian",
+  "irish",
+  "italian",
+  "lithuanian",
+  "nepali",
+  "norwegian",
+  "portuguese",
+  "romanian",
+  "russian",
+  "serbian",
+  "spanish",
+  "swedish",
+  "tamil",
+  "turkish",
+  "yiddish",
+] as const;
 
 /** A text field that validates itself the way the deleted
  * `InlineValidation` did — quiet until first blur, then debounced while
@@ -285,6 +323,74 @@ export function CollectionForm({
           collectionName={value.name}
         />
       ) : null}
+
+      {value.schema.some((f) => f.searchable) ? (
+        <section className="flex flex-col gap-3">
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-foreground">Full-text search</span>
+            <span className="text-xs text-muted-foreground">
+              At least one field above is marked <span className="font-mono">searchable</span>, so this collection
+              accepts <span className="font-mono">?search=</span>.
+            </span>
+          </div>
+          <OptionField
+            label="Search language"
+            className="max-w-xs"
+            help='Postgres text-search config for stemming/stopwords (e.g. "english" matches "running" against "run"). Ignored on SQLite, which always does plain token/prefix matching.'
+          >
+            <Select
+              value={value.searchLanguage ?? "simple"}
+              onValueChange={(searchLanguage) =>
+                onChange({ ...value, searchLanguage: searchLanguage === "simple" ? null : searchLanguage })
+              }
+            >
+              <SelectTrigger aria-label="Search language" className="h-control-md w-full text-sm">
+                <SelectValue placeholder="simple (default)" />
+              </SelectTrigger>
+              <SelectContent>
+                {SEARCH_LANGUAGES.map((lang) => (
+                  <SelectItem key={lang} value={lang}>
+                    {lang === "simple" ? "simple (default, no stemming)" : lang}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </OptionField>
+        </section>
+      ) : null}
+
+      <section className="flex flex-col gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm font-medium text-foreground">Storage quota</span>
+          <span className="text-xs text-muted-foreground">
+            Only relevant if a per-user quota is set in Settings → Application → Storage.
+          </span>
+        </div>
+        <OptionField
+          label="Owner field"
+          className="max-w-xs"
+          help="Which field on a record here names its owner's auth record id — usually a relation to users. Files stored on that record's file fields count toward the owner's quota. None (default) means this collection is never counted or gated."
+        >
+          <Select
+            value={value.ownerField ?? "__none__"}
+            onValueChange={(ownerField) => onChange({ ...value, ownerField: ownerField === "__none__" ? null : ownerField })}
+          >
+            <SelectTrigger aria-label="Owner field" className="h-control-md w-full text-sm">
+              <SelectValue placeholder="None" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">None</SelectItem>
+              {value.schema
+                .filter((f) => f.name)
+                .map((f) => (
+                  <SelectItem key={f.id} value={f.name}>
+                    {f.name}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
+        </OptionField>
+      </section>
 
       <section className="flex flex-col gap-3">
         <div className="flex flex-col">

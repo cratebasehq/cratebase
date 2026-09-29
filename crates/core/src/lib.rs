@@ -14,6 +14,7 @@ pub mod event;
 pub mod field;
 pub mod ids;
 pub mod record;
+pub mod search;
 pub mod settings;
 
 pub use collection::{
@@ -26,6 +27,7 @@ pub use event::{RecordAction, RecordChanged};
 pub use field::{Field, FieldKind, FieldType};
 pub use ids::{collection_id, field_id, record_id};
 pub use record::{Record, SerializeOptions};
+pub use search::{known_ts_config, KNOWN_TS_CONFIGS};
 pub use settings::Settings;
 
 /// Field/collection names reserved by the system and unavailable to

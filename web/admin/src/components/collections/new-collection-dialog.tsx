@@ -56,6 +56,8 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
         createRule: value.createRule,
         updateRule: value.updateRule,
         deleteRule: value.deleteRule,
+        searchLanguage: value.searchLanguage,
+        ownerField: value.ownerField,
         ...(value.type === "auth" && value.auth ? authOptionsPayload(value.auth, value.identityFields) : {}),
       }),
     onSuccess: async (created) => {

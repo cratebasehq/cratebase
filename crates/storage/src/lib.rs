@@ -25,7 +25,10 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
+use object_store::signer::Signer;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload, WriteMultipart};
+use std::time::Duration;
+use url::Url;
 
 /// Multipart part size for [`Storage::put_stream`]. S3 requires every
 /// part but the last to be at least 5 MiB; uploads that finish before
@@ -42,6 +45,12 @@ pub const LOCAL_BACKUPS_DIR: &str = "backups";
 pub struct Storage {
     store: Arc<dyn ObjectStore>,
     local_root: Option<Arc<Path>>,
+    /// `Some` only for the S3 driver, which is the only backend
+    /// [`object_store`] can mint presigned URLs for. `None` (the local
+    /// driver) means "presigning isn't a thing here" — the caller falls
+    /// back to a same-origin upload URL the server itself handles; see
+    /// [`Storage::presign_put`].
+    signer: Option<Arc<dyn Signer>>,
 }
 
 /// One object as seen by [`Storage::list`].
@@ -66,6 +75,7 @@ impl Storage {
                 Ok(Storage {
                     store: Arc::new(fs),
                     local_root: Some(Arc::from(Path::new(base_dir))),
+                    signer: None,
                 })
             }
             StorageConfig::S3 {
@@ -90,9 +100,11 @@ impl Storage {
                         .with_endpoint(endpoint)
                         .with_allow_http(endpoint.starts_with("http://"));
                 }
+                let s3 = Arc::new(builder.build().map_err(StorageError::Backend)?);
                 Ok(Storage {
-                    store: Arc::new(builder.build().map_err(StorageError::Backend)?),
+                    store: s3.clone(),
                     local_root: None,
+                    signer: Some(s3),
                 })
             }
         }
@@ -277,6 +289,23 @@ impl Storage {
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(StorageError::Backend(e)),
         }
+    }
+
+    /// A presigned URL a client can `PUT` bytes to directly, bypassing
+    /// this server for the upload itself — `POST /api/files/presign` in
+    /// the server crate. `Ok(None)` on the local driver, which has no
+    /// notion of a presigned URL; the caller falls back to a same-origin
+    /// upload endpoint the server handles itself, so the SDK's upload
+    /// flow looks identical either way.
+    pub async fn presign_put(&self, key: &str, expires_in: Duration) -> StorageResult<Option<Url>> {
+        let Some(signer) = &self.signer else {
+            return Ok(None);
+        };
+        let url = signer
+            .signed_url(http::Method::PUT, &ObjectPath::from(key), expires_in)
+            .await
+            .map_err(StorageError::Backend)?;
+        Ok(Some(url))
     }
 
     /// Objects whose key starts with `prefix` (recursively), used by the
@@ -558,6 +587,43 @@ mod tests {
             Storage::from_settings(&no_bucket, "/nonexistent"),
             Err(StorageError::Config(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn presign_put_is_none_on_the_local_driver() {
+        let dir = temp_dir();
+        let storage = Storage::local(&dir).unwrap();
+        assert_eq!(
+            storage
+                .presign_put("a/b.txt", std::time::Duration::from_secs(60))
+                .await
+                .unwrap(),
+            None
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn presign_put_signs_a_url_on_the_s3_driver() {
+        let s3 = S3 {
+            enabled: true,
+            bucket: "bucket".into(),
+            region: "us-east-1".into(),
+            endpoint: "http://localhost:9000".into(),
+            access_key: "ak".into(),
+            secret: "sk".into(),
+            force_path_style: true,
+        };
+        let storage = Storage::from_settings(&s3, "/nonexistent").unwrap();
+        let url = storage
+            .presign_put("pbc_1/rec_a/file.png", std::time::Duration::from_secs(900))
+            .await
+            .unwrap()
+            .expect("S3 driver must be able to sign a PUT URL");
+        assert_eq!(url.scheme(), "http");
+        assert!(url.path().ends_with("pbc_1/rec_a/file.png"), "{url}");
+        // SigV4 query params, not credentials embedded in the path.
+        assert!(url.query().unwrap_or_default().contains("X-Amz-Signature"));
     }
 
     #[test]

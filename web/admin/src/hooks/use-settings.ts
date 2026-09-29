@@ -61,6 +61,19 @@ export interface ServerSettings {
     cronMaxKeep: number;
     s3: ServerSettings["s3"];
   };
+  /** Image transforms (`?w=&h=&fit=&format=&q=` on the files route) and
+   * the per-user storage quota — both apply to the local driver too, not
+   * just S3, which is why they live in their own section rather than
+   * under `s3`. */
+  storage: {
+    imageTransformsEnabled: boolean;
+    /** The largest `w`/`h` a non-superuser request may ask for. `0` means
+     * no limit. */
+    maxTransformDimension: number;
+    /** Per-user cap, in bytes, on the sum of file sizes across every
+     * `ownerField`-scoped collection. `0` disables quota enforcement. */
+    userQuotaBytes: number;
+  };
   llm: {
     enabled: boolean;
     provider: string;

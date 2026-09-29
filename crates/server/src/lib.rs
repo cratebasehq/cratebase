@@ -50,8 +50,10 @@ pub mod middleware;
 pub mod plugin;
 pub mod plugin_wasm;
 pub mod pocketbase_migrate;
+pub mod presign;
 pub mod push;
 pub mod queue;
+pub mod quota;
 pub mod realtime;
 #[cfg(test)]
 mod records_multi_file_tests;

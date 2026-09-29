@@ -45,6 +45,10 @@ pub const JOB_SESSION_SWEEP: &str = "__cbSessionSweep__";
 /// `_mailLog` retention (`settings.logs.mailLogMaxDays`), same cadence as
 /// [`JOB_LOGS_CLEANUP`]. Cratebase-only.
 pub const JOB_MAIL_LOG_CLEANUP: &str = "__cbMailLogCleanup__";
+/// Hourly `_pendingUploads` sweep (`crate::presign::sweep_expired`):
+/// drops presigned-upload tickets that expired without being claimed,
+/// and best-effort deletes the object they reserved. Cratebase-only.
+pub const JOB_PENDING_UPLOADS_SWEEP: &str = "__cbPendingUploadsSweep__";
 
 #[derive(Clone)]
 struct Job {

@@ -16,6 +16,11 @@ export interface RecordsQuery {
   filter: string;
   /** A `sort` param exactly as the server takes it (`-created`, `author.name`, `@random`). */
   sort: string;
+  /** Full-text search over the collection's `searchable` fields, or ""
+   * for none. Only meaningful when the collection has at least one such
+   * field (`collection.fields.some(f => f.searchable)`); the records
+   * table only shows the search box in that case. */
+  search: string;
   /** Comma-separated relation paths to expand, or "" for none. */
   expand: string;
   /** Skip the `COUNT(*)`. The server answers `totalItems: -1` and the query
@@ -38,6 +43,7 @@ export function useRecords(collectionName: string, query: RecordsQuery) {
         perPage: query.perPage,
         filter: query.filter || undefined,
         sort: query.sort || undefined,
+        search: query.search || undefined,
         expand: query.expand || undefined,
         skipTotal: query.skipTotal || undefined,
       }),

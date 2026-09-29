@@ -10,6 +10,22 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **SQLite full-text search query shape**: `search()`/`?search=` compiled its FTS5 predicate as
+  `(rowid IN (SELECT rowid FROM {table}_fts WHERE {table}_fts MATCH $1)) = $2` — the boolean
+  literal from `search(...) = true`/the parser's bare-predicate sugar bound as an extra parameter
+  instead of folded away. Wrapped in that outer `= $2` against a value unknown at plan time,
+  SQLite's planner couldn't recognize the semi-join as flattenable and fell back to a full
+  `SCAN {table}` re-testing FTS5 membership per row, which is why this page used to document
+  SQLite's FTS5 search as *slower* than a plain `~`/LIKE scan. `search(...)` now compiles straight
+  to the bare predicate (and its negation to `NOT (...)`), so the planner drives the scan by
+  `rowid` instead: `SEARCH {table} USING INTEGER PRIMARY KEY (rowid=?)`. Same fix applies to
+  `search()` used from an API rule and to the `COUNT` half of a `?search=` request, since both
+  share the same compiled `WHERE` fragment. See
+  [Database → Full-text search](https://cratebase.dev/docs/database/full-text-search/) for the
+  updated benchmark numbers.
+
 ## 0.4.0 — 2026-09-28
 
 Email, database extensibility, consumer-app auth, and a dashboard where
@@ -47,6 +63,36 @@ every setting is configurable. Highlights:
   `useMagicLinkCallback`.
 
 ### Added
+
+- **Full-text search** (`?search=` on any collection's records list, and the `search()` filter
+  function usable in any API rule): mark a `text`/`editor`/`email`/`url` field `searchable` from
+  the field editor and the collection accepts full-text queries over it — SQLite's FTS5 virtual
+  table + triggers, or Postgres's generated `tsvector` column + GIN index, kept in sync
+  automatically whenever the searchable field set, the collection name, or (Postgres) the new
+  per-collection `searchLanguage` setting changes. Ranks by relevance (SQLite `bm25`, Postgres
+  `ts_rank`) unless an explicit `sort` is given. See
+  [Database → Full-text search](https://cratebase.dev/docs/database/full-text-search/) for query
+  syntax, relevance semantics, and SQLite-vs-Postgres `EXPLAIN`/benchmark numbers (Postgres's GIN
+  index is ~9.5x faster than a `~`/ILIKE scan at 50k rows in this repo's own benchmark; SQLite's
+  FTS5 predicate is ~31x faster than `~`/LIKE for a rare term, and roughly even for a term matching
+  a fifth of the table, where fetching that many rows dominates either way).
+- **Presigned direct uploads** (`POST /api/files/presign`, `PUT /api/files/presign-upload/{token}`):
+  upload a file straight to storage (S3, signed — or a same-origin route for the local driver)
+  instead of round-tripping its bytes through a multipart create/update, then claim it with a
+  single-use token as the target field's value. `@cratebase/client`'s `cb.files.upload(file, {
+  collection, field })` and `@cratebase/react`'s `useUpload()` hook (progress/pending/error state,
+  `abort()`) wrap the flow. Unclaimed tickets expire after 30 minutes and are swept hourly.
+- **Image transforms** on the files route: `?w=&h=&fit=cover|contain|inside&format=jpeg|png|webp&q=`,
+  independent of and mutually exclusive with the existing `?thumb=`. Gated by the new
+  `settings.storage.imageTransformsEnabled` (default on); a non-superuser request's `w`/`h` is
+  clamped to `settings.storage.maxTransformDimension` (default 4000px) rather than rejected.
+- **Per-user storage quota** (`settings.storage.userQuotaBytes`, default `0`/disabled): caps the
+  bytes an auth record may store via the direct-upload flow above, scoped to whichever
+  collections set the new `ownerField` schema setting (which field names a record's owner).
+  Enforced at presign time with a `400`, before a ticket is minted.
+- Dashboard: a "Searchable" checkbox on text/editor/email/url fields, a "Search language" and
+  "Owner field" picker in collection settings, and a "Storage limits" section (image transforms +
+  quota) under Settings → Email → Delivery → File storage.
 
 - **Settings navigation consolidated to 7 tabbed groups** (`web/admin/src/lib/settings-nav.ts`
   and the `routes/settings-*.tsx`/`components/settings/*-settings-page.tsx` files): the ~24-item

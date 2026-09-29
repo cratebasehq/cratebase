@@ -30,7 +30,7 @@ interface SchemaFieldRowProps {
  * underneath explaining what the constraint does — every option here maps
  * 1:1 to a key `cratebase_core::field::FieldOptions` reads, so the copy
  * doubles as inline documentation for that struct. */
-function OptionField({
+export function OptionField({
   label,
   help,
   children,
@@ -133,6 +133,25 @@ function toDatetimeLocal(value: unknown): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/** The "Searchable" checkbox shared by every field type `?search=` can
+ * index — `text`/`editor`/`email`/`url` (mirrors
+ * `cratebase_core::field::FieldOptions::searchable`'s own restriction to
+ * those four). Toggling it takes effect on save, the same as any other
+ * schema change — resyncing the FTS5/tsvector index for a large
+ * collection isn't instant, but the dashboard doesn't need to say so any
+ * louder than it already does for e.g. adding an index. */
+function SearchableOption({ field, patch }: { field: FieldSchema; patch: (patch: Record<string, unknown>) => void }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <CheckboxOption
+        checked={(field.searchable as boolean | undefined) ?? false}
+        onChange={(searchable) => patch({ searchable })}
+        label="Searchable — included in this collection's ?search= full-text index"
+      />
+    </div>
+  );
+}
+
 /** True when the field's type has anything to configure at all — a `bool`
  * has no options, so it gets no disclosure arrow. */
 function hasOptions(type: FieldSchema["type"]): boolean {
@@ -152,6 +171,7 @@ function optionsSummary(field: FieldSchema, collections: CollectionModel[]): str
       if (typeof min === "number" && min > 0) parts.push(`min ${min}`);
       if (typeof max === "number" && max > 0) parts.push(`max ${max}`);
       if (field.pattern) parts.push("pattern");
+      if (field.type !== "password" && field.searchable) parts.push("searchable");
       break;
     case "number":
       if (typeof min === "number") parts.push(`≥ ${min}`);
@@ -190,6 +210,10 @@ function optionsSummary(field: FieldSchema, collections: CollectionModel[]): str
       if (embedding?.sourceField) parts.push(`auto from ${embedding.sourceField}`);
       break;
     }
+    case "email":
+    case "url":
+      if (field.searchable) parts.push("searchable");
+      break;
     default:
       break;
   }
@@ -379,12 +403,13 @@ export function SchemaFieldRow({
                     className="h-control-md font-mono text-sm"
                   />
                 </OptionField>
-                <div className="flex items-end pb-5">
+                <div className="flex flex-col justify-end gap-2 pb-5">
                   <CheckboxOption
                     checked={(field.primaryKey as boolean | undefined) ?? false}
                     onChange={(primaryKey) => patch({ primaryKey })}
                     label="Primary key — replaces the auto-generated id column"
                   />
+                  <SearchableOption field={field} patch={patch} />
                 </div>
               </>
             ) : (
@@ -410,7 +435,7 @@ export function SchemaFieldRow({
                 placeholder="No limit"
               />
             </OptionField>
-            <div className="flex items-end pb-5">
+            <div className="flex flex-col justify-end gap-2 pb-5">
               <CheckboxOption
                 // Wire key is `convertURLs` (capital URL) — an explicit
                 // serde rename on `FieldKind::Editor::convert_urls`, not
@@ -419,6 +444,7 @@ export function SchemaFieldRow({
                 onChange={(convertURLs) => patch({ convertURLs })}
                 label="Convert bare URLs in the content into links"
               />
+              <SearchableOption field={field} patch={patch} />
             </div>
           </div>
         </OptionGroup>
@@ -690,6 +716,7 @@ export function SchemaFieldRow({
               hint="Rejected even if not covered by an allow list"
             />
           </div>
+          <SearchableOption field={field} patch={patch} />
         </OptionGroup>
       ) : null}
 

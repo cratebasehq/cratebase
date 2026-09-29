@@ -91,8 +91,21 @@ impl Modifier {
 }
 
 /// Known functions and their arity. Extend this table to add new callable
-/// operands (`vectorDistance`, `search`, ...).
-pub const FUNCTIONS: &[(&str, usize)] = &[("geoDistance", 4)];
+/// operands (`vectorDistance`, ...).
+///
+/// `search("query")` is the one function usable **bare** (with no
+/// comparison operator) — `parser::parse_comparison` special-cases it into
+/// `search("query") = true`, which then compiles to a boolean SQL
+/// predicate over the collection's full-text index (see
+/// `compiler::Compiler::resolve_call`'s `"search"` arm). It stays in this
+/// same table (not a separate list) since it is, syntactically, an
+/// ordinary call: `search("q") = false`, `search("q") != true`, `search("q")
+/// || published = true` are all valid too.
+pub const FUNCTIONS: &[(&str, usize)] = &[("geoDistance", 4), ("search", 1)];
+
+/// Functions that may appear bare (no comparison operator) — the call
+/// itself is the whole boolean predicate.
+pub const BARE_PREDICATE_FUNCTIONS: &[&str] = &["search"];
 
 /// One side of a comparison.
 #[derive(Debug, Clone, PartialEq)]
