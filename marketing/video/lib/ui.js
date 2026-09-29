@@ -59,6 +59,21 @@ export class UIPlane {
     S(this.root, { transform: css(m) });
     this.m = m;
   }
+  /**
+   * Spotlight: dim everything on the plane outside `r` (plane px) by
+   * `a` (0..1). Depth dimming of context, not a fade-in. Call every frame.
+   */
+  spot(r, a) {
+    if (!this.dims) this.dims = [0, 1, 2, 3].map(() => this.rectEl({ x: 0, y: 0, w: 0, h: 0 }, { background: "#000" }));
+    const W = this.w, H = this.h, x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    const rs = [
+      [0, 0, W, Math.max(0, y0)],
+      [0, y1, W, Math.max(0, H - y1)],
+      [0, y0, Math.max(0, x0), r.h],
+      [x1, y0, Math.max(0, W - x1), r.h],
+    ];
+    this.dims.forEach((d, i) => S(d, { left: rs[i][0] + "px", top: rs[i][1] + "px", width: rs[i][2] + "px", height: rs[i][3] + "px", opacity: a.toFixed(3) }));
+  }
   /** A rectangle on the plane (masks, highlight rings), in plane px. */
   rectEl(r, style = {}) {
     const e = el("div", "abs", this.overlay);

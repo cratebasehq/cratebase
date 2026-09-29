@@ -41,7 +41,7 @@ addCue(10.0, "pop", { note: 62 });
 export default [
   {
     id: "binary",
-    from: 7.55,
+    from: 7.95,
     to: 14,
     z: 3,
     async build(root, L) {
@@ -54,6 +54,9 @@ export default [
         S(r, { height: FS * LH + "px", lineHeight: FS * LH + "px", color: kind === "out" || kind === "dim" ? "#6f8499" : kind === "hi" ? "#ffffff" : "#eef1f4", fontWeight: kind === "hi" ? 700 : 500 });
         return r;
       });
+      const probe = el("span", "abs nowrap", term, "0123456789");
+      const glyph = probe.getBoundingClientRect().width / 10;
+      probe.remove();
       const ring = el("div", "abs", term);
       S(ring, { border: "6px solid #ef7d3e", borderRadius: "18px" });
       // real Overview capture, swings in from depth on 12.5
@@ -62,7 +65,7 @@ export default [
       const st1 = statement(root, L.portrait ? ["One binary."] : ["One", "binary."], "disp");
       const st2 = statement(root, L.portrait ? ["Collections, auth,", "files, realtime."] : ["Collections, auth,", "files, realtime."]);
       const cur = cursor(root);
-      return { term, rows, ring, ov, st1, st2, cur, planeW, planeH };
+      return { term, rows, ring, ov, st1, st2, cur, planeW, planeH, glyph };
     },
     draw(t, s, L) {
       // --- terminal text (typed commands in 16th bursts, output instant)
@@ -78,38 +81,55 @@ export default [
           shown = t >= t0 ? txt : "";
           if (kind === "kv" && shown) {
             const m = shown.match(/^(\s+[A-Za-z ]+:)(\s+)(.*)$/);
-            if (m) shown = `<span style="color:#6f8499">${m[1]}</span>${m[2]}${m[3]}`;
+            if (m) shown = `<span style="color:#6f8499">${m[1]}</span>${m[2]}<span class="v">${m[3]}</span>`;
           }
           if (r.__h !== shown) { r.__h = shown; r.innerHTML = shown; }
         }
       });
+      // measure the Dashboard URL span once it exists (offsets ignore transforms)
+      if (!s.dash && t >= 10.375) {
+        const v = s.rows[7].querySelector(".v");
+        if (v) s.dash = { x: v.offsetLeft, w: v.offsetWidth };
+      }
       const rowY = (i) => 80 + i * FS * LH + (FS * LH) / 2;
       // which row the camera follows
       const active = LINES.reduce((acc, l, i) => (t >= l[0] ? i : acc), 0);
-      // --- camera over the terminal
-      const band = t >= 10 ? 1 : 0;
-      const region = L.portrait ? { x: 0, y: L.H * 0.34, w: L.W, h: L.H * 0.66 } : { x: L.W * 0.36, y: 0, w: L.W * 0.64, h: L.H };
-      const zBase = L.portrait ? 0.62 : 0.9;
+      // --- camera over the terminal. Keep the text's left edge (plane x=110)
+      // just right of the statement band once statements are on screen.
+      const zBase = L.portrait ? 0.78 : 1.2;
       const follow = track(t, LINES.map((l, i) => [l[0], rowY(Math.min(i, 9))]), 170, 26);
       const dashY = rowY(7);
+      const leftAt = (screenX, z, pxC) => 110 + (pxC - screenX) / z; // cx so plane x=110 lands at screenX
+      const zA = zBase, zB = zBase * 0.8;
+      const pxA = L.W * 0.5, pxB = L.portrait ? L.W * 0.5 : L.W * 0.62;
+      const pyB = L.portrait ? L.H * 0.66 : L.H * 0.52;
       const keys = [
-        [7.55, { cx: 900, cy: rowY(0), z: zBase * 1.25, rx: 14, ry: -18, rz: -2, px: L.W * 0.5, py: L.H * 0.5 }],
-        [8.3, { z: zBase, rx: 9, ry: -12, rz: -1 }],
-        [10.0, { cx: 1350, px: region.x + region.w * 0.46, py: region.y + region.h * 0.5, ry: -16, z: zBase * 0.82 }],
-        [12.0, { cx: 1250, cy: dashY, z: zBase * 1.3, rx: 4, ry: -8, rz: 0 }],
-        [12.55, { z: zBase * 2.6, rx: 0, ry: 0 }],
+        [7.95, { cx: leftAt(L.m, zA * 1.6, pxA), cy: rowY(0), z: zA * 1.6, rx: 14, ry: -18, rz: -2, px: pxA, py: L.H * 0.5 }],
+        [8.2, { rx: 8, ry: -10, rz: -1 }],
+        [9.0, { cx: leftAt(L.m, zA, pxA), z: zA }],
+        [10.0, { cx: leftAt(L.portrait ? L.m * 0.5 : L.W * 0.4, zB, pxB), px: pxB, py: pyB, ry: -12, z: zB }],
+        [12.0, { cx: s.dash ? s.dash.x + s.dash.w * 0.5 : 1300, px: L.W * 0.5, py: L.H * 0.5, z: zBase * 1.35, rx: 3, ry: -6, rz: 0 }],
+        [12.55, { z: zBase * 2.8, rx: 0, ry: 0 }],
       ];
       const cam = camTrack(t, keys);
-      if (t < 12.0) cam.cy = lerp(follow, cam.cy, 0) ; // follow the typing line until the rack
-      if (t >= 12.0) cam.cy = track(t, [[0, follow], [12.0, dashY]], 210, 30);
+      cam.cy = t < 12.0 ? follow : track(t, [[0, follow], [12.0, dashY]], 210, 30);
+      // ride the caret while the install command types (8.0–9.0)
+      if (t < 9.3) {
+        const typed = s.rows[0].textContent.length;
+        const caretX = 110 + typed * s.glyph;
+        const ride = leftAt(L.m, zA * 1.6, pxA) + Math.max(0, caretX - (110 + (pxA + L.W * 0.18 - L.m) / (zA * 1.6)));
+        const w = 1 - clamp((t - 9.0) / 0.3);
+        cam.cx = cam.cx * (1 - w) + track(t, [[0, ride]], 170, 26) * 0 + ride * w;
+      }
       const m = shotMatrix({ ...cam, persp: 1700 });
       S(s.term, { transform: css(m), display: t < 12.95 ? "" : "none" });
       // highlight ring on the Dashboard URL
       const rp = snappy(t - 12.1);
       show(s.ring, t >= 12.1);
-      S(s.ring, { left: px(110 + FS * 0.6 * 17 - 22), top: px(dashY - FS * 0.75), width: px((FS * 0.6 * 21 + 44) * clamp(rp)), height: px(FS * 1.5) });
-      // cursor to the URL and click on 12.5
-      const target = project(m, 110 + FS * 0.6 * 27, dashY);
+      const d = s.dash || { x: 1100, w: 800 };
+      S(s.ring, { left: px(d.x - 22), top: px(dashY - FS * 0.78), width: px((d.w + 44) * clamp(rp)), height: px(FS * 1.56) });
+            // cursor to the URL and click on 12.5
+      const target = project(m, d.x + d.w * 0.55, dashY + FS * 0.2);
       drawCursor(s.cur, t, [[11.6, L.W * 0.9, L.H * 1.1], [12.2, target[0] + 20, target[1] + 30], [12.5, target[0], target[1]]], [12.5], L.u * 1.2, t >= 11.6 && t < 12.95);
       // --- statements
       const sx = L.m, sy = L.portrait ? L.H * 0.07 : L.H * 0.23;

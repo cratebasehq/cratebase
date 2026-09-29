@@ -57,7 +57,11 @@ export function layout(W, H) {
   const m = (portrait ? 64 : 96) * u;
   const band = portrait ? { x: m, y: 120 * u, w: W - 2 * m, h: H * 0.27 } : { x: m, y: 0, w: W * 0.34, h: H };
   const ui = portrait ? { x: 0, y: H * 0.31, w: W, h: H * 0.69 } : { x: W * 0.35, y: 0, w: W * 0.65, h: H };
-  return { W, H, portrait, u, m, band, ui, full: { x: 0, y: 0, w: W, h: H } };
+  // UI chapters: a top statement band and the UI framed full-width below it
+  // (the side band would cap dashboard zoom below the 52px glyph floor).
+  const top = { x: m, y: (portrait ? 110 : 64) * u, h: portrait ? H * 0.2 : H * 0.2 };
+  const below = portrait ? { x: 0, y: H * 0.25, w: W, h: H * 0.75 } : { x: 0, y: H * 0.22, w: W, h: H * 0.78 };
+  return { W, H, portrait, u, m, band, ui, top, below, full: { x: 0, y: 0, w: W, h: H } };
 }
 
 // ---------------------------------------------------------------- time
@@ -162,6 +166,7 @@ export function callout(parent, label, { mono = false, dark = true } = {}) {
   const line = el("div", "abs", g);
   const dot = el("div", "abs", g);
   const card = el("div", "abs nowrap", g, label);
+  S(g, { display: "none" });
   S(dot, { width: "18px", height: "18px", left: "-9px", top: "-9px", borderRadius: "50%", background: "#ef7d3e", boxShadow: "0 0 0 6px rgba(239,125,62,.28)" });
   S(line, { height: "3px", background: dark ? "#eef1f4" : "#0e2238", transformOrigin: "0 50%" });
   S(card, {
