@@ -53,7 +53,32 @@ const SHOTS = [
   { name: "hd-places-records", path: "/_/collections/places", h: 820 },
   { name: "hd-places-api", path: "/_/collections/places?tab=api", h: 1200 },
   { name: "hd-email-templates", path: "/_/settings/email?tab=templates", h: 820 },
-  { name: "hd-email-editor", path: "/_/settings/email-templates/{{welcomeTemplateId}}", h: 900, settle: 4000 },
+  {
+    name: "hd-email-editor",
+    path: "/_/settings/email-templates/{{welcomeTemplateId}}",
+    h: 900,
+    settle: 4000,
+    // Line 1's `Welcome, {{user.name}}` sits past the editor's right edge;
+    // scroll the real editor horizontally so the variable is in view.
+    steps: async (page) => {
+      await page.evaluate(() => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = walker.nextNode())) if (node.textContent.includes("{{user.name}}")) break;
+        let e = node?.parentElement;
+        while (e && !(e.scrollWidth > e.clientWidth + 4 && getComputedStyle(e).overflowX !== "visible")) e = e.parentElement;
+        if (!e) return;
+        // put "Welcome, {{user.name}}" ~60% across the editor's visible width
+        const i = node.textContent.indexOf("Welcome, {{user.name}}");
+        const r = document.createRange();
+        r.setStart(node, Math.max(0, i));
+        r.setEnd(node, Math.max(0, i) + 1);
+        const x = r.getBoundingClientRect().left - e.getBoundingClientRect().left + e.scrollLeft;
+        e.scrollLeft = Math.max(0, x - e.clientWidth * 0.45);
+      });
+      await page.waitForTimeout(400);
+    },
+  },
   {
     name: "hd-mail-inbox",
     path: "/_/settings/mail-inbox",
