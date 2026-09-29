@@ -77,14 +77,16 @@ node audio/sync-check.mjs out/stem-sfx.wav         # onset-vs-cue sync report
 ### 4. Masters and deliverables
 
 ```bash
-./render.sh node render.mjs --w 1920 --h 1080 --fps 60 --sub 2 --workers 4 --out out/master-16x9.mp4
-./render.sh node render.mjs --w 1080 --h 1920 --fps 60 --sub 2 --workers 4 --out out/master-9x16.mp4
+./render.sh node render.mjs --w 1920 --h 1080 --fps 60 --workers 4 --out out/master-16x9.mp4
+./render.sh node render.mjs --w 1080 --h 1920 --fps 60 --workers 4 --out out/master-9x16.mp4
 ./encode.sh      # delivery MP4s/WebM, teaser, posters, stills, final contact sheet + ffprobe report
 ```
 
 `render.mjs` splits the frame range across `--workers` browser contexts,
-encodes near-lossless segments (CRF 10) and concatenates them; `--sub 2`
-renders two subframes per output frame and averages them (motion blur).
+encodes near-lossless segments (CRF 10) and concatenates them. `--sub N`
+averages N subframes per output frame (motion blur); the masters use crisp
+60 fps because 2 subframes ghosted fast moves into two visible copies
+(critique round 3) — use `--sub 4`+ if you want blur, never 2.
 `encode.sh` does the size-tuned delivery encodes from those masters.
 
 ### 5. Critique loop (after stills, animatic and full pass — until every score ≥ 8)

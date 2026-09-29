@@ -67,6 +67,33 @@ detection on the SFX stem vs. the 163 non-swell cues).
 2. Linear mastering: measured static gain to −14 LUFS, then a 4× oversampled look-ahead limiter → −14.2 LUFS, −1.7 dBTP.
 3. Portrait-specific ROIs (names → types rack, 250 px rule ROI, narrower record columns), tabular-width probe for 10.47×, line-broken PocketBase snippet, lockup raised. Full 9:16 render is round 3.
 
+## v2 · Round 3 — final 60 fps masters (16:9 and 9:16) + delivery encodes
+
+Reviewed: strips at 3.85 s (crate drop, the fastest motion) and 27.9 s
+(auth card exit), the 16:9 contact/phone sheets, the 9:16 contact and a
+phone-size sheet of the vertical delivery, and the teaser contact sheet.
+
+First look at the 60 fps `--sub 2` master found **ghosting**: two averaged
+subframes turned every fast move (crate fall, card exit, typing reveals,
+code-card fling) into two distinct copies instead of blur. It read as
+cheap, so the masters were re-rendered at crisp 60 fps (sub 1). Also fixed
+here: the `DATABASE_URL=` line blinked out on every beat at 52–54 s (the
+wipe clipped the whole line); now only the value rolls.
+
+| Axis | 16:9 | 9:16 | Why |
+|---|---|---|---|
+| Hook | 8 | 8 | Four mega words in the first 2 s, fog cut, crate lands on the 4.0 hit. |
+| Phone readability | 8 | 8 | Every focal detail reads at 360 px wide. 9:16's data chapter frames narrower ROIs and racks between them to keep glyphs large. |
+| Motion quality | 9 | 8 | Crisp 60 fps, no ghosting, no overlapping swaps, no dead holds. 9:16 inherits a few 16:9-tuned camera moves that feel slightly fast on the narrow frame. |
+| Variety | 9 | 9 | Unchanged. |
+| Composition | 8 | 8 | Full-bleed throughout. 9:16 data/email framings leave large dimmed plane areas above the focus: legible, but the least dense frames in the vertical cut. |
+| Brand accuracy | 9 | 9 | Unchanged; all on-screen claims verified (README, CHANGELOG 0.4.0, benchmarks/README.md 2026-09-04, SDK source, feature branch for v0.5 labels). |
+| Sound sync | 8 | 8 | Same analysis as round 2 on the final mix: 120/163 cues within 10 ms, the rest verified present. Final mix −14.2 LUFS integrated, −1.7 dBTP, linear. Not auditioned by a human. |
+
+**Every score ≥ 8 — gate passed.** Residual notes for a next pass: tighten
+9:16 data/email framings; have someone actually listen to the mix (score
+taste is unverified by ears).
+
 ---
 
 # v1 history (superseded animatic, 66 s)

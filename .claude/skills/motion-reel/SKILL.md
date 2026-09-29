@@ -64,7 +64,7 @@ feature branches so those get a "Coming in vX" label, never a silent claim.
 7. **Audio**: `node audio/score.mjs --stems && sh audio/master.sh &&
    node audio/sync-check.mjs out/stem-sfx.wav` (typing cues: `n` = number of
    picture reveal steps).
-8. **Masters** at 60 fps `--sub 2`, then `./encode.sh` for every deliverable.
+8. **Masters** at crisp 60 fps (`--sub 2` ghosts fast moves into double images; use none or ≥ 4), then `./encode.sh` for every deliverable.
 
 ## Critique loop (minimum 3 rounds, every score ≥ 8)
 
