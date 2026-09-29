@@ -37,6 +37,13 @@ const KNOWN: Record<string, JobDescription> = {
   },
 };
 
+/** `true` for one of the built-in jobs registered in Rust — everything
+ * else that isn't a `custom:`-prefixed `_cron_jobs` record is a JS
+ * `cronAdd` registration from a `pb_hooks/*.pb.js` file. */
+export function isKnownSystemJob(id: string): boolean {
+  return id in KNOWN;
+}
+
 export function describeJob(id: string): JobDescription {
   return (
     KNOWN[id] ?? {

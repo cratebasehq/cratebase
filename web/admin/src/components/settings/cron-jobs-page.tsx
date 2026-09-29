@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Clock, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { Clock, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { cb } from "@/lib/api";
+import { cb, parseServerDate } from "@/lib/api";
 import { describeFailure } from "@/lib/api";
-import { describeJob, describeSchedule } from "@/lib/cron";
+import { describeJob, describeSchedule, isKnownSystemJob } from "@/lib/cron";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -83,20 +83,14 @@ export function CronJobsPage() {
     },
   });
 
-  const jobs = (data ?? []).filter((job) => !job.id.startsWith("custom:"));
+  const nonCustom = (data ?? []).filter((job) => !job.id.startsWith("custom:"));
+  const systemJobs = nonCustom.filter((job) => isKnownSystemJob(job.id));
+  const jsJobs = nonCustom.filter((job) => !isKnownSystemJob(job.id));
+  const runningId = run.isPending ? (run.variables ?? null) : null;
 
   const item = settingsItemFor("/settings/cron")!;
   return (
     <SettingsPage title={item.label} description={item.description} width="wide">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium">System jobs</h2>
-        <p className="max-w-measure text-sm text-muted-foreground">
-          Scheduled work the server runs on its own — log trimming, expired one-time codes, database upkeep, and the
-          automatic backup once one is configured. Running a job here executes it immediately without affecting its
-          schedule.
-        </p>
-      </div>
-
       {error ? (
         <Empty>
           <EmptyHeader>
@@ -113,14 +107,71 @@ export function CronJobsPage() {
             <Skeleton key={i} className="h-row w-full" />
           ))}
         </div>
-      ) : jobs.length === 0 ? (
+      ) : (
+        <>
+          <JobsTable
+            title="System jobs"
+            description="Scheduled work the server runs on its own — log trimming, expired one-time codes, database upkeep, and the automatic backup once one is configured. Running a job here executes it immediately without affecting its schedule."
+            emptyDescription="Nothing is registered on this server."
+            jobs={systemJobs}
+            runningId={runningId}
+            onRun={(id) => run.mutate(id)}
+          />
+          <JobsTable
+            title="Custom code jobs"
+            description={
+              <>
+                Registered from a <code>pb_hooks/*.pb.js</code> file via <code>cronAdd</code> — not editable here.
+              </>
+            }
+            emptyDescription="No pb_hooks file has registered one with cronAdd."
+            jobs={jsJobs}
+            runningId={runningId}
+            onRun={(id) => run.mutate(id)}
+          />
+        </>
+      )}
+
+      <CustomCronJobsSection onRun={(id) => run.mutate(id)} runningId={runningId} />
+    </SettingsPage>
+  );
+}
+
+/** One `GET /api/crons` job table shared by the System and JS `cronAdd`
+ * sections — same columns, same "run now"/"history" actions, different
+ * copy and source rows. */
+function JobsTable({
+  title,
+  description,
+  emptyDescription,
+  jobs,
+  runningId,
+  onRun,
+}: {
+  title: string;
+  description: React.ReactNode;
+  emptyDescription: string;
+  jobs: CronJob[];
+  runningId: string | null;
+  onRun: (id: string) => void;
+}) {
+  const [historyJob, setHistoryJob] = useState<CronJob | null>(null);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
+        <h2 className="text-sm font-medium">{title}</h2>
+        <p className="max-w-measure text-sm text-muted-foreground">{description}</p>
+      </div>
+
+      {jobs.length === 0 ? (
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <Clock />
             </EmptyMedia>
-            <EmptyTitle>No scheduled jobs</EmptyTitle>
-            <EmptyDescription>Nothing is registered on this server.</EmptyDescription>
+            <EmptyTitle>Nothing here</EmptyTitle>
+            <EmptyDescription>{emptyDescription}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
@@ -129,14 +180,14 @@ export function CronJobsPage() {
             <TableRow>
               <TableHead>Job</TableHead>
               <TableHead>Runs</TableHead>
-              <TableHead className="w-24 text-right">Run</TableHead>
+              <TableHead className="w-40 text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {jobs.map((job) => {
               const described = describeJob(job.id);
               const schedule = describeSchedule(job.expression);
-              const running = run.isPending && run.variables === job.id;
+              const running = runningId === job.id;
               return (
                 <TableRow key={job.id} className="align-top">
                   <TableCell className="py-3">
@@ -154,16 +205,26 @@ export function CronJobsPage() {
                     )}
                   </TableCell>
                   <TableCell className="py-3 text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Run ${described.title} now`}
-                      disabled={running}
-                      onClick={() => run.mutate(job.id)}
-                    >
-                      {running ? <Spinner className="size-3.5" /> : <Play className="size-3.5" />}
-                      Run now
-                    </Button>
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`View history for ${described.title}`}
+                        onClick={() => setHistoryJob(job)}
+                      >
+                        <History className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Run ${described.title} now`}
+                        disabled={running}
+                        onClick={() => onRun(job.id)}
+                      >
+                        {running ? <Spinner className="size-3.5" /> : <Play className="size-3.5" />}
+                        Run now
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               );
@@ -172,8 +233,93 @@ export function CronJobsPage() {
         </Table>
       )}
 
-      <CustomCronJobsSection onRun={(id) => run.mutate(id)} runningId={run.isPending ? (run.variables ?? null) : null} />
-    </SettingsPage>
+      {historyJob ? (
+        <CronHistoryDialog job={historyJob} onOpenChange={(open) => !open && setHistoryJob(null)} />
+      ) : null}
+    </div>
+  );
+}
+
+/** A `_cronRuns` record — see `crates/server/src/cron_history.rs`. */
+interface CronRun {
+  id: string;
+  jobId: string;
+  source: "sql" | "js";
+  status: "success" | "error";
+  startedAt: string;
+  durationMs?: number;
+  message?: string;
+}
+
+/** Run history for one job id — `GET /api/crons` gives `custom:<id>` for
+ * a SQL `_cron_jobs` row or the raw `cronAdd` id otherwise, which is
+ * exactly `_cronRuns.jobId`. Empty is normal: a job that's never fired,
+ * or whose ticks all lost the multi-node advisory-lock race on this
+ * node, has zero rows. */
+function CronHistoryDialog({ job, onOpenChange }: { job: CronJob; onOpenChange: (open: boolean) => void }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["cron-runs", job.id],
+    queryFn: () =>
+      cb.collection("_cronRuns").list({
+        page: 1,
+        perPage: 20,
+        sort: "-startedAt",
+        filter: `jobId = "${job.id}"`,
+      }) as unknown as Promise<{ items: CronRun[] }>,
+  });
+
+  const runs = data?.items ?? [];
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{describeJob(job.id).title} — history</DialogTitle>
+          <DialogDescription>The most recent runs recorded in _cronRuns.</DialogDescription>
+        </DialogHeader>
+
+        {error ? (
+          <p className="text-sm text-destructive">{describeFailure(error).detail}</p>
+        ) : isLoading ? (
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: 3 }, (_, i) => (
+              <Skeleton key={i} className="h-row w-full" />
+            ))}
+          </div>
+        ) : runs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No history yet.</p>
+        ) : (
+          <div className="flex max-h-96 flex-col gap-2 overflow-auto">
+            {runs.map((run) => (
+              <div key={run.id} className="flex flex-col gap-1 rounded-md border p-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="font-normal uppercase">
+                    {run.source}
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className={run.status === "success" ? "font-normal text-success" : "font-normal text-destructive"}
+                  >
+                    {run.status}
+                  </Badge>
+                  <span className="text-muted-foreground">{parseServerDate(run.startedAt).toLocaleString()}</span>
+                  {typeof run.durationMs === "number" ? (
+                    <span className="text-muted-foreground">{run.durationMs}ms</span>
+                  ) : null}
+                </div>
+                {run.message ? <div className="truncate text-muted-foreground">{run.message}</div> : null}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -192,6 +338,7 @@ function CustomCronJobsSection({
   const queryClient = useQueryClient();
   const [dialogJob, setDialogJob] = useState<CustomCronJob | "new" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomCronJob | null>(null);
+  const [historyJob, setHistoryJob] = useState<CronJob | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["custom-cron-jobs"],
@@ -318,6 +465,14 @@ function CustomCronJobsSection({
                       <Button
                         variant="ghost"
                         size="sm"
+                        aria-label={`View history for ${job.name}`}
+                        onClick={() => setHistoryJob({ id: jobId, expression: job.expression })}
+                      >
+                        <History className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         aria-label={`Run ${job.name} now`}
                         disabled={running}
                         onClick={() => onRun(jobId)}
@@ -356,6 +511,10 @@ function CustomCronJobsSection({
             if (!open) setDialogJob(null);
           }}
         />
+      ) : null}
+
+      {historyJob ? (
+        <CronHistoryDialog job={historyJob} onOpenChange={(open) => !open && setHistoryJob(null)} />
       ) : null}
 
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>

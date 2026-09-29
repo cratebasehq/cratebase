@@ -3,6 +3,7 @@ import { SETTINGS_GROUPS } from "@/lib/settings-nav";
 import { SettingsTabsPage } from "@/components/settings/settings-form";
 import { CronJobsPage } from "@/components/settings/cron-jobs-page";
 import { WebhooksPage } from "@/components/settings/webhooks-page";
+import { QueueJobsPage } from "@/components/settings/queue-jobs-page";
 import { FunctionsPage } from "@/components/settings/functions-page";
 import { RealtimeChannelsPage } from "@/components/settings/realtime-channels-page";
 
@@ -11,6 +12,7 @@ const GROUP = SETTINGS_GROUPS.find((g) => g.to === "/settings/automation")!;
 const COMPONENT_FOR: Record<AutomationTab, React.ReactNode> = {
   cron: <CronJobsPage />,
   webhooks: <WebhooksPage />,
+  queue: <QueueJobsPage />,
   functions: <FunctionsPage />,
   realtime: <RealtimeChannelsPage />,
 };
