@@ -1,0 +1,108 @@
+---
+/**
+ * Hero stage: an isometric loading yard the product sits in. A tiled floor
+ * in the mark's projection, crate stacks at the left and right corners, and
+ * a small run of crates lifting off the left stack toward the centre (where
+ * the product window is layered on top by the page). Those lifting crates
+ * carry `.drift` and float a few px under a CSS animation that the page
+ * switches off for prefers-reduced-motion.
+ *
+ * Always drawn for a navy ground (the hero stage is harbor-dark in both
+ * themes), so it pins the dark-variant face colours itself.
+ */
+import { box, faces, braces, line, shadow, type Box } from "../../assets/illustrations/iso";
+import IsoFrame from "./IsoFrame.astro";
+
+const N = 14;
+const grid: string[] = [];
+for (let i = 0; i <= N; i++) {
+  grid.push(line([i, 0, 0], [i, N, 0]));
+  grid.push(line([0, i, 0], [N, i, 0]));
+}
+
+// Painter's order: back-to-front by x + y, then bottom-up by z.
+const stacked: Box[] = [
+  // left corner stack (screen-left = high y)
+  box(1, 10, 0), box(1, 11, 0), box(2, 11, 0), box(1, 10, 1), box(1, 11, 1), box(1, 11, 2),
+  box(3, 12, 0),
+  // right corner stack (screen-right = high x)
+  box(10, 1, 0), box(11, 1, 0), box(11, 2, 0), box(11, 1, 1), box(12, 3, 0),
+  // front pallet
+  box(10.2, 10.2, 0, 0.8), box(11.1, 10.2, 0, 0.8), box(10.2, 11.1, 0, 0.8), box(10.2, 10.2, 0.8, 0.8),
+].sort((a, b) => a.x + a.y - (b.x + b.y) || a.z - b.z);
+
+const drifting: Box[] = [box(2.4, 8.6, 3.2, 0.7), box(3.6, 7.2, 4.1, 0.5), box(4.7, 6.1, 4.8, 0.34)];
+
+const W = N * 20;
+const view = `${-W - 10} ${-20 - 3 * 18.9} ${W * 2 + 20} ${N * 21 + 40 + 3 * 18.9}`;
+---
+
+<IsoFrame viewBox={view}>
+  <g class="yard">
+    <path class="thin yard-grid" d={grid.join("")} />
+    {stacked.filter((b) => b.z === 0).map((b) => <path class="shadow" d={shadow(b, 0.22)} />)}
+    {
+      stacked.map((b) => {
+        const f = faces(b);
+        return (
+          <g>
+            <path class="crate-left" d={f.left} />
+            <path class="crate-right" d={f.right} />
+            <path class="crate-top" d={f.top} />
+            <path class="brace" d={braces(b)} />
+          </g>
+        );
+      })
+    }
+    {
+      drifting.map((b, i) => {
+        const f = faces(b);
+        return (
+          <g class="drift" style={`--i:${i}`}>
+            <path class="crate-left" d={f.left} />
+            <path class="crate-right" d={f.right} />
+            <path class="crate-top" d={f.top} />
+            <path class="brace" d={braces(b)} />
+          </g>
+        );
+      })
+    }
+  </g>
+</IsoFrame>
+
+<style>
+  .yard {
+    color: #eef1f4;
+    --iso-shadow-opacity: 0.45;
+  }
+  .yard-grid {
+    opacity: 0.09;
+  }
+  .yard :global(.shadow) {
+    fill: #02070d;
+  }
+  .yard :global(path:not(.yard-grid):not(.shadow):not(.brace)) {
+    stroke: #0a1622;
+  }
+  .yard :global(.brace) {
+    stroke: #0a1622;
+    opacity: 0.4;
+  }
+  .drift {
+    animation: drift 7s var(--ease-house) infinite alternate;
+    animation-delay: calc(var(--i) * -2.1s);
+  }
+  @keyframes drift {
+    from {
+      transform: translateY(3px);
+    }
+    to {
+      transform: translateY(-5px);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .drift {
+      animation: none;
+    }
+  }
+</style>
