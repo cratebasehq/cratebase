@@ -1,0 +1,79 @@
+---
+/**
+ * A real dashboard capture in both themes. Renders the light and the dark
+ * capture of the same screen as two <picture>s; CSS shows the one that
+ * matches the page theme (so the theme toggle repaints instantly). The
+ * hidden one is `loading="lazy"` and display:none, so the browser never
+ * fetches it unless the theme flips.
+ *
+ * Bare image only — framing (window chrome, shadow, crop box) belongs to
+ * whoever places it.
+ */
+import { Picture } from "astro:assets";
+import type { ImageMetadata } from "astro";
+
+interface Props {
+  light: ImageMetadata;
+  dark: ImageMetadata;
+  alt: string;
+  widths?: number[];
+  sizes?: string;
+  /** Load the light capture eagerly with high priority (hero use). */
+  eager?: boolean;
+  class?: string;
+}
+const {
+  light,
+  dark,
+  alt,
+  widths = [480, 800, 1200, 1600],
+  sizes = "(min-width: 1100px) 800px, 92vw",
+  eager = false,
+  class: className = "",
+} = Astro.props;
+---
+
+<span class:list={["shot", className]}>
+  <Picture
+    src={light}
+    alt={alt}
+    formats={["avif", "webp"]}
+    widths={widths}
+    sizes={sizes}
+    loading={eager ? "eager" : "lazy"}
+    fetchpriority={eager ? "high" : "auto"}
+    decoding={eager ? "sync" : "async"}
+    pictureAttributes={{ class: "shot-l" }}
+  />
+  <Picture
+    src={dark}
+    alt={alt}
+    formats={["avif", "webp"]}
+    widths={widths}
+    sizes={sizes}
+    loading="lazy"
+    decoding="async"
+    pictureAttributes={{ class: "shot-d" }}
+  />
+</span>
+
+<style>
+  .shot {
+    display: block;
+    line-height: 0;
+  }
+  .shot :global(img) {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .shot :global(.shot-d) {
+    display: none;
+  }
+  :root[data-theme="dark"] .shot :global(.shot-l) {
+    display: none;
+  }
+  :root[data-theme="dark"] .shot :global(.shot-d) {
+    display: block;
+  }
+</style>
