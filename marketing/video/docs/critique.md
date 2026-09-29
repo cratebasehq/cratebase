@@ -5,6 +5,45 @@ axes, the 3 biggest problems with timestamps, what got fixed, what's
 still open. Round continues until every score is 8+ (course step 11);
 this file is the honest record of not being there yet.
 
+# v2 (art-direction rework, 64 s, 120 BPM)
+
+Sheets per round come from `./critique.sh <render> <strip_start> <tag>`:
+`out/critique/<tag>-contact.png` (2 fps, 6 across; tile r,c = (6r+c)/2 s),
+`<tag>-strip.png` (12 consecutive frames at the fastest action) and
+`<tag>-phone.png` (1 fps at 360 px wide). Scores are 1–10 on hook, phone
+readability, motion quality, variety, composition, brand accuracy, sound
+sync. Every round below was actually looked at, not assumed.
+
+## v2 · Round 1 — animatic (12 fps, full 64 s, synthesized score muxed)
+
+Strip taken at 36.2 s (search re-ranking on every keystroke — the fastest
+state change in the film).
+
+| Axis | Score | Why |
+|---|---|---|
+| Hook | 7 | Mega words on the beat + fog cut + crate hit land hard, but 5.5–7.0 s is nearly static (only one line rising under the wordmark). |
+| Phone readability | 6 | Statements, terminal, rules, auth card and inbox all read at 360 px. Superpowers panel details (search rows, board cards, notification rows) are ~30–36 px and blur out; the 2×2 wall is texture only. |
+| Motion quality | 7 | Springs, camera racks and the auth morph feel expensive. Search rows cross through each other mid-swap (transparent rows, keystrokes every 16th so springs never settle); CTA ends on a near-static hold. |
+| Variety | 8 | Every chapter changes ground, technique and scale; a new state at least every beat in Superpowers. |
+| Composition | 7 | Full-bleed everywhere, strong focal points; map and proof cells leave some slack, CTA right-bottom quadrant empty. |
+| Brand accuracy | 9 | Real palette, crate geometry from iso.ts, real product captures and fonts; v0.5 features labelled. |
+| Sound sync | 6 | Score renders from the same cue sheet (164 cues) and structure matches the picture (hits at 4.0/56.0, drop at 48), but the mix has not been checked against the picture onset-by-onset yet. |
+
+### 3 worst problems
+1. **Dead holds** — 60.0–64.0 s CTA barely moves (6 % push only); 5.5–7.0 s hook near-static.
+2. **Superpowers detail too small on phone** — 36–44 s panel text 29–36 px.
+3. **Text overlapping during swaps** — 36.25–37.0 s search rows cross with transparent backgrounds.
+
+### Fixes
+1. CTA: a row of seven feature chips builds one per beat 60.5–63.5 s, each with a pop; hook: constant slow dolly on the crate stage 4.0–7.5 s with the wordmark drifting at a different rate (parallax).
+2. Search rows 170 px (58 px titles), board cards 36 px text, notification rows 40 px, map list/pins enlarged.
+3. Search rows get a solid ground and the rising row is drawn on top; keystrokes move to 8th notes (36.25–37.5 s) so each re-rank settles before the next.
+
+
+---
+
+# v1 history (superseded animatic, 66 s)
+
 ## Round 1 — `out/animatic.mp4` (8fps, 66s, silent, no `--sub` blur)
 
 Reviewed: `out/contact-full.png` (12x11 tile, fps=2, full 66s), a

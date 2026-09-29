@@ -195,7 +195,7 @@ export default [
       const enter = heavy(t - 22.0);
       const focusY = s.wrapTop - 70 + h / 2; // card-local y to keep centred
       const cx = P ? (L.W - 360 * k) / 2 : L.W * 0.315;
-      const cyScreen = P ? L.H * 0.6 : L.H * 0.54;
+      const cyScreen = P ? L.H * 0.52 : L.H * 0.54;
       const kk = k * (0.82 + 0.18 * enter) * (1 - 0.3 * exitP);
       const x = cx + (1 - enter) * L.W * 0.5 - exitP * (P ? 0 : L.W * 0.25);
       const y = cyScreen - focusY * kk + exitP * L.H * 1.1;

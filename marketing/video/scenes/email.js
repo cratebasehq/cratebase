@@ -80,7 +80,7 @@ export default [
         const cam = camTrack(t, keys);
         const m = shotMatrix({ ...cam, persp: 2200 });
         ed.set(m);
-        ed.spot({ x: line.x - 200, y: line.y, w: line.w + 400, h: line.h }, clamp((t - 30.35) / 0.3) * 0.7 * (1 - clamp((t - 32) / 0.3)));
+        ed.spot({ x: line.x - 200, y: line.y, w: line.w + 400, h: line.h }, clamp((t - 30.05) / 0.3) * 0.92 * (1 - clamp((t - 32) / 0.3)));
         // ring locks on 30.75
         const rp = snappy(t - 30.75);
         show(s.ring, t >= 30.75 && t < 32.0);

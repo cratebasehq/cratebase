@@ -36,7 +36,8 @@ export default [
       const big = maskLine(root, "disp", "10.47×");
       S(big.wrap, { fontVariantNumeric: "tabular-nums", paddingBottom: "0.08em" });
       const probe = el("div", "abs disp nowrap", root, "10.47×");
-      const bigSize = P ? fitWidth(probe, L.W - 2 * L.m, 300) : fitWidth(probe, L.W * 0.66, 300);
+      S(probe, { fontVariantNumeric: "tabular-nums" });
+      const bigSize = P ? fitWidth(probe, (L.W - 2 * L.m) * 0.92, 300) : fitWidth(probe, L.W * 0.66, 300);
       probe.remove();
       S(big.wrap, { fontSize: px(bigSize) });
       const cap = statement(root, P ? ["faster record list reads", "at 50 concurrent clients"] : ["faster record list reads at 50 concurrent clients"]);
@@ -146,10 +147,12 @@ export default [
       show(s.imp, on4);
       show(s.conf, on4);
       if (on4) {
-        const src = `import PocketBase from "pocketbase";\n\nconst pb = new PocketBase("http://127.0.0.1:8090");`;
+        const src = P
+          ? `import PocketBase from "pocketbase";\n\nconst pb = new PocketBase(\n  "http://127.0.0.1:8090"\n);`
+          : `import PocketBase from "pocketbase";\n\nconst pb = new PocketBase("http://127.0.0.1:8090");`;
         const n = Math.floor(clamp((t - 54.5) / 0.6) * 12) / 12;
         html(s.imp, src.slice(0, Math.round(src.length * n)).replace(/"[^"]*"/g, (m) => `<span style="color:#f6b183">${m}</span>`));
-        S(s.imp, { fontSize: px((P ? 34 : 52) * u), transform: `translate3d(${px(L.m)},${px(P ? L.H * 0.45 : L.H * 0.55)},0)` });
+        S(s.imp, { fontSize: px((P ? 40 : 52) * u), transform: `translate3d(${px(L.m)},${px(P ? L.H * 0.45 : L.H * 0.55)},0)` });
         text(s.conf, "180 of 181 SDK conformance tests pass.");
         S(s.conf, { fontSize: px((P ? 52 : 72) * u), transform: `translate3d(${px(L.m)},${px(P ? L.H * 0.66 : L.H * 0.78)},0) scale(${snappy(t - 55.25).toFixed(3)})`, transformOrigin: "0 50%" });
       }

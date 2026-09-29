@@ -27,9 +27,9 @@ const DOCS = [
   { t: "Shipping the places search feature", b: "Full-text search across name and description, ranked, in one query parameter.", c: "posts" },
 ];
 const QUERY = "coffee";
-const Q_T = [36.25, 36.375, 36.5, 36.625, 36.75, 36.875]; // one letter per 16th
+const Q_T = [36.25, 36.5, 36.75, 37.0, 37.25, 37.5]; // one letter per 8th: each re-rank settles
 const QUERY2 = "vinyl";
-const Q2_T = [44.5, 44.625, 44.75, 44.875, 45.0];
+const Q2_T = [44.5, 44.75, 45.0, 45.25, 45.5];
 const words = (s) => s.toLowerCase().match(/[a-z0-9-]+/g) || [];
 function score(doc, q) {
   if (!q) return 0;
@@ -98,7 +98,6 @@ const MARK_READ = 43.5;
 // ------------------------------------------------------------------ cues
 addCue(36.0, "whoosh", { dur: 0.4, gain: 0.6 });
 Q_T.forEach((t) => addCue(t, "keys", { n: 1, dur: 0.05 }));
-[37.0, 37.5].forEach((t) => addCue(t, "tick", { note: 88 }));
 addCue(38.0, "whoosh", { dur: 0.35, gain: 0.5 });
 addCue(38.0, "riser", { dur: 0.5 });
 PIN_T.forEach((t, i) => addCue(t, "pin", { note: 72 + [0, 3, 7, 10][i] }));
@@ -144,16 +143,16 @@ function buildSearch(root, W, H, portrait) {
   const count = el("div", "abs nowrap", p);
   S(count, { fontFamily: "RHMono, monospace", fontSize: px(fieldH * 0.24), color: C.dim, left: px(pad), top: px(fieldY + fieldH + fieldH * 0.22) });
   const listY = fieldY + fieldH * 1.75;
-  const rowH = (portrait ? 150 * (W / 1080) : 138 * u);
+  const rowH = (portrait ? 170 * (W / 1080) : 172 * u);
   const rows = DOCS.map((d) => {
     const r = el("div", "abs", p);
-    S(r, { left: px(pad), width: px(W - 2 * pad), height: px(rowH - 10 * u), borderBottom: `2px solid ${C.line}`, overflow: "hidden" });
+    S(r, { left: px(pad), width: px(W - 2 * pad), height: px(rowH - 10 * u), borderBottom: `2px solid ${C.line}`, overflow: "hidden", background: C.bg });
     const tag = el("div", "abs nowrap", r, d.c);
     S(tag, { left: "auto", right: "0px", top: px(rowH * 0.14), fontFamily: "RHMono, monospace", fontSize: px(rowH * 0.2), color: d.c === "posts" ? C.manifest : C.crate, border: `2px solid ${C.line}`, borderRadius: px(8), padding: "0.05em 0.45em" });
     const t = el("div", "abs nowrap", r);
     S(t, { left: "0px", top: px(rowH * 0.1), fontSize: px(rowH * 0.34), fontWeight: 600, letterSpacing: "-0.01em", maxWidth: px(W - 2 * pad - rowH * 1.6), overflow: "hidden", textOverflow: "ellipsis" });
     const b = el("div", "abs nowrap", r);
-    S(b, { left: "0px", top: px(rowH * 0.54), fontSize: px(rowH * 0.23), color: C.dim, maxWidth: px(W - 2 * pad), overflow: "hidden", textOverflow: "ellipsis" });
+    S(b, { left: "0px", top: px(rowH * 0.54), fontSize: px(rowH * 0.23), opacity: 0.6, maxWidth: px(W - 2 * pad), overflow: "hidden", textOverflow: "ellipsis" });
     return { r, t, b };
   });
   const chip = el("div", "chip", p, `cb.collection("places").list({ search: "coffee" })`);
@@ -174,7 +173,7 @@ function drawSearch(s, t, typedAt, query, t0) {
   text(s.count, q ? `${hits} result${hits === 1 ? "" : "s"}` : "");
   s.rows.forEach((row, i) => {
     const y = track(t, rk.map(([x, r]) => [x, s.listY + r.rank[i] * s.rowH]), 320, 30);
-    S(row.r, { top: px(y), opacity: String(q && cur.score[i] === 0 ? 0.28 : 1) });
+    S(row.r, { top: px(y), zIndex: String(10 - cur.rank[i]), color: q && cur.score[i] === 0 ? "rgba(246,244,239,.3)" : C.paper });
     html(row.t, markup(DOCS[i].t, q));
     html(row.b, markup(DOCS[i].b, q));
   });
@@ -285,10 +284,10 @@ function buildBoard(root, W, H, portrait) {
     S(h, { left: px(22 * U), top: px(20 * U), fontSize: px(30 * U), fontWeight: 600, color: C.dim });
     return c;
   });
-  const cardH = (portrait ? 190 : 150) * U;
+  const cardH = (portrait ? 200 : 190) * U;
   const cardEls = CARDS.map(([ci, title], k) => {
     const e = el("div", "abs", p, title);
-    S(e, { width: px(colW - 36 * U), height: px(cardH), background: C.bg, border: `2px solid ${C.line}`, borderRadius: px(12 * U), padding: px(20 * U), fontSize: px((portrait ? 26 : 29) * U), fontWeight: 500, lineHeight: 1.25 });
+    S(e, { width: px(colW - 36 * U), height: px(cardH), background: C.bg, border: `2px solid ${C.line}`, borderRadius: px(12 * U), padding: px(20 * U), fontSize: px((portrait ? 30 : 36) * U), fontWeight: 500, lineHeight: 1.22 });
     return e;
   });
   const slot = (ci, row) => [pad + ci * (colW + 24 * U) + 18 * U, top + 80 * U + row * (cardH + 16 * U)];
@@ -364,14 +363,14 @@ function buildNotes(root, W, H, portrait) {
   const mh = el("div", "abs nowrap", menu);
   S(mh, { left: px(28 * U), right: px(28 * U), top: px(22 * U), height: px(60 * U), display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: px(30 * U), fontWeight: 600 });
   mh.innerHTML = `<span>Notifications</span><span data-k="mar" style="color:${C.manifest};font-weight:600">Mark all read</span>`;
-  const rowH = (portrait ? 124 : 104) * U;
+  const rowH = (portrait ? 128 : 116) * U;
   const rows = NOTES.map((n, i) => {
     const r = el("div", "abs", menu);
     S(r, { left: px(16 * U), right: px(16 * U), height: px(rowH - 8 * U), borderRadius: px(12 * U), padding: `${px(14 * U)} ${px(20 * U)} 0 ${px(52 * U)}` });
     const dot = el("div", "abs", r);
     S(dot, { left: px(20 * U), top: px(26 * U), width: px(16 * U), height: px(16 * U), borderRadius: "50%", background: C.crate });
     const tx = el("div", "nowrap", r, n);
-    S(tx, { fontSize: px((portrait ? 32 : 36) * U), fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", maxWidth: px(lw - 110 * U) });
+    S(tx, { fontSize: px((portrait ? 34 : 42) * U), fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", maxWidth: px(lw - 110 * U) });
     const tm = el("div", "nowrap", r, i === 0 ? "just now" : `${i * 2} min ago`);
     S(tm, { fontSize: px(22 * U), color: C.dim, marginTop: px(6 * U) });
     return { r, dot, tx };

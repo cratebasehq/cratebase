@@ -87,9 +87,22 @@ export default [
         const fields = sch.union(sch.box("name", { kind: "input" }), sch.box("owner", { kind: "input" }), sch.box("Relation", { kind: "button" }), sch.box("→ users"));
         const rule = sch.union(sch.box("Update"), sch.box(RULE, { kind: "input", n: 0 }));
         const ruleTight = { x: rule.x, y: rule.y, w: 380 * 4, h: rule.h };
+        if (P) { ruleTight.w = 250 * 4; }
         const fF = frame(fields, below, { fill: 0.94 });
         const fR = frame(ruleTight, { ...below, h: below.h * 0.7 }, { fill: 0.9 });
-        const keys = [
+        // portrait: rack across the row instead of shrinking it — names, then types
+        const namesCol = sch.union(sch.box("name", { kind: "input" }), sch.box("owner", { kind: "input" }));
+        const typesCol = sch.union(sch.box("Text", { kind: "button" }), sch.box("Relation", { kind: "button" }), sch.box("→ users"));
+        const fN = frame({ ...namesCol, w: namesCol.w * 0.8 }, below, { fill: 0.96 });
+        const fT = frame({ x: typesCol.x - 300, y: typesCol.y, w: typesCol.w + 300, h: typesCol.h }, below, { fill: 0.94 });
+        const keys = P ? [
+          [13.9, { ...fN, z: fN.z * 0.45, rx: 30, ry: -26, rz: 4, lift: -400 }],
+          [14.0, { ...fN, rx: 6, ry: -10, rz: 0, lift: 0 }],
+          [14.9, { ...fT, rx: 6, ry: 10 }],
+          [16.0, { ...fR, rx: 6, ry: 6 }],
+          [17.5, { z: fR.z * 1.06, rx: 2, ry: 2 }],
+          [17.95, { cx: fR.cx + 2400, z: fR.z * 0.8, ry: -30 }],
+        ] : [
           [13.9, { ...fF, z: fF.z * 0.45, rx: 30, ry: -26, rz: 4, lift: -400 }],
           [14.0, { ...fF, rx: 8, ry: -8, rz: 0, lift: 0 }],
           [15.9, { rx: 4, ry: -4, z: fF.z * 1.04 }],
@@ -103,7 +116,7 @@ export default [
         // spotlight follows the focus region
         const focus = t < 16 ? fields : rule;
         const pad = 60;
-        sch.spot({ x: focus.x - pad, y: focus.y - pad, w: focus.w + 2 * pad, h: focus.h + 2 * pad }, 0.84 * clamp((t - 13.95) / 0.3));
+        sch.spot({ x: focus.x - pad, y: focus.y - pad, w: focus.w + 2 * pad, h: focus.h + 2 * pad }, 0.9 * clamp((t - 13.95) / 0.3));
         // rows unmask one per beat
         s.rowsR.forEach((r, i) => {
           const p = heavy(t - 14.0 - i * 0.5);
@@ -138,8 +151,10 @@ export default [
       if (onRec) {
         const cols = rec.union(rec.box("name", { kind: "text" }), rec.box("Warung Tekko"), rec.box("-6.2297"));
         const cols2 = rec.union(rec.box("location", { kind: "text", n: 0 }), rec.box("Amara Chen", { n: 1 }), rec.box("-6.2297"));
-        const fA = frame(cols, below, { fill: 0.94 });
-        const fB = frame(cols2, below, { fill: 0.94 });
+        const colsP = rec.union(rec.box("name", { kind: "text" }), rec.box("Pasar Santa Vinyl Corner"), rec.box("Warung Tekko"));
+        const fA = frame(P ? colsP : cols, below, { fill: 0.94 });
+        const cols2P = rec.union(rec.box("location", { kind: "text", n: 0 }), rec.box("-6.2297"), rec.box("-6.2407"));
+        const fB = frame(P ? { ...cols2P, w: cols2P.w + 360 } : cols2, below, { fill: 0.94 });
         const keys = [
           [17.85, { ...fA, cx: fA.cx - 2600, z: fA.z * 0.8, rx: 6, ry: 30, lift: -200 }],
           [18.0, { ...fA, rx: 6, ry: -6, lift: 0 }],

@@ -6,7 +6,7 @@
 //   node audio/score.mjs [--out out/score.wav] [--dur 64] [--tail 2.5] [--stems]
 
 import path from "node:path";
-import { BEAT, BAR, DUR, SECTIONS, CHORDS, CUES } from "../lib/timeline.js";
+import { BEAT, BAR, DUR, SECTIONS, CHORDS, CUES } from "../lib/cues.mjs";
 import {
   TWO_PI,
   clamp,

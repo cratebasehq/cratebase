@@ -96,11 +96,11 @@ export default [
       const active = LINES.reduce((acc, l, i) => (t >= l[0] ? i : acc), 0);
       // --- camera over the terminal. Keep the text's left edge (plane x=110)
       // just right of the statement band once statements are on screen.
-      const zBase = L.portrait ? 0.78 : 1.2;
+      const zBase = L.portrait ? 0.9 : 1.2;
       const follow = track(t, LINES.map((l, i) => [l[0], rowY(Math.min(i, 9))]), 170, 26);
       const dashY = rowY(7);
       const leftAt = (screenX, z, pxC) => 110 + (pxC - screenX) / z; // cx so plane x=110 lands at screenX
-      const zA = zBase, zB = zBase * 0.8;
+      const zA = zBase, zB = zBase * (L.portrait ? 0.95 : 0.8);
       const pxA = L.W * 0.5, pxB = L.portrait ? L.W * 0.5 : L.W * 0.62;
       const pyB = L.portrait ? L.H * 0.66 : L.H * 0.52;
       const keys = [

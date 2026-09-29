@@ -18,7 +18,8 @@ addCue(58.0, "keys", { n: 16, dur: 0.75 });
 addCue(59.0, "pop", { note: 74 });
 addCue(59.5, "pop", { note: 77 });
 addCue(60.0, "pop", { note: 81 });
-addCue(62.0, "sub", { gain: 0.4 });
+const CHIPS = ["Collections", "Auth", "Files", "Realtime", "Email", "Search", "Rules"];
+CHIPS.forEach((_, i) => addCue(60.5 + i * 0.5, "pop", { note: 69 + [0, 2, 3, 5, 7, 9, 12][i] }));
 
 export default [
   {
@@ -54,7 +55,13 @@ export default [
       S(pill, { background: "#101f30", color: "#eef1f4", borderRadius: "999px", padding: "0.5em 0.9em", boxShadow: "0 0 0 2px rgba(238,241,244,.14)", fontWeight: 600 });
       const links = statement(cam, ["cratebase.dev", "github.com/cratebasehq/cratebase"], "stmt");
       const fine = statement(cam, P ? ["MIT licensed. Self-hostable.", "One binary."] : ["MIT licensed. Self-hostable. One binary."]);
-      return { cam, crate, svgW, svgH, word, wsize, tag, pill, links, fine };
+      const chips = CHIPS.map((c) => {
+        const e = el("div", "abs nowrap", cam, c);
+        S(e, { fontFamily: "var(--display)", fontWeight: 700, fontStretch: "92%", color: "#eef1f4", background: "#101f30", border: "2px solid rgba(238,241,244,.16)", borderRadius: "999px", padding: "0.22em 0.7em 0.28em", transformOrigin: "50% 100%", fontSize: px((P ? 40 : 40) * L.u) });
+        e.__w = e.offsetWidth; // layout width, measured once at build (no transforms)
+        return e;
+      });
+      return { cam, crate, svgW, svgH, word, wsize, tag, pill, links, fine, chips };
     },
     draw(t, s, L) {
       const P = L.portrait;
@@ -68,7 +75,7 @@ export default [
       const z = 1 + 0.06 * prog(t, 59.0, 64.0);
       S(s.cam, { transform: `scale(${z.toFixed(4)})` });
       const x = L.m;
-      const wy = P ? L.H * 0.46 : L.H * 0.2;
+      const wy = P ? L.H * 0.4 : L.H * 0.2;
       place(s.word.wrap, x, wy);
       show(s.word.wrap, t >= 56.4);
       S(s.word.inner, { transform: `translate3d(0,${((1 - heavy(t - 56.5)) * 125).toFixed(1)}%,0)` });
@@ -84,6 +91,19 @@ export default [
         S(s.pill, { fontSize: px((P ? 30 : 34) * u), transform: `translate3d(${px(x)},${px(ty + (P ? 120 : 150) * u)},0) scale(${snappy(t - 57.95).toFixed(3)})`, transformOrigin: "0 50%" });
       }
       drawStatement(s.links, t, 59.0, 999, { x, y: ty + (P ? 240 : 270) * u, size: (P ? 58 : 66) * u, color: "#eef1f4", stagger: 0.5, lh: 1.25 });
+      // feature chips build one per beat under the crate (16:9) / below the lockup (9:16)
+      const cs = (P ? 40 : 40) * u;
+      let cxp = P ? L.m : L.W * 0.545, cyp = P ? L.H * 0.845 : L.H * 0.77, rowStart = cxp;
+      s.chips.forEach((e, i) => {
+        const t0 = 60.5 + i * 0.5;
+        show(e, t >= t0);
+        const w = e.__w;
+        const maxX = L.W - L.m;
+        if (cxp + w > maxX) { cxp = rowStart; cyp += cs * 1.9; }
+        const p = heavy(t - t0);
+        place(e, cxp, cyp + (1 - p) * cs * 1.6, ` scale(${(0.7 + 0.3 * p).toFixed(3)})`);
+        cxp += w + cs * 0.4;
+      });
       drawStatement(s.fine, t, 60.0, 999, { x, y: ty + (P ? 420 : 440) * u, size: (P ? 40 : 46) * u, color: "#93a4b6" });
     },
   },

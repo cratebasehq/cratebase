@@ -135,7 +135,8 @@ export default [
       void land;
       // camera push into the top face 7.0→7.7 (exponential zoom)
       const pz = prog(t, 7.0, 7.75);
-      const zoom = Math.exp(easeIn(pz) * Math.log(16));
+      const dolly = 1 + 0.07 * prog(t, 4.0, 7.2);
+      const zoom = Math.exp(easeIn(pz) * Math.log(16)) * dolly;
       // crate svg positioned so its box centre is at (cx, cy)
       const sx = s.cx - s.svgW / 2, sy = s.cy - s.svgH / 2 + dropY;
       S(s.svg, { transform: `translate3d(${px(sx)},${px(sy)},0) scale(1,${squash.toFixed(4)})`, transformOrigin: "50% 100%" });
@@ -155,11 +156,12 @@ export default [
       const wx = L.portrait ? L.m : L.m;
       const wy = L.portrait ? L.H * 0.12 : L.H * 0.5 - s.wsize * 0.78;
       show(s.word.wrap, t >= 4.9);
-      place(s.word.wrap, wx - out * L.W * 0.6, wy);
+      const drift = -38 * L.u * prog(t, 4.9, 7.2);
+      place(s.word.wrap, wx - out * L.W * 0.6 + drift, wy);
       S(s.word.inner, { transform: `translate3d(0,${((1 - heavy(t - 5.0)) * 125).toFixed(2)}%,0)` });
       const tsize = (L.portrait ? 92 : 104) * L.u;
       drawStatement(s.tag, t, 6.0, 999, {
-        x: wx - out * L.W * 0.6,
+        x: wx - out * L.W * 0.6 + drift * 1.6,
         y: wy + s.wsize * 0.98,
         size: tsize,
         color: "#93a4b6",

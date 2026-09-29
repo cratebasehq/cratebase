@@ -42,7 +42,7 @@ echo "measured: I=$MEASURED_I LUFS  TP=$MEASURED_TP dBTP  LRA=$MEASURED_LRA  thr
 echo "== master.sh: pass 2 (apply, linear normalization) =="
 ffmpeg -hide_banner -nostats -y -i "$IN" -af \
   "loudnorm=I=$I:TP=$TP:LRA=$LRA:measured_I=$MEASURED_I:measured_TP=$MEASURED_TP:measured_LRA=$MEASURED_LRA:measured_thresh=$MEASURED_THRESH:offset=$OFFSET:linear=true:print_format=summary" \
-  -ar 48000 -c:a pcm_s24le "$OUT"
+  -ar 48000 -c:a pcm_s24le "$OUT.tmp.wav" && ffmpeg -hide_banner -nostats -loglevel error -y -i "$OUT.tmp.wav" -af "alimiter=limit=0.84:attack=1:release=60:level=false" -ar 48000 -c:a pcm_s24le "$OUT" && rm -f "$OUT.tmp.wav"
 
 echo "== master.sh: verifying result ($OUT) =="
 RESULT=$(ffmpeg -hide_banner -nostats -i "$OUT" -af "loudnorm=I=$I:TP=$TP:LRA=$LRA:print_format=json" -f null - 2>&1)
