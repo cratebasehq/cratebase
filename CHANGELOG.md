@@ -50,8 +50,10 @@ one-command starter kits (`bun create cratebase`).
 
 - `settings.queue.enabled` is now a live toggle — no restart. It gates
   only processing; enqueueing, retrying and deleting always work.
-- Cron jobs (SQL and JS) take a Postgres advisory lock per tick, so a
-  multi-node cluster runs each tick on exactly one node. No-op on SQLite.
+- Cron jobs (SQL and JS) claim each scheduled tick with a
+  `UNIQUE (jobId, tickAt)` row in `_cronRuns` before running, so a
+  multi-node cluster runs each tick on exactly one node — durable, not
+  timing-dependent. Single-node SQLite behaves as before.
 - **`create-cratebase`** — a scaffolding CLI (`bun create cratebase my-app` /
   `npm create cratebase@latest my-app`) with three templates (`nextjs`,
   `vite-react`, `expo`), each shipping a `schema.json`, `pb_seed/` demo
@@ -65,8 +67,8 @@ one-command starter kits (`bun create cratebase`).
 
 ### Upgrading from 0.5.0
 
-- Migration `21` runs automatically (`_webhookDeliveries`, `_cronRuns`, new
-  `_webhooks` fields). Existing webhooks start recording deliveries and
+- Migrations `21` and `22` run automatically (`_webhookDeliveries`,
+  `_cronRuns` with a unique tick claim, new `_webhooks` fields). Existing webhooks start recording deliveries and
   retrying on failure.
 - Webhook receivers can now verify `X-Cratebase-Signature: sha256=…` over
   `"{X-Cratebase-Timestamp}.{body}"` and dedupe on `X-Cratebase-Delivery`.

@@ -139,10 +139,14 @@ pub fn start(app: &App) {
     });
 
     let cron_app = app.clone();
-    let _ = app.cron().add(CLEANUP_JOB_ID, "0 */6 * * *", move || {
-        let app = cron_app.clone();
-        async move { cleanup(&app).await }
-    });
+    let _ = app.cron().add(
+        CLEANUP_JOB_ID,
+        "0 */6 * * *",
+        move |_tick_at: crate::cron::TickAt| {
+            let app = cron_app.clone();
+            async move { cleanup(&app).await }
+        },
+    );
 }
 
 /// Insert one `pending` `_webhookDeliveries` row. `record` is the

@@ -22,9 +22,19 @@ use chrono::{DateTime, Timelike, Utc};
 use cratebase_core::AppError;
 use croner::Cron;
 
+/// The canonical timestamp for one invocation of a job: for a real
+/// scheduled tick, `now` (whatever wall-clock value drove that tick)
+/// floored to the minute — identical on every node that reaches the same
+/// scheduled minute, which is what lets `crate::cron_history` claim a
+/// tick durably instead of racing an in-transaction lock. For an
+/// on-demand [`CronService::run`] call it is simply "now", full
+/// precision, so triggering a job manually never collides with a
+/// scheduled tick or an earlier manual trigger in the same minute.
+pub type TickAt = DateTime<Utc>;
+
 /// A job body. Boxed and shared so `run(id)` can fire the same closure
 /// the scheduler uses.
-pub type JobFn = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type JobFn = Arc<dyn Fn(TickAt) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// System job ids, kept identical to PocketBase's.
 pub const JOB_DB_OPTIMIZE: &str = "__pbDBOptimize__";
@@ -101,10 +111,10 @@ impl CronService {
         func: F,
     ) -> Result<(), AppError>
     where
-        F: Fn() -> Fut + Send + Sync + 'static,
+        F: Fn(TickAt) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let func: JobFn = Arc::new(move || Box::pin(func()));
+        let func: JobFn = Arc::new(move |tick_at| Box::pin(func(tick_at)));
         self.add_boxed(id, expression, func)
     }
 
@@ -171,7 +181,9 @@ impl CronService {
     }
 
     /// `POST /api/crons/{id}`: run the job now, inline, so the caller
-    /// learns whether it panicked.
+    /// learns whether it panicked. Its tick is "now", full precision —
+    /// see [`TickAt`]'s doc for why that's deliberately not floored to
+    /// the minute the way a real scheduled tick is.
     pub async fn run(&self, id: &str) -> Result<(), AppError> {
         let func = {
             let inner = self.inner.read().expect("cron registry poisoned");
@@ -181,7 +193,7 @@ impl CronService {
                 .map(|j| j.func.clone())
                 .ok_or_else(|| AppError::not_found("Missing or invalid cron job."))?
         };
-        run_guarded(id.to_string(), func).await;
+        run_guarded(id.to_string(), func, Utc::now()).await;
         Ok(())
     }
 
@@ -206,10 +218,22 @@ impl CronService {
         self.started.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Fire every job due at `now`, at most once per minute per job.
+    /// Fire every job due at `now`, at most once per minute per job. Every
+    /// job fired by the same call gets the same [`TickAt`] — `now` floored
+    /// to the minute (seconds and sub-seconds zeroed) — so two nodes
+    /// ticking the same scheduled minute, even microseconds apart by wall
+    /// clock, agree on exactly the same canonical tick for
+    /// `crate::cron_history`'s durable claim to key on.
+    ///
     /// Public so tests can drive the scheduler deterministically.
     pub fn tick(&self, now: DateTime<Utc>) -> Vec<String> {
         let minute = now.timestamp() / 60;
+        // `croner` matches to the second; the schedule is minute-resolution,
+        // so normalise seconds and sub-seconds away.
+        let at_minute = now
+            .with_second(0)
+            .and_then(|t| t.with_nanosecond(0))
+            .unwrap_or(now);
         let due: Vec<Job> = {
             let mut inner = self.inner.write().expect("cron registry poisoned");
             let candidates: Vec<Job> = inner
@@ -223,9 +247,6 @@ impl CronService {
                     if inner.last_run.get(&job.id) == Some(&minute) {
                         return false;
                     }
-                    // `croner` matches to the second; the schedule is
-                    // minute-resolution, so normalise the second away.
-                    let at_minute = now.with_second(0).unwrap_or(now);
                     if job.schedule.is_time_matching(&at_minute).unwrap_or(false) {
                         inner.last_run.insert(job.id.clone(), minute);
                         true
@@ -239,7 +260,7 @@ impl CronService {
         let mut fired = Vec::with_capacity(due.len());
         for job in due {
             fired.push(job.id.clone());
-            tokio::spawn(run_guarded(job.id, job.func));
+            tokio::spawn(run_guarded(job.id, job.func, at_minute));
         }
         fired
     }
@@ -248,9 +269,10 @@ impl CronService {
 /// Run one job, turning a panic into a log line. A cron job is background
 /// work nobody is waiting on; taking the scheduler down with it would
 /// silently stop every other job.
-async fn run_guarded(id: String, func: JobFn) {
+async fn run_guarded(id: String, func: JobFn, tick_at: TickAt) {
     let started = std::time::Instant::now();
-    let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(func())).await;
+    let result =
+        futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(func(tick_at))).await;
     match result {
         Ok(()) => {
             tracing::debug!(job = %id, elapsed_ms = started.elapsed().as_millis() as u64, "cron job finished")
@@ -282,14 +304,15 @@ mod tests {
         let cron = CronService::new();
         let hits = Arc::new(AtomicUsize::new(0));
         let h = hits.clone();
-        cron.add("job-a", "0 0 * * *", move || {
+        cron.add("job-a", "0 0 * * *", move |_tick_at| {
             let h = h.clone();
             async move {
                 h.fetch_add(1, Ordering::SeqCst);
             }
         })
         .unwrap();
-        cron.add("job-b", "*/5 * * * *", || async {}).unwrap();
+        cron.add("job-b", "*/5 * * * *", |_tick_at| async {})
+            .unwrap();
 
         assert_eq!(
             cron.list(),
@@ -317,14 +340,17 @@ mod tests {
     #[test]
     fn invalid_expressions_are_rejected() {
         let cron = CronService::new();
-        let err = cron.add("bad", "not a cron", || async {}).unwrap_err();
+        let err = cron
+            .add("bad", "not a cron", |_tick_at| async {})
+            .unwrap_err();
         assert_eq!(err.status(), 400);
     }
 
     #[tokio::test]
     async fn a_job_fires_once_per_matching_minute() {
         let cron = CronService::new();
-        cron.add("hourly", "0 * * * *", || async {}).unwrap();
+        cron.add("hourly", "0 * * * *", |_tick_at| async {})
+            .unwrap();
 
         assert_eq!(cron.tick(at("2026-09-03T12:00:00Z")), ["hourly"]);
         assert!(
@@ -338,9 +364,37 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_job_does_not_poison_the_service() {
         let cron = CronService::new();
-        cron.add("boom", "* * * * *", || async { panic!("kaboom") })
+        cron.add("boom", "* * * * *", |_tick_at| async { panic!("kaboom") })
             .unwrap();
         cron.run("boom").await.unwrap();
         assert_eq!(cron.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tick_passes_the_same_floored_minute_to_every_job_it_fires() {
+        let cron = CronService::new();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = seen.clone();
+        cron.add("hourly", "0 * * * *", move |tick_at| {
+            let s = s.clone();
+            async move {
+                s.lock().unwrap().push(tick_at);
+            }
+        })
+        .unwrap();
+
+        // Same minute, non-zero seconds and sub-second precision — the
+        // tick handed to the job body must have both zeroed.
+        let fired = at("2026-09-03T12:00:47.123Z");
+        assert_eq!(cron.tick(fired), ["hourly"]);
+        // The job runs on a spawned task; give it a moment.
+        for _ in 0..50 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got, vec![at("2026-09-03T12:00:00Z")]);
     }
 }

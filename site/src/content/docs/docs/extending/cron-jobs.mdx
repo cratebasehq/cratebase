@@ -22,11 +22,14 @@ dashboard CRUD (it lives in a `pb_hooks/*.pb.js` file, not a record).
 Every SQL `_cron_jobs` run and every JS `cronAdd` run also lands one row
 in `_cronRuns` — `jobId` (the same id `GET /api/crons` lists: `custom:<id>`
 for a SQL job, the raw `cronAdd` id otherwise), `source` (`sql`/`js`),
-`status` (`success`/`error`), `startedAt`, `durationMs`, and `message`.
-This is what gives a JS `cronAdd` job — which otherwise has no row of
-its own anywhere — the same run-history visibility `_cron_jobs`' own
-`lastRunAt`/`lastStatus`/`lastMessage` columns already gave SQL jobs; the
-dashboard's **Cron jobs** tab shows both. Query `_cronRuns` directly
+`status` (`running`/`success`/`error`), `startedAt`, `tickAt`,
+`durationMs`, and `message`. `tickAt` is the scheduled minute this run
+claims (see **Multi-node safety** below) — `null` on a row written before
+`tickAt` existed. This is what gives a JS `cronAdd` job — which otherwise
+has no row of its own anywhere — the same run-history visibility
+`_cron_jobs`' own `lastRunAt`/`lastStatus`/`lastMessage` columns already
+gave SQL jobs; the dashboard's **Cron jobs** tab shows both. Query
+`_cronRuns` directly
 (`GET /api/collections/_cronRuns/records?filter=jobId%3D%22custom%3Aabc123%22&sort=-startedAt`)
 for a fuller history than the "last run" snapshot alone.
 
@@ -34,9 +37,22 @@ for a fuller history than the "last run" snapshot alone.
 
 Each server node's own scheduler decides *independently* that a job is
 due — with more than one node sharing a Postgres database, every node
-can reach the same tick at once. A `pg_try_advisory_xact_lock` check
-(transaction-scoped, released automatically at commit — never at risk of
-leaking a lock into a pooled connection) picks exactly one winner per
-tick for both SQL and JS jobs alike; every other node skips silently,
-before the job body ever runs, and only the winner's run is recorded in
-`_cronRuns`. SQLite (never multi-node) always proceeds.
+can reach the same scheduled minute at once. Every node normalizes that
+minute the same way (the tick's timestamp floored to the minute, called
+`tickAt`), so two nodes racing the same tick always agree on the exact
+value. Before running a job's body, a node *claims* that tick by
+inserting the `_cronRuns` row for it itself — `status: "running"` —
+guarded by a `UNIQUE (jobId, tickAt)` index with `INSERT ... ON CONFLICT
+DO NOTHING` (Postgres) / `INSERT OR IGNORE` (SQLite): only the node whose
+insert actually lands a row has won the claim, and only that node's job
+body ever runs, for both SQL and JS jobs alike. Every other node's insert
+affects zero rows and it skips silently, before the job body ever
+runs. The winner updates that same row in place once the body finishes
+(`status: "success"`/`"error"`, `durationMs`, `message`).
+
+Because the claim is a real, atomically-enforced database constraint —
+not a lock that is only held for the moment a check runs — it holds even
+when one node's run has already fully finished before a slower sibling
+node gets around to considering the same tick at all. SQLite (never
+multi-node) always wins its own claim, so single-node behavior is
+unchanged: exactly one `_cronRuns` row per run.
