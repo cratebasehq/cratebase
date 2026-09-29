@@ -99,7 +99,8 @@ fn sync_one(app: &App, row: &Row) {
         let app = app.clone();
         let sql = sql.clone();
         let record_id = record_id.clone();
-        move || run_custom_job(app.clone(), record_id.clone(), sql.clone())
+        let job = job.clone();
+        move || run_custom_job(app.clone(), job.clone(), record_id.clone(), sql.clone())
     }) {
         tracing::warn!(error = %e, job = %job, "invalid custom cron expression, not scheduled");
     }
@@ -109,35 +110,60 @@ fn unsync(app: &App, record_id: &str) {
     app.cron().remove(&job_id(record_id));
 }
 
-/// Run one custom job's SQL and write the outcome back onto its own row.
+/// Run one custom job's SQL and write the outcome back onto its own row —
+/// wrapped in `crate::cron_history::run_locked_with_history` so a
+/// multi-node Postgres cluster runs this tick on exactly one node (see
+/// that module's doc), and every run also lands a `_cronRuns` row for the
+/// dashboard's history view, alongside `_cron_jobs`'s own
+/// `lastRunAt`/`lastStatus`/`lastMessage` (kept for backwards
+/// compatibility with anything already reading those three columns).
 fn run_custom_job(
     app: App,
+    job: String,
     record_id: String,
     sql: String,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(async move {
-        let (status, message) = match app.db().execute(&sql, &[]).await {
-            Ok(n) => ("success", format!("{n} row(s) affected")),
-            Err(e) => ("error", e.to_string()),
-        };
-        let now = DateTime::now().to_pb_string();
-        if let Err(e) = app
-            .db()
-            .execute(
-                &format!(
-                    r#"UPDATE "{COLLECTION}" SET "lastRunAt" = $1, "lastStatus" = $2, "lastMessage" = $3 WHERE "id" = $4"#
-                ),
-                &[
-                    Sql::from(now),
-                    Sql::from(status),
-                    Sql::from(message),
-                    Sql::from(record_id.clone()),
-                ],
-            )
-            .await
-        {
-            tracing::warn!(error = %e, record_id = %record_id, "failed to record a custom cron job's run result");
-        }
+        crate::cron_history::run_locked_with_history(
+            &app,
+            &job,
+            crate::cron_history::SOURCE_SQL,
+            || {
+                let app = app.clone();
+                let record_id = record_id.clone();
+                let sql = sql.clone();
+                async move {
+                    let (status, message) = match app.db().execute(&sql, &[]).await {
+                        Ok(n) => ("success", format!("{n} row(s) affected")),
+                        Err(e) => ("error", e.to_string()),
+                    };
+                    let now = DateTime::now().to_pb_string();
+                    if let Err(e) = app
+                        .db()
+                        .execute(
+                            &format!(
+                                r#"UPDATE "{COLLECTION}" SET "lastRunAt" = $1, "lastStatus" = $2, "lastMessage" = $3 WHERE "id" = $4"#
+                            ),
+                            &[
+                                Sql::from(now),
+                                Sql::from(status),
+                                Sql::from(message.clone()),
+                                Sql::from(record_id.clone()),
+                            ],
+                        )
+                        .await
+                    {
+                        tracing::warn!(error = %e, record_id = %record_id, "failed to record a custom cron job's run result");
+                    }
+                    if status == "success" {
+                        Ok(message)
+                    } else {
+                        Err(message)
+                    }
+                }
+            },
+        )
+        .await;
     })
 }
 

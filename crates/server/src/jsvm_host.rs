@@ -758,14 +758,32 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
     fn register_cron(&self, id: &str, expr: &str, handler: CronHandlerId) {
         let cron_app = self.0.app().clone();
         let id_owned = id.to_string();
+        let cron_id = id_owned.clone();
         let result = self.0.app().cron().add(id, expr, move || {
             let app = cron_app.clone();
             let handler = handler.clone();
+            let job_id = cron_id.clone();
             async move {
-                let Some(rt) = app.jsvm() else { return };
-                if let Err(e) = rt.call_cron(&handler).await {
-                    tracing::warn!(error = %e, cron = %handler, "jsvm cron job failed");
-                }
+                // Multi-node safety + run history, same wrapper the SQL
+                // `_cron_jobs` path uses (`crate::cron_jobs::run_custom_job`)
+                // — see `crate::cron_history`'s doc.
+                crate::cron_history::run_locked_with_history(
+                    &app,
+                    &job_id,
+                    crate::cron_history::SOURCE_JS,
+                    || {
+                        let app = app.clone();
+                        let handler = handler.clone();
+                        async move {
+                            let Some(rt) = app.jsvm() else {
+                                return Err("jsvm runtime not available".to_string());
+                            };
+                            rt.call_cron(&handler).await.map_err(|e| e.to_string())?;
+                            Ok(String::new())
+                        }
+                    },
+                )
+                .await;
             }
         });
         if let Err(e) = result {
