@@ -1,16 +1,17 @@
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
 
-export type IntegrationsTab = "push" | "llm" | "mcp";
+export type IntegrationsTab = "push" | "llm" | "mcp" | "notifications";
 
 export type IntegrationsSearch = { tab?: IntegrationsTab };
 
 function isIntegrationsTab(value: unknown): value is IntegrationsTab {
-  return value === "push" || value === "llm" || value === "mcp";
+  return value === "push" || value === "llm" || value === "mcp" || value === "notifications";
 }
 
 /** `/settings/integrations` — the "Integrations" settings group: Push
- * notifications, LLM provider, and MCP server as tabs. */
+ * notifications, LLM provider, MCP server, and in-app Notifications as
+ * tabs. */
 export const settingsIntegrationsRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/integrations",

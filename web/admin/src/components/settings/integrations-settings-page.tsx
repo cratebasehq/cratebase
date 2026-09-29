@@ -5,6 +5,7 @@ import { SettingsTabsPage } from "@/components/settings/settings-form";
 import { PushPage } from "@/components/settings/push-page";
 import { LlmPage } from "@/components/settings/llm-page";
 import { McpPage } from "@/components/settings/mcp-page";
+import { NotificationsPage } from "@/components/settings/notifications-page";
 
 const GROUP = SETTINGS_GROUPS.find((g) => g.to === "/settings/integrations")!;
 
@@ -12,6 +13,7 @@ const COMPONENT_FOR: Record<IntegrationsTab, React.ReactNode> = {
   push: <PushPage />,
   llm: <LlmPage />,
   mcp: <McpPage />,
+  notifications: <NotificationsPage />,
 };
 
 /** `/settings/integrations` — the consolidated Integrations settings

@@ -107,6 +107,13 @@ export interface ServerSettings {
       targetField: string;
     }[];
   };
+  /** In-app notifications (`_notifications`, `$notify.send`/
+   * `POST /api/notifications/send`) retention. */
+  notifications: {
+    /** Only *read* notifications older than this are ever pruned; `<= 0`
+     * disables cleanup, same convention as `logs.maxDays`. */
+    retentionDays: number;
+  };
 }
 
 /** Whether the mailer is running the zero-config `Log` backend right now

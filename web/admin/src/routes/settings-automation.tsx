@@ -1,16 +1,16 @@
 import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
 import { settingsRoute } from "@/routes/settings";
 
-export type AutomationTab = "cron" | "webhooks" | "functions";
+export type AutomationTab = "cron" | "webhooks" | "functions" | "realtime";
 
 export type AutomationSearch = { tab?: AutomationTab };
 
 function isAutomationTab(value: unknown): value is AutomationTab {
-  return value === "cron" || value === "webhooks" || value === "functions";
+  return value === "cron" || value === "webhooks" || value === "functions" || value === "realtime";
 }
 
 /** `/settings/automation` — the "Automation" settings group: Cron jobs,
- * Webhooks, and Functions as tabs. */
+ * Webhooks, Functions, and Realtime channels as tabs. */
 export const settingsAutomationRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: "/automation",
