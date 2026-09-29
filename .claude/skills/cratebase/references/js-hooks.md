@@ -78,7 +78,7 @@ non-`Execute` lifecycle hook (`onRecordCreate`) when you need to
 validate/mutate the record *before* it's persisted, inside the same
 transaction.
 
-## `routerAdd` / `cronAdd`
+## `routerAdd` / `cronAdd` / `onQueueJob`
 
 ```
 routerAdd(method, path, handler, ...middlewares)
@@ -94,7 +94,24 @@ cronAdd(id, cronExpr, handler)
 Schedules `handler` on a croner-compatible cron expression (seconds
 field ignored — minute-level granularity, per
 `crates/server/src/cron.rs`). `handler` is `() => void` with access to
-`$app` and the other globals, not a `RequestEvent`.
+`$app` and the other globals, not a `RequestEvent`. Run history (status,
+duration, error) lands in `_cronRuns`; on a multi-node Postgres cluster
+each tick runs on exactly one node (`crates/server/src/cron_history.rs`).
+
+```
+onQueueJob(queue, handler)
+$queue.enqueue(queue, payload, { runAt?, delay?, maxAttempts?, dedupeKey?, priority? })
+```
+`onQueueJob` registers `handler(e)` — `e.payload` is whatever was
+enqueued — for a background job named `queue` (`crates/server/src/queue.rs`).
+Returning normally marks the job `completed`; throwing retries it with
+backoff, `failed` once `maxAttempts` is reached. A Rust
+`QueueHandle::register_handler` for the same `queue` name always wins
+over a JS one. `$queue.enqueue` inserts a durable `_queue_jobs` row —
+deferred past commit when called inside a record-write hook (never
+enqueued if that write rolls back), no-op if `dedupeKey` matches an
+already pending/in-progress job. Works even while
+`settings.queue.enabled` is off; the job just waits.
 
 ```
 routerUse(...middlewares)
