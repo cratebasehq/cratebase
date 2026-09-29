@@ -49,6 +49,18 @@ Background jobs, webhooks and cron you can rely on in production.
   only processing; enqueueing, retrying and deleting always work.
 - Cron jobs (SQL and JS) take a Postgres advisory lock per tick, so a
   multi-node cluster runs each tick on exactly one node. No-op on SQLite.
+### Added
+
+- **`create-cratebase`** — a scaffolding CLI (`bun create cratebase my-app` /
+  `npm create cratebase@latest my-app`) with three templates (`nextjs`,
+  `vite-react`, `expo`), each shipping a `schema.json`, `pb_seed/` demo
+  data, a `pb_hooks/welcome.pb.js` signup email, and a `dev` script that
+  runs `cratebase dev` and the frontend together. `nextjs`/`vite-react`
+  wire up the full `@cratebase/client`/`@cratebase/react` surface (auth —
+  password/OTP/magic-link/OAuth/TOTP — a realtime dashboard, file upload,
+  search, notifications); `expo` is a lean password/OTP + realtime-list
+  starter. See [`packages/create-cratebase`](./packages/create-cratebase)
+  and [Starter kits](https://cratebase.dev/docs/getting-started/starter-kits/).
 
 ## 0.5.0 — 2026-09-29
 

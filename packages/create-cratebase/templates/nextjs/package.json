@@ -1,0 +1,33 @@
+{
+  "name": "{{PROJECT_NAME}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n cratebase,web -c yellow,cyan \"node scripts/cratebase-dev.mjs\" \"next dev\"",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "typegen": "cratebase typegen -o ./cratebase-types.d.ts"
+  },
+  "dependencies": {
+    "@cratebase/client": "^0.4.0",
+    "@cratebase/react": "^0.4.0",
+    "next": "^15.5.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "concurrently": "^10.0.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -106,6 +106,53 @@ jobs:
       - run: bun install
       - run: bun run sdk:check
 
+  create-cratebase:
+    name: create-cratebase CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install
+      - run: bun run create-cratebase:check
+
+  create-cratebase-templates:
+    name: create-cratebase template (${{ matrix.template }})
+    runs-on: ubuntu-latest
+    needs: [create-cratebase]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # No backend attached — this only checks that each template
+          # installs and type-checks/builds on its own. The real,
+          # backend-attached smoke test (scaffold + `cratebase dev` +
+          # sign up/create/list/search against it) is run by hand; see
+          # the commit that added each template for those results.
+          - template: nextjs
+            build: bunx tsc --noEmit && bunx next build
+          - template: vite-react
+            build: bunx tsc -b --noEmit && bunx vite build
+          - template: expo
+            build: bunx tsc --noEmit && bunx expo export --platform web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install
+      - name: Scaffold ${{ matrix.template }}
+        run: >-
+          bun run --cwd packages/create-cratebase dev -- "$RUNNER_TEMP/cc-${{ matrix.template }}"
+          --template ${{ matrix.template }} --pm bun --yes --no-git
+      - name: Install scaffolded project's dependencies
+        working-directory: ${{ runner.temp }}/cc-${{ matrix.template }}
+        run: bun install
+      - name: Typecheck & build
+        working-directory: ${{ runner.temp }}/cc-${{ matrix.template }}
+        run: ${{ matrix.build }}
+
   dependency-scan:
     name: Dependency vulnerability scan
     runs-on: ubuntu-latest

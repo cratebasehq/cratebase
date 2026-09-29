@@ -1,0 +1,16 @@
+{
+  "posts": [
+    {
+      "id": "demopost0000001",
+      "owner": "demouser0000001",
+      "title": "Welcome to {{PROJECT_NAME}}",
+      "content": "This is a seeded note — edit or delete it, then create your own from the dashboard."
+    },
+    {
+      "id": "demopost0000002",
+      "owner": "demouser0000001",
+      "title": "Full-text search works out of the box",
+      "content": "Try typing \"search\" into the search box above — it's backed by Cratebase's searchable field index, no extra service required."
+    }
+  ]
+}

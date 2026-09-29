@@ -1,0 +1,104 @@
+---
+title: "Starter kits"
+description: "bun create cratebase — a full app on Cratebase in one command."
+sidebar:
+  order: 7
+---
+
+The fastest way to start a new app on Cratebase isn't an empty
+`cratebase dev` and a blank frontend — it's
+[`create-cratebase`](https://github.com/cratebasehq/cratebase/tree/main/packages/create-cratebase),
+a scaffolding CLI that gives you a small, production-shaped, typed-end-to-end
+app with auth, a realtime dashboard, and a Cratebase server ready to run,
+in one command.
+
+```sh
+bun create cratebase my-app
+# or: npm create cratebase@latest my-app
+# or: pnpm create cratebase my-app
+```
+
+Answer three prompts (template, package manager, whether to install
+dependencies and run `git init`) — or skip all of them non-interactively:
+
+```sh
+bun create cratebase my-app --template nextjs --pm bun --yes
+```
+
+Then:
+
+```sh
+cd my-app
+bun run dev
+```
+
+`dev` runs `cratebase dev` (the local server: superuser, schema, seed data,
+generated types, hot-reloading hooks — see [First run](/docs/getting-started/first-run/))
+and the frontend's own dev server side by side. Sign in with the seeded
+demo account, or create a new one — either way you're looking at real
+auth, a realtime list, file upload, and search wired up to a real
+Cratebase instance within a minute of running the first command.
+
+## Templates
+
+| | `nextjs` | `vite-react` | `expo` |
+|---|---|---|---|
+| Stack | Next.js (App Router), TypeScript, Tailwind | Vite, React, TypeScript, Tailwind | Expo Router, TypeScript |
+| Auth | Password, email OTP, magic link, OAuth, TOTP | Password, email OTP, magic link, OAuth, TOTP | Password, email OTP |
+| Realtime list | ✅ `useRecords(..., { realtime: true })` | ✅ | ✅ |
+| Create/update/delete | ✅ `useMutation` | ✅ | Add/delete |
+| File upload | ✅ `useUpload` | ✅ | not included — same API, see the template's README |
+| Full-text search | ✅ | ✅ | not included — same API, see the template's README |
+| Notifications bell | ✅ `useNotifications` | ✅ | not included — same API, see the template's README |
+| Rendering | SSR-safe `CratebaseProvider` boundary | Client-only SPA | Native + web (SPA export) |
+
+`nextjs` and `vite-react` ship the full feature set: password/OTP/magic-link
+sign-in with OAuth buttons (rendered only for providers you've actually
+configured) and TOTP challenge handling, a protected dashboard with a
+realtime list, create/update/delete, cover-image upload, a search box, and
+a notifications bell. `expo` is kept deliberately lean — password and
+email-code sign-in plus a realtime list — since OAuth, magic links, and
+TOTP all need a bit of native wiring (deep linking, a QR-rendering
+library) that doesn't belong in a starter; its README shows exactly how
+to add each one with the same `@cratebase/client` calls the web templates
+use.
+
+Every template ships with:
+
+- **`schema.json`** — a small `posts` collection (title + content, both
+  searchable; an optional `cover` file field; an `owner` relation), scoped
+  with `owner = @request.auth.id` rules — see
+  [Schema as code](/docs/extending/schema-as-code/).
+- **`pb_seed/`** — a demo user (`demo@example.com` / `password123`) and a
+  couple of seeded notes, applied once on an empty database — see
+  [Seeding data](/docs/getting-started/first-run/#seeding-data).
+- **`pb_hooks/welcome.pb.js`** — emails the built-in `welcome`
+  [email template](/docs/email/templates/) to every new signup via
+  `$mails.send`.
+- **`.env.example`**, a `dev` script that runs `cratebase dev` and the
+  frontend together (and prints the one-line install command if the
+  `cratebase` binary isn't on your `PATH` yet), and a README with its own
+  60-second quickstart and deploy notes.
+
+## The CLI itself
+
+`create-cratebase` has no runtime dependency beyond
+[`@clack/prompts`](https://github.com/bombshell-dev/clack) — it copies a
+template, substitutes your project name, and optionally installs
+dependencies and runs `git init`. Every flag also works non-interactively,
+which is what a CI job scaffolding a template for a build check (like
+Cratebase's own) uses:
+
+```
+Usage:
+  bun create cratebase <project-directory> [options]
+
+Options:
+  -t, --template <name>   nextjs, vite-react, expo
+      --pm <name>         bun, npm, pnpm, yarn
+  -y, --yes               Skip prompts, accept defaults for anything unset
+      --no-install        Skip installing dependencies
+      --no-git            Skip `git init`
+```
+
+Works with Bun, npm, pnpm, or Yarn, and requires only Node ≥ 18.

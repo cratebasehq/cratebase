@@ -1,7 +1,15 @@
 {
   "name": "cratebase-workspace",
   "private": true,
-  "workspaces": ["web/admin", "web/email", "tests/conformance", "sdk/js/client", "sdk/js/react", "sdk/js/extras"],
+  "workspaces": [
+    "web/admin",
+    "web/email",
+    "tests/conformance",
+    "sdk/js/client",
+    "sdk/js/react",
+    "sdk/js/extras",
+    "packages/create-cratebase"
+  ],
   "scripts": {
     "admin:dev": "bun run --cwd web/admin dev",
     "admin:build": "RAYON_NUM_THREADS=1 bun run --cwd web/admin build",
@@ -12,6 +20,7 @@
     "examples:chat:setup": "bash examples/realtime-chat/setup.sh",
     "examples:cursors:setup": "bash examples/realtime-cursors/setup.sh",
     "examples:kanban:setup": "bash examples/kanban/setup.sh",
-    "sdk:check": "bun run --cwd sdk/js/client typecheck && bun run --cwd sdk/js/client build && bun run --cwd sdk/js/react typecheck && bun run --cwd sdk/js/react test && bun run --cwd sdk/js/extras typecheck"
+    "sdk:check": "bun run --cwd sdk/js/client typecheck && bun run --cwd sdk/js/client build && bun run --cwd sdk/js/react typecheck && bun run --cwd sdk/js/react test && bun run --cwd sdk/js/extras typecheck",
+    "create-cratebase:check": "bun run --cwd packages/create-cratebase typecheck && bun run --cwd packages/create-cratebase test && bun run --cwd packages/create-cratebase build"
   }
 }

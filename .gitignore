@@ -45,6 +45,9 @@ sdk/js/client/dist
 # above: a real npm build artifact, rebuilt fresh by CI before publish.
 sdk/js/react/dist
 
+# create-cratebase's dist/ — same reasoning as the sdk packages above.
+packages/create-cratebase/dist
+
 # TypeScript incremental build info for the zero-build example apps
 # (examples/kanban's own tsconfig `-b` run) — a local build cache, not
 # something to commit.
