@@ -54,11 +54,32 @@ sdk/js/react/dist
 # part of the shipped product; keep them out of the open-source repo.
 # Exception: .claude/skills/cratebase/ is authored here and shipped
 # intentionally so it's available to anyone who opens this repo.
+# Exception: .claude/skills/motion-reel/ is the packaged launch-film
+# pipeline from marketing/video/ — also authored here, also shipped.
 .claude/skills/
 !.claude/skills/cratebase/
 !.claude/skills/cratebase/**
+!.claude/skills/motion-reel/
+!.claude/skills/motion-reel/**
 .agents/skills/
 skills-lock.json
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# marketing/video/ — the launch-film render engine (marketing/video/docs/README.md
+# has the pipeline). Engine source, docs and Docker/render scripts are committed;
+# everything below is a large or regenerable artifact and is not.
+marketing/video/node_modules/
+marketing/video/out/
+marketing/video/refs/
+# Captured real UI screenshots + the local Cratebase demo data dir used to take
+# them: large, regenerable by marketing/video/capture/, never hand-authored.
+marketing/video/capture/shots/
+marketing/video/capture/demo-data/
+# Large source assets (raw screenshots, exported audio stems, fonts vendored
+# for the render). Small hand-authored/derived files (manifests, thumbnails
+# under a few KB) may still be force-added case by case.
+marketing/video/assets/*
+!marketing/video/assets/.gitkeep
+!marketing/video/assets/manifest.json
