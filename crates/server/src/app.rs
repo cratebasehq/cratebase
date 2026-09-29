@@ -793,17 +793,18 @@ impl App {
     /// `GET /api/crons` matches the fixture.
     fn register_system_crons(&self) {
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_DB_OPTIMIZE, "0 0 * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_DB_OPTIMIZE,
+            "0 0 * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     if let Err(e) = app.db().engine.optimize().await {
                         tracing::warn!(error = %e, "database optimize failed");
                     }
                 }
-            });
+            },
+        );
 
         // `_mfas` / `_otps` rows are short-lived; each auth collection has
         // its own configured duration, and both system tables are shared
@@ -813,7 +814,7 @@ impl App {
         let _ = self
             .inner
             .cron
-            .add(cron::JOB_MFA_CLEANUP, "0 * * * *", move || {
+            .add(cron::JOB_MFA_CLEANUP, "0 * * * *", move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     for collection in app.db().collections.all().all.iter() {
@@ -857,7 +858,7 @@ impl App {
         let _ = self
             .inner
             .cron
-            .add(cron::JOB_OTP_CLEANUP, "0 * * * *", move || {
+            .add(cron::JOB_OTP_CLEANUP, "0 * * * *", move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     for collection in app.db().collections.all().all.iter() {
@@ -887,10 +888,10 @@ impl App {
             });
 
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_TOTP_CLEANUP, "0 * * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_TOTP_CLEANUP,
+            "0 * * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     // A pending (unconfirmed) TOTP setup abandoned for
@@ -909,13 +910,14 @@ impl App {
                         tracing::warn!(error = %e, "totp cleanup failed");
                     }
                 }
-            });
+            },
+        );
 
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_LOGS_CLEANUP, "0 */6 * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_LOGS_CLEANUP,
+            "0 */6 * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     let days = app.settings().logs.max_days;
@@ -928,31 +930,34 @@ impl App {
                         Err(e) => tracing::warn!(error = %e, "logs cleanup failed"),
                     }
                 }
-            });
+            },
+        );
 
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_SESSION_SWEEP, "0 * * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_SESSION_SWEEP,
+            "0 * * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move { crate::sessions::sweep_expired(&app).await }
-            });
+            },
+        );
 
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_PENDING_UPLOADS_SWEEP, "0 * * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_PENDING_UPLOADS_SWEEP,
+            "0 * * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move { crate::presign::sweep_expired(&app).await }
-            });
+            },
+        );
 
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_MAIL_LOG_CLEANUP, "0 */6 * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_MAIL_LOG_CLEANUP,
+            "0 */6 * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     let days = app.settings().logs.mail_log_max_days;
@@ -973,13 +978,14 @@ impl App {
                         Err(e) => tracing::warn!(error = %e, "_mailLog cleanup failed"),
                     }
                 }
-            });
+            },
+        );
 
         let app = self.clone();
-        let _ = self
-            .inner
-            .cron
-            .add(cron::JOB_NOTIFICATIONS_CLEANUP, "0 */6 * * *", move || {
+        let _ = self.inner.cron.add(
+            cron::JOB_NOTIFICATIONS_CLEANUP,
+            "0 */6 * * *",
+            move |_tick_at: crate::cron::TickAt| {
                 let app = app.clone();
                 async move {
                     let days = app.settings().notifications.retention_days;
@@ -1009,7 +1015,8 @@ impl App {
                         Err(e) => tracing::warn!(error = %e, "_notifications cleanup failed"),
                     }
                 }
-            });
+            },
+        );
     }
 
     /// Add/remove the scheduled-backup job to match `settings.backups.cron`.
@@ -1023,14 +1030,18 @@ impl App {
             return;
         }
         let app = self.clone();
-        if let Err(e) = self.inner.cron.add(ID, &expression, move || {
-            let app = app.clone();
-            async move {
-                if let Err(e) = crate::routes::backups::create_scheduled(&app).await {
-                    tracing::error!(error = %e, "scheduled backup failed");
-                }
-            }
-        }) {
+        if let Err(e) =
+            self.inner
+                .cron
+                .add(ID, &expression, move |_tick_at: crate::cron::TickAt| {
+                    let app = app.clone();
+                    async move {
+                        if let Err(e) = crate::routes::backups::create_scheduled(&app).await {
+                            tracing::error!(error = %e, "scheduled backup failed");
+                        }
+                    }
+                })
+        {
             tracing::warn!(error = %e, "ignoring invalid settings.backups.cron");
         }
     }

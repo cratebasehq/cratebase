@@ -100,7 +100,15 @@ fn sync_one(app: &App, row: &Row) {
         let sql = sql.clone();
         let record_id = record_id.clone();
         let job = job.clone();
-        move || run_custom_job(app.clone(), job.clone(), record_id.clone(), sql.clone())
+        move |tick_at: crate::cron::TickAt| {
+            run_custom_job(
+                app.clone(),
+                job.clone(),
+                record_id.clone(),
+                sql.clone(),
+                tick_at,
+            )
+        }
     }) {
         tracing::warn!(error = %e, job = %job, "invalid custom cron expression, not scheduled");
     }
@@ -122,12 +130,14 @@ fn run_custom_job(
     job: String,
     record_id: String,
     sql: String,
+    tick_at: crate::cron::TickAt,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(async move {
         crate::cron_history::run_locked_with_history(
             &app,
             &job,
             crate::cron_history::SOURCE_SQL,
+            cratebase_core::DateTime::from_utc(tick_at),
             || {
                 let app = app.clone();
                 let record_id = record_id.clone();
