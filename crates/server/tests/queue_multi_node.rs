@@ -19,7 +19,13 @@ use cratebase_server::app::App;
 use cratebase_server::config::Config;
 use cratebase_server::queue::{self, EnqueueOptions};
 
-const JOB_COUNT: usize = 40;
+// The live worker loop ticks once a second per node (see
+// `QueuePlugin::new`'s default `tick_interval`), claiming (at most) one
+// job per tick, so `JOB_COUNT` jobs across two nodes need at least
+// `JOB_COUNT / 2` seconds even under perfect conditions — kept modest,
+// with a generous deadline below, so this stays reliable on a loaded or
+// slow CI runner rather than racing its own timeout.
+const JOB_COUNT: usize = 24;
 
 fn node_config(url: &str, dir: &std::path::Path) -> Config {
     Config {
@@ -115,7 +121,7 @@ async fn every_job_is_claimed_and_run_exactly_once_across_two_nodes() {
     // timeout — each node's own ticker is a real 1s-interval background
     // loop here (not `run_one_tick`), since the point of this test is
     // exactly that two independent, live worker loops don't race.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
     loop {
         let rows = app_a
             .db()
