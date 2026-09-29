@@ -65,7 +65,7 @@ use serde_json::{Map, Value};
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 
-use crate::host::{CronHandlerId, HookHandlerId, HostApi, RouteHandlerId};
+use crate::host::{CronHandlerId, HookHandlerId, HostApi, QueueHandlerId, RouteHandlerId};
 use crate::worker::{self, Control, Job, MigrationDirection};
 
 /// Runtime configuration.
@@ -453,6 +453,20 @@ impl Runtime {
     pub async fn call_cron(&self, handler: &CronHandlerId) -> Result<(), AppError> {
         let id = handler.clone();
         self.submit(move |reply| Job::Cron { id, reply }).await
+    }
+
+    /// Invoke an `onQueueJob` handler with a claimed job's payload. `Err`
+    /// means the handler threw (or the worker pool itself is down); `Ok`
+    /// means it returned normally. See `crate::queue::HandlerFn`'s doc in
+    /// the server crate for what each outcome does to the job.
+    pub async fn call_queue_job(
+        &self,
+        handler: &QueueHandlerId,
+        payload: Value,
+    ) -> Result<(), AppError> {
+        let id = handler.clone();
+        self.submit(move |reply| Job::Queue { id, payload, reply })
+            .await
     }
 
     /// Migration files in `migrations_dir`, sorted by file name.

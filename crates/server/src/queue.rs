@@ -95,26 +95,111 @@ pub type HandlerFn =
     Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 type HandlerMap = Arc<RwLock<HashMap<String, HandlerFn>>>;
+/// Queue names a Rust caller ([`QueueHandle::register_handler`]) has
+/// claimed — see [`QueueHandle::register_js_handler`]'s doc for why this
+/// exists.
+type ClaimedSet = Arc<RwLock<std::collections::HashSet<String>>>;
 
 /// A cheap, cloneable handle to a [`QueuePlugin`]'s handler registry,
 /// usable after the plugin itself has been moved into
 /// [`crate::app::App::register_plugin`] (which takes ownership). Obtain
 /// one with [`QueuePlugin::handle`] *before* registering.
 #[derive(Clone)]
-pub struct QueueHandle(HandlerMap);
+pub struct QueueHandle(HandlerMap, ClaimedSet);
 
 impl QueueHandle {
     /// Register (or replace) the handler for `queue`. Call this for every
     /// job name a binary's own code wants this queue to actually run —
     /// an unregistered name still enqueues fine, it just fails (and
     /// eventually gives up) every time [`tick`] tries to run it.
+    ///
+    /// A name registered here can never be reclaimed by a JS `onQueueJob`
+    /// call ([`QueueHandle::register_js_handler`]) — "Rust handlers still
+    /// take precedence for their names" (spec). `crate::app::App::bootstrap`
+    /// registers the built-in Queue plugin, and every Rust caller that
+    /// wants a queue name of its own (`crate::mails`'s send pipeline,
+    /// most notably), *before* the JS runtime starts, so this ordering is
+    /// what actually makes that precedence hold in practice; this method
+    /// additionally records `queue` as claimed so a *later* Rust
+    /// registration (there is none today, but nothing stops a future
+    /// plugin) is just as protected.
     pub fn register_handler<F, Fut>(&self, queue: impl Into<String>, handler: F)
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
+        let queue = queue.into();
         let wrapped: HandlerFn = Arc::new(move |payload| Box::pin(handler(payload)));
-        self.0.write().insert(queue.into(), wrapped);
+        self.1.write().insert(queue.clone());
+        self.0.write().insert(queue, wrapped);
+    }
+
+    /// Register (or replace) a JavaScript `onQueueJob(queue, handler)`
+    /// registration — `crate::jsvm_host`'s `HostApi::register_queue_handler`
+    /// is the only caller. Returns `false`, and leaves the existing
+    /// handler (if any) untouched, when `queue` was already claimed by a
+    /// Rust [`QueueHandle::register_handler`] call: "Rust handlers still
+    /// take precedence for their names" (spec) means a `pb_hooks` file
+    /// can never shadow, say, the built-in mail-delivery queue. A second
+    /// `onQueueJob` call for a name JS itself already owns *does* replace
+    /// the handler, since that's exactly what a `--dev` hot reload needs
+    /// (see `crate::jsvm_host`'s reload story) — only Rust's claim is
+    /// exclusive.
+    pub fn register_js_handler<F, Fut>(&self, queue: impl Into<String>, handler: F) -> bool
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let queue = queue.into();
+        if self.1.read().contains(&queue) {
+            tracing::warn!(
+                queue = %queue,
+                "onQueueJob: ignored — a built-in Rust handler already owns this queue name"
+            );
+            return false;
+        }
+        let wrapped: HandlerFn = Arc::new(move |payload| Box::pin(handler(payload)));
+        self.0.write().insert(queue, wrapped);
+        true
+    }
+
+    /// Forget every JS-registered handler, keeping Rust ones — mirrors
+    /// `crate::app::App`'s `clear_routes`/hook-reload story: called once
+    /// (see `crate::jsvm_host::HostApi::clear_queue_handlers`) at the
+    /// start of a `--dev` hooks reload, right before the hook files are
+    /// evaluated again, so a handler a changed file no longer registers
+    /// is dropped instead of lingering.
+    pub fn clear_js_handlers(&self) {
+        let claimed = self.1.read().clone();
+        self.0.write().retain(|name, _| claimed.contains(name));
+    }
+
+    /// Force one [`reclaim_stale`] + [`claim_next`] + run pass right now,
+    /// against whatever handlers (Rust or JS) are currently registered —
+    /// the same work `QueuePlugin`'s live 1-second ticker does, just
+    /// on demand rather than waited out. Useful for an integration test
+    /// holding the real, app-wide `QueueHandle` (`crate::app::App::queue_handle`)
+    /// that wants determinism (and a much shorter backoff than the
+    /// production defaults) instead of a real sleep, and equally usable
+    /// as the "process now" primitive behind a future dashboard action —
+    /// same idea as `crate::cron::CronService::run`'s "run this job now".
+    pub async fn run_one_tick(
+        &self,
+        app: &App,
+        base_delay: Duration,
+        max_delay: Duration,
+        stale_timeout: Duration,
+    ) {
+        tick(
+            app,
+            &self.0,
+            TickConfig {
+                base_delay,
+                max_delay,
+                stale_timeout,
+            },
+        )
+        .await;
     }
 }
 
@@ -129,6 +214,7 @@ struct TickConfig {
 
 pub struct QueuePlugin {
     handlers: HandlerMap,
+    rust_claimed: ClaimedSet,
     tick_interval: Duration,
     config: TickConfig,
 }
@@ -143,6 +229,7 @@ impl QueuePlugin {
     pub fn new() -> Self {
         QueuePlugin {
             handlers: Arc::new(RwLock::new(HashMap::new())),
+            rust_claimed: Arc::new(RwLock::new(std::collections::HashSet::new())),
             tick_interval: Duration::from_secs(1),
             config: TickConfig {
                 base_delay: Duration::from_secs(1),
@@ -177,7 +264,7 @@ impl QueuePlugin {
     /// A cloneable handle for registering handlers, safe to keep after
     /// this plugin is moved into `App::register_plugin`.
     pub fn handle(&self) -> QueueHandle {
-        QueueHandle(self.handlers.clone())
+        QueueHandle(self.handlers.clone(), self.rust_claimed.clone())
     }
 }
 
@@ -187,12 +274,20 @@ impl Plugin for QueuePlugin {
     }
 
     fn setup(&self, app: &App) -> Result<(), AppError> {
-        // `_queue_jobs` is provisioned by `queue::ensure_collection`
-        // *before* this plugin is registered (see `App::bootstrap_inner`)
-        // rather than here: `setup()` is synchronous and provisioning a
-        // collection is an async DB round trip, so there is nowhere to
-        // `.await` it from this signature. All that's left to do here is
-        // start the worker loop.
+        // Registered and started unconditionally now (see
+        // `crate::app::App::bootstrap_inner` — the queue plugin is
+        // registered before `settings.queue.enabled` is even read, unlike
+        // the toggle-gated `zip_export` plugin next to it), specifically
+        // so `settings.queue.enabled` can flip on a *running* server via
+        // `PATCH /api/settings` and take effect on this very loop's next
+        // pass — no restart needed, same "check the live setting, do
+        // nothing while it's off" pattern `crate::teams::bind_hooks` uses.
+        // The loop itself costs one atomic `Settings` read per tick while
+        // disabled (matching `crate::app::App::start_schema_watch`'s
+        // always-on 300ms poller in spirit); `_queue_jobs` is still only
+        // ever provisioned — `ensure_collection` touches the database at
+        // all — once it turns on, so an install that never enables Queue
+        // still never provisions the table.
         let handlers = self.handlers.clone();
         let config = self.config;
         let tick_interval = self.tick_interval;
@@ -202,6 +297,13 @@ impl Plugin for QueuePlugin {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 ticker.tick().await;
+                if !app.settings().queue.enabled {
+                    continue;
+                }
+                if let Err(e) = ensure_collection(&app).await {
+                    tracing::warn!(error = %e, "queue: failed to provision _queue_jobs");
+                    continue;
+                }
                 tick(&app, &handlers, config).await;
             }
         });
@@ -209,7 +311,14 @@ impl Plugin for QueuePlugin {
     }
 
     fn routes(&self) -> Option<Router<App>> {
-        Some(Router::new().route("/enqueue", post(enqueue)))
+        // Kept for backwards compatibility — `crate::routes::queue` is the
+        // canonical, always-mounted surface now (see that module's doc).
+        Some(
+            Router::new()
+                .route("/enqueue", post(enqueue))
+                .route("/jobs/{id}/retry", post(retry_route))
+                .route("/jobs/{id}", axum::routing::delete(delete_route)),
+        )
     }
 }
 
@@ -219,7 +328,23 @@ impl Plugin for QueuePlugin {
 /// `_cron_jobs`/`_webhooks`: a queued job's payload is handed verbatim to
 /// whatever handler its `queue` name resolves to, with no rule
 /// enforcement in between.
+/// Serializes [`ensure_collection`] process-wide. Now that the live queue
+/// toggle (`QueuePlugin::setup`'s tick loop) and `enqueue_job`'s own lazy
+/// provisioning can both reach `ensure_collection` around the same
+/// moment, a plain "check, then insert" has a real TOCTOU window: both
+/// callers can see the collection missing before either one's insert
+/// lands. A process-wide lock (rather than a per-`App` one) is fine here
+/// — provisioning happens at most once per process lifetime, never a hot
+/// path, so contention is a non-issue.
+static ENSURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 pub async fn ensure_collection(app: &App) -> Result<(), AppError> {
+    if app.db().collections.get_by_name(COLLECTION).is_some() {
+        return Ok(());
+    }
+    let _guard = ENSURE_LOCK.lock().await;
+    // Re-check now that we hold the lock: a concurrent caller may have
+    // just finished provisioning it while this one was waiting.
     if app.db().collections.get_by_name(COLLECTION).is_some() {
         return Ok(());
     }
@@ -302,6 +427,31 @@ fn build_collection() -> Collection {
     let mut last_error = text_field("lastError");
     last_error.required = false;
 
+    // A caller-supplied idempotency key: [`enqueue_job`] treats a second
+    // `enqueue` call with the same non-empty `dedupeKey` while an earlier
+    // job with that key is still `pending`/`in_progress` as a no-op,
+    // returning the existing job instead of inserting a duplicate. The
+    // partial unique index below is the actual correctness guarantee
+    // (races are possible around a plain read-then-insert); the
+    // application-level check in [`enqueue_job`] just makes the common,
+    // uncontended case cheap and gives a clean "deduped: true" response
+    // instead of surfacing a raw constraint-violation error.
+    let mut dedupe_key = text_field("dedupeKey");
+    dedupe_key.required = false;
+
+    // Higher runs first among otherwise-due jobs; defaults to `0`. See
+    // [`claim_next`]'s `ORDER BY`.
+    let mut priority = Field::new(
+        "priority",
+        FieldKind::Number {
+            min: None,
+            max: None,
+            only_int: true,
+        },
+    );
+    priority.system = true;
+    priority.required = false;
+
     let pos = c.fields.len() - 2;
     c.fields.splice(
         pos..pos,
@@ -314,93 +464,287 @@ fn build_collection() -> Collection {
             run_after,
             started_at,
             last_error,
+            dedupe_key,
+            priority,
         ],
     );
     c.indexes = vec![
         "CREATE INDEX `idx_queue_jobs_status_runAfter` ON `_queue_jobs` (status, runAfter)".into(),
+        // Partial: only pending/in-progress rows need a unique `dedupeKey`
+        // — a completed or failed job's key is free to be reused by a
+        // later, unrelated enqueue. Both SQLite (3.8+) and Postgres
+        // support a `WHERE` clause on `CREATE INDEX`, so one definition
+        // works unchanged on either engine.
+        "CREATE UNIQUE INDEX `idx_queue_jobs_dedupe` ON `_queue_jobs` (dedupeKey) \
+         WHERE `dedupeKey` <> '' AND `status` IN ('pending', 'in_progress')"
+            .into(),
     ];
     c
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct EnqueueBody {
-    queue: String,
+pub struct EnqueueBody {
+    pub queue: String,
     #[serde(default)]
-    payload: Value,
+    pub payload: Value,
     #[serde(default)]
-    max_attempts: Option<i64>,
+    pub max_attempts: Option<i64>,
+    /// Accepted for backwards compatibility; `runAt` is the name every
+    /// new surface (`$queue.enqueue`, the canonical HTTP route) uses.
     #[serde(default)]
-    run_after: Option<String>,
+    pub run_after: Option<String>,
+    #[serde(default)]
+    pub run_at: Option<String>,
+    /// Milliseconds from now to delay the job's first attempt. Ignored if
+    /// `runAt`/`runAfter` is also given (an explicit timestamp wins).
+    #[serde(default)]
+    pub delay: Option<i64>,
+    #[serde(default)]
+    pub dedupe_key: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EnqueueResponse {
-    id: String,
-    queue: String,
-    status: String,
-    run_after: String,
+pub struct EnqueueResponse {
+    pub id: String,
+    pub queue: String,
+    pub status: String,
+    pub run_after: String,
+    /// `true` when an in-flight job with the same `dedupeKey` already
+    /// existed and `id`/`status`/`run_after` describe *that* job rather
+    /// than a newly inserted one.
+    pub deduped: bool,
 }
 
-/// `POST /api/plugins/queue/enqueue` — superuser-only, same trust tier as
-/// the collection itself (see [`ensure_collection`]'s doc comment).
+/// `POST /api/plugins/queue/enqueue` (and its canonical alias,
+/// `POST /api/queue/enqueue` — see `crate::routes::queue`) — superuser or
+/// API key, same trust tier as the collection itself (see
+/// [`ensure_collection`]'s doc comment).
 async fn enqueue(
     State(app): State<App>,
     _auth: RequireSuperuser,
     Json(body): Json<EnqueueBody>,
 ) -> ApiResult<Json<EnqueueResponse>> {
+    enqueue_from_body(&app, body).await.map(Json)
+}
+
+async fn retry_route(
+    State(app): State<App>,
+    _auth: RequireSuperuser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<axum::http::StatusCode> {
+    retry_job(&app, &id).await.map_err(ApiError)?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+async fn delete_route(
+    State(app): State<App>,
+    _auth: RequireSuperuser,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<axum::http::StatusCode> {
+    delete_job(&app, &id).await.map_err(ApiError)?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// Shared by the plugin route, the canonical `crate::routes::queue` route,
+/// and (indirectly, via [`enqueue_job`]) `$queue.enqueue`.
+pub async fn enqueue_from_body(app: &App, body: EnqueueBody) -> ApiResult<EnqueueResponse> {
     if body.queue.trim().is_empty() {
         return Err(ApiError::bad_request("queue must not be empty."));
     }
-    let run_after = match body.run_after.as_deref() {
-        Some(s) if !s.is_empty() => DateTime::parse(s)
-            .ok_or_else(|| ApiError::bad_request("runAfter is not a valid date."))?,
-        _ => DateTime::now(),
-    };
+    let run_after = resolve_run_after(
+        body.run_at.as_deref(),
+        body.run_after.as_deref(),
+        body.delay,
+    )
+    .map_err(ApiError::bad_request)?;
     let max_attempts = body.max_attempts.unwrap_or(DEFAULT_MAX_ATTEMPTS).max(1);
-    let id = enqueue_job(&app, &body.queue, body.payload, max_attempts, run_after)
+    let opts = EnqueueOptions {
+        max_attempts,
+        run_after,
+        dedupe_key: body.dedupe_key.filter(|s| !s.trim().is_empty()),
+        priority: body.priority.unwrap_or(0),
+    };
+    let outcome = enqueue_job(app, &body.queue, body.payload, opts)
         .await
         .map_err(ApiError)?;
 
-    Ok(Json(EnqueueResponse {
-        id,
+    Ok(EnqueueResponse {
+        id: outcome.id,
         queue: body.queue,
-        status: STATUS_PENDING.to_string(),
-        run_after: run_after.to_pb_string(),
-    }))
+        status: outcome.status,
+        run_after: outcome.run_after.to_pb_string(),
+        deduped: outcome.deduped,
+    })
+}
+
+/// Resolve the effective `runAfter` from the three (mutually-compatible
+/// priority order) ways a caller can express "when": an explicit `runAt`,
+/// the older `runAfter` alias, or a relative `delay` in milliseconds. No
+/// scheduling info at all means "now".
+pub(crate) fn resolve_run_after(
+    run_at: Option<&str>,
+    run_after: Option<&str>,
+    delay_ms: Option<i64>,
+) -> Result<DateTime, String> {
+    if let Some(s) = run_at.filter(|s| !s.is_empty()) {
+        return DateTime::parse(s).ok_or_else(|| "runAt is not a valid date.".to_string());
+    }
+    if let Some(s) = run_after.filter(|s| !s.is_empty()) {
+        return DateTime::parse(s).ok_or_else(|| "runAfter is not a valid date.".to_string());
+    }
+    if let Some(ms) = delay_ms.filter(|ms| *ms > 0) {
+        return Ok(DateTime::from_utc(
+            DateTime::now().inner() + chrono::Duration::milliseconds(ms),
+        ));
+    }
+    Ok(DateTime::now())
+}
+
+/// Options for [`enqueue_job`], mirroring `$queue.enqueue`'s `{ runAt,
+/// delay, maxAttempts, dedupeKey, priority }`.
+#[derive(Debug, Clone)]
+pub struct EnqueueOptions {
+    pub max_attempts: i64,
+    pub run_after: DateTime,
+    /// A non-empty, trimmed dedupe key, or `None` for no deduplication.
+    pub dedupe_key: Option<String>,
+    pub priority: i64,
+}
+
+impl Default for EnqueueOptions {
+    fn default() -> Self {
+        EnqueueOptions {
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            run_after: DateTime::now(),
+            dedupe_key: None,
+            priority: 0,
+        }
+    }
+}
+
+/// The result of one [`enqueue_job`] call.
+pub struct EnqueueOutcome {
+    pub id: String,
+    pub status: String,
+    pub run_after: DateTime,
+    /// `true` when `opts.dedupe_key` matched an already-pending/in-progress
+    /// job and nothing new was inserted.
+    pub deduped: bool,
 }
 
 /// Inserts one `_queue_jobs` row, `status: "pending"`, `attempts: 0` —
 /// the Rust-callable equivalent of `POST /api/plugins/queue/enqueue`
 /// above (which now just validates its body and calls this), for
-/// server-internal callers like `crate::mails`'s send pipeline that want
-/// durable, retrying delivery without going through HTTP. Returns the
-/// new row's id.
+/// server-internal callers like `crate::mails`'s send pipeline and
+/// `$queue.enqueue` (`crate::jsvm_host`) that want durable, retrying
+/// delivery without going through HTTP.
+///
+/// # Dedupe
+///
+/// When `opts.dedupe_key` is set, this runs inside one transaction that
+/// first takes a Postgres advisory (transaction-scoped, auto-released at
+/// commit/rollback — see `crate::cron_history` for the same pattern) lock
+/// keyed on the dedupe key, so two concurrent callers enqueuing the same
+/// key never both pass the "does a matching job already exist" check.
+/// SQLite needs no such lock: `Engine::begin` already serializes every
+/// writer. The `idx_queue_jobs_dedupe` partial unique index (see
+/// [`build_collection`]) is the actual correctness backstop either way —
+/// this lock is purely to turn the common race into a clean "deduped"
+/// response instead of a surfaced constraint-violation error.
 pub async fn enqueue_job(
     app: &App,
     queue: &str,
     payload: Value,
-    max_attempts: i64,
-    run_after: DateTime,
-) -> Result<String, AppError> {
-    let Some(collection) = app.db().collections.get_by_name(COLLECTION) else {
-        return Err(AppError::internal(
-            "the queue plugin's collection is missing; is settings.queue.enabled set?",
-        ));
-    };
-    let mut record = Record::new(collection);
-    record.set("queue", Value::String(queue.to_string()));
-    record.set("payload", payload);
-    record.set("status", Value::String(STATUS_PENDING.to_string()));
-    record.set("attempts", serde_json::json!(0));
-    record.set("maxAttempts", serde_json::json!(max_attempts.max(1)));
-    record.set("runAfter", Value::String(run_after.to_pb_string()));
+    opts: EnqueueOptions,
+) -> Result<EnqueueOutcome, AppError> {
+    if app.db().collections.get_by_name(COLLECTION).is_none() {
+        // Lazily provisioned: enqueueing must work even when an operator
+        // has never flipped `settings.queue.enabled` on (a job just sits
+        // `pending` until they do — see `QueuePlugin::setup`'s doc for the
+        // toggle's live-reload story). `ensure_collection` re-checks and
+        // is a no-op if another concurrent caller just won this race.
+        ensure_collection(app).await?;
+    }
+    let max_attempts = opts.max_attempts.max(1);
 
-    cratebase_db::records::create(app.db(), &app.db().collections, &mut record)
-        .await
-        .map_err(AppError::from)?;
-    Ok(record.id().to_string())
+    app.run_in_transaction(|tx| {
+        let queue = queue.to_string();
+        let dedupe_key = opts.dedupe_key.clone();
+        let run_after = opts.run_after;
+        async move {
+            if let Some(key) = dedupe_key.as_deref() {
+                if matches!(tx.dialect(), Dialect::Postgres) {
+                    tx.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext($1))",
+                        &[Sql::from(format!("_queue_jobs:dedupe:{key}"))],
+                    )
+                    .await
+                    .map_err(AppError::from)?;
+                }
+                let existing = tx
+                    .query_one(
+                        &format!(
+                            r#"SELECT "id", "status", "runAfter" FROM "{COLLECTION}"
+                               WHERE "dedupeKey" = $1 AND "status" IN ('{STATUS_PENDING}', '{STATUS_IN_PROGRESS}')
+                               LIMIT 1"#
+                        ),
+                        &[Sql::from(key)],
+                    )
+                    .await
+                    .map_err(AppError::from)?;
+                if let Some(row) = existing {
+                    let id = row.get_str("id").unwrap_or_default().to_string();
+                    let status = row.get_str("status").unwrap_or_default().to_string();
+                    let run_after = row
+                        .get_str("runAfter")
+                        .and_then(DateTime::parse)
+                        .unwrap_or(run_after);
+                    return Ok(EnqueueOutcome {
+                        id,
+                        status,
+                        run_after,
+                        deduped: true,
+                    });
+                }
+            }
+
+            let collection = tx
+                .app()
+                .db()
+                .collections
+                .get_by_name(COLLECTION)
+                .ok_or_else(|| {
+                    AppError::internal("the queue collection went missing mid-transaction")
+                })?;
+            let mut record = Record::new(collection);
+            record.set("queue", Value::String(queue));
+            record.set("payload", payload);
+            record.set("status", Value::String(STATUS_PENDING.to_string()));
+            record.set("attempts", serde_json::json!(0));
+            record.set("maxAttempts", serde_json::json!(max_attempts));
+            record.set("runAfter", Value::String(run_after.to_pb_string()));
+            record.set(
+                "dedupeKey",
+                Value::String(dedupe_key.clone().unwrap_or_default()),
+            );
+            record.set("priority", serde_json::json!(opts.priority));
+
+            cratebase_db::records::create(&tx, &tx.app().db().collections, &mut record)
+                .await
+                .map_err(AppError::from)?;
+            Ok(EnqueueOutcome {
+                id: record.id().to_string(),
+                status: STATUS_PENDING.to_string(),
+                run_after,
+                deduped: false,
+            })
+        }
+    })
+    .await
 }
 
 /// One claimed row, enough to run its handler and write the outcome back.
@@ -461,12 +805,12 @@ async fn claim_next(app: &App) -> Result<Option<ClaimedJob>, AppError> {
             Dialect::Postgres => format!(
                 r#"SELECT "id", "queue", "payload", "attempts", "maxAttempts" FROM "{COLLECTION}"
                    WHERE "status" = $1 AND "runAfter" <= $2
-                   ORDER BY "runAfter" ASC LIMIT 1 FOR UPDATE SKIP LOCKED"#
+                   ORDER BY "priority" DESC, "runAfter" ASC LIMIT 1 FOR UPDATE SKIP LOCKED"#
             ),
             Dialect::Sqlite => format!(
                 r#"SELECT "id", "queue", "payload", "attempts", "maxAttempts" FROM "{COLLECTION}"
                    WHERE "status" = $1 AND "runAfter" <= $2
-                   ORDER BY "runAfter" ASC LIMIT 1"#
+                   ORDER BY "priority" DESC, "runAfter" ASC LIMIT 1"#
             ),
         };
         let Some(row) = tx
@@ -598,6 +942,70 @@ async fn mark_failed_or_retry(app: &App, job: &ClaimedJob, error: &str, config: 
     if let Err(e) = result {
         tracing::warn!(error = %e, job = %job.id, "queue: failed to write back job outcome");
     }
+}
+
+/// The dead-letter view: `POST /api/queue/jobs/{id}/retry` (and its
+/// `/api/plugins/queue/jobs/{id}/retry` alias) — resets a `failed` job
+/// back to `pending` with `attempts` cleared to `0` (a fresh
+/// `maxAttempts` budget; leaving `attempts` as-is would let it flip
+/// straight back to `failed` on the very next failure) and `runAfter` set
+/// to now. Rejects anything not currently `failed`: retrying a job still
+/// in flight would race the worker that's already running it, and
+/// retrying a `completed` one makes no sense.
+pub async fn retry_job(app: &App, id: &str) -> Result<(), AppError> {
+    if app.db().collections.get_by_name(COLLECTION).is_none() {
+        return Err(AppError::not_found("Missing or invalid queue job."));
+    }
+    let row = app
+        .db()
+        .query_one(
+            &format!(r#"SELECT "id", "status" FROM "{COLLECTION}" WHERE "id" = $1"#),
+            &[Sql::from(id)],
+        )
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::not_found("Missing or invalid queue job."))?;
+    if row.get_str("status") != Some(STATUS_FAILED) {
+        return Err(AppError::bad_request("only a failed job can be retried."));
+    }
+    app.db()
+        .execute(
+            &format!(
+                r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = 0, "runAfter" = $2,
+                   "lastError" = '' WHERE "id" = $3"#
+            ),
+            &[
+                Sql::from(STATUS_PENDING),
+                Sql::from(DateTime::now().to_pb_string()),
+                Sql::from(id),
+            ],
+        )
+        .await
+        .map_err(AppError::from)?;
+    Ok(())
+}
+
+/// `DELETE /api/queue/jobs/{id}` (and its `/api/plugins/queue/jobs/{id}`
+/// alias): removes a `_queue_jobs` row outright, whatever its status —
+/// unlike [`retry_job`] this isn't limited to the dead-letter case, since
+/// deleting a row a caller no longer cares about (a stale `pending`
+/// duplicate, an old `completed` row) is unambiguous regardless of state.
+pub async fn delete_job(app: &App, id: &str) -> Result<(), AppError> {
+    if app.db().collections.get_by_name(COLLECTION).is_none() {
+        return Err(AppError::not_found("Missing or invalid queue job."));
+    }
+    let deleted = app
+        .db()
+        .execute(
+            &format!(r#"DELETE FROM "{COLLECTION}" WHERE "id" = $1"#),
+            &[Sql::from(id)],
+        )
+        .await
+        .map_err(AppError::from)?;
+    if deleted == 0 {
+        return Err(AppError::not_found("Missing or invalid queue job."));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

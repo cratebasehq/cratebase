@@ -10,6 +10,45 @@ first real tagged release.
 
 ## [Unreleased]
 
+Background jobs, webhooks and cron you can rely on in production.
+
+### Added
+
+- **JS job handlers** — `onQueueJob("name", (e) => {...})` in a
+  `pb_hooks/*.pb.js` file handles background jobs with the same claim,
+  retry and backoff as a Rust handler (a Rust handler for the same name
+  wins). `$queue.enqueue(name, payload, { runAt, delay, maxAttempts,
+  dedupeKey, priority })` is deferred past commit inside a record-write
+  hook. `dedupeKey` makes enqueue idempotent among pending/in-progress
+  jobs (`deduped: true` in the response); higher `priority` runs first.
+  Canonical `POST /api/queue/enqueue` (superuser or API key;
+  `/api/plugins/queue/enqueue` kept as an alias). Dead-letter surface:
+  `POST /api/queue/jobs/{id}/retry` and `DELETE /api/queue/jobs/{id}`.
+  SDK `cb.queue.{enqueue,retry,delete}`. Exactly-once claiming is proven
+  across nodes sharing one Postgres database.
+- **Durable webhook delivery** — every `_webhooks` dispatch is a
+  `_webhookDeliveries` row delivered by an always-on worker: fixed retry
+  schedule (1m, 5m, 30m, 2h, 6h; per-webhook `maxAttempts`, default 6),
+  10s timeout, ≤2KB response excerpt, SSRF check on every attempt. Each
+  attempt sends `X-Cratebase-Delivery` (stable across retries),
+  `X-Cratebase-Timestamp` and `X-Cratebase-Signature: sha256=…` (HMAC of
+  `"{timestamp}.{body}"`). `POST /api/webhooks/deliveries/{id}/replay`
+  resends one. `settings.webhooks.disableAfterFailures` (default 50)
+  auto-disables a failing webhook with an `_audit_log` entry;
+  `settings.webhooks.deliveryRetentionDays` (default 14) prunes old rows.
+- **Cron run history** — `_cronRuns` records every run of a SQL
+  `_cron_jobs` row or JS `cronAdd` job (`jobId`, `source`, `status`,
+  `startedAt`, `durationMs`, `message`).
+- **Dashboard** — Settings → Automation gains a Queue tab (per-queue
+  counts, payload viewer, retry/delete), a Deliveries view under
+  Webhooks (with replay), and run history for every cron job.
+
+### Changed
+
+- `settings.queue.enabled` is now a live toggle — no restart. It gates
+  only processing; enqueueing, retrying and deleting always work.
+- Cron jobs (SQL and JS) take a Postgres advisory lock per tick, so a
+  multi-node cluster runs each tick on exactly one node. No-op on SQLite.
 ### Added
 
 - **`create-cratebase`** — a scaffolding CLI (`bun create cratebase my-app` /

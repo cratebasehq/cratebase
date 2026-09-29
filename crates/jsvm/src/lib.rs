@@ -29,8 +29,8 @@ pub mod types;
 mod worker;
 
 pub use host::{
-    CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, HttpResponse, RecordTokenKind,
-    RouteHandlerId, TransactionFn,
+    CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, HttpResponse, QueueHandlerId,
+    RecordTokenKind, RouteHandlerId, TransactionFn,
 };
 pub use runtime::{
     JsBody, JsEvent, JsEventOutcome, JsRequest, JsResponse, MigrationLedger, Runtime,

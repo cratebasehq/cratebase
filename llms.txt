@@ -127,6 +127,41 @@ source. Everything referenced below is real and current, not aspirational.
   string-interpolated; `readOnly: true` (the default) runs inside a
   read-only transaction the same way the SQL console's read/write gate
   does. Returns `{ items: [...] }`.
+- `POST /queue/enqueue` (superuser/API key; `/plugins/queue/enqueue`
+  kept as an alias) — durable, retrying background jobs. `{queue,
+  payload, maxAttempts?, runAt?, delay?, dedupeKey?, priority?}`, handled
+  by a `pb_hooks/*.pb.js` `onQueueJob("queue-name", (e) => {...})` (JS)
+  or `QueuePlugin::handle().register_handler(...)` (Rust — always wins
+  over a JS handler for the same name). Fixed exponential backoff,
+  `FOR UPDATE SKIP LOCKED` claim (exactly-once across nodes sharing one
+  Postgres database), stale-`in_progress` reclaim after a worker crash.
+  `POST /queue/jobs/{id}/retry` (`failed` → `pending`, fresh attempts)
+  and `DELETE /queue/jobs/{id}` round out the dead-letter surface.
+  `settings.queue.enabled` (default `false`) gates only *processing*,
+  live, no restart — enqueueing/retrying/deleting always work.
+- `_webhooks` (superuser-only system collection) — POST a JSON payload
+  to a URL on a chosen collection's `create`/`update`/`delete` events.
+  Every dispatch is a durable `_webhookDeliveries` row, delivered by an
+  always-on worker (no toggle) with a fixed retry schedule (1m, 5m, 30m,
+  2h, 6h; per-webhook `maxAttempts`, default 6), a 10s timeout, and a
+  ≤2KB captured response excerpt. Every attempt carries
+  `X-Cratebase-Delivery` (stable across retries — dedupe key),
+  `X-Cratebase-Timestamp`, and (with a configured `secret`)
+  `X-Cratebase-Signature: sha256=<hmac-sha256("{timestamp}.{body}")>`.
+  `POST /webhooks/deliveries/{id}/replay` (superuser) resends one.
+  `settings.webhooks.disableAfterFailures` (default 50) auto-disables a
+  chronically-failing webhook (`_audit_log` entry recorded);
+  `settings.webhooks.deliveryRetentionDays` (default 14) prunes old
+  delivery rows. SSRF-guarded (private/loopback/link-local/cloud-metadata
+  addresses blocked) on every attempt, redirects disabled.
+- `_cron_jobs` (superuser-only system collection, reactive — no restart
+  needed) + `GET /crons` (list)/`POST /crons/{id}` (run now) — schedule a
+  raw SQL statement on a cron expression. A `pb_hooks/*.pb.js`
+  `cronAdd(id, cronExpr, handler)` job runs the same way from JS. Both
+  get run-history rows in `_cronRuns` (`jobId`, `source` sql/js, `status`,
+  `startedAt`, `durationMs`, `message`), and both are guarded by a
+  Postgres advisory lock so a multi-node cluster runs each tick on
+  exactly one node.
 - Files: `GET /files/{collection}/{recordId}/{filename}` (gated by
   `viewRule`) accepts `?thumb=WxH` (plus `f`/`t`/`b` fit variants) or,
   independently, `?w=&h=&fit=cover|contain|inside&format=jpeg|png|webp&q=`

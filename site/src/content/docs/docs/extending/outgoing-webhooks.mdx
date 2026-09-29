@@ -1,12 +1,144 @@
 ---
 title: "Outgoing webhooks"
-description: "_webhooks: configure a URL and get a signed POST on record events."
+description: "_webhooks: configure a URL and get a signed, durably-retried POST on record events."
 ---
 
 Configure a URL, a target collection, and which events to fire on from
 the dashboard (backed by the `_webhooks` system collection), and
-Cratebase `POST`s the event payload to that URL whenever it happens,
-optionally signing the body with an `X-Cratebase-Signature` header the
-receiver can verify with the same HMAC-SHA256 primitive
-[incoming webhooks](/docs/extending/incoming-webhooks/) documents from
-the other direction.
+Cratebase `POST`s the event payload to that URL whenever it happens.
+Every delivery is durable: the moment a matching record event fires, a
+row is inserted into `_webhookDeliveries` and a dedicated, always-on
+worker (`crates/server/src/webhook_deliveries.rs`) takes it from there —
+retrying with backoff, timing out, capturing the response, and giving up
+only after exhausting its attempt budget. This worker has no toggle of
+its own (unlike the [job queue](/docs/extending/queue/)'s
+`settings.queue.enabled`): outgoing webhooks are always delivered.
+
+## Retry schedule
+
+A failed attempt is retried at 1 minute, 5 minutes, 30 minutes, 2 hours,
+then 6 hours — up to `maxAttempts` (a per-webhook override on the
+`_webhooks` row; unset or `0` means the default, 6). Each attempt has a
+10 second timeout. Once `maxAttempts` is reached the delivery stays
+`failed` and is never retried automatically again — see **Replay**
+below to retry it by hand.
+
+## Deliveries (`_webhookDeliveries`)
+
+| Field | Meaning |
+|---|---|
+| `webhookRef` | The `_webhooks` row this delivery belongs to. |
+| `event` | `create`, `update`, or `delete`. |
+| `collectionRef` / `recordId` | Which record triggered this delivery. |
+| `payload` | The generic `{event, collection, record}` snapshot taken at dispatch time. The chat-app-specific reshaping (see below) is computed fresh from the *current* `url` on every attempt, not baked into this snapshot. |
+| `attempts` / `maxAttempts` | Retry count and ceiling for this delivery. |
+| `status` | `pending`, `success`, or `failed`. |
+| `responseCode` | The HTTP status the receiver returned, if any. |
+| `responseBody` | Up to a 2KB excerpt of the response body. |
+| `durationMs` | How long the most recent attempt took. |
+| `nextAttemptAt` | When this row becomes eligible to be claimed again. |
+| `error` | The most recent failure reason (a non-2xx response, a timeout, a network error, or the SSRF guard's message). |
+| `deliveredAt` | Set once `status` becomes `success`. |
+
+Query it like any other system collection, or use the dashboard's
+**Deliveries** view inside the Webhooks tab (status, attempts, response,
+and a Replay button per row).
+
+## Signature, delivery id, and timestamp
+
+Every attempt sends three headers:
+
+- `X-Cratebase-Delivery` — this delivery row's id, stable across every
+  retry of the *same* delivery. Use it to deduplicate: a receiver that
+  already processed this id can safely ignore a resend.
+- `X-Cratebase-Timestamp` — unix seconds at send time.
+- `X-Cratebase-Signature: sha256=<hex>` — only sent when the webhook has
+  a `secret` configured. It's the hex-encoded HMAC-SHA256 of the exact
+  bytes `"{timestamp}.{raw request body}"`, keyed by the secret. Signing
+  the timestamp together with the body (rather than the body alone)
+  means a captured, replayed request is only ever valid for the instant
+  it actually claims to have been sent at.
+
+### Verifying in Node
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const MAX_CLOCK_SKEW_SECONDS = 5 * 60;
+const seenDeliveries = new Set(); // swap for a real store in production
+
+function verifyWebhook(req, rawBody, secret) {
+  const signatureHeader = req.headers["x-cratebase-signature"]; // "sha256=<hex>"
+  const timestamp = Number(req.headers["x-cratebase-timestamp"]);
+  const deliveryId = req.headers["x-cratebase-delivery"];
+
+  if (!signatureHeader || !timestamp || !deliveryId) return false;
+  if (Math.abs(Date.now() / 1000 - timestamp) > MAX_CLOCK_SKEW_SECONDS) return false;
+
+  const expected = `sha256=${createHmac("sha256", secret)
+    .update(`${timestamp}.`)
+    .update(rawBody) // the raw request body Buffer, read before JSON.parse
+    .digest("hex")}`;
+  const a = Buffer.from(signatureHeader);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+
+  if (seenDeliveries.has(deliveryId)) return false; // already processed this retry
+  seenDeliveries.add(deliveryId);
+  return true;
+}
+```
+
+`rawBody` has to be the exact bytes Cratebase sent — capture it before
+your framework's JSON body parser runs (e.g. `express.raw()`, or read the
+stream yourself), since re-serializing a parsed object is not guaranteed
+to byte-for-byte match what was signed.
+
+## Chat-app auto-shaping
+
+A webhook pointed at `hooks.slack.com` gets `{"text": "..."}`, one at
+`discord.com/api/webhooks/...` gets `{"content": "..."}` — both a
+human-readable summary of the event, collection, and record. Any other
+`url` keeps the generic `{event, collection, record}` shape. This is
+detected from the URL's host, not a separate field, so pointing an
+existing webhook at Slack or Discord "just works". It's recomputed from
+the *current* `url` on every attempt, so editing a webhook's target
+after some deliveries are already queued changes their shape too.
+
+## Replay
+
+```sh
+curl -X POST http://localhost:8090/api/webhooks/deliveries/$ID/replay \
+  -H "Authorization: $SUPERUSER_TOKEN"
+```
+
+Resets a delivery to `pending` with a fresh `attempts` budget and clears
+`error`. Works on a `failed` delivery (the usual dead-letter case) or
+even one that already succeeded — replaying a successful delivery is a
+legitimate "send this to the receiver again" action, not just recovery.
+
+## Auto-disable
+
+`settings.webhooks.disableAfterFailures` (default 50) consecutive
+failures on one webhook flips its `enabled` to `false` and writes an
+`_audit_log` row (`action: "webhook.autoDisabled"`) recording the
+webhook's name, the failure count, and the threshold — a permanently
+broken endpoint stops burning delivery attempts and retry backoff slots
+forever. Any successful delivery resets the counter to `0`.
+
+## Retention
+
+`settings.webhooks.deliveryRetentionDays` (default 14; `<= 0` disables
+this) — a cron prunes `_webhookDeliveries` rows older than that,
+regardless of status, every 6 hours.
+
+## SSRF hardening
+
+A webhook's `url` is operator-configured, but this process is the one
+making the outbound request — so it's resolved and checked against a
+private/loopback/link-local/cloud-metadata-address blocklist **on every
+attempt**, not just the first, since a webhook's `url` can be edited
+between retries. Redirect-following is disabled too, so a URL that
+passes the check can't 302 its way to a blocked address. See
+[incoming webhooks](/docs/extending/incoming-webhooks/) for the same
+HMAC primitive used from the other direction.

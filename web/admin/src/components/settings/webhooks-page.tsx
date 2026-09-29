@@ -204,6 +204,8 @@ export function WebhooksPage() {
         </Table>
       )}
 
+      <WebhookDeliveries webhooks={webhooks} />
+
       {dialogWebhook ? (
         <WebhookDialog
           webhook={dialogWebhook === "new" ? null : dialogWebhook}
@@ -395,5 +397,180 @@ function WebhookDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const DELIVERY_STATUSES = ["pending", "success", "failed"] as const;
+type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+
+/** A `_webhookDeliveries` record — see
+ * `crates/server/src/webhook_deliveries.rs`. */
+interface WebhookDelivery {
+  id: string;
+  webhookRef: string;
+  event: string;
+  status: DeliveryStatus;
+  attempts: number;
+  maxAttempts: number;
+  responseCode?: string;
+  error?: string;
+  created: string;
+}
+
+const DELIVERIES_PAGE_SIZE = 50;
+
+function deliveryStatusClass(status: DeliveryStatus): string {
+  switch (status) {
+    case "success":
+      return "font-normal text-success";
+    case "failed":
+      return "font-normal text-destructive";
+    default:
+      return "font-normal text-muted-foreground";
+  }
+}
+
+/** Recent `_webhookDeliveries` rows across every webhook, with a status
+ * filter and a Replay button — every dispatch is durably retried by an
+ * always-on worker (`crates/server/src/webhook_deliveries.rs`), not
+ * fired-and-forgotten, so this is the operational view into that. */
+function WebhookDeliveries({ webhooks }: { webhooks: WebhookRecord[] }) {
+  const queryClient = useQueryClient();
+  const [statusFilter, setStatusFilter] = useState<DeliveryStatus | "all">("all");
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["webhook-deliveries", statusFilter],
+    queryFn: () =>
+      cb.collection("_webhookDeliveries").list({
+        page: 1,
+        perPage: DELIVERIES_PAGE_SIZE,
+        sort: "-created",
+        filter: statusFilter === "all" ? undefined : `status = "${statusFilter}"`,
+      }) as unknown as Promise<{ items: WebhookDelivery[] }>,
+  });
+
+  const replay = useMutation({
+    mutationFn: (id: string) =>
+      cb.send<void>(`/api/webhooks/deliveries/${encodeURIComponent(id)}/replay`, { method: "POST" }),
+    onSuccess: () => {
+      toast.success("Delivery queued for replay");
+      void queryClient.invalidateQueries({ queryKey: ["webhook-deliveries"] });
+    },
+    onError: (failure) => {
+      const described = describeFailure(failure);
+      toast.error(described.title, { description: described.detail });
+    },
+  });
+
+  const deliveries = data?.items ?? [];
+  const nameFor = (webhookRef: string) => webhooks.find((w) => w.id === webhookRef)?.name ?? webhookRef;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-col gap-2">
+          <h2 className="text-sm font-medium">Recent deliveries</h2>
+          <p className="max-w-measure text-sm text-muted-foreground">
+            Every dispatch is durably retried with backoff, not fired-and-forgotten. Replay resends one now.
+          </p>
+        </div>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as DeliveryStatus | "all")}>
+          <SelectTrigger className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {DELIVERY_STATUSES.map((s) => (
+              <SelectItem key={s} value={s}>
+                {s}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {error ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Webhook />
+            </EmptyMedia>
+            <EmptyTitle>Couldn't load deliveries</EmptyTitle>
+            <EmptyDescription>{describeFailure(error).detail}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : isLoading ? (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 2 }, (_, i) => (
+            <Skeleton key={i} className="h-row w-full" />
+          ))}
+        </div>
+      ) : deliveries.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Webhook />
+            </EmptyMedia>
+            <EmptyTitle>No deliveries yet</EmptyTitle>
+            <EmptyDescription>Nothing has been dispatched to a webhook yet.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Webhook</TableHead>
+              <TableHead>Event</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Attempts</TableHead>
+              <TableHead>Response</TableHead>
+              <TableHead className="w-24 text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {deliveries.map((delivery) => (
+              <TableRow key={delivery.id} className="align-top">
+                <TableCell className="py-3 font-medium">{nameFor(delivery.webhookRef)}</TableCell>
+                <TableCell className="py-3 text-sm">{delivery.event}</TableCell>
+                <TableCell className="py-3">
+                  <Badge variant="outline" className={deliveryStatusClass(delivery.status)}>
+                    {delivery.status}
+                  </Badge>
+                  {delivery.error ? (
+                    <div
+                      className="mt-1 max-w-xs truncate text-xs text-muted-foreground"
+                      title={delivery.error}
+                    >
+                      {delivery.error}
+                    </div>
+                  ) : null}
+                </TableCell>
+                <TableCell className="py-3 text-sm">
+                  {delivery.attempts} / {delivery.maxAttempts}
+                </TableCell>
+                <TableCell className="py-3 text-sm text-muted-foreground">
+                  {delivery.responseCode ?? "—"}
+                </TableCell>
+                <TableCell className="py-3 text-right">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Replay delivery to ${nameFor(delivery.webhookRef)}`}
+                    disabled={replay.isPending && replay.variables === delivery.id}
+                    onClick={() => replay.mutate(delivery.id)}
+                  >
+                    {replay.isPending && replay.variables === delivery.id ? (
+                      <Spinner className="size-3.5" />
+                    ) : (
+                      "Replay"
+                    )}
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </div>
   );
 }

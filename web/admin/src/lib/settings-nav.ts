@@ -206,6 +206,13 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
         collection: "_webhooks",
       },
       {
+        value: "queue",
+        label: "Queue",
+        description: "Durable, retrying background jobs - from a JS handler or Rust code.",
+        legacyPath: "/settings/queue",
+        collection: "_queue_jobs",
+      },
+      {
         value: "functions",
         label: "Functions",
         description: "Custom server-side JavaScript hooks and the routes they register.",

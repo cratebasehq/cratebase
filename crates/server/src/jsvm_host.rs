@@ -50,7 +50,8 @@ use cratebase_db::engine::{Executor, Sql};
 use cratebase_db::{query, records};
 use cratebase_jsvm::{
     CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, HttpResponse, JsBody, JsRequest,
-    JsResponse, RecordTokenKind, Runtime, RuntimeConfig, TransactionFn, JS_RECORD_OPTIONS,
+    JsResponse, QueueHandlerId, RecordTokenKind, Runtime, RuntimeConfig, TransactionFn,
+    JS_RECORD_OPTIONS,
 };
 use cratebase_mailer::Message;
 use serde_json::{Map, Value};
@@ -559,6 +560,79 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
         Ok(result)
     }
 
+    async fn queue_enqueue(&self, input: Map<String, Value>) -> Result<Value, AppError> {
+        let queue = input
+            .get("queue")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| AppError::bad_request("queue must not be empty."))?
+            .to_string();
+        let payload = input.get("payload").cloned().unwrap_or(Value::Null);
+        let get_str = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
+        let run_after = crate::queue::resolve_run_after(
+            get_str("runAt").as_deref(),
+            get_str("runAfter").as_deref(),
+            input.get("delay").and_then(Value::as_i64),
+        )
+        .map_err(AppError::bad_request)?;
+        let opts = crate::queue::EnqueueOptions {
+            max_attempts: input
+                .get("maxAttempts")
+                .and_then(Value::as_i64)
+                .unwrap_or(5)
+                .max(1),
+            run_after,
+            dedupe_key: get_str("dedupeKey").filter(|s| !s.trim().is_empty()),
+            priority: input.get("priority").and_then(Value::as_i64).unwrap_or(0),
+        };
+
+        // Same "resolve/validate now, do the actual write after commit"
+        // split as `mails_send`/`notify_send` above, and for the same
+        // reason: a job enqueued from inside a still-open write-hook
+        // transaction must never run for a write that ends up rolling
+        // back, and `crate::queue::enqueue_job` opens its own transaction
+        // internally (for the dedupe check), which this scope's already-open
+        // one can't nest into on SQLite (a guaranteed self-deadlock — see
+        // `crate::mails`'s module doc for the identical constraint).
+        if !self.0.is_transactional() {
+            let outcome = crate::queue::enqueue_job(self.0.app(), &queue, payload, opts).await?;
+            return Ok(serde_json::json!({
+                "id": outcome.id,
+                "queue": queue,
+                "status": outcome.status,
+                "runAfter": outcome.run_after.to_pb_string(),
+                "deduped": outcome.deduped,
+            }));
+        }
+        let app = self.0.app().clone();
+        let result = serde_json::json!({
+            "id": cratebase_core::record_id(),
+            "queue": queue,
+            "status": crate::queue::STATUS_PENDING,
+            "runAfter": opts.run_after.to_pb_string(),
+            "deduped": false,
+        });
+        // The id above is provisional (never written anywhere) purely so
+        // JS gets a same-shaped response either way; the real id
+        // `enqueue_job` generates after commit is not reported back —
+        // same tradeoff `mails_send`'s deferred path makes for `log_id`.
+        // Unlike that path, `crate::queue::enqueue_job`'s own dedupe check
+        // (which can turn this into a no-op) also only happens after
+        // commit, so a caller relying on `deduped` from *this* branch
+        // should not — it is always `false` here regardless of the
+        // eventual outcome.
+        self.0.after_commit(Box::pin(async move {
+            if let Err(e) = crate::queue::enqueue_job(&app, &queue, payload, opts).await {
+                tracing::warn!(
+                    error = %e,
+                    queue = %queue,
+                    "deferred $queue.enqueue failed after its transaction committed"
+                );
+            }
+        }));
+        Ok(result)
+    }
+
     async fn realtime_publish(
         &self,
         channel: String,
@@ -684,14 +758,32 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
     fn register_cron(&self, id: &str, expr: &str, handler: CronHandlerId) {
         let cron_app = self.0.app().clone();
         let id_owned = id.to_string();
+        let cron_id = id_owned.clone();
         let result = self.0.app().cron().add(id, expr, move || {
             let app = cron_app.clone();
             let handler = handler.clone();
+            let job_id = cron_id.clone();
             async move {
-                let Some(rt) = app.jsvm() else { return };
-                if let Err(e) = rt.call_cron(&handler).await {
-                    tracing::warn!(error = %e, cron = %handler, "jsvm cron job failed");
-                }
+                // Multi-node safety + run history, same wrapper the SQL
+                // `_cron_jobs` path uses (`crate::cron_jobs::run_custom_job`)
+                // — see `crate::cron_history`'s doc.
+                crate::cron_history::run_locked_with_history(
+                    &app,
+                    &job_id,
+                    crate::cron_history::SOURCE_JS,
+                    || {
+                        let app = app.clone();
+                        let handler = handler.clone();
+                        async move {
+                            let Some(rt) = app.jsvm() else {
+                                return Err("jsvm runtime not available".to_string());
+                            };
+                            rt.call_cron(&handler).await.map_err(|e| e.to_string())?;
+                            Ok(String::new())
+                        }
+                    },
+                )
+                .await;
             }
         });
         if let Err(e) = result {
@@ -701,6 +793,37 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
 
     fn remove_cron(&self, id: &str) {
         self.0.app().cron().remove(id);
+    }
+
+    fn register_queue_handler(&self, queue: &str, handler: QueueHandlerId) {
+        let Some(qh) = self.0.app().queue_handle() else {
+            // No Queue plugin registered — unreachable in a real boot
+            // (see `crate::app::App::bootstrap`, which always registers
+            // it before the JS runtime starts) but harmless to no-op in a
+            // test double that builds a bare `App`/`HostApi` pair without
+            // going through `bootstrap`.
+            return;
+        };
+        let app = self.0.app().clone();
+        let took = qh.register_js_handler(queue, move |payload| {
+            let app = app.clone();
+            let handler = handler.clone();
+            async move {
+                let Some(rt) = app.jsvm() else {
+                    return Err("jsvm runtime not available".to_string());
+                };
+                rt.call_queue_job(&handler, payload)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        });
+        let _ = took;
+    }
+
+    fn clear_queue_handlers(&self) {
+        if let Some(qh) = self.0.app().queue_handle() {
+            qh.clear_js_handlers();
+        }
     }
 
     fn register_hook(
@@ -2543,5 +2666,477 @@ mod hot_reload_tests {
         );
         assert_eq!(rows[0].get_str("type"), Some("widget.created"));
         assert_eq!(rows[0].get_str("title"), Some("Widget created"));
+    }
+
+    // -----------------------------------------------------------------
+    // $queue.enqueue / onQueueJob
+    // -----------------------------------------------------------------
+
+    /// `crate::queue::QueueHandle::run_one_tick` with a short, test-sized
+    /// backoff/stale-timeout, against the real app-wide handle.
+    async fn tick_now(app: &App) {
+        app.queue_handle()
+            .expect("queue plugin is always registered")
+            .run_one_tick(
+                app,
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(300),
+            )
+            .await;
+    }
+
+    async fn queue_job_row(app: &App, id: &str) -> cratebase_db::engine::Row {
+        app.db()
+            .query_one(
+                r#"SELECT * FROM "_queue_jobs" WHERE "id" = $1"#,
+                &[cratebase_db::engine::Sql::from(id)],
+            )
+            .await
+            .expect("query _queue_jobs")
+            .expect("job row present")
+    }
+
+    #[tokio::test]
+    async fn onqueuejob_handler_runs_and_receives_the_payload() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"routerAdd("GET", "/probe", (e) => e.json(200, { seen: null }));
+            onQueueJob("greet", (e) => {
+                $app.store().set("queueSeen", e.payload);
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "greet",
+            serde_json::json!({ "name": "ada" }),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue");
+        tick_now(&app).await;
+
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(
+            row.get_str("status"),
+            Some(crate::queue::STATUS_COMPLETED),
+            "a JS onQueueJob handler that returns normally must complete the job"
+        );
+    }
+
+    #[tokio::test]
+    async fn onqueuejob_handler_throwing_retries_with_backoff_then_fails() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("flaky", (e) => { throw new Error("boom from JS"); });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "flaky",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions {
+                max_attempts: 2,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        // Attempt 1: fails, scheduled a short backoff out, still pending.
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(1));
+        assert!(
+            row.get_str("lastError")
+                .unwrap_or_default()
+                .contains("boom from JS"),
+            "{:?}",
+            row.get_str("lastError")
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+        // Attempt 2 == maxAttempts: gives up for good.
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_FAILED));
+        assert_eq!(row.get_i64("attempts"), Some(2));
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_respects_run_at() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            "onQueueJob(\"later\", (e) => {});",
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let future = cratebase_core::DateTime::from_utc(
+            cratebase_core::DateTime::now().inner() + chrono::Duration::seconds(60),
+        );
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "later",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions {
+                run_after: future,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enqueue");
+
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(
+            row.get_str("status"),
+            Some(crate::queue::STATUS_PENDING),
+            "a job scheduled a minute out must not run yet"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_dedupe_key_ignores_a_duplicate_while_pending() {
+        let (app, _dir) = {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let app = App::new(Config::memory(dir.path().join("pb_data")));
+            app.bootstrap().await.expect("bootstrap");
+            (app, dir)
+        };
+        crate::queue::ensure_collection(&app)
+            .await
+            .expect("ensure collection");
+
+        let first = crate::queue::enqueue_job(
+            &app,
+            "welcome-email",
+            serde_json::json!({ "n": 1 }),
+            crate::queue::EnqueueOptions {
+                dedupe_key: Some("user-42".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("first enqueue");
+        assert!(!first.deduped);
+
+        let second = crate::queue::enqueue_job(
+            &app,
+            "welcome-email",
+            serde_json::json!({ "n": 2 }),
+            crate::queue::EnqueueOptions {
+                dedupe_key: Some("user-42".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("second enqueue");
+        assert!(
+            second.deduped,
+            "a matching dedupeKey must not insert a second row"
+        );
+        assert_eq!(second.id, first.id);
+
+        let count = app
+            .db()
+            .query(
+                r#"SELECT "id" FROM "_queue_jobs" WHERE "dedupeKey" = $1"#,
+                &[cratebase_db::engine::Sql::from("user-42")],
+            )
+            .await
+            .expect("query")
+            .len();
+        assert_eq!(count, 1, "exactly one row for the deduped key");
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_in_after_success_hook_does_not_deadlock() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        crate::queue::ensure_collection(&app)
+            .await
+            .expect("ensure _queue_jobs");
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterCreateSuccess((e) => {
+                $queue.enqueue("widget-created", { id: e.record.get("id") });
+                e.next();
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("a create whose after-success hook calls $queue.enqueue must not deadlock")
+        .unwrap();
+        assert_eq!(
+            created.status(),
+            StatusCode::OK,
+            "{:?}",
+            body_json(created).await
+        );
+
+        let queued = poll_until(std::time::Duration::from_secs(5), || async {
+            app.db()
+                .query(
+                    r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'widget-created'"#,
+                    &[],
+                )
+                .await
+                .map(|rows| !rows.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+        assert!(
+            queued,
+            "the deferred $queue.enqueue must still insert its row once the triggering \
+             transaction commits"
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_enqueue_in_after_success_hook_is_not_enqueued_when_the_write_rolls_back() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        crate::queue::ensure_collection(&app)
+            .await
+            .expect("ensure _queue_jobs");
+        let router = crate::router(app.clone());
+        let token = superuser_token(&app).await;
+
+        let create_collection = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/collections",
+                &token,
+                serde_json::json!({
+                    "name": "widgets",
+                    "type": "base",
+                    "listRule": "",
+                    "viewRule": "",
+                    "createRule": "",
+                    "updateRule": "",
+                    "deleteRule": "",
+                    "fields": [{"name": "name", "type": "text"}],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_collection.status(), StatusCode::OK);
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onRecordAfterCreateSuccess((e) => {
+                $queue.enqueue("should-never-run", { id: e.record.get("id") });
+                e.next();
+            }, "widgets");
+            onRecordAfterCreateSuccess((e) => {
+                throw new Error("force rollback after the job was queued");
+            }, "widgets");"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let created = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            router.clone().oneshot(json_request(
+                "POST",
+                "/api/collections/widgets/records",
+                &token,
+                serde_json::json!({ "name": "gizmo" }),
+            )),
+        )
+        .await
+        .expect("must not deadlock even though the write ultimately fails")
+        .unwrap();
+        assert_ne!(created.status(), StatusCode::OK);
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let rows = app
+            .db()
+            .query(
+                r#"SELECT "id" FROM "_queue_jobs" WHERE "queue" = 'should-never-run'"#,
+                &[],
+            )
+            .await
+            .expect("query _queue_jobs");
+        assert!(
+            rows.is_empty(),
+            "a job queued before a later handler rolled back the write must never exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rust_handler_takes_precedence_over_a_js_onqueuejob_for_the_same_name() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+        let ran_rust = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = ran_rust.clone();
+        app.queue_handle()
+            .expect("queue plugin registered")
+            .register_handler("shared-name", move |_payload| {
+                let flag = flag.clone();
+                async move {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }
+            });
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("shared-name", (e) => {
+                $app.store().set("jsRanInstead", true);
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload");
+
+        let outcome = crate::queue::enqueue_job(
+            &app,
+            "shared-name",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue");
+        tick_now(&app).await;
+
+        assert!(
+            ran_rust.load(std::sync::atomic::Ordering::SeqCst),
+            "the Rust handler registered first must run, not the JS one"
+        );
+        let row = queue_job_row(&app, &outcome.id).await;
+        assert_eq!(row.get_str("status"), Some(crate::queue::STATUS_COMPLETED));
+    }
+
+    /// A `--dev` hot reload re-registers `onQueueJob` handlers from the
+    /// reloaded files: a changed handler body takes effect, and a queue
+    /// name a new version of the file no longer registers goes back to
+    /// having no handler at all — same "whole table dropped, rebuilt"
+    /// story as `routerAdd` (see `QueueHandle::clear_js_handlers`'s doc).
+    #[tokio::test]
+    async fn dev_reload_re_registers_onqueuejob_handlers() {
+        let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
+
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("versioned", (e) => {
+                $app.store().set("version", "v1");
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload v1");
+
+        let first = crate::queue::enqueue_job(
+            &app,
+            "versioned",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue v1");
+        tick_now(&app).await;
+        assert_eq!(
+            queue_job_row(&app, &first.id).await.get_str("status"),
+            Some(crate::queue::STATUS_COMPLETED)
+        );
+
+        // v2: the handler body changes.
+        std::fs::write(
+            hooks_dir.join("main.pb.js"),
+            r#"onQueueJob("versioned", (e) => {
+                $app.store().set("version", "v2");
+            });"#,
+        )
+        .unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload v2");
+
+        let second = crate::queue::enqueue_job(
+            &app,
+            "versioned",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions::default(),
+        )
+        .await
+        .expect("enqueue v2");
+        tick_now(&app).await;
+        assert_eq!(
+            queue_job_row(&app, &second.id).await.get_str("status"),
+            Some(crate::queue::STATUS_COMPLETED),
+            "the reloaded file's handler must still run for the same queue name"
+        );
+
+        // v3: the file stops registering it at all.
+        std::fs::write(hooks_dir.join("main.pb.js"), "// no more onQueueJob here\n").unwrap();
+        app.jsvm().unwrap().reload().await.expect("reload v3");
+
+        let third = crate::queue::enqueue_job(
+            &app,
+            "versioned",
+            serde_json::json!({}),
+            crate::queue::EnqueueOptions {
+                max_attempts: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("enqueue v3");
+        tick_now(&app).await;
+        let row = queue_job_row(&app, &third.id).await;
+        assert_eq!(
+            row.get_str("status"),
+            Some(crate::queue::STATUS_FAILED),
+            "a queue name the reloaded files no longer register must go back to \
+             having no handler, exactly like it never had one"
+        );
+        assert!(
+            row.get_str("lastError")
+                .unwrap_or_default()
+                .contains("no handler registered"),
+            "{:?}",
+            row.get_str("lastError")
+        );
     }
 }

@@ -47,15 +47,16 @@
 //!
 //! # Why the status write-back bypasses the record API
 //!
-//! [`deliver`] writes `lastTriggeredAt`/`lastStatus`/`lastMessage` back
-//! with a raw `UPDATE`, not `records::update` — same reasoning as
-//! `_cron_jobs`'s `run_custom_job`: going through the record API would
-//! re-fire the very hook that dispatches webhooks (harmless here since
-//! `_webhooks` is never a dispatch target, but still pointless), and it
-//! would run full field validation for a write that only ever touches
-//! three system-owned columns.
+//! [`record_attempt_outcome`] writes `lastTriggeredAt`/`lastStatus`/
+//! `lastMessage` back with a raw `UPDATE`, not `records::update` — same
+//! reasoning as `_cron_jobs`'s `run_custom_job`: going through the record
+//! API would re-fire the very hook that dispatches webhooks (harmless
+//! here since `_webhooks` is never a dispatch target, but still
+//! pointless), and it would run full field validation for a write that
+//! only ever touches three system-owned columns.
 //!
-//! # Why delivery is fire-and-forget, and waits for the triggering commit
+//! # Delivery is durable, not fire-and-forget, and waits for the
+//! triggering commit
 //!
 //! [`dispatch_after_success`] runs as an ordinary `on_record_after_*_success`
 //! handler, so `e.app` is a [`crate::app::TxApp`] bound to the triggering
@@ -64,13 +65,14 @@
 //! for the identical fix applied there). It therefore queues the actual
 //! lookup behind [`crate::app::TxApp::after_commit`] rather than touching
 //! the database inline, so it can never contend for the writer lock that
-//! transaction is still holding, and a webhook never fires for a write
-//! that ends up rolling back. Once that runs (after commit), it spawns
-//! one `tokio::spawn` for the `_webhooks` lookup, and the lookup+delivery
-//! work inside it spawns one more `tokio::spawn` per matching row, each
-//! POSTing with a 5 second timeout via `reqwest`. A slow or dead target
-//! therefore never blocks the record write's HTTP response, and one slow
-//! target never blocks another target's delivery either.
+//! transaction is still holding, and a webhook delivery is never created
+//! for a write that ends up rolling back. Once that runs (after commit),
+//! [`dispatch`] loads every matching `_webhooks` row and inserts one
+//! `pending` `_webhookDeliveries` row per match — see `crate::webhook_deliveries`
+//! for the always-on, independently-ticking worker that actually POSTs,
+//! retries with backoff, times out, and gives up, all against that
+//! durable row rather than an in-memory future no one can inspect or
+//! retry after the fact.
 //!
 //! # SSRF hardening
 //!
@@ -82,20 +84,19 @@
 //! credentials back out through `lastMessage`, or at `127.0.0.1:<port>`
 //! to reach a service that only trusts localhost callers. This is a
 //! *server-side request forgery* surface independent of the
-//! already-documented superuser trust boundary above, so [`deliver`]
-//! resolves `url`'s host with [`validate_webhook_url`] and refuses to
+//! already-documented superuser trust boundary above, so
+//! `crate::webhook_deliveries` resolves `url`'s host with
+//! [`validate_webhook_url`] — on *every* attempt, not just the first,
+//! since a webhook's `url` can be edited between retries — and refuses to
 //! send if every resolved address isn't a public one, or if the scheme
-//! isn't `http`/`https`. The shared `reqwest::Client` also disables
-//! redirect-following ([`reqwest::redirect::Policy::none`]): otherwise a
+//! isn't `http`/`https`. Its shared `reqwest::Client` also disables
+//! redirect-following (`reqwest::redirect::Policy::none`): otherwise a
 //! validated public URL could 302 to a blocked address and the check
 //! above would never see it.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::time::Duration;
 
-use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
-use sha2::Sha256;
 
 use cratebase_core::codes::REQUIRED;
 use cratebase_core::{AppError, DateTime, FieldError};
@@ -105,7 +106,7 @@ use crate::app::App;
 use crate::events::RecordEvent;
 use crate::hooks::{Event, Handler};
 
-const COLLECTION: &str = "_webhooks";
+pub(crate) const COLLECTION: &str = "_webhooks";
 const EVENT_KINDS: [&str; 3] = ["create", "update", "delete"];
 
 /// Bind the validating and reactive hooks. Called once from
@@ -190,8 +191,11 @@ fn dispatch_after_success(event: &str, e: &RecordEvent) {
 }
 
 /// Load every enabled `_webhooks` row targeting `collection_name`/
-/// `collection_id` and subscribed to `event`, and spawn one delivery per
-/// match.
+/// `collection_id` and subscribed to `event`, and insert one durable
+/// `_webhookDeliveries` row per match — `crate::webhook_deliveries`'s
+/// always-on ticker (independent of `settings.queue.enabled`; see that
+/// module's doc) does the actual, retrying delivery from there. Nothing
+/// here talks to the network directly anymore.
 async fn dispatch(
     app: App,
     event: String,
@@ -215,9 +219,11 @@ async fn dispatch(
             return;
         }
     };
-    // Note: no shared payload here — each webhook row's `url` may need
-    // a different shape (see `format_payload`), so the payload is built
-    // per row below, after `url` is known.
+    let record_id = record
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     for row in &rows {
         let Some(id) = row.get_str("id") else {
             continue;
@@ -226,18 +232,30 @@ async fn dispatch(
         if !events.split(',').map(str::trim).any(|k| k == event) {
             continue;
         }
-        let url = row.get_str("url").unwrap_or_default().to_string();
-        if url.is_empty() {
+        if row.get_str("url").unwrap_or_default().is_empty() {
             continue;
         }
-        let secret = row
-            .get_str("secret")
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        let record_id = id.to_string();
-        let app = app.clone();
-        let payload = format_payload(&url, &event, &collection_name, &record);
-        tokio::spawn(deliver(app, record_id, url, secret, payload));
+        let max_attempts = row
+            .get_i64("maxAttempts")
+            .filter(|n| *n > 0)
+            .unwrap_or(crate::webhook_deliveries::DEFAULT_MAX_ATTEMPTS);
+        if let Err(e) = crate::webhook_deliveries::enqueue_delivery(
+            &app,
+            id,
+            &event,
+            &collection_name,
+            &record_id,
+            record.clone(),
+            max_attempts,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                webhook_id = %id,
+                "failed to queue a webhook delivery"
+            );
+        }
     }
 }
 
@@ -253,7 +271,7 @@ async fn dispatch(
 /// collection, and the record as pretty JSON in a code fence) under the
 /// field name each platform expects: Slack's incoming-webhook payload is
 /// `{"text": "..."}`, Discord's is `{"content": "..."}`.
-fn format_payload(url: &str, event: &str, collection: &str, record: &Value) -> Value {
+pub(crate) fn format_payload(url: &str, event: &str, collection: &str, record: &Value) -> Value {
     let host = reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
@@ -278,53 +296,19 @@ fn format_payload(url: &str, event: &str, collection: &str, record: &Value) -> V
     }
 }
 
-/// POST `payload` to `url`, optionally signing the raw body with
-/// HMAC-SHA256 in `X-Cratebase-Signature`, and write the outcome back
-/// onto the triggering `_webhooks` row.
-async fn deliver(app: App, record_id: String, url: String, secret: Option<String>, payload: Value) {
-    static CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
-        reqwest::Client::builder()
-            // See the module doc's "SSRF hardening" section: without
-            // this, a `validate_webhook_url`-approved public URL could
-            // 302 to a blocked address and the delivery would follow it
-            // there anyway.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("static client config is valid")
-    });
-    let client = &*CLIENT;
-
-    let (status, message) = match validate_webhook_url(&url).await {
-        Err(reason) => ("error".to_string(), reason),
-        Ok(()) => {
-            let body = serde_json::to_vec(&payload).unwrap_or_default();
-            let mut builder = client
-                .post(&url)
-                .header("Content-Type", "application/json")
-                .timeout(Duration::from_secs(5));
-            if let Some(secret) = &secret {
-                let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-                    .expect("HMAC accepts a key of any length");
-                mac.update(&body);
-                let signature = mac
-                    .finalize()
-                    .into_bytes()
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>();
-                builder = builder.header("X-Cratebase-Signature", signature);
-            }
-            match builder.body(body).send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    (status.as_u16().to_string(), format!("delivered to {url}"))
-                }
-                Err(e) => ("error".to_string(), e.to_string()),
-            }
-        }
-    };
-
-    let now = DateTime::now().to_pb_string();
+/// Write `lastTriggeredAt`/`lastStatus`/`lastMessage` back onto a
+/// `_webhooks` row — bypasses `records::update` for the same reason the
+/// module doc's "Why the status write-back bypasses the record API"
+/// section gives. `crate::webhook_deliveries` calls this after every
+/// delivery attempt (success or failure alike), so these three columns
+/// always reflect the *most recent* attempt regardless of which
+/// `_webhookDeliveries` row it belonged to.
+pub(crate) async fn record_attempt_outcome(
+    app: &App,
+    webhook_id: &str,
+    status: &str,
+    message: &str,
+) {
     if let Err(e) = app
         .db()
         .execute(
@@ -332,15 +316,15 @@ async fn deliver(app: App, record_id: String, url: String, secret: Option<String
                 r#"UPDATE "{COLLECTION}" SET "lastTriggeredAt" = $1, "lastStatus" = $2, "lastMessage" = $3 WHERE "id" = $4"#
             ),
             &[
-                Sql::from(now),
+                Sql::from(DateTime::now().to_pb_string()),
                 Sql::from(status),
                 Sql::from(message),
-                Sql::from(record_id.clone()),
+                Sql::from(webhook_id),
             ],
         )
         .await
     {
-        tracing::warn!(error = %e, record_id = %record_id, "failed to record a webhook's delivery result");
+        tracing::warn!(error = %e, webhook_id = %webhook_id, "failed to record a webhook's delivery result");
     }
 }
 
@@ -381,7 +365,7 @@ fn validate_events(events: &str) -> Result<(), AppError> {
 /// "SSRF hardening" section. Resolution happens here (not left to
 /// `reqwest`) specifically so a DNS name that resolves to a private or
 /// metadata address is caught before any socket is opened.
-async fn validate_webhook_url(url: &str) -> Result<(), String> {
+pub(crate) async fn validate_webhook_url(url: &str) -> Result<(), String> {
     let parsed =
         reqwest::Url::parse(url).map_err(|e| format!("invalid webhook URL \"{url}\": {e}"))?;
     match parsed.scheme() {

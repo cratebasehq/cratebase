@@ -25,6 +25,7 @@ import { settingsSuperusersRoute } from "@/routes/settings-superusers";
 import { settingsSessionsRoute } from "@/routes/settings-sessions";
 import { settingsBackupsRoute } from "@/routes/settings-backups";
 import { settingsCronRoute } from "@/routes/settings-cron";
+import { settingsQueueRoute } from "@/routes/settings-queue";
 import { settingsNetworkRoute } from "@/routes/settings-network";
 import { settingsSqlConsoleRoute } from "@/routes/settings-sql-console";
 import { settingsExtensionsRoute } from "@/routes/settings-extensions";
@@ -63,6 +64,7 @@ const routeTree = rootRoute.addChildren([
       settingsSessionsRoute,
       settingsBackupsRoute,
       settingsCronRoute,
+      settingsQueueRoute,
       settingsNetworkRoute,
       settingsSqlConsoleRoute,
       settingsExtensionsRoute,

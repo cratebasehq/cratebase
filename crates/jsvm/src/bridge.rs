@@ -19,7 +19,8 @@ use serde_json::{json, Map, Value};
 
 use crate::convert::{from_js, throw_app_error, to_js};
 use crate::host::{
-    CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, RecordTokenKind, RouteHandlerId,
+    CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, QueueHandlerId, RecordTokenKind,
+    RouteHandlerId,
 };
 use crate::runtime::JS_RECORD_OPTIONS;
 use crate::security::{self, HmacAlg};
@@ -324,6 +325,13 @@ pub(crate) fn dispatch(
             }
             Ok(Value::Null)
         }
+        "registerQueueHandler" => {
+            if state.reports() {
+                let queue = a.str(0);
+                host.register_queue_handler(&queue, QueueHandlerId(queue.clone()));
+            }
+            Ok(Value::Null)
+        }
 
         // ---- $http --------------------------------------------------------
         "httpSend" => {
@@ -416,6 +424,10 @@ pub(crate) fn dispatch(
         "notifySend" => {
             let input = a.map(0);
             state.block_on(host.notify_send(input))
+        }
+        "queueEnqueue" => {
+            let input = a.map(0);
+            state.block_on(host.queue_enqueue(input))
         }
         "realtimePublish" => {
             let channel = a.str(0);

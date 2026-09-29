@@ -1,55 +1,133 @@
 ---
 title: "Job queue"
-description: "A pg_boss-style durable job queue: enqueue, retry with backoff, and stale-job reclaim."
+description: "A pg_boss-style durable job queue: JS or Rust handlers, dedupe, priority, retry with backoff, and a dead-letter API."
 ---
 
-The Queue plugin (`crates/server/src/queue.rs`) is a durable, retrying
-job queue built on the `Plugin` trait (see [Rust plugins](/docs/extending/rust-plugins/)) — a
-pg_boss-style worker, not a hosted service. It is **off by default**:
-set `settings.queue.enabled` to `true` (`PATCH /api/settings
-{"queue": {"enabled": true}}`) and restart the server. While disabled,
-the `_queue_jobs` collection is never provisioned and no worker tick
-ever spawns — zero background cost.
+The Queue (`crates/server/src/queue.rs`) is a durable, retrying job
+queue — a pg_boss-style worker, not a hosted service. A job can be
+handled from a `pb_hooks/*.pb.js` file with no Rust code at all, or from
+Rust for anything that needs to run at native speed or reach a crate
+JavaScript can't.
 
-## Enqueuing a job
+**Enqueueing always works.** `settings.queue.enabled` (`false` by
+default) only gates whether jobs get *processed* — `POST
+/api/queue/enqueue`, `$queue.enqueue`, and the dead-letter endpoints
+below all work regardless, so a job you enqueue before an operator turns
+the setting on just sits `pending` until they do. Flipping the setting —
+either direction — takes effect on the worker's very next tick, no
+restart: `PATCH /api/settings {"queue": {"enabled": true}}` starts
+processing immediately, and turning it back off stops it just as fast.
+`_queue_jobs` itself is still only ever provisioned in the database the
+first time it's actually needed (the first enqueue, or the setting
+turning on) — an install that never touches the queue costs nothing.
+
+## Handling jobs from JavaScript
+
+```js
+onQueueJob("send-welcome-email", (e) => {
+  // e.payload is whatever `enqueue`/`$queue.enqueue` was called with.
+  sendEmail(e.payload.userId);
+  // returning normally marks the job `completed`.
+});
+```
+
+Throwing inside the handler marks the job for retry with the backoff
+described below, `failed` once `maxAttempts` is reached — the exact same
+outcome a Rust handler's `Err` gets, since both are routed through the
+one claim/retry loop. A `--dev` hot reload re-registers `onQueueJob`
+handlers from the reloaded files, same as `routerAdd`/`cronAdd`: a
+changed handler body takes effect, and a queue name a new version of the
+file no longer registers goes back to "no handler registered", exactly
+as if it had never had one.
+
+A **Rust handler always takes precedence** over a JS `onQueueJob` for the
+same queue name — `crate::mails`'s own queued-mail-delivery path
+registers under a fixed name the same way a `pb_hooks` file can't
+accidentally shadow it.
+
+## Enqueueing a job
+
+```js
+// From a pb_hooks/*.pb.js file:
+const job = $queue.enqueue("send-welcome-email", { userId: "abc123" }, {
+  maxAttempts: 5,
+  dedupeKey: `welcome-${userId}`,
+});
+```
 
 ```sh
-curl -X POST http://localhost:8090/api/plugins/queue/enqueue \
+curl -X POST http://localhost:8090/api/queue/enqueue \
   -H "Authorization: $SUPERUSER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"queue": "send-welcome-email", "payload": {"userId": "abc123"}, "maxAttempts": 5}'
 ```
 
-Superuser-only, the same trust tier as `_cron_jobs`/`_webhooks`: a
+Superuser or API key — the same trust tier as `_cron_jobs`/`_webhooks`: a
 queued job's `payload` is handed verbatim to whatever handler its
 `queue` name resolves to, with no rule enforcement in between. The
-response is the created `_queue_jobs` row's `id`, `queue`, `status`
-(always `"pending"` on enqueue) and `runAfter`.
+response is `{ id, queue, status, runAfter, deduped }`. The older `POST
+/api/plugins/queue/enqueue` still works, unchanged, as an alias.
 
 From JavaScript, [`@cratebase/extras`](/docs/ai/extras-package/)'s
-`enqueue(pb, queue, payload, options)` wraps the same call.
+`enqueue(pb, queue, payload, options)` wraps the same call, and the
+`cb` SDK client exposes it as `cb.queue.enqueue(queue, payload,
+options)`.
+
+### Options
+
+| Option | Meaning |
+|---|---|
+| `maxAttempts` | How many attempts (including the first) before the job gives up for good. Default: 5. |
+| `runAt` | ISO-8601/RFC3339 timestamp; the job is not eligible to run before this. Takes precedence over `delay`. |
+| `delay` | Milliseconds from now to delay the job's first attempt. Ignored if `runAt` is also given. |
+| `dedupeKey` | A caller-chosen idempotency key. A second `enqueue` with the same non-empty key, while an earlier job with it is still `pending`/`in_progress`, is a no-op: the response describes the *existing* job with `deduped: true` instead of inserting a duplicate. Enforced with a Postgres advisory lock around the check-and-insert, plus a partial unique index as the actual correctness backstop against races. |
+| `priority` | Higher runs first among otherwise-due jobs. Default `0`. |
 
 ## Job shape (`_queue_jobs`)
 
 | Field | Meaning |
 |---|---|
-| `queue` | The job's name — looked up in the handler registry below. |
+| `queue` | The job's name — looked up in the handler registry (Rust first, then JS). |
 | `payload` | Arbitrary JSON passed to the handler. |
 | `status` | `pending` → `in_progress` → `completed`, or back to `pending` on a retry, or `failed` once `attempts` reaches `maxAttempts`. |
 | `attempts` / `maxAttempts` | Retry count and ceiling. |
-| `runAfter` | Not claimed before this timestamp — the initial schedule, or a failure's backoff. |
+| `runAfter` | Not claimed before this timestamp — the initial schedule (`runAt`/`delay`), or a failure's backoff. |
 | `startedAt` | Set when a worker claims the job; used to detect a stale `in_progress` row. |
 | `lastError` | The most recent handler failure message, if any. |
+| `dedupeKey` | The caller-supplied idempotency key, if any. |
+| `priority` | Claim order among otherwise-due jobs. |
 
 Query it like any other system collection through the ordinary Records
 API (`GET /api/collections/_queue_jobs/records/:id`) to poll a job's
 status.
 
-## Handlers are compile-time, not dynamic
+## Dead-letter API
 
-There is no bytecode or script execution plane here — a job's `queue`
-name is looked up in an in-process handler registry populated by
-whatever Rust code registered the plugin:
+A job that exhausts `maxAttempts` stays `failed` with `lastError` set —
+nothing deletes it automatically. From the dashboard's **Queue** tab, or
+directly:
+
+```sh
+# Reset a failed job to pending with a fresh attempts budget:
+curl -X POST http://localhost:8090/api/queue/jobs/$ID/retry \
+  -H "Authorization: $SUPERUSER_TOKEN"
+
+# Remove a job outright, whatever its status:
+curl -X DELETE http://localhost:8090/api/queue/jobs/$ID \
+  -H "Authorization: $SUPERUSER_TOKEN"
+```
+
+`retry` is refused (400) unless the job is currently `failed` — retrying
+one still `in_progress` would race the worker already running it.
+`delete` has no such restriction. Both also exist under the older
+`/api/plugins/queue/jobs/...` prefix as aliases, and as
+`cb.queue.retry(id)`/`cb.queue.delete(id)` in the SDK.
+
+## Handlers: Rust
+
+There is no bytecode or script execution plane beyond the JS runtime
+above — a Rust handler is a plain closure registered on the plugin's
+handle:
 
 ```rust
 use cratebase_server::queue::QueuePlugin;
@@ -62,21 +140,17 @@ plugin.handle().register_handler("send-welcome-email", |payload| async move {
 app.register_plugin(plugin)?;
 ```
 
-A job whose `queue` has no registered handler fails immediately with a
-descriptive `lastError`, retried and eventually given up on like any
-other failure — it never panics the worker loop. This is the same
-"small built-in job registry" trade-off `_cron_jobs`' raw-SQL bodies
-make in the other direction: dynamic *data*, compile-time *code*. A
-fully dynamic, sandboxed third-party execution plane is a separate,
-larger effort — see [Rust plugins](/docs/extending/rust-plugins/) for
-where a WASM-based plugin system would layer on top instead.
+A job whose `queue` has no registered handler (Rust or JS) fails
+immediately with a descriptive `lastError`, retried and eventually given
+up on like any other failure — it never panics the worker loop.
 
 ## Retry and backoff
 
 A failed job's `runAfter` is pushed out with exponential backoff —
 `min(2^attempts * base_delay, max_delay)` — until `attempts` reaches
 `maxAttempts`, at which point it becomes `failed` for good and is never
-retried again.
+retried again automatically (use the dead-letter API above to retry it
+by hand).
 
 ## Crash recovery
 
@@ -85,7 +159,7 @@ Every worker tick first reclaims any `in_progress` job whose
 `pending` — pg_boss's own core guarantee: a worker that crashes
 mid-job never orphans that job forever.
 
-## Claim atomicity
+## Claim atomicity and multi-node safety
 
 Claiming the next due job runs inside one transaction: `SELECT ... FOR
 UPDATE SKIP LOCKED` on Postgres (so concurrent workers never race for
@@ -93,4 +167,6 @@ the same row), then an `UPDATE ... WHERE status = 'pending'` that
 re-checks status inside the same transaction rather than trusting the
 row the `SELECT` just read. SQLite needs neither trick — the engine's
 single writer lock already serializes the whole transaction against
-every other write.
+every other write. This is what makes a job run exactly once even when
+several server nodes share one Postgres database — proven with a real
+two-process test in this project's own test suite, not just asserted.

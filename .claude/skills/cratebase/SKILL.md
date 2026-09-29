@@ -21,8 +21,9 @@ that's wire-compatible with PocketBase's official SDKs.
    point), `""` = public, or a **filter expression** evaluated per
    request/row (e.g. `owner = @request.auth.id`), enforced in SQL, not
    in application code.
-4. Everything else (JS hooks, cron, realtime, file storage) hangs off
-   collections/records — there's no separate backend-logic layer.
+4. Everything else (JS hooks, cron, background jobs, outgoing webhooks,
+   realtime, file storage) hangs off collections/records — there's no
+   separate backend-logic layer.
 5. For a query `filter`/`sort` can't express, there's custom SQL RPC
    (`_rpc` collection + `POST /api/rpc/{name}`, named parameters, its own
    `rule`) and, on Postgres, extension management
@@ -130,8 +131,9 @@ request — prototype a rule there before pasting it into a `*Rule` field.
   `POST /api/collections` shape, real SDK call patterns, and recipes for
   RPC nearest-location queries, sending email straight from a frontend
   via `sendRule`, no-code `_emailTriggers`, and magic-link + TOTP login.
-- `references/js-hooks.md` — every hook, `routerAdd`/`cronAdd`, request
-  context, and the globals available inside `pb_hooks/*.pb.js`.
+- `references/js-hooks.md` — every hook, `routerAdd`/`cronAdd`/
+  `onQueueJob`, request context, and the globals available inside
+  `pb_hooks/*.pb.js`.
 
 These reference files cite exact `crates/filter/src/...` and
 `examples/...` paths from the `cratebase` repo as evidence for each

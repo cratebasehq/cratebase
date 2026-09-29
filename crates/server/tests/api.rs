@@ -153,7 +153,10 @@ async fn plugins_run_at_bootstrap_and_reject_duplicates() {
     })
     .await;
     assert_eq!(ran.load(Ordering::SeqCst), 1);
-    assert_eq!(harness.app.plugin_names(), ["audit"]);
+    // "queue" is registered unconditionally by `App::bootstrap` now (see
+    // that call site's doc for why) - after "audit", since `tweak` above
+    // runs before `bootstrap` does.
+    assert_eq!(harness.app.plugin_names(), ["audit", "queue"]);
 }
 
 #[tokio::test]
@@ -379,6 +382,7 @@ async fn settings_round_trip_keeps_secrets_out_of_responses() {
             "superuserIPs",
             "teams",
             "trustedProxy",
+            "webhooks",
             "zipExport",
         ]
     );

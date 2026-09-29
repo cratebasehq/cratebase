@@ -21,12 +21,12 @@ import type { RecordModel } from "pocketbase";
 import { nearestTo, type NearestToOptions } from "./vector.js";
 import { getToolSchema, getToolSchemas, type ToolSchema } from "./mcp.js";
 import { trackPresence, type Presence, type PresenceOptions } from "./presence.js";
-import { enqueue, type EnqueuedJob, type EnqueueOptions } from "./queue.js";
+import { enqueue, retryJob, deleteJob, type EnqueuedJob, type EnqueueOptions } from "./queue.js";
 
 export { nearestTo, type NearestToOptions } from "./vector.js";
 export { getToolSchema, getToolSchemas, type ToolSchema } from "./mcp.js";
 export { trackPresence, type Presence, type PresenceOptions } from "./presence.js";
-export { enqueue, type EnqueuedJob, type EnqueueOptions } from "./queue.js";
+export { enqueue, retryJob, deleteJob, type EnqueuedJob, type EnqueueOptions } from "./queue.js";
 
 /** One turn of a chat exchange, mirroring the server's `WireMessage`
  * (`crates/server/src/routes/llm.rs`). */
@@ -186,5 +186,13 @@ export class CratebaseExtras {
 
   enqueue(queue: string, payload: unknown, options?: EnqueueOptions): Promise<EnqueuedJob> {
     return enqueue(this.pb, queue, payload, options);
+  }
+
+  retryJob(id: string): Promise<void> {
+    return retryJob(this.pb, id);
+  }
+
+  deleteJob(id: string): Promise<void> {
+    return deleteJob(this.pb, id);
   }
 }

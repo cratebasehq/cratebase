@@ -1,0 +1,40 @@
+---
+title: "Queue"
+description: "Enqueue a durable background job and manage the dead-letter queue. Superuser or API key."
+sidebar:
+  order: 28
+---
+
+See [Job queue](/docs/extending/queue/) for the full model — handlers
+(JS `onQueueJob` or Rust), retry/backoff, and multi-node claim
+atomicity. Works regardless of `settings.queue.enabled`: a job just sits
+`pending` until an operator turns processing on.
+
+### `POST /queue/enqueue`
+
+```json
+{ "queue": "send-welcome-email", "payload": { "userId": "abc123" }, "maxAttempts": 5, "dedupeKey": "welcome-abc123" }
+```
+
+```json
+{ "id": "abc123", "queue": "send-welcome-email", "status": "pending", "runAfter": "2026-01-01 00:00:00.000Z", "deduped": false }
+```
+
+`queue`/`payload` required; `maxAttempts` (default 5), `runAt`
+(ISO-8601, or the deprecated `runAfter` alias), `delay` (milliseconds
+from now, ignored if `runAt`/`runAfter` is given), `dedupeKey`, and
+`priority` (default `0`, higher runs first) are all optional. A matching
+in-flight `dedupeKey` returns the existing job with `deduped: true`
+instead of inserting a new one. `POST /plugins/queue/enqueue` is kept as
+an alias for this same endpoint.
+
+### `POST /queue/jobs/{id}/retry`
+
+Resets a `failed` job to `pending` with `attempts` cleared to `0`. `400`
+if the job isn't currently `failed`; `404` for an unknown id.
+`POST /plugins/queue/jobs/{id}/retry` is kept as an alias.
+
+### `DELETE /queue/jobs/{id}`
+
+Removes the row outright, whatever its status. `404` for an unknown id.
+`DELETE /plugins/queue/jobs/{id}` is kept as an alias.

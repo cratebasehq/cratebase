@@ -12,15 +12,21 @@ info:
     ordinary system collections reached through the generic
     `/collections/{idOrName}/records` endpoints documented below, gated
     end to end by that collection's own rules. `_webhooks` configures
-    *outgoing* per-collection webhook dispatch (superuser only); `_teams`
-    and `_team_members` are end-user workspace membership records (not an
-    admin-access mechanism); `_audit_log` is an append-only (even to
-    superusers) history of consequential dashboard/API actions;
-    `_push_subscriptions` holds registered push targets that
-    `POST /push/send` delivers to; `_cron_jobs` and `_api_keys` are listed
-    read-only by `GET /crons` and created by `POST /api-keys`
-    respectively, but otherwise managed the same way; `_rpc` (custom SQL
-    RPC definitions) is managed the same way too, but additionally gets
+    *outgoing* per-collection webhook dispatch (superuser only) and its
+    durable delivery attempts land in `_webhookDeliveries`, which
+    additionally gets `POST /webhooks/deliveries/{id}/replay` below;
+    `_teams` and `_team_members` are end-user workspace membership
+    records (not an admin-access mechanism); `_audit_log` is an
+    append-only (even to superusers) history of consequential
+    dashboard/API actions; `_push_subscriptions` holds registered push
+    targets that `POST /push/send` delivers to; `_cron_jobs`, `_cronRuns`,
+    and `_api_keys` are listed read-only by `GET /crons` (`_cron_jobs`
+    only; `_cronRuns` has no listing endpoint of its own) and created by
+    `POST /api-keys` respectively, but otherwise managed the same way;
+    `_queue_jobs` is managed the same way too, but additionally gets its
+    own `POST /queue/enqueue` and `POST|DELETE /queue/jobs/{id}/...`
+    below; `_rpc` (custom SQL RPC definitions) is managed the same way
+    too, but additionally gets
     its own call surface, `POST /rpc/{name}`, documented below. None of
     these get their own *management* path in this document beyond what
     is listed above.
@@ -2289,6 +2295,113 @@ paths:
         "204": { description: Ran to completion }
         "401": { $ref: "#/components/responses/Error" }
         "404": { description: Missing or invalid cron job id }
+
+  /queue/enqueue:
+    post:
+      summary: Enqueue a durable, retrying background job (superuser or API key)
+      description: >
+        Works even while `settings.queue.enabled` is off — the job just
+        sits `pending` until an operator turns processing on, live, with
+        no restart either direction. `queue` is looked up in the handler
+        registry (a Rust `QueuePlugin::handle().register_handler` call,
+        or a `pb_hooks/*.pb.js` `onQueueJob` — Rust always wins for a
+        name both register); a queue with no registered handler still
+        accepts the job, it just fails (and retries, then gives up) every
+        time the worker tries it. `POST /plugins/queue/enqueue` is kept
+        as an alias for this same endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queue]
+              properties:
+                queue: { type: string }
+                payload: {}
+                maxAttempts: { type: integer, description: "Default: 5" }
+                runAt: { type: string, description: "ISO-8601/RFC3339; not eligible to run before this. Takes precedence over delay." }
+                runAfter: { type: string, description: "Deprecated alias for runAt, still accepted." }
+                delay: { type: integer, description: "Milliseconds from now; ignored if runAt/runAfter is also given" }
+                dedupeKey:
+                  type: string
+                  description: >
+                    A second enqueue with the same non-empty key, while an
+                    earlier job with it is still pending/in-progress, is a
+                    no-op — the response describes that existing job with
+                    `deduped: true` instead of inserting a duplicate.
+                priority: { type: integer, description: "Higher runs first among otherwise-due jobs. Default: 0." }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  queue: { type: string }
+                  status: { type: string, example: pending }
+                  runAfter: { type: string }
+                  deduped: { type: boolean }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /queue/jobs/{id}/retry:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Reset a failed job back to pending with a fresh attempts budget (superuser or API key)
+      description: >
+        Refused unless the job is currently `failed` — retrying one still
+        `in_progress` would race the worker already running it.
+        `POST /plugins/queue/jobs/{id}/retry` is kept as an alias.
+      responses:
+        "204": { description: Reset to pending }
+        "400": { description: The job isn't currently failed }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { description: Missing or invalid queue job id }
+
+  /queue/jobs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      summary: Remove a queue job outright, whatever its status (superuser or API key)
+      description: >
+        Unlike `retry`, not limited to the dead-letter case.
+        `DELETE /plugins/queue/jobs/{id}` is kept as an alias.
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { description: Missing or invalid queue job id }
+
+  /webhooks/deliveries/{id}/replay:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Reset a webhook delivery back to pending with a fresh attempts budget (superuser only)
+      description: >
+        Every outgoing `_webhooks` dispatch is delivered through a
+        durable `_webhookDeliveries` row (fixed backoff schedule: 1m,
+        5m, 30m, 2h, 6h; up to a per-webhook `maxAttempts` override,
+        default 6). This endpoint works on a `failed` delivery (the
+        usual dead-letter case) or even one that already succeeded —
+        replaying a successful delivery is a legitimate "send it again"
+        action, not just recovery.
+      responses:
+        "204": { description: Reset to pending }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { description: Missing or invalid webhook delivery id }
 
   /functions:
     get:
