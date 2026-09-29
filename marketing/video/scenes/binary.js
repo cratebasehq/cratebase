@@ -14,8 +14,8 @@ import { addCue } from "../lib/timeline.js";
 // [appear time, text, style, typed?]. Typed lines reveal in 16th-note bursts.
 const LINES = [
   [8.0, "$ curl -fsSL https://cratebase.dev/install.sh | sh", "cmd", 8.0, 9.0],
-  [9.0, "Downloading Cratebase 0.4.0 for x86_64-unknown-linux-musl...", "out"],
-  [9.25, "Cratebase 0.4.0 installed to ~/.local/bin/cratebase", "out"],
+  [9.0, "Downloading Cratebase 0.5.0 for x86_64-unknown-linux-musl...", "out"],
+  [9.25, "Cratebase 0.5.0 installed to ~/.local/bin/cratebase", "out"],
   [9.5, "$ cratebase dev", "cmd", 9.5, 9.875],
   [10.0, "  cratebase dev", "hi"],
   [10.125, "  ------------------------------------------------------------", "dim"],

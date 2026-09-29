@@ -9,7 +9,7 @@
 // `sort=geoDistance(location.lon, location.lat, 106.8045, -6.2385)`), and
 // real SDK calls. Search and geo sort ship in 0.4.0; presence and
 // notifications are from feat/notifications-realtime and are labelled
-// "Coming in v0.5" on screen.
+// "New in v0.5" on screen.
 
 import { el, S, place, show, px, heavy, snappy, soft, chrome, prog, statement, drawStatement, cursor, drawCursor, html, text, easeIn, lerp } from "../lib/kit.js";
 import { clamp, track, mulberry32 } from "../lib/motion.js";
@@ -441,7 +441,7 @@ export default [
         notes: statement(root, ["Notifications."], "disp"),
         wall: statement(root, P ? ["All of it,", "one binary."] : ["All of it, one binary."], "disp"),
       };
-      const soon = el("div", "abs nowrap", root, "Coming in v0.5");
+      const soon = el("div", "abs nowrap", root, "New in v0.5");
       S(soon, { fontFamily: "Inter, sans-serif", fontWeight: 700, color: C.bg, background: C.crate, borderRadius: "999px", padding: "0.18em 0.7em 0.22em", fontSize: px((P ? 40 : 44) * L.u) });
       const plate = el("div", "abs", root);
       S(plate, { background: "#0a1622", width: L.W + "px", zIndex: "2" });
