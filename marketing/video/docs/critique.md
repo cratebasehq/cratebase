@@ -40,6 +40,33 @@ state change in the film).
 3. Search rows get a solid ground and the rising row is drawn on top; keystrokes move to 8th notes (36.25–37.5 s) so each re-rank settles before the next.
 
 
+## v2 · Round 2 — full pass (30 fps, 64 s, score muxed) + first 9:16 stills
+
+Strip at 43.9 s (the solo → 2×2 wall transition, the busiest cut).
+Also reviewed: 28 vertical (1080×1920) stills across every chapter, and an
+objective sound-sync check (`node audio/sync-check.mjs`: energy-onset
+detection on the SFX stem vs. the 163 non-swell cues).
+
+| Axis | Score | Why |
+|---|---|---|
+| Hook | 8 | Mega words on beats 0–3, fog cut, crate lands on the 4.0 hit; the reveal now dollies with parallax instead of holding. |
+| Phone readability | 8 | Every focal detail (rule, `{{user.name}}`, OTP digits, search rows, board cards, badge, 10.47×) reads at 360 px; the 2×2 wall is deliberately texture under a 170 px statement. |
+| Motion quality | 8 | Search re-ranks settle on 8ths with solid rows (no overlapping text); CTA builds a chip per beat to the last frame. One continuity pop found at 44.0 (see below). |
+| Variety | 9 | New technique per chapter; a state change every beat in Superpowers. |
+| Composition | 8 | Full-bleed throughout; proof recomposed (number + full-width bars); CTA fills the lower-right with the chip row. |
+| Brand accuracy | 9 | Unchanged from round 1; benchmark label corrected to "record list reads" (the `search` workload is paged listing, not FTS). |
+| Sound sync | 8 | 120/163 cues have an SFX onset within 10 ms, 130 within 40 ms. The rest were checked by peak level: present but masked by a preceding tail (hit reverb, sub under the count-up) or centred by design (whooshes/risers). Key clicks were drifting (linear spread, ±30 ms jitter) — now one click per picture reveal step. Scored from analysis, not listening: nobody auditioned the mix. |
+
+### 3 worst problems
+1. **44.0 s notification rows vanish** when the panel joins the wall (its sub-timeline restarted) — a continuity pop.
+2. **Mastering used loudnorm's dynamic mode** (true-peak constraint forced it), which can pump the mix.
+3. **9:16 only reviewed as stills** — data chapter framing, 10.47× clipping, CTA chips off-frame and PocketBase code overflow were found and fixed from stills; the vertical cut still needs a full-render round.
+
+### Fixes
+1. The wall continues the solo's state: read rows stay on screen and re-arriving notifications light their row and badge up again.
+2. Linear mastering: measured static gain to −14 LUFS, then a 4× oversampled look-ahead limiter → −14.2 LUFS, −1.7 dBTP.
+3. Portrait-specific ROIs (names → types rack, 250 px rule ROI, narrower record columns), tabular-width probe for 10.47×, line-broken PocketBase snippet, lockup raised. Full 9:16 render is round 3.
+
 ---
 
 # v1 history (superseded animatic, 66 s)

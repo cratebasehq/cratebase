@@ -702,9 +702,10 @@ function sfxClick(i0, { gain = 0.35 } = {}) {
 function sfxKeys(i0, n, dur, { gain = 0.3 } = {}) {
   const totalSamples = Math.round(dur * SR);
   for (let k = 0; k < n; k++) {
-    const frac = n > 1 ? k / (n - 1) : 0;
-    const jitter = Math.round((rand() - 0.5) * 0.06 * SR);
-    const t0 = Math.round(frac * totalSamples) + jitter;
+    // one click at the start of each of the picture's n reveal steps
+    // (text reveals in quantized steps of dur/n), ±1.5 ms humanize only
+    const jitter = Math.round((rand() - 0.5) * 0.003 * SR);
+    const t0 = Math.max(0, Math.round((k / n) * totalSamples) + jitter);
     const freq = 900 + rand() * 500;
     const lvl = 0.7 + rand() * 0.3;
     const pan = (rand() - 0.5) * 0.6;
@@ -788,7 +789,7 @@ function sfxTick(i0, { note = 96, gain = 0.25 } = {}) {
   );
 }
 
-function sfxDigit(i0, { gain = 0.22 } = {}) {
+function sfxDigit(i0, { gain = 0.38 } = {}) {
   const len = Math.round(0.02 * SR);
   const hp = new Biquad();
   hp.highpass(SR, 3500, 0.8);

@@ -1,53 +1,18 @@
 #!/bin/sh
-# audio/master.sh — two-pass ffmpeg loudnorm mastering pass for the
-# synthesized score: out/score.wav -> out/score-master.wav.
-# Target: I=-14 LUFS, TP=-1.0 dBTP, LRA=11 (per the film's audio spec).
-#
-# Usage: sh audio/master.sh [in.wav] [out.wav]
-
+# audio/master.sh — master the synthesized score to -14 LUFS / -1 dBTP.
+#   sh audio/master.sh [in.wav] [out.wav]
+# Linear only (no dynamic loudnorm pumping): measure integrated loudness,
+# apply one static gain to land on -14 LUFS, then a 4x-oversampled
+# look-ahead limiter catches the few transient peaks (the two hits) so
+# true peak stays under -1 dBTP. Prints the verified result.
 set -eu
-
 IN="${1:-out/score.wav}"
 OUT="${2:-out/score-master.wav}"
-I=-14
-TP=-1.0
-LRA=11
-
-if [ ! -f "$IN" ]; then
-  echo "master.sh: input not found: $IN" >&2
-  exit 1
-fi
-
-echo "== master.sh: pass 1 (measure loudness of $IN) =="
-MEASURE=$(ffmpeg -hide_banner -nostats -i "$IN" -af "loudnorm=I=$I:TP=$TP:LRA=$LRA:print_format=json" -f null - 2>&1)
-
-# ffmpeg prints one JSON object at the end of stderr for pass 1.
-JSON=$(printf '%s\n' "$MEASURE" | awk '/^\{/{f=1} f{print} /^\}/{if(f)exit}')
-if [ -z "$JSON" ]; then
-  echo "master.sh: could not parse loudnorm pass-1 output:" >&2
-  printf '%s\n' "$MEASURE" >&2
-  exit 1
-fi
-
-get() { printf '%s\n' "$JSON" | grep -o "\"$1\" *: *\"[^\"]*\"" | head -1 | sed -E 's/.*: *"([^"]*)"/\1/'; }
-
-MEASURED_I=$(get input_i)
-MEASURED_TP=$(get input_tp)
-MEASURED_LRA=$(get input_lra)
-MEASURED_THRESH=$(get input_thresh)
-OFFSET=$(get target_offset)
-
-echo "measured: I=$MEASURED_I LUFS  TP=$MEASURED_TP dBTP  LRA=$MEASURED_LRA  thresh=$MEASURED_THRESH  offset=$OFFSET"
-
-echo "== master.sh: pass 2 (apply, linear normalization) =="
-ffmpeg -hide_banner -nostats -y -i "$IN" -af \
-  "loudnorm=I=$I:TP=$TP:LRA=$LRA:measured_I=$MEASURED_I:measured_TP=$MEASURED_TP:measured_LRA=$MEASURED_LRA:measured_thresh=$MEASURED_THRESH:offset=$OFFSET:linear=true:print_format=summary" \
-  -ar 48000 -c:a pcm_s24le "$OUT.tmp.wav" && ffmpeg -hide_banner -nostats -loglevel error -y -i "$OUT.tmp.wav" -af "alimiter=limit=0.84:attack=1:release=60:level=false" -ar 48000 -c:a pcm_s24le "$OUT" && rm -f "$OUT.tmp.wav"
-
-echo "== master.sh: verifying result ($OUT) =="
-RESULT=$(ffmpeg -hide_banner -nostats -i "$OUT" -af "loudnorm=I=$I:TP=$TP:LRA=$LRA:print_format=json" -f null - 2>&1)
-RJSON=$(printf '%s\n' "$RESULT" | awk '/^\{/{f=1} f{print} /^\}/{if(f)exit}')
-FINAL_I=$(printf '%s\n' "$RJSON" | grep -o '"input_i" *: *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/')
-FINAL_TP=$(printf '%s\n' "$RJSON" | grep -o '"input_tp" *: *"[^"]*"' | head -1 | sed -E 's/.*: *"([^"]*)"/\1/')
-
-echo "$OUT measured integrated loudness: ${FINAL_I} LUFS (target ${I}), true peak: ${FINAL_TP} dBTP (target ${TP})"
+measure() { ffmpeg -hide_banner -nostats -i "$1" -af "loudnorm=I=-14:TP=-1:LRA=11:print_format=json" -f null - 2>&1 | awk '/^\{/{f=1} f{print}' | grep -o "\"$2\" *: *\"[^\"]*\"" | head -1 | sed -E 's/.*: *"([^"]*)"/\1/'; }
+I0=$(measure "$IN" input_i)
+G=$(python3 -c "print(round(-14.0 - float('$I0') + 0.25, 2))")   # +0.25 dB pre-compensates limiter loss
+echo "input: $I0 LUFS -> static gain ${G} dB"
+ffmpeg -hide_banner -nostats -loglevel error -y -i "$IN" -af \
+  "volume=${G}dB,aresample=192000,alimiter=limit=0.8:attack=2:release=80:level=false,aresample=48000" \
+  -c:a pcm_s24le "$OUT"
+echo "$OUT measured integrated loudness: $(measure "$OUT" input_i) LUFS (target -14), true peak: $(measure "$OUT" input_tp) dBTP (target -1.0)"

@@ -20,7 +20,7 @@ addCue(49.0, "pop", { note: 74 });
 [50.0, 50.25, 50.5].forEach((t, i) => addCue(t, "pop", { note: 69 + i * 3 }));
 [52.0, 52.5, 53.0, 53.5].forEach((t) => addCue(t, "click", {}));
 addCue(54.0, "whoosh", { dur: 0.4, gain: 0.5 });
-addCue(54.5, "keys", { n: 10, dur: 0.6 });
+addCue(54.5, "keys", { n: 12, dur: 0.6 });
 addCue(55.25, "confirm", {});
 
 export default [

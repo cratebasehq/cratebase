@@ -97,7 +97,7 @@ const MARK_READ = 43.5;
 
 // ------------------------------------------------------------------ cues
 addCue(36.0, "whoosh", { dur: 0.4, gain: 0.6 });
-Q_T.forEach((t) => addCue(t, "keys", { n: 1, dur: 0.05 }));
+Q_T.forEach((t) => addCue(t, "click", { gain: 0.55 }));
 addCue(38.0, "whoosh", { dur: 0.35, gain: 0.5 });
 addCue(38.0, "riser", { dur: 0.5 });
 PIN_T.forEach((t, i) => addCue(t, "pin", { note: 72 + [0, 3, 7, 10][i] }));
@@ -110,7 +110,7 @@ NOTE_T.forEach((t, i) => addCue(t, "tick", { note: 84 + i * 2 }));
 addCue(MARK_READ, "click", {});
 addCue(MARK_READ + 0.02, "confirm", {});
 addCue(44.0, "whoosh", { dur: 0.6, gain: 0.8 });
-Q2_T.forEach((t) => addCue(t, "keys", { n: 1, dur: 0.05 }));
+Q2_T.forEach((t) => addCue(t, "click", { gain: 0.45 }));
 [45.0, 45.25, 45.5].forEach((t, i) => addCue(t, "tick", { note: 88 + i * 3 }));
 addCue(46.0, "riser", { dur: 1.9 });
 addCue(47.0, "whoosh", { dur: 1.0, gain: 0.9 });
@@ -380,7 +380,7 @@ function buildNotes(root, W, H, portrait) {
   const mar = mh.querySelector('[data-k="mar"]');
   return { p, bell, badge, rows, rowH, menu, mar, U, lx, ly, lw, chip };
 }
-function drawNotes(s, t, base, markAt) {
+function drawNotes(s, t, base, markAt, keep = false) {
   const times = NOTE_T.map((x) => x - 42 + base);
   const n = times.filter((x) => t >= x).length;
   const read = markAt !== null && t >= markAt;
@@ -400,11 +400,15 @@ function drawNotes(s, t, base, markAt) {
     const shown = NOTES.length - n; // rows below the newest
     void shown;
     const k = i; // rows cascade in from top
-    const p = heavy(t - times[k]);
-    show(r.r, t >= times[k]);
-    S(r.r, { top: px(90 * s.U + k * s.rowH), transform: `translate3d(${((1 - p) * 60).toFixed(1)}%,0,0)`, background: read ? "transparent" : "rgba(240,116,64,.07)" });
-    S(r.dot, { transform: `scale(${read ? (1 - chrome(t - markAt)).toFixed(3) : "1"})` });
-    S(r.tx, { color: read ? C.dim : C.paper, fontWeight: read ? "500" : "600" });
+    // keep: the wall continues the solo's state — rows already read stay on
+    // screen, and each re-arriving notification lights its row up again
+    const arrived = t >= times[k];
+    const rowRead = keep ? !arrived : read;
+    const p = keep ? 1 : heavy(t - times[k]);
+    show(r.r, keep || arrived);
+    S(r.r, { top: px(90 * s.U + k * s.rowH), transform: `translate3d(${((1 - p) * 60).toFixed(1)}%,0,0)`, background: rowRead ? "transparent" : "rgba(240,116,64,.07)" });
+    S(r.dot, { transform: `scale(${keep ? (arrived ? chrome(t - times[k]) : 0).toFixed(3) : read ? (1 - chrome(t - markAt)).toFixed(3) : "1"})` });
+    S(r.tx, { color: rowRead ? C.dim : C.paper, fontWeight: rowRead ? "500" : "600" });
     void t0;
   });
 }
@@ -481,7 +485,7 @@ export default [
       }
       if (solo === "map" || t >= 44) drawMap(pn.map, t, t < 44 ? 38.0 : 44.2);
       if (solo === "board" || t >= 44) drawBoard(pn.board, t, t < 44 ? 40.0 : 44.3, t < 44);
-      if (solo === "notes" || t >= 44) drawNotes(pn.notes, t, t < 44 ? 42.0 : 44.6, t < 44 ? MARK_READ : null);
+      if (solo === "notes" || t >= 44) drawNotes(pn.notes, t, t < 44 ? 42.0 : 44.6, t < 44 ? MARK_READ : null, t >= 44);
       // chips pop with their panel
       order.forEach((k, i) => S(pn[k].chip, { transform: `scale(${snappy(t - (36 + i * 2) - 0.5).toFixed(3)})`, transformOrigin: "0 50%" }));
       // cursor clicks "Mark all read" in the notes solo

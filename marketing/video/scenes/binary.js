@@ -31,7 +31,7 @@ const LH = 1.55;
 for (const [t0, txt, kind, a, b] of LINES) {
   if (kind === "cmd") {
     const bursts = Math.round((b - a) / 0.125);
-    addCue(a, "keys", { n: bursts * 2, dur: b - a });
+    addCue(a, "keys", { n: bursts, dur: b - a });
   } else addCue(t0, "tick", { note: 84 + (LINES.findIndex((l) => l[0] === t0) % 5) * 2 });
 }
 addCue(12.5, "click", {});

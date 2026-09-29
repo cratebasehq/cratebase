@@ -29,12 +29,12 @@ const CODE_T0 = 20.0, CODE_T1 = 21.25;
 [14.0, 14.5, 15.0, 15.5].forEach((t, i) => addCue(t, "pop", { note: 69 + [0, 3, 5, 7][i] }));
 addCue(14.0, "whoosh", { dur: 0.45, gain: 0.6 });
 addCue(16.0, "whoosh", { dur: 0.4, gain: 0.5 });
-addCue(RULE_T0, "keys", { n: 14, dur: RULE_T1 - RULE_T0 });
+addCue(RULE_T0, "keys", { n: 12, dur: RULE_T1 - RULE_T0 });
 addCue(17.25, "confirm", {});
 addCue(18.0, "whoosh", { dur: 0.5, gain: 0.7 });
 [18.1, 18.3, 18.5, 18.7].forEach((t, i) => addCue(t, "tick", { note: 81 + i * 2 }));
 addCue(20.0, "whoosh", { dur: 0.35, gain: 0.5 });
-addCue(CODE_T0 + 0.1, "keys", { n: 16, dur: CODE_T1 - CODE_T0 });
+addCue(CODE_T0 + 0.1, "keys", { n: 20, dur: CODE_T1 - CODE_T0 });
 
 export default [
   {

@@ -14,7 +14,7 @@ addCue(55.75, "swell", { dur: 0.25 });
 addCue(56.0, "hit", { gain: 0.9 });
 addCue(56.5, "whoosh", { dur: 0.4, gain: 0.5 });
 addCue(57.0, "pop", { note: 69 });
-addCue(58.0, "keys", { n: 16, dur: 0.75 });
+addCue(58.0, "keys", { n: 12, dur: 0.75 });
 addCue(59.0, "pop", { note: 74 });
 addCue(59.5, "pop", { note: 77 });
 addCue(60.0, "pop", { note: 81 });

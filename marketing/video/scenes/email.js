@@ -21,7 +21,7 @@ addCue(30.0, "whoosh", { dur: 0.45, gain: 0.6 });
 addCue(30.75, "pop", { note: 74 });
 addCue(31.0, "whoosh", { dur: 0.3, gain: 0.35 });
 addCue(32.0, "whoosh", { dur: 0.35, gain: 0.5 });
-addCue(SEND_T0, "keys", { n: 18, dur: SEND_T1 - SEND_T0 });
+addCue(SEND_T0, "keys", { n: 20, dur: SEND_T1 - SEND_T0 });
 addCue(33.5, "send", {});
 addCue(34.0, "pop", { note: 81 });
 addCue(35.0, "confirm", {});
