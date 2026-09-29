@@ -136,8 +136,8 @@ own angle, not an arbitrary 45°), never a plain crossfade.
 - **Morph** (primary, ~70% of transitions): a value with one or more
   targets on `track()` — width, height, radius, x, y. Default spring
   `k=210, d=30` (critically damped, no overshoot) for containers; `k=260,
-  d=20` (tiny ~4% overshoot) for small UI chrome snapping into place
-  (a provider logo landing in its grid cell, a tab indicator arriving).
+  d=20` (measured ~8% overshoot in `lib/motion.test.mjs`) for small UI chrome snapping into place
+  (a tab indicator arriving, a toggle switching, a button in a scrolling list settling).
 - **Isometric wipe** (chapter changes only): a hard-edged clip-path wipe
   at the crate top-face angle (`atan2(H, W)` from `iso.ts`'s own
   constants), duration 0.18s, no easing curve — a wipe should feel like
@@ -161,7 +161,7 @@ presets, matching the course's own vocabulary:
 | Snappy | 320 | 28 | Cursor moves, tab indicators, toggle switches |
 | Default | 210 | 30 | Containers, cards, the camera push-in |
 | Heavy | 150 | 34 | Big type entrances, the crate assembly, the final lockup |
-| Chrome-snap | 260 | 20 | Provider logos, small UI elements landing (tiny visible overshoot — the *only* place overshoot is allowed on non-type, non-crate elements) |
+| Chrome-snap | 260 | 20 | Small UI elements landing — a toggle, a tab indicator (tiny visible overshoot — the *only* place overshoot is allowed on non-type, non-crate elements; no logo grid exists in the real product, see shotlist.md Ch. 4) |
 
 Rules carried over directly from the brief and the course:
 - **Type never overshoots.** Display type uses Heavy (critically damped

@@ -32,7 +32,27 @@ Legend: **REAL** = captured screenshot/DOM of the actual v0.4.0 dashboard
 or SDK output. **RECREATE** = v0.5.0-only feature (channels/presence/
 notifications, unreleased — see `feat/notifications-realtime` in this
 repo for the real API/SDK shapes it's built from), animated faithfully
-from real code, never imagined UI.
+from real code, never imagined UI. **RECREATE (shipped, no example UI)**
+= a documented, narrower exception: a 0.4.0 feature with a real
+API/backend but no example frontend in this repo to screenshot (only
+`TOTP 2FA`, in Ch. 4) — built from the real request/response shape in
+`crates/auth`, called out explicitly rather than presented as a capture.
+
+**Correction from asset capture** (logged here rather than silently
+changed): the plan gate assumed the admin dashboard's auth-providers
+screen shows a logo grid. Capture found it doesn't — `Settings → Auth &
+security` is superusers/sessions/API keys/network, and OAuth providers
+actually live on the `users` collection's own Schema tab as plain text
+config cards (name, callback URL, client id/secret — see
+`capture/shots/06-users-auth-options.png`), with **no per-provider icon
+anywhere in the admin dashboard**. There's a real branded sign-in card,
+though: `examples/team-board`'s `AuthScreen.tsx`, a shipped example this
+repo already has, renders the exact "Password / Email code / Magic link"
+tab morph the plan wanted, plus a real (icon-less, text) "Continue with
+Google / GitHub / Microsoft / ..." button list driven by that same
+`users` collection's configured providers — see
+`capture/shots/12..14-team-board-auth-*.png`. Ch. 4 below uses that real
+example instead of an invented grid.
 
 ---
 
@@ -132,29 +152,36 @@ otherwise unchanged.
 
 ## 4. Auth — 20.0–28.0s (bars 10–14)
 
-**4.1 — 20.0–23.0s.** REAL. Section title "Auth" wipes in. Panel morphs
-into the auth-providers settings screen. Provider icons (the real 0.4.0
-set — Google, Apple, GitHub, Microsoft, Discord, GitLab, Facebook, X,
-LinkedIn, Slack, Twitch, Spotify, per `CHANGELOG.md` 0.4.0) snap into a
-grid one at a time on the Chrome-snap spring (k=260/d=20 — the one place
-outside the crate/type where a tiny overshoot is allowed), each arrival
-on a 16th-note (~0.19s apart), quietest to loudest visually as the grid
-fills.
+**4.1 — 20.0–22.5s.** REAL (`capture/shots/06-users-auth-options.png`).
+Section title "Auth" wipes in. Panel morphs into the `users` collection's
+real Auth options screen: Password/OAuth2 toggles switching on, then a
+provider config card (the real "google" card, with its real callback URL
+`http://localhost:8090/api/collections/users/oauth2/google/callback`)
+expanding into frame — grounding the beat in the real config surface
+before cutting to what a signed-out visitor actually sees.
 
-**4.2 — 23.0–25.5s.** REAL. One sign-in card, one continuous morph across
-three real auth methods via `track()` (never three separate cards):
-magic-link (email field + "we'll email you a link") → OTP (6-digit code
-boxes) → TOTP 2FA (QR code + 6-digit input, matching the real 0.4.0
-feature). Content swaps behind the clip-path text-exit/enter rule, never
-a fade.
+**4.2 — 22.5–25.5s.** REAL (`capture/shots/12,13,14-team-board-auth-*.png`,
+`examples/team-board/src/components/AuthScreen.tsx`). One sign-in card —
+the real shipped `team-board` example's card, not an invented one — one
+continuous morph across its three real tabs via `track()`: Password →
+Email code (the real copy: "We'll email a one-time code") → Magic link.
+Below the tabs, the card's real "or continue with" button list is the
+Auth beat's honest substitute for a logo grid: the twelve configured
+providers (Google, GitHub, Microsoft, Discord, GitLab, Facebook, X,
+LinkedIn, Slack, Twitch, Spotify, Apple) scroll past as plain labeled
+buttons — real copy, real order, no icons, because the real UI has none.
 
-**4.3 — 25.5–28.0s.** REAL. Card settles on TOTP as the shot holds long
-enough to read it, then the panel begins its Email morph on the 28.0s
-downbeat.
+**4.3 — 25.5–28.0s.** RECREATE (shipped, no example UI). TOTP 2FA has a
+real backend contract (`crates/auth`) but no example frontend anywhere in
+this repo to capture, so this one shot is built from that contract: a QR
+code + 6-digit input, standard TOTP UX, in the same visual language as
+4.2's real card. Panel begins its Email morph on the 28.0s downbeat.
 
-**SFX:** a short percussive "snap" per provider icon landing, pitched up
-slightly across the run (a rising xylophone-like run of 12 short notes);
-a soft whoosh on each of the two card-content morphs.
+**SFX:** a soft whoosh on each of the three tab/card morphs (4.1→4.2,
+each tab switch inside 4.2, 4.2→4.3); a quiet, fast tick per button as
+the provider list scrolls past in 4.2, pitched flat (not a rising
+run — that read as a "grid reveal" cue for a grid that turned out not to
+exist; a flat tick better matches "a list, not an event").
 
 ---
 
@@ -290,14 +317,30 @@ render contract's exact `DUR` is locked.
 
 ---
 
-## Open items carried to the next gate (asset capture)
+## Resolved during asset capture (this session)
 
-- Exact copy for dropdown/field-type labels in 3.1 depends on what the
-  real dashboard renders for a `geoPoint`/`relation` field type — capture
-  first, don't guess the label text.
-- 4.1's 12-provider grid needs the real icon set as shipped in the
-  dashboard (`web/admin`), not redrawn logos — confirm during capture
-  which are inline SVGs vs sprite assets.
+- 3.1's field-type labels are now known from the real dashboard: "Text",
+  "Geo point", "Relation" (see `capture/shots/03-collections-places-schema-rules.png`)
+  — used verbatim, not guessed.
+- 4.1/4.2 corrected per the note above the Ch. 4 heading: no logo grid
+  exists in the real product; replaced with the real `users` Auth
+  options screen + the real `team-board` example's sign-in card.
+- Demo schema/seed (`places`/`posts`/`users`) is live and reproducible
+  via `capture/seed.sh` — see two real API-shape gotchas documented in
+  that script's header (POST/PATCH `/api/collections` takes `fields` not
+  `schema`; a relation's target is a flat `collectionId`, not nested
+  `options.collectionId`).
+- Full-text search confirmed working end to end against the seeded data
+  (`?search=coffee` matches "Kopi Kenangan Senopati" via its description).
+
+## Open items carried to the next gate (stills)
+
 - 6.2's isometric map-card is a new brand-consistent element (no existing
   illustration for "map"); sketch it as a still before animating, matches
   the Stills gate.
+- 4.3's TOTP recreation (no shipped example UI, see Ch. 4) needs a
+  reference QR/6-digit layout sketched as a still before animating, kept
+  visually consistent with 4.2's real captured card.
+- capture/shots/*.png are gitignored (regenerable, large) — re-run
+  `capture/seed.sh` then `capture/capture.mjs` (see README.md) in any new
+  session before starting the Stills gate.
