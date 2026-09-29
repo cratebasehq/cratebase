@@ -175,6 +175,73 @@ specific record id instead when a screen only cares about one record.
 The same `viewRule`/`listRule` filter rules gate which realtime events a
 given client actually receives — realtime is not a bypass of API rules.
 
+### Realtime channels & presence (not tied to a record)
+
+A channel is a topic that exists only because you configured it — no
+collection, no `listRule`. Create a `_channels` row first (superuser
+only, in the dashboard under Automation → Realtime channels, or via the
+records API), or every publish/subscribe/presence call on that name is
+refused (secure default: no matching row = disabled):
+
+```javascript
+await cb.collection("_channels").create({
+  name: "room:*", // exact name, or a prefix pattern ending in "*"
+  subscribeRule: "@request.auth.id != ''", // null = superusers only, "" = anyone
+  publishRule: "@request.auth.id != ''",
+});
+
+const room = cb.channel("room:" + roomId);
+const unsubscribe = await room.subscribe((msg) => console.log(msg.event, msg.data));
+await room.publish("chat", { text: "hi", from: userId });
+
+// Presence: who's here right now, auto-removed when their connection drops.
+await room.presence.track({ name: userName, cursor: [x, y] });
+const members = await room.presence.list();
+const stop = await room.presence.onChange((kind, member) => {
+  // kind: "join" | "update" | "leave"
+});
+```
+
+React: `useChannel("room:" + roomId, { onMessage })` and
+`usePresence("room:" + roomId, state)` from `@cratebase/react` wrap the
+above with subscribe-on-mount/unsubscribe-on-unmount and a heartbeat
+interval. A prefix pattern's matched suffix is available to rules as
+`@request.data.suffix` (and the full name as `@request.data.channel`) —
+e.g. `subscribeRule: "@request.data.suffix = @request.auth.id"` for a
+private per-user channel `"user:*"`. From a JS hook, `$realtime.publish(name, event, data)`
+runs at the trusted tier (no `publishRule` check, same as `$app.save`).
+
+### Notifications (in-app + email + push, one call)
+
+```javascript
+// pb_hooks/*.pb.js — after creating a comment, say
+$notify.send({
+  to: post.get("authorId"),
+  type: "comment",
+  title: "New comment",
+  body: `${author.name} replied to your post`,
+  link: `/posts/${post.id}`,
+  // channels defaults to ["inapp", "email", "push"]; narrow it to skip some
+});
+```
+
+```javascript
+const { items } = await cb.notifications.list({ sort: "-created" });
+const unread = await cb.notifications.unreadCount();
+await cb.notifications.markRead(notificationId);
+await cb.notifications.markAllRead();
+```
+
+`_notifications` is an ordinary system collection (`owner_rule`-scoped —
+`list`/`view`/`delete` are the caller's own rows, `update` only ever
+accepts `readAt`), so `cb.notifications.subscribe(handler)` or
+`useNotifications()` (React) just works. Sending
+(`$notify.send`/`POST /api/notifications/send`) is superuser/API-key
+only — email renders the `notification` `_emailTemplates` row, push
+goes to the recipient's `_push_subscriptions` rows, both best-effort
+(a recipient missing an email/subscription is silently skipped for that
+channel only).
+
 ### File uploads
 
 Fields of type `file` must be sent as `multipart/form-data`, not JSON —
