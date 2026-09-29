@@ -26,6 +26,7 @@ describe("settings", () => {
       "superuserIPs",
       "teams",
       "trustedProxy",
+      "webhooks",
       "zipExport",
     ]);
     expect(Object.keys(s.meta).sort()).toEqual([
