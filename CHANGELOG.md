@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.4.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.5.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
@@ -10,8 +10,35 @@ first real tagged release.
 
 ## [Unreleased]
 
-In-app notifications and realtime channels + presence.
+## 0.5.0 — 2026-09-29
 
+Full-text search, storage upgrades, in-app notifications, and realtime
+channels with presence — the pieces every consumer app needs next.
+
+### Added
+
+- **Full-text search** — a `searchable` option on text/editor/email/url
+  fields and a per-collection search language. Cratebase keeps an index
+  in sync automatically (SQLite FTS5 external-content table; Postgres
+  `tsvector` + GIN). `GET /api/collections/{c}/records?search=…` combines
+  with `filter` (rules still enforced in SQL) and ranks by relevance
+  unless `sort` is given; `search("…")` is also available in the filter
+  language. Query text is sanitized (prefixes and phrases supported). At
+  50k rows a selective query is ~31x faster than `~` LIKE on SQLite and
+  ~10x faster than ILIKE on Postgres. SDK `list({ search })`; dashboard
+  search box, "Searchable" checkbox and language picker.
+- **Presigned direct uploads** — `POST /api/files/presign` validates the
+  field's rules, `maxSize` and `mimeTypes`, returns a direct S3 PUT URL
+  (same-origin URL on local storage) and a token that a normal
+  create/update attaches after the server verifies the object.
+  `_pendingUploads` + hourly expiry sweep. SDK `cb.files.upload()`, React
+  `useUpload()` with progress.
+- **Image transforms** — `?w=&h=&fit=&format=&q=` on the files route
+  (`?thumb=` unchanged), cached, with allow-lists and limits against
+  cache-busting.
+- **Per-user storage quota** (off by default), scoped to presigned
+  uploads via a per-collection owner field. Storage settings (S3, limits,
+  quota) now live in Settings → Application → Storage.
 - **Notifications** — `_notifications` system collection (recipient in
   any auth collection, rule-scoped to "my own", `readAt`-only updates
   for non-superusers) plus `$notify.send(...)`/`POST /api/notifications/send`:
@@ -47,9 +74,12 @@ In-app notifications and realtime channels + presence.
 
 ### Upgrading
 
-- Migration `20_add_notifications_and_channels` runs automatically,
-  adding `_notifications`/`_channels` and seeding the `notification`
-  email template.
+- Migrations `19_add_pending_uploads` and
+  `20_add_notifications_and_channels` run automatically, adding
+  `_pendingUploads`, `_notifications`/`_channels` and seeding the
+  `notification` email template.
+- Channels are disabled until you add a `_channels` row, so nothing is
+  exposed by default.
 - `@cratebase/react`: if you used the old `usePresence(collection, data, options)`,
   rename the import to `useRecordPresence` — `usePresence` now takes
   `(channelName, state, options?)` instead.
