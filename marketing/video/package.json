@@ -1,0 +1,14 @@
+{
+  "name": "cratebase-launch-film",
+  "private": true,
+  "type": "module",
+  "description": "Render engine, asset capture and audio synthesis for the Cratebase launch film. See README.md for the exact commands (all run in Docker — see Dockerfile).",
+  "scripts": {
+    "capture": "node capture/capture.mjs",
+    "render": "node render.mjs",
+    "sfx": "node sfx/sfx.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.48.0"
+  }
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Cratebase launch film</title>
+<style>
+  /* All fonts vendored by fetch-fonts.sh: offline, deterministic renders. */
+  @font-face { font-family: "Bricolage"; src: url(assets/fonts/bricolage-grotesque-latin-standard-normal.woff2) format("woff2"); font-weight: 200 800; font-stretch: 75% 100%; }
+  @font-face { font-family: "RHMono"; src: url(assets/fonts/red-hat-mono-latin-wght-normal.woff2) format("woff2"); font-weight: 300 700; }
+  @font-face { font-family: "Plex"; src: url(assets/fonts/ibm-plex-sans-latin-wght-normal.woff2) format("woff2"); font-weight: 100 700; }
+  @font-face { font-family: "JBMono"; src: url(assets/fonts/jetbrains-mono-latin-wght-normal.woff2) format("woff2"); font-weight: 100 800; }
+  @font-face { font-family: "Inter"; src: url(assets/fonts/inter-latin-wght-normal.woff2) format("woff2"); font-weight: 100 900; }
+  @font-face { font-family: "Archivo"; src: url(assets/fonts/archivo-latin-wght-normal.woff2) format("woff2"); font-weight: 100 900; }
+
+  :root {
+    --navy: #0a1622; --panel: #101f30; --ink: #eef1f4; --ink2: #93a4b6;
+    --fog: #eef1f4; --harbor: #0e2238; --crate: #ef7d3e;
+    --crate-l: #d26f3a; --crate-r: #b05f37;
+    --tb-ink: #16181d; --tb-ink7: #1b1e25; --tb-ink6: #2b2f38;
+    --tb-paper: #f6f4ef; --tb-paper2: #efebe2; --tb-slate: #c9c2b4;
+    --tb-crate: #e8622c; --tb-crate-d: #f07440; --tb-manifest: #3a5b8c; --tb-manifest-l: #6c8fc7;
+    --display: "Bricolage", system-ui, sans-serif;
+    --mono: "RHMono", ui-monospace, monospace;
+  }
+  /* Render contract: no CSS transitions/animations; seek(t) sets every state. */
+  *, *::before, *::after { box-sizing: border-box; transition: none !important; animation: none !important; }
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  #stage { position: relative; overflow: hidden; background: var(--navy); font-family: var(--display); color: var(--ink); }
+  #world { position: absolute; inset: 0; }
+  .scene { position: absolute; inset: 0; overflow: hidden; }
+  .abs { position: absolute; left: 0; top: 0; }
+  .plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; backface-visibility: hidden; }
+  .plane > img { display: block; }
+  .nowrap { white-space: nowrap; }
+  .clip { overflow: hidden; }
+  .disp { font-family: var(--display); font-weight: 800; font-stretch: 75%; letter-spacing: -0.035em; line-height: 0.84; }
+  .stmt { font-family: var(--display); font-weight: 760; font-stretch: 88%; letter-spacing: -0.03em; line-height: 0.95; }
+  .mono { font-family: var(--mono); }
+</style>
+</head>
+<body>
+  <div id="stage"><div id="world"></div></div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
