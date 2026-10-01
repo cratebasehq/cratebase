@@ -10,6 +10,14 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`create-cratebase` search box returned nothing while typing** —
+  `?search=` matches whole FTS5 words, so a partial word ("sear") found no
+  rows until it was complete. The `nextjs` and `vite-react` dashboards now
+  pass the box through `toPrefixSearch()` (`lib/cratebase.ts`), which turns
+  each word into a `term*` prefix query.
+
 ## 0.6.0 — 2026-09-29
 
 Background jobs, webhooks and cron you can rely on in production, plus
