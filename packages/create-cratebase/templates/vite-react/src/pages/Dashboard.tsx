@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { RecordModel } from "@cratebase/client";
-import { useAuth, useRecords } from "@/lib/cratebase";
+import { toPrefixSearch, useAuth, useRecords } from "@/lib/cratebase";
 import type { UsersRecord } from "../../cratebase-types";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { SearchBox } from "@/components/SearchBox";
@@ -20,7 +20,7 @@ export function Dashboard() {
   // filter the collection's own listRule already applies server-side.
   const { records: posts, loading } = useRecords("posts", {
     sort: "-created",
-    search: search.trim() || undefined,
+    search: toPrefixSearch(search),
     realtime: true,
   });
 
