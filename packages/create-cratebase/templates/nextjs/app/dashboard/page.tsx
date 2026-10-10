@@ -4,11 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { RecordModel } from "@cratebase/client";
 import { toPrefixSearch, useAuth, useRecords } from "@/lib/cratebase";
+import type { UsersRecord } from "../../cratebase-types";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { SearchBox } from "@/components/SearchBox";
 import { PostForm } from "@/components/PostForm";
 import { PostList } from "@/components/PostList";
-import type { UsersRecord } from "../../cratebase-types";
 
 export default function DashboardPage() {
   const { user, signOut } = useAuth<UsersRecord & RecordModel>();
@@ -20,7 +20,11 @@ export default function DashboardPage() {
   // manual invalidation. `search` runs Cratebase's full-text index over
   // `posts`' searchable fields (title, content), ANDed onto the owner
   // filter the collection's own listRule already applies server-side.
-  const { records: posts, loading } = useRecords("posts", {
+  const {
+    records: posts,
+    loading,
+    error,
+  } = useRecords("posts", {
     sort: "-created",
     search: toPrefixSearch(search),
     realtime: true,
@@ -29,9 +33,9 @@ export default function DashboardPage() {
   return (
     <div className="mx-auto max-w-2xl px-6 py-10">
       <header className="mb-8 flex items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold">{"{{PROJECT_NAME}}"}</h1>
-          <p className="text-sm text-black/50 dark:text-white/50">Signed in as {user?.email}</p>
+          <p className="muted truncate text-sm">Signed in as {user?.email}</p>
         </div>
         <div className="flex items-center gap-2">
           <NotificationsBell />
@@ -48,15 +52,11 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <div className="mb-6">
+      <main className="flex flex-col gap-6">
         <SearchBox value={search} onChange={setSearch} />
-      </div>
-
-      <div className="mb-6">
         <PostForm />
-      </div>
-
-      <PostList posts={posts} loading={loading} />
+        <PostList posts={posts} loading={loading} error={error} searching={search.trim() !== ""} />
+      </main>
     </div>
   );
 }

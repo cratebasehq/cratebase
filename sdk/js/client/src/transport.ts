@@ -1,10 +1,8 @@
 /** The HTTP transport every module sends through: URL building, request
  * encoding, and the error shape every failure surfaces as.
  *
- * No auto-cancellation. PocketBase's SDK auto-cancels same-key in-flight
- * requests (why call sites there sprinkle `requestKey: null`); this
- * client has no such behavior, so there is nothing to opt out of —
- * callers pass an `AbortSignal` when they want cancellation. */
+ * No auto-cancellation: callers pass an `AbortSignal` when they want
+ * cancellation. */
 
 /** Every failure this client throws — a non-2xx response, a malformed
  * response body, or an aborted request. */
@@ -73,7 +71,7 @@ export interface TransportOptions {
   cookie?: string;
   headers?: Record<string, string>;
   credentials?: RequestCredentials;
-  /** `Accept-Language`, PocketBase's `lang` header equivalent. */
+  /** `Accept-Language`. */
   lang?: string;
 }
 

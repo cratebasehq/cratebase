@@ -1,4 +1,4 @@
-//! Application errors rendered as PocketBase's
+//! Application errors rendered as Cratebase's
 //! `{"status": 400, "message": "...", "data": {field: {code, message}}}`.
 
 use std::collections::BTreeMap;
@@ -8,14 +8,14 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// A single field's validation failure: a stable machine-readable `code`
-/// (PocketBase's `validation_*` vocabulary, see [`codes`]) and a
+/// (Cratebase's `validation_*` vocabulary, see [`codes`]) and a
 /// human-readable `message`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FieldError {
     pub code: String,
     pub message: String,
     /// Machine-readable detail behind the message, so a client can render
-    /// its own wording. PocketBase emits this for the comparison
+    /// its own wording. Cratebase emits this for the comparison
     /// constraints — a date bound carries
     /// `{"threshold": "2020-01-01T00:00:00Z"}` — and omits the key
     /// entirely otherwise.
@@ -41,7 +41,7 @@ impl FieldError {
     }
 }
 
-/// PocketBase's validation error codes, so SDK users branching on `code`
+/// Cratebase's validation error codes, so SDK users branching on `code`
 /// get the values they expect.
 pub mod codes {
     pub const REQUIRED: &str = "validation_required";
@@ -114,7 +114,7 @@ pub enum AppError {
 }
 
 impl AppError {
-    /// PocketBase's default messages, used when a caller has nothing more
+    /// Cratebase's default messages, used when a caller has nothing more
     /// specific to say.
     pub const DEFAULT_BAD_REQUEST: &'static str =
         "Something went wrong while processing your request.";
@@ -174,7 +174,7 @@ impl AppError {
         })
     }
 
-    /// A validation error with PocketBase's per-operation message
+    /// A validation error with Cratebase's per-operation message
     /// (`"Failed to create record."`, ...) and per-field details.
     pub fn validation(
         message: impl Into<String>,
@@ -239,7 +239,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_body_matches_pocketbase_shape() {
+    fn validation_body_matches_cratebase_shape() {
         let err = AppError::validation(
             "Failed to create record.",
             [(

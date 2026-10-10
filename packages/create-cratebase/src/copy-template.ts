@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -89,4 +89,23 @@ export function projectNameFromDir(dir: string): string {
     .replace(/[^a-z0-9-_.]+/g, "-")
     .replace(/^[-_.]+|[-_.]+$/g, "");
   return slug.length > 0 ? slug : "cratebase-app";
+}
+
+/**
+ * Removes everything inside `dir` except `.git`, so a user who answers
+ * "overwrite" keeps their repository history. The directory itself stays.
+ */
+export async function emptyDir(dir: string): Promise<void> {
+  for (const entry of await readdir(dir)) {
+    if (entry === ".git") continue;
+    await rm(path.join(dir, entry), { recursive: true, force: true });
+  }
+}
+
+/** Returns a user-facing error for an unusable project directory argument, or `undefined` if it's fine. */
+export function validateProjectDir(input: string): string | undefined {
+  const value = input.trim();
+  if (value.length === 0) return "Please enter a directory name.";
+  if (/[\0<>"|?*]/.test(value)) return 'The name can\'t contain any of: < > " | ? * (or NUL).';
+  return undefined;
 }

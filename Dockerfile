@@ -14,15 +14,14 @@ COPY package.json bun.lock ./
 COPY sdk/js/client sdk/js/client
 COPY web/admin web/admin
 COPY web/email web/email
-# The root package.json lists `tests/conformance` as a workspace and Bun
-# refuses to install when a declared member is missing. The image has no
-# use for the suite itself, so only its manifest is copied — enough for
-# the workspace to resolve, without dragging the tests into the build.
-COPY tests/conformance/package.json tests/conformance/package.json
-# Same for the SDK packages that aren't needed to build the dashboard:
+# The root package.json lists more workspaces than the dashboard needs and
+# Bun refuses to install when a declared member is missing, so only their
+# manifests are copied — enough for the workspaces to resolve, without
+# dragging their sources into the build.
 # `sdk/js/client` is copied in full above because web/admin imports it.
 COPY sdk/js/react/package.json sdk/js/react/package.json
-COPY sdk/js/extras/package.json sdk/js/extras/package.json
+COPY sdk/js/start/package.json sdk/js/start/package.json
+COPY sdk/js/schema/package.json sdk/js/schema/package.json
 COPY packages/create-cratebase/package.json packages/create-cratebase/package.json
 RUN bun install && bun run admin:build && bun run email:build
 

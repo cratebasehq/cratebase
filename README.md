@@ -39,7 +39,7 @@ cratebase dev
 is one command for local development: it creates the data directory,
 provisions a superuser (`admin@localhost` with a random, printed-once
 password — no setup form to click through), applies a `schema.json` if
-you have one, seeds `pb_seed/` if the database is empty, writes
+you have one, seeds `cb_seed/` if the database is empty, writes
 TypeScript types for your schema, and starts listening on `:8090` with
 verbose logging and hook hot-reload — then prints a startup banner with
 everything it did: the API and dashboard URLs, the superuser, the types
@@ -77,19 +77,13 @@ instance: [llms.txt](./llms.txt). Full endpoint reference:
 
 ## Why Cratebase
 
-- **PocketBase-wire-compatible.** The official
-  [`pocketbase`](https://www.npmjs.com/package/pocketbase) JS/TS client
-  (and PocketBase's other official SDKs) work against Cratebase
-  unchanged — verified against the real SDK: 180/181 conformance tests
-  pass (the one skip restarts the server mid-run to test backup restore,
-  which would kill the test harness itself; see
-  [tests/conformance/KNOWN_DIVERGENCES.md](./tests/conformance/KNOWN_DIVERGENCES.md)).
-  Already on PocketBase? [Migrating from PocketBase](https://cratebase.dev/docs/migrating/migration-tool/)
-  covers the actual migration tool.
-- **Rust performance.** Same API, same filter syntax, same rules —
-  meaningfully faster under load than PocketBase's Go implementation.
-  Numbers and methodology (hardware, what's measured, honest caveats):
-  [benchmarks/README.md](./benchmarks/README.md).
+- **A single, typed API.** One REST API for collections, records, auth,
+  files and realtime, with first-party TypeScript clients
+  ([`@cratebase/client`](./sdk/js/client), `@cratebase/react`) and a
+  complete [openapi.yaml](./openapi.yaml). Unknown or legacy input is
+  rejected with a clear error rather than silently ignored.
+- **Rust performance.** Numbers and methodology (hardware, what's
+  measured, honest caveats): [benchmarks/README.md](./benchmarks/README.md).
 - **SQLite or Postgres, zero code changes.** `DATABASE_URL=sqlite://...`
   (default) or `DATABASE_URL=postgres://...` — identical API, identical
   filter syntax, identical rules either way.
@@ -139,11 +133,25 @@ instance: [llms.txt](./llms.txt). Full endpoint reference:
   create/update/upsert/delete calls (JSON or multipart, for file fields)
   in one HTTP round trip and one SQL transaction: all of them commit or
   none do.
-- **JS hooks (PocketBase parity)** — drop a `*.pb.js` file in `pb_hooks/`
-  next to your data directory and get PocketBase's own hook API:
+- **JS hooks** — drop a `*.cb.js` file in `cb_hooks/`
+  next to your data directory and get Cratebase's hook API:
   `onRecordCreate`/`onRecordUpdate`/-style lifecycle hooks and `routerAdd`
   for custom HTTP endpoints, both backed by an embedded QuickJS runtime
   (`crates/jsvm`) — no separate process, no restart-to-reload.
+- **Schema as code** — `@cratebase/schema` is a typed TypeScript DSL
+  (`defineCollection`, field builders, `idx`) that writes the
+  `schema.json` that `cratebase dev`, `cratebase schema` and
+  `POST /api/schema/apply` apply.
+- **Server-side sessions for SSR frameworks** — `@cratebase/start` gives
+  TanStack Start apps cookie sessions, auth middleware and an API-key
+  admin client in one `createCratebaseStart()` call;
+  `npm create cratebase` has a `tanstack-start` template.
+- **LLM usage ledger** — `POST /api/llm/usage` records every model call
+  your app makes (tokens, cached/reasoning tokens, latency, cost from a
+  per-model price table); `GET /api/llm/usage/summary` rolls it up.
+- **Many projects, one process** — `cratebase host serve` runs several
+  isolated projects behind one listener, routed by `Host`
+  ([Host mode](https://cratebase.dev/docs/deploy/host-mode/)).
 - **File storage** — local disk by default; switch to any S3-compatible
   bucket (AWS S3, Cloudflare R2, Backblaze B2, or self-hosted
   [RustFS](https://rustfs.com)/MinIO) with three environment variables.
@@ -195,7 +203,7 @@ crates/filter   filter expression parser + SQL compiler
 crates/db       storage engine: sqlx over sqlite/postgres, collection<->table sync
 crates/storage  file storage: local disk or any S3-compatible bucket
 crates/auth     Argon2id password hashing + JWT sessions, OAuth2/OIDC, OTP/MFA/TOTP
-crates/jsvm     embedded QuickJS runtime — pb_hooks/, routerAdd, cronAdd
+crates/jsvm     embedded QuickJS runtime — cb_hooks/, routerAdd, cronAdd
 crates/mailer   pluggable mail backend (Resend API, SMTP, or log-only for dev)
 crates/server   axum HTTP API, CLI, plugin system, embedded admin dashboard
 web/admin       admin dashboard source (React + Vite + TanStack + shadcn/ui)
@@ -212,6 +220,8 @@ shipped and what's still ahead.
 - [Docker](https://cratebase.dev/docs/deploy/docker/),
   [reverse proxy/TLS](https://cratebase.dev/docs/deploy/reverse-proxy-tls/),
   and other deployment topics.
+- [Host mode](https://cratebase.dev/docs/deploy/host-mode/) — many isolated
+  projects in one process, routed by `Host`.
 - [Extending Cratebase](https://cratebase.dev/docs/extending/js-hooks/) —
   JS hooks, Rust plugins, cron jobs, webhooks.
 - [Contributing, security policy, license](https://cratebase.dev/docs/project/contributing-security-license/)

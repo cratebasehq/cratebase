@@ -9,7 +9,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Columns3, GripVertical, Rows2, Rows3, Settings2, Trash2, X } from "lucide-react";
+import { Columns3, Copy, Download, GripVertical, Rows2, Rows3, Settings2, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -246,22 +246,41 @@ export function SelectionBar({
   count,
   onClear,
   onDelete,
+  onCopy,
+  onExport,
+  onPageCount,
   batchEnabled,
   busy,
 }: {
   count: number;
   onClear: () => void;
   onDelete: () => void;
+  onCopy: () => void;
+  onExport: () => void;
+  /** How many of the selected rows are on the page being shown — the only
+   * ones copy and export can reach. */
+  onPageCount: number;
   batchEnabled: boolean;
   busy: boolean;
 }) {
   if (count === 0) return null;
+  const reachable = onPageCount > 0;
   return (
-    <div className="flex h-control-lg shrink-0 items-center gap-3 border-b border-border bg-primary/[0.06] px-page">
-      <span className="font-tabular text-sm font-medium">
-        {count.toLocaleString()} selected
-      </span>
+    <div
+      role="toolbar"
+      aria-label="Bulk actions"
+      className="flex h-control-lg shrink-0 items-center gap-2 border-b border-border bg-brand-soft px-page animate-rise"
+    >
+      <span className="font-tabular text-sm font-medium">{count.toLocaleString()} selected</span>
       <Separator orientation="vertical" className="h-4" />
+      <Button variant="ghost" size="sm" className="h-control-sm gap-1.5" onClick={onCopy} disabled={!reachable}>
+        <Copy className="size-3.5" />
+        <span className="hidden sm:inline">Copy JSON</span>
+      </Button>
+      <Button variant="ghost" size="sm" className="h-control-sm gap-1.5" onClick={onExport} disabled={!reachable}>
+        <Download className="size-3.5" />
+        <span className="hidden sm:inline">Export</span>
+      </Button>
       {batchEnabled ? (
         <Button variant="ghost" size="sm" className="h-control-sm gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={onDelete} disabled={busy}>
           <Trash2 className="size-3.5" />

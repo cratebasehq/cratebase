@@ -15,7 +15,7 @@ Rules let a recipient list/view/delete their own rows, and update only
 One call fans a notification out across up to three channels:
 
 ```js
-// JS hook (pb_hooks/*.pb.js)
+// JS hook (cb_hooks/*.cb.js)
 $notify.send({
   to: record.get("authorId"),
   type: "comment",

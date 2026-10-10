@@ -1,6 +1,6 @@
-# JS hooks (`pb_hooks/*.pb.js`)
+# JS hooks (`cb_hooks/*.cb.js`)
 
-Drop a `.pb.js` file in `pb_hooks/` next to the data directory. It runs
+Drop a `.cb.js` file in `cb_hooks/` next to the data directory. It runs
 in an embedded QuickJS runtime (`crates/jsvm`) — no separate process, no
 restart-to-reload; edit the file and it's live on the next request.
 Reach for this when the logic can't be expressed as a filter-expression
@@ -210,7 +210,7 @@ record write), `e.next()` to continue the hook chain.
 
 ## Real examples
 
-`examples/docmind/pb_hooks/docmind.pb.js` is the most complete example
+`examples/docmind/cb_hooks/docmind.cb.js` is the most complete example
 in the repo (RAG/vector-search app) and worth reading end to end:
 
 - `:82-150` — `onRecordAfterCreateSuccess`: chunks an uploaded file into

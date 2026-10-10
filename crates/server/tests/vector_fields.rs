@@ -27,7 +27,7 @@ struct Harness {
 impl Harness {
     async fn new() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         let id = app
             .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
@@ -282,8 +282,7 @@ async fn echo_provider_auto_embeds_from_the_source_field_on_create() {
 /// derives or overwrites a vector field's `sourceField` was embedded
 /// against stale (pre-hook) text instead of what the hook actually
 /// wrote. `crate::routes::records::write_record` now computes embeddings
-/// after the create/update hook has run, mirroring PocketBase's own
-/// "onRecordCreate → e.next() → persist" ordering.
+/// after the create/update hook has run (the "onRecordCreate → e.next() → persist" ordering).
 #[tokio::test]
 async fn a_hook_that_sets_the_source_field_is_embedded_from_the_hook_s_text_on_create() {
     let harness = Harness::new().await;
@@ -527,6 +526,74 @@ async fn nearest_to_orders_by_descending_cosine_similarity() {
         )
         .await;
     assert_eq!(status, 400, "{body}");
+}
+
+#[tokio::test]
+async fn search_combined_with_nearest_to_fuses_text_and_vector_ranks() {
+    let harness = Harness::new().await;
+    harness
+        .collection(json!({
+            "name": "docs",
+            "type": "base",
+            "listRule": "",
+            "viewRule": "",
+            "createRule": "",
+            "fields": [
+                {"name": "title", "type": "text", "searchable": true},
+                {"name": "embedding", "type": "vector", "dimensions": 3},
+            ],
+        }))
+        .await;
+    let mut ids = std::collections::HashMap::new();
+    for (key, title, vector) in [
+        ("A", "rust async runtime", [1.0, 0.0, 0.0]),
+        ("B", "cooking pasta", [0.9, 0.1, 0.0]),
+        ("C", "rust borrow checker", [0.0, 1.0, 0.0]),
+    ] {
+        let (status, created) = harness
+            .admin(
+                "POST",
+                "/api/collections/docs/records",
+                Some(json!({"title": title, "embedding": vector})),
+            )
+            .await;
+        assert_eq!(status, 200, "{created}");
+        ids.insert(key, created["id"].as_str().unwrap().to_string());
+    }
+    let order = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let (status, page) = harness
+        .admin(
+            "GET",
+            "/api/collections/docs/records?search=rust&nearestTo=embedding:1,0,0",
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(
+        order(&page),
+        [ids["A"].clone(), ids["C"].clone(), ids["B"].clone()]
+    );
+
+    let (status, page) = harness
+        .admin(
+            "GET",
+            "/api/collections/docs/records?nearestTo=embedding:1,0,0",
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(
+        order(&page),
+        [ids["A"].clone(), ids["B"].clone(), ids["C"].clone()]
+    );
 }
 
 // --------------------------------------------- llm.enabled independence

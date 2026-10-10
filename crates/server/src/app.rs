@@ -75,7 +75,7 @@ pub struct AppInner {
     /// test assert "exactly one resolution per request" instead of
     /// trusting a comment.
     auth_resolutions: std::sync::atomic::AtomicU64,
-    /// Set once the JS runtime starts (absent `pb_hooks/`, or an empty
+    /// Set once the JS runtime starts (absent `cb_hooks/`, or an empty
     /// one, means it never does). An `Arc<OnceLock<_>>` rather than a
     /// plain field so hook bridges bound while the runtime's own hook
     /// files are still being evaluated (see `register_hook`) can hold a
@@ -87,7 +87,7 @@ pub struct AppInner {
     /// impl reads this to wire a JS `onQueueJob` registration into the
     /// same handler map `crate::queue::tick` dispatches from.
     queue_handle: OnceLock<crate::queue::QueueHandle>,
-    /// Routes a `pb_hooks` file mounted with `routerAdd`, collected while
+    /// Routes a `cb_hooks` file mounted with `routerAdd`, collected while
     /// the runtime starts and turned into real axum routes by
     /// `crate::jsvm_host::js_router` once `crate::router` assembles the
     /// server.
@@ -132,10 +132,10 @@ pub struct App {
 /// into a real axum route by `crate::jsvm_host::js_router`.
 #[derive(Clone)]
 pub struct JsRoute {
-    /// Upper-case HTTP method, or empty for "any method" (PocketBase
-    /// accepts both from `routerAdd`).
+    /// Upper-case HTTP method, or empty for "any method"
+    /// (both are accepted from `routerAdd`).
     pub method: String,
-    /// PocketBase-style path pattern (`/hello/{name}`, `/files/{path...}`).
+    /// Path pattern (`/hello/{name}`, `/files/{path...}`).
     pub pattern: String,
     pub handler: cratebase_jsvm::RouteHandlerId,
 }
@@ -310,7 +310,7 @@ impl App {
     }
 
     /// The running JS runtime, once `App::bootstrap` has started one.
-    /// `None` when no `pb_hooks` directory exists (or it is empty) — the
+    /// `None` when no `cb_hooks` directory exists (or it is empty) — the
     /// documented zero-cost case, so nothing here ever starts a runtime
     /// speculatively.
     pub fn jsvm(&self) -> Option<cratebase_jsvm::Runtime> {
@@ -339,7 +339,7 @@ impl App {
 
     /// Record a `routerAdd` registration. Turned into a real route by
     /// `crate::jsvm_host::js_router` when `crate::router` assembles the
-    /// server, which happens once every `pb_hooks` file has already run.
+    /// server, which happens once every `cb_hooks` file has already run.
     pub(crate) fn push_js_route(&self, route: JsRoute) {
         self.inner
             .js_routes
@@ -590,7 +590,7 @@ impl App {
 
         // Registered unconditionally, *before* the JS runtime starts just
         // below — unlike every other toggle-gated plugin in this function
-        // (`zip_export`), so that: (1) a `pb_hooks/*.pb.js` file's
+        // (`zip_export`), so that: (1) a `cb_hooks/*.cb.js` file's
         // `onQueueJob(...)` calls have a real handler registry to add
         // themselves to the moment the runtime evaluates them, rather than
         // needing the plugin to exist first; and (2) `settings.queue.enabled`
@@ -602,10 +602,10 @@ impl App {
         let _ = self.inner.queue_handle.set(queue_plugin.handle());
         self.register_plugin(queue_plugin)?;
 
-        // Starts the JS runtime when `pb_hooks/` exists and has at least
-        // one `*.pb.js` file; a no-op otherwise (spec: absent `pb_hooks`
+        // Starts the JS runtime when `cb_hooks/` exists and has at least
+        // one `*.cb.js` file; a no-op otherwise (spec: absent `cb_hooks`
         // must cost nothing). Must run before `register_system_crons` /
-        // `plugin.setup` below so a `pb_hooks` file's `cronAdd`/`onRecord*`
+        // `plugin.setup` below so a `cb_hooks` file's `cronAdd`/`onRecord*`
         // registrations are in place before anything can trigger them, and
         // after settings/collections are loaded so a hook file that reads
         // `$app.*` at evaluation time sees a working database.
@@ -703,24 +703,12 @@ impl App {
     /// already run; calling it again would panic (`bootstrap` refuses a
     /// second call).
     pub async fn listen(self) -> anyhow::Result<()> {
-        // After the core (Rust) migrations `bootstrap` already ran, before
-        // the listener accepts a single request — matching PocketBase's
-        // "migrations run automatically on `serve` startup".
-        for file in crate::js_migrations::run_up(&self).await? {
-            tracing::info!(file = %file, "applied JS migration");
-        }
-
-        let address = format!("{}:{}", self.config().host, self.config().port);
-        let router = crate::router(self.clone());
-        let mut event = crate::events::ServeEvent::new(self.clone(), router, address.clone());
-        self.hooks()
-            .on_serve
-            .trigger(&mut event, |_| Box::pin(async { Ok(()) }))
+        let (router, address) = self
+            .prepare_router(&format!("{}:{}", self.config().host, self.config().port))
             .await?;
 
-        let listener = tokio::net::TcpListener::bind(&event.address).await?;
-        tracing::info!(address = %event.address, "cratebase listening");
-        let router = std::mem::take(&mut event.router);
+        let listener = tokio::net::TcpListener::bind(&address).await?;
+        tracing::info!(address = %address, "cratebase listening");
         axum::serve(
             listener,
             router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -730,6 +718,27 @@ impl App {
 
         self.terminate(false).await;
         Ok(())
+    }
+
+    /// The pre-listen half of [`App::listen`]: run JS migrations, build
+    /// the router and fire `on_serve` (whose handlers may replace the
+    /// router or the address). Returns the final router and address
+    /// without binding anything, so a multi-project host can mount several
+    /// apps in one listener. Assumes `bootstrap` has already run.
+    pub async fn prepare_router(&self, address: &str) -> anyhow::Result<(axum::Router, String)> {
+        // After the core (Rust) migrations `bootstrap` already ran, before
+        // the listener accepts a single request, so migrations run automatically on `serve` startup.
+        for file in crate::js_migrations::run_up(self).await? {
+            tracing::info!(file = %file, "applied JS migration");
+        }
+
+        let router = crate::router(self.clone());
+        let mut event = crate::events::ServeEvent::new(self.clone(), router, address.to_string());
+        self.hooks()
+            .on_serve
+            .trigger(&mut event, |_| Box::pin(async { Ok(()) }))
+            .await?;
+        Ok((std::mem::take(&mut event.router), event.address))
     }
 
     /// Fire `on_terminate` and close the database. `is_restart` is true
@@ -789,8 +798,8 @@ impl App {
         Ok(())
     }
 
-    /// PocketBase's four system jobs, registered under their exact ids so
-    /// `GET /api/crons` matches the fixture.
+    /// The four system jobs, registered under their fixed ids so
+    /// `GET /api/crons` lists them.
     fn register_system_crons(&self) {
         let app = self.clone();
         let _ = self.inner.cron.add(
@@ -1020,7 +1029,7 @@ impl App {
     }
 
     /// Add/remove the scheduled-backup job to match `settings.backups.cron`.
-    /// The id is PocketBase's `__pbAutoBackup__`, and the job only appears
+    /// The id is `__cbAutoBackup__`, and the job only appears
     /// in `GET /api/crons` once a cron expression is configured.
     pub fn sync_backup_cron(&self) {
         const ID: &str = crate::cron::JOB_AUTO_BACKUP;
@@ -1211,7 +1220,7 @@ impl App {
     /// Mint a token for a record of `collection_name`, signed with the
     /// record's own `tokenKey` (spec §2). Note that the claims carry no
     /// `refreshable` flag; `routes::auth` mints session tokens itself
-    /// with `new_auth_claims` so the SDK sees PocketBase's exact payload.
+    /// with `new_auth_claims` so the SDK sees the exact payload.
     pub async fn mint_token(
         &self,
         collection_name: &str,
@@ -1264,7 +1273,7 @@ impl App {
         self.inner.setup_token.get().map(String::as_str)
     }
 
-    /// PocketBase prints a one-time installer URL at boot when no
+    /// A one-time installer URL is printed at boot when no
     /// superuser exists yet, so whoever is watching the log — not
     /// whoever hits the endpoint first — gets to claim the instance.
     /// This generates (or, for a scripted deploy, reads `CB_SETUP_TOKEN`
@@ -1277,7 +1286,7 @@ impl App {
     /// instance.
     ///
     /// The token lives only in memory and is regenerated every boot —
-    /// deliberately simple, matching PocketBase's own installer token.
+    /// deliberately simple.
     /// One consequence: if the *last* superuser is later deleted without
     /// restarting the process, `GET /api/setup/status` reports
     /// `needsSetup: true` again but this token was never created for
@@ -1321,8 +1330,8 @@ impl App {
     }
 }
 
-/// A fresh 50-character `tokenKey`, PocketBase's
-/// `autogeneratePattern: [a-zA-Z0-9]{50}`.
+/// A fresh 50-character `tokenKey`
+/// (`autogeneratePattern: [a-zA-Z0-9]{50}`).
 pub fn new_token_key() -> String {
     cratebase_core::ids::random_string(
         50,
@@ -1521,7 +1530,7 @@ impl Executor for TxApp {
 }
 
 /// Ctrl-C / SIGTERM, so `serve` can shut the log writer down cleanly.
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };

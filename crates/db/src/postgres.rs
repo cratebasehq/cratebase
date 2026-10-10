@@ -10,7 +10,7 @@
 //!
 //! Decoding goes by column type, collapsing Postgres' richer type system
 //! onto the five [`Sql`] shapes: booleans become `0`/`1`, JSON becomes
-//! its text, timestamps become PocketBase-formatted strings.
+//! its text, timestamps become strings.
 
 use std::error::Error as StdError;
 use std::str::FromStr;

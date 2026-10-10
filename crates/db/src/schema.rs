@@ -1,6 +1,6 @@
 //! DDL derived from a [`Collection`]: the physical table (or view)
 //! named exactly after the collection, one column per field, and the
-//! raw `CREATE INDEX` statements PocketBase keeps in `indexes[]`.
+//! raw `CREATE INDEX` statements Cratebase keeps in `indexes[]`.
 //!
 //! [`sync`] diffs `previous` against `next` **by field id** so a renamed
 //! field becomes `RENAME COLUMN` (data kept) while a field whose
@@ -9,7 +9,7 @@
 //! would not surprise someone).
 //!
 //! Every column is nullable and carries a zero default (`''`, `0`, or
-//! `NULL` for JSON-shaped fields) so partial inserts and PocketBase-style
+//! `NULL` for JSON-shaped fields) so partial inserts and Cratebase-style
 //! view queries behave the same on both backends.
 
 use cratebase_core::{is_valid_identifier, Collection, Field, FieldType};
@@ -244,7 +244,7 @@ impl<'a> Cursor<'a> {
 }
 
 /// Tolerantly parse `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table
-/// (cols) [WHERE expr]` in PocketBase's backtick style or plain SQL.
+/// (cols) [WHERE expr]` in Cratebase's backtick style or plain SQL.
 pub fn parse_index(stmt: &str) -> Option<IndexDef> {
     let s = stmt.trim().trim_end_matches(';').trim();
     let mut cur = Cursor { s, pos: 0 };
@@ -284,7 +284,7 @@ pub fn parse_index(stmt: &str) -> Option<IndexDef> {
 
 /// Re-emit `stmt` as `CREATE [UNIQUE] INDEX IF NOT EXISTS "name" ON
 /// "table" (...) [WHERE ...]` with backticks rewritten to double quotes
-/// and the table forced to `table` (PocketBase does the same: an index
+/// and the table forced to `table` (Cratebase does the same: an index
 /// statement can only ever target its own collection).
 pub fn normalize_index(stmt: &str, table: &str) -> DbResult<String> {
     let def = parse_index(stmt)
@@ -803,7 +803,7 @@ mod tests {
     use cratebase_core::{CollectionType, FieldKind};
 
     #[test]
-    fn parses_pocketbase_style_indexes() {
+    fn parses_cratebase_style_indexes() {
         let def = parse_index(
             "CREATE UNIQUE INDEX `idx_email_pbc_1` ON `users` (`email`) WHERE `email` != ''",
         )

@@ -1,6 +1,6 @@
 //! API rule evaluation.
 //!
-//! PocketBase encodes a rule as `Option<String>`:
+//! Cratebase encodes a rule as `Option<String>`:
 //!
 //! * `None` — "superusers only". Every non-superuser request is denied.
 //! * `Some("")` — public. Everyone passes.
@@ -12,7 +12,7 @@
 //! `createRule` is the odd one out: there is no row to filter yet, so it
 //! is evaluated as a plain boolean against the submitted body.
 //!
-//! PocketBase turns those into four *different* HTTP outcomes, and this
+//! Cratebase turns those into four *different* HTTP outcomes, and this
 //! module deliberately keeps them distinguishable rather than collapsing
 //! them into one error (measured against v0.40.2, see
 //! `tests/conformance/KNOWN_DIVERGENCES.md`):
@@ -77,7 +77,7 @@ pub fn evaluate(
     param_offset: usize,
 ) -> DbResult<RuleOutcome> {
     // Checked first: a superuser bypasses even a syntactically broken
-    // rule, exactly as PocketBase does.
+    // rule, exactly as Cratebase does.
     if resolver.ctx().is_superuser() {
         return Ok(RuleOutcome::AllowAll);
     }
@@ -114,7 +114,7 @@ pub async fn check_create_rule(
 }
 
 /// [`check_create_rule`] generalised to any single row, given as a
-/// PocketBase-shaped JSON map.
+/// JSON map.
 ///
 /// The realtime fan-out needs exactly this and cannot use a plain query:
 /// a `delete` event has to be access-checked against a row that is

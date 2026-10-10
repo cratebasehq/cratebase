@@ -30,10 +30,10 @@ fn test_config(dir: &std::path::Path) -> Config {
     // `crate::config::sibling`) -- passing the tempdir's own root would
     // put those a level up, outside the tempdir entirely (i.e. straight
     // into the real `/tmp`), leaking directories that could collide with
-    // other tests. Nesting under `pb_data`, the same convention
+    // other tests. Nesting under `cb_data`, the same convention
     // `Config::memory` and the jsvm hot-reload tests use, keeps
     // everything this test touches inside `dir`.
-    let mut cfg = Config::for_data_dir(dir.join("pb_data"));
+    let mut cfg = Config::for_data_dir(dir.join("cb_data"));
     cfg.secret = "test-secret-0123456789".into();
     cfg.log_requests = false;
     cfg

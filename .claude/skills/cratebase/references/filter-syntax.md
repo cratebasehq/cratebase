@@ -43,7 +43,7 @@ call     := name "(" operand ( "," operand )* ")"
   same relation requires *every* linked tag to be `"public"`.
   A **bare multi-valued column with no relation path or `:each` is not
   an element set at all** — it compares as the raw JSON text of the
-  column (`tags = "a"` is false for `["a","b"]`), matching PocketBase.
+  column (`tags = "a"` is false for `["a","b"]`).
   (`crates/filter/src/compiler.rs:17-24`)
 
 ## Literals
@@ -71,7 +71,7 @@ apply where they make semantic sense (`crates/filter/src/tests.rs:494-501`).
 ## Date macros
 
 All computed in UTC at compile time and bound as SQL parameters, in
-PocketBase's `YYYY-MM-DD HH:MM:SS.sssZ` format (or as integers for the
+the `YYYY-MM-DD HH:MM:SS.sssZ` format (or as integers for the
 calendar-component macros):
 
 ```
@@ -99,7 +99,7 @@ timestamp (`crates/filter/src/tests.rs:838-841,881-884`).
   start as drafts regardless of what else the client sends.
 - `@request.query.<path>` — query string params on the current request.
 - `@request.headers.<name>` — request header, name lowercased with `-`
-  replaced by `_` (PocketBase convention), e.g.
+  replaced by `_`, e.g.
   `@request.headers.x_token = 'tok'` for an `X-Token` header.
 - `@request.method` — HTTP method as an uppercase string (`'GET'`,
   `'POST'`, ...).

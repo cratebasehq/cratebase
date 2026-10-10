@@ -11,8 +11,8 @@
 //!
 //! Gated the same way the full collection schema is (`GET
 //! /api/collections/{id}`, see `routes::collections::view`): the field
-//! list is schema, not data, and PocketBase already treats schema reads
-//! as a superuser-only operation.
+//! list is schema, not data, and schema reads are
+//! treated as a superuser-only operation.
 
 use axum::extract::{Path, State};
 use axum::routing::get;

@@ -1,6 +1,6 @@
 //! Server-sent events: `GET /api/realtime` and `POST /api/realtime`.
 //!
-//! # The wire, as PocketBase speaks it
+//! # The wire
 //!
 //! A client opens `GET /api/realtime` and the server immediately writes
 //! one frame whose SSE `id:` **is** the client id — the JS SDK reads it
@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! id:2LmCCjhuUes8uv1OBpW2Lp7QTa7ODym75D2bQGG9
-//! event:PB_CONNECT
+//! event:CB_CONNECT
 //! data:{"clientId":"2LmCCjhuUes8uv1OBpW2Lp7QTa7ODym75D2bQGG9"}
 //! ```
 //!
@@ -30,7 +30,7 @@
 //!
 //! # Why access is decided in memory
 //!
-//! Measured against PocketBase v0.40.2 (see `docs/superpowers/specs`):
+//! Behavior (see `docs/superpowers/specs`):
 //!
 //! * the **`listRule`** decides, not the `viewRule` — a collection with
 //!   `listRule: ""` and `viewRule: null` delivers to anonymous clients,
@@ -109,7 +109,7 @@ use crate::http_error::{ApiError, ApiResult};
 
 pub use cratebase_core::RecordAction;
 
-/// PocketBase's `security.RandomString(40)` client id. The JS SDK's own
+/// A 40-character random client id. The JS SDK's own
 /// test asserts `/^[A-Za-z0-9]{40}$/`, so the alphabet is mixed case.
 const CLIENT_ID_LEN: usize = 40;
 const CLIENT_ID_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -120,7 +120,7 @@ const CLIENT_ID_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqr
 const SEND_QUEUE_LIMIT: usize = 512;
 
 /// `@request.context` during realtime rule evaluation, which rules can
-/// branch on exactly as PocketBase's do.
+/// branch on.
 const CONTEXT_REALTIME: &str = "realtime";
 
 /// A member's presence entry is dropped this long after its most recent
@@ -602,7 +602,7 @@ async fn connect(State(app): State<App>) -> impl IntoResponse {
     // that look there instead.
     let hello = Event::default()
         .id(&id)
-        .event("PB_CONNECT")
+        .event("CB_CONNECT")
         .data(serde_json::json!({ "clientId": &id }).to_string());
     let _ = tx.send(hello);
 
@@ -615,7 +615,7 @@ async fn connect(State(app): State<App>) -> impl IntoResponse {
     };
 
     Sse::new(stream).keep_alive(
-        // Proxies commonly close an idle stream at 60s; PocketBase's own
+        // Proxies commonly close an idle stream at 60s; the SDK
         // client has no timeout of its own, so the comment ping is purely
         // to keep intermediaries from hanging up.
         KeepAlive::new().interval(Duration::from_secs(30)),
@@ -714,7 +714,7 @@ async fn submit(
         .realtime()
         .set_subscriptions(&body.client_id, subs, auth)
     {
-        // PocketBase answers a stale/unknown client id with 404 rather
+        // A stale/unknown client id is answered with 404 rather
         // than silently accepting subscriptions nobody will ever read.
         return Err(ApiError(cratebase_core::AppError::not_found(
             "Missing or invalid client id.",
@@ -774,7 +774,7 @@ async fn fan_out(
     record: Record,
     watchers: Vec<(String, Arc<Client>)>,
 ) {
-    // The record as the rules see it: PocketBase-shaped JSON of the
+    // The record as the rules see it: the JSON of the
     // post-write state. Built once, shared by every subscriber's rule and
     // filter evaluation.
     //
@@ -893,7 +893,7 @@ async fn notify_cross_node(
         // Falling back to an id-only snapshot rather than just dropping
         // the notify entirely (the old behavior) still lets
         // `receive_cross_node` emit `{"action":"delete","record":{"id":...}}`
-        // — PocketBase clients key a delete on `record.id` alone, so
+        // — clients key a delete on `record.id` alone, so
         // this is enough for every other node's subscribers to drop the
         // row from their local state, even though this particular
         // record's snapshot is too big to ride along.

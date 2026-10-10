@@ -3,12 +3,12 @@
 The worked example scoped in
 `docs/superpowers/specs/2026-09-04-value-add-strategy.md` §8: a 20-person
 startup's internal knowledge-base copilot, built entirely on collections +
-one `pb_hooks` file — no separate vector DB, no separate RAG service, no
+one `cb_hooks` file — no separate vector DB, no separate RAG service, no
 separate chat backend. It ties together every item in the doc's §1a
 "AI-flagship" bundle in one app instead of four independent checkboxes:
 
 1. Employees upload plain-text documents through a normal app UI →
-   Cratebase file storage holds the raw file, and a `pb_hooks` JS hook
+   Cratebase file storage holds the raw file, and a `cb_hooks` JS hook
    chunks the text and writes `{docId, text}` rows to a `chunks`
    collection whose `vector` field auto-embeds on write.
 2. An employee asks a question → a custom endpoint does an
@@ -25,28 +25,27 @@ multi-tab optimistic state reconciliation, nothing that benefits from a
 component tree or real state management the way kanban's board does.
 `index.html` + `app.js` with an [import
 map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
-resolving `"pocketbase"` to the official SDK on esm.sh — the same
+resolving `"@cratebase/client"` to a browser bundle of `sdk/js/client` that
+`examples/serve.sh` builds into `examples/lib/` — the same
 zero-build convention as `examples/todo` and `examples/realtime-chat` —
 is the right amount of machinery for what this page actually does.
 
-## Why no `@cratebase/extras`
+## Why a hook endpoint instead of `cb.vector` / `cb.llm` on the client
 
-`@cratebase/extras` ships `nearestTo` and `chat` helpers for exactly this
-kind of RAG flow, and this example deliberately doesn't import it. The
+The client SDK has `cb.vector.nearestTo` and `cb.llm.chat` helpers for
+this kind of RAG flow, and this example deliberately calls neither. The
 reason is structural, not stylistic: turning a raw employee question into
 a *query vector* requires writing a throwaway record through the real
 auto-embedding pipeline (see "Why a throwaway record" in
-`pb_hooks/docmind.pb.js`), which needs privileges an ordinary `users`
+`cb_hooks/docmind.cb.js`), which needs privileges an ordinary `users`
 account doesn't have. That has to happen server-side, so all of the
-retrieval + chat-gateway orchestration lives in one custom `pb_hooks`
-endpoint (`POST /docmind/ask`) — the W8 "BFF" pattern the spec doc's §6
+retrieval + chat-gateway orchestration lives in one custom `cb_hooks`
+endpoint (`POST /docmind/ask`) — the "BFF" pattern the spec doc's §6
 already validates (`routerAdd` + `HostApi` record reads composing several
 calls into one response). The *client* is left with exactly one custom
-`fetch`-shaped call (`cb.send("/docmind/ask", ...)`) and the stock SDK's
-`pb.realtime.subscribe`, both of which the official `pocketbase` package
-already covers — there is nothing left for `@cratebase/extras` to do on
-the client side of this particular flow. `app.js`'s realtime subscription
-code is, in effect, `@cratebase/extras`'s own `chat()` helper written out
+call (`cb.send("/docmind/ask", ...)`) and the realtime subscription
+(`cb.realtime.subscribeTopic`). `app.js`'s realtime subscription
+code is, in effect, `cb.llm.chat()`'s own streaming handling written out
 by hand against the custom endpoint instead of `/api/llm/chat` directly.
 
 ## 1. Start Cratebase
@@ -59,21 +58,21 @@ cargo build --release -p cratebase-server --bin cratebase
 
 This example needs two extra environment variables beyond every other
 example's plain `cargo run ... -- serve` — both explained in full in
-`pb_hooks/docmind.pb.js`'s module doc, summarized here:
+`cb_hooks/docmind.cb.js`'s module doc, summarized here:
 
 ```bash
-CB_HOOKS_DIR="$(pwd)/examples/docmind/pb_hooks" \
-  DOCMIND_DATA_DIR="$(pwd)/pb_data" \
+CB_HOOKS_DIR="$(pwd)/examples/docmind/cb_hooks" \
+  DOCMIND_DATA_DIR="$(pwd)/cb_data" \
   cargo run -p cratebase-server --bin cratebase -- serve
 ```
 
-- **`CB_HOOKS_DIR`** — every other example has no `pb_hooks/` at all, so
-  the server's default (`<dataDir>/../pb_hooks`) is irrelevant to them.
-  This example's hooks live under `examples/docmind/pb_hooks/`, not next
-  to whatever `pb_data` directory the server is using, so it has to be
+- **`CB_HOOKS_DIR`** — every other example has no `cb_hooks/` at all, so
+  the server's default (`<dataDir>/../cb_hooks`) is irrelevant to them.
+  This example's hooks live under `examples/docmind/cb_hooks/`, not next
+  to whatever `cb_data` directory the server is using, so it has to be
   pointed there explicitly.
 - **`DOCMIND_DATA_DIR`** — must match whatever data directory the server
-  actually uses (`--dir`, `CRATEBASE_DATA_DIR`, or the `./pb_data`
+  actually uses (`--dir`, `CRATEBASE_DATA_DIR`, or the `./cb_data`
   default). The `docs` hook reads an uploaded file straight off local
   disk (`<dataDir>/storage/<collectionId>/<recordId>/<filename>`) instead
   of over HTTP — see the hook file for exactly why — and has no other way
@@ -106,7 +105,7 @@ creates/updates three collections:
   `chunkIndex` (number), `embedding` (`vector`, 64 dimensions,
   `embedding: {provider: "echo", model: "", sourceField: "text"}`).
   `createRule`/`updateRule`/`deleteRule` are all superuser-only — nothing
-  but `pb_hooks/docmind.pb.js` ever writes here (with a freshly minted
+  but `cb_hooks/docmind.cb.js` ever writes here (with a freshly minted
   superuser token — see "Why a throwaway record"); any signed-in employee
   can list/view for their own client-side inspection.
 - **`messages`** — `author` (relation → `users`, required), `prompt`,
@@ -140,11 +139,11 @@ and ask a question about it.
 
 ## How it works
 
-- **Auth**: `users.create(...)` + `authWithPassword(...)` to register,
-  `authWithPassword` alone to sign in — identical to `examples/todo`.
+- **Auth**: `cb.auth.signUp(...)` to register (it signs in immediately),
+  `cb.auth.signIn.password(...)` to sign in — identical to `examples/todo`.
 - **Upload**: `docs.create(formData)` with a `FormData` carrying `title`
   and `file` — the SDK's normal multipart path, no special handling.
-- **Chunking, immediately**: `pb_hooks/docmind.pb.js` binds
+- **Chunking, immediately**: `cb_hooks/docmind.cb.js` binds
   `onRecordAfterCreateSuccess` on `docs`. It reads the just-uploaded
   file's bytes straight off local disk (not over HTTP — see the file's
   module doc for the transaction-visibility reason why), splits it into
@@ -178,13 +177,13 @@ and ask a question about it.
   request-scoping field, so this endpoint persists the `messages` row
   itself afterward with an explicit `author: e.auth.id`, which is what
   actually makes `messages`' per-employee `authRule` mean something.
-- **Streaming**: `app.js` calls `pb.realtime.subscribe("llm_chunk"/
+- **Streaming**: `app.js` calls `cb.realtime.subscribeTopic("llm_chunk"/
   "llm_done"/"llm_error", ...)` once, on sign-in — these are not
   collection topics, they're the three realtime event names
   `crates/server/src/routes/llm.rs` sends over the caller's *existing*
-  `GET /api/realtime` SSE connection, and the SDK's `subscribe` accepts
+  `GET /api/realtime` SSE connection, and `subscribeTopic` accepts
   any topic string. `POST /docmind/ask`'s body carries
-  `pb.realtime.clientId` through to the internal `/api/llm/chat` call, so
+  `cb.realtime.ensureClientId()` through to the internal `/api/llm/chat` call, so
   the chunks land on the same connection the page already opened. The
   `POST /docmind/ask` promise's own resolved `reply` is still what
   finally renders — the streamed deltas are a live preview, not the
@@ -195,7 +194,7 @@ and ask a question about it.
 **Fully live-verified**, end to end, against the prebuilt release binary
 (`cargo build --release -p cratebase-server --bin cratebase`) on an
 isolated port + data directory, using only the committed `setup.sh` and
-`pb_hooks/docmind.pb.js` (no manual patching) — the run below started
+`cb_hooks/docmind.cb.js` (no manual patching) — the run below started
 from a completely empty data directory:
 
 - `bash examples/docmind/setup.sh` against a fresh instance: created
@@ -252,7 +251,7 @@ from a completely empty data directory:
 via an equivalent standalone static server instead, for isolation from
 another concurrently-running dev instance on the shared default port);
 live token-by-token streaming rendering mid-flight (the SSE plumbing and
-subscription code path were verified working — `pb.realtime.subscribe`
+subscription code path were verified working — `cb.realtime.subscribeTopic`
 successfully connects and the gateway's `llm_chunk`/`llm_done` events are
 real, existing infrastructure already proven by `examples/kanban`'s
 presence feature and this repo's own conformance suite — but a

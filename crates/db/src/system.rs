@@ -1,7 +1,7 @@
 //! The fixed system tables. Every statement is `IF NOT EXISTS`, so both
 //! functions are safe to run on every boot (and are).
 //!
-//! Column names that PocketBase spells in camelCase (`listRule`, ...)
+//! Column names that Cratebase spells in camelCase (`listRule`, ...)
 //! are quoted in DDL and in every query so Postgres keeps their case.
 
 use crate::engine::Executor;

@@ -1,9 +1,9 @@
-//! Rendering of collection-level email templates the way PocketBase does
+//! Rendering of collection-level email templates the way Cratebase does
 //! it: plain `{PLACEHOLDER}` substitution into the template's `subject`
 //! and `body`, with the body then wrapped in a fixed HTML layout.
 //!
 //! Supported placeholders are whatever the caller passes in `vars`;
-//! PocketBase's are `{APP_NAME}`, `{APP_URL}`, `{TOKEN}`, `{OTP}`,
+//! Cratebase's are `{APP_NAME}`, `{APP_URL}`, `{TOKEN}`, `{OTP}`,
 //! `{ALERT_INFO}` and `{RECORD:field}` (pass the key as `RECORD:name`).
 
 use cratebase_core::settings::Meta;
@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::mustache::{html_to_text, render_mustache};
 
 /// The outer HTML shell every rendered body is placed into, modelled on
-/// PocketBase's `mails/layout.html`: a centered, single-column, responsive
+/// Cratebase's `mails/layout.html`: a centered, single-column, responsive
 /// card with a `.btn` style for the call-to-action link the default
 /// templates use. `{CONTENT}` is replaced with the rendered body.
 pub const DEFAULT_LAYOUT: &str = r#"<!DOCTYPE html>
@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn default_pocketbase_templates_render() {
+    fn default_cratebase_templates_render() {
         let auth = cratebase_core::collection::AuthOptions::default();
         let (subject, html) = render_template(
             &auth.verification_template,

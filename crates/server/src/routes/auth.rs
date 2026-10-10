@@ -10,8 +10,8 @@
 //! A session token is signed with `app secret + record.tokenKey +
 //! authToken.secret`. Nothing is stored server-side; rotating a record's
 //! `tokenKey` (which every password change does) invalidates every
-//! outstanding session for that record. The claims are PocketBase's
-//! exactly — `{collectionId, exp, id, refreshable, type}` — because the
+//! outstanding session for that record. The claims are
+//! exactly `{collectionId, exp, id, refreshable, type}` because the
 //! SDK reads `refreshable` off the payload. Verification / password-reset /
 //! email-change tokens are the same JWT machinery with a different `type`
 //! and an `email`/`newEmail` extra claim instead of `refreshable`, which
@@ -86,7 +86,7 @@ use crate::http_error::{ApiError, ApiJson, ApiResult};
 use crate::routes::common;
 use crate::sessions;
 
-/// PocketBase's deliberately uninformative login failure.
+/// A deliberately uninformative login failure.
 const AUTH_FAILED: &str = "Failed to authenticate.";
 const VALIDATION_FAILED: &str = "An error occurred while validating the submitted data.";
 const PASSWORD_DISABLED: &str =
@@ -99,14 +99,14 @@ const MAGIC_LINK_DISABLED: &str =
 /// (like `auth-with-otp`'s), so neither leaks which case it was.
 const MAGIC_LINK_INVALID: &str = "Invalid or expired magic link.";
 const OAUTH2_DISABLED: &str = "The collection is not configured to allow OAuth2 authentication.";
-/// PocketBase's exact code for an unrecognized/disabled `provider` name.
+/// Code for an unrecognized/disabled `provider` name.
 const OAUTH2_INVALID_PROVIDER: &str = "validation_invalid_provider";
 const AUTH_RULE_FAILED: &str =
     "The request doesn't satisfy the collection requirements to authenticate.";
 /// `auth-methods` on a name that is not a collection at all.
 const MISSING_COLLECTION: &str = "Missing or invalid collection context.";
 /// A `token` that could not even be parsed into claims of the right
-/// shape. Distinct per flow because PocketBase's wording is.
+/// shape. Distinct per flow.
 const TOKEN_MISSING_EMAIL_CLAIM: &str = "validation_invalid_token_claims";
 const TOKEN_INVALID_PAYLOAD: &str = "validation_invalid_token_payload";
 const TOKEN_INVALID_PASSWORD: &str = "validation_invalid_password";
@@ -250,7 +250,7 @@ async fn auth_with_password(
         return Err(ApiError::forbidden(AUTH_RULE_FAILED));
     }
 
-    // A bcrypt hash imported from PocketBase is upgraded on the spot.
+    // An imported bcrypt hash is upgraded on the spot.
     // `tokenKey` is deliberately left alone: rotating it here would
     // invalidate the token this very request is about to mint.
     if cratebase_auth::needs_rehash(&hash) {
@@ -389,7 +389,7 @@ async fn auth_refresh(
 ) -> ApiResult<Response> {
     let collection = common::auth_collection_of(&app, &name)?;
     if auth.collection_id != collection.id {
-        // PocketBase names the *authenticated* record's collection here.
+        // The message names the *authenticated* record's collection.
         return Err(ApiError::forbidden(format!(
             "The request requires auth record from {} collection.",
             auth.collection_name
@@ -649,8 +649,8 @@ pub(crate) async fn provider_auth_url(
 /// verbatim in the `auth-with-oauth2` POST, so cratebase needs no
 /// server-side session to remember it), and an `authURL` with every
 /// query param except `redirect_uri` already filled in — the SDK
-/// appends its own before sending the browser there, exactly like
-/// PocketBase's own `authURL + "&redirect_uri="`.
+/// appends its own before sending the browser there, by plain
+/// concatenation of `"&redirect_uri="`.
 async fn oauth2_provider_info(
     client: &reqwest::Client,
     config: &cratebase_core::OAuth2Provider,
@@ -768,7 +768,7 @@ pub(crate) async fn mint_and_record(
     Ok((token, record))
 }
 
-/// A PocketBase-shaped session token: `{collectionId, exp, id,
+/// A session token: `{collectionId, exp, id,
 /// refreshable, type}`, signed with the record's own `tokenKey`.
 fn mint(app: &App, collection: &Arc<Collection>, record: &Record) -> ApiResult<String> {
     let config = &collection.auth.auth_token;
@@ -1597,8 +1597,8 @@ async fn auth_with_otp(
         MfaGate::Passed => {}
     }
 
-    // A successful OTP proves control of the mailbox, so PocketBase marks
-    // the record verified the same way a clicked verification link does.
+    // A successful OTP proves control of the mailbox, so the record is marked
+    // verified the same way a clicked verification link does.
     if !record.verified() {
         record.set("verified", Value::Bool(true));
         records::update(app.db(), &app.db().collections, &mut record)
@@ -1630,7 +1630,7 @@ struct MagicLinkRequestBody {
     /// `authOptions.magicLink.urlTemplate`, when it passes
     /// [`is_same_origin`] against `settings.meta.appURL` — see
     /// [`build_magic_link`].
-    #[serde(default, rename = "redirectURL", alias = "redirectUrl")]
+    #[serde(default, rename = "redirectURL")]
     redirect_url: String,
 }
 
@@ -1700,7 +1700,7 @@ async fn request_magic_link(
 /// The link a magic-link email points at: `redirect_url` when non-empty
 /// and same-origin as `settings.meta.appURL` (a `?token=`/`&token=` query
 /// param appended to it), otherwise `authOptions.magicLink.urlTemplate`
-/// with `{APP_URL}`/`{TOKEN}` substituted — PocketBase's own
+/// with `{APP_URL}`/`{TOKEN}` substituted — the
 /// `{PLACEHOLDER}` convention, since this is a URL an admin configures
 /// the same way they configure a template.
 fn build_magic_link(app: &App, collection: &Collection, token: &str, redirect_url: &str) -> String {
@@ -1867,9 +1867,8 @@ struct OAuth2Body {
     code: String,
     #[serde(default)]
     code_verifier: String,
-    /// PocketBase renamed this from `redirectUrl` to `redirectURL`;
-    /// both are accepted since the SDK versions in the wild send either.
-    #[serde(default, rename = "redirectURL", alias = "redirectUrl")]
+    /// The redirect URL the client sends.
+    #[serde(default, rename = "redirectURL")]
     redirect_url: String,
     /// Extra fields to seed a brand-new record with, same as the field
     /// of the same name on `authWithOAuth2Code`.
@@ -2318,9 +2317,9 @@ fn require_owner_or_superuser(auth: &Auth, collection: &Collection, id: &str) ->
 }
 
 /// `GET /api/collections/{collection}/records/{id}/external-auths` —
-/// PocketBase's `listExternalAuths`: every OAuth2 provider currently
-/// linked to `id`, owner-or-superuser only. Matches PocketBase's own
-/// response shape (a bare array, not the usual `{items: [...]}` list
+/// `listExternalAuths`: every OAuth2 provider currently
+/// linked to `id`, owner-or-superuser only. The
+/// response is a bare array, not the usual `{items: [...]}` list
 /// envelope — this isn't a paginated collection listing).
 async fn list_external_auths(
     State(app): State<App>,
@@ -2365,9 +2364,8 @@ async fn list_external_auths(
     Ok(Json(Value::Array(items)))
 }
 
-/// `DELETE .../records/{id}/external-auths/{provider}` — PocketBase's
-/// `unlinkExternalAuth`, owner-or-superuser only, plus a check
-/// PocketBase itself doesn't have: refuse when unlinking `provider`
+/// `DELETE .../records/{id}/external-auths/{provider}` — `unlinkExternalAuth`,
+/// owner-or-superuser only, plus a check: refuse when unlinking `provider`
 /// would leave the record with no way to sign back in at all (no
 /// password, no *other* linked provider, and both OTP and magic-link
 /// login disabled on the collection) — a consumer app has exactly one
@@ -2434,7 +2432,7 @@ async fn unlink_external_auth(
 
 /// Finds or creates the record `oauth_user` should sign in as, and makes
 /// sure an `_externalAuths` row links `provider`+`oauth_user.id` to it —
-/// PocketBase's exact precedence: an existing link wins outright; then a
+/// Precedence: an existing link wins outright; then a
 /// record already logged into `collection` in this request (linking a
 /// second provider to one account); then a same-email match in
 /// `collection` (marked verified, since the provider vouches for the
@@ -2490,8 +2488,8 @@ async fn resolve_oauth2_record(
                     // prior OAuth2 link at all — the first time trust
                     // shifts from "whoever knows the password" to
                     // "whoever controls the provider account" — reset
-                    // the password (mirrors PocketBase's
-                    // `SetRandomPassword`), rotate `tokenKey`
+                    // the password (a random
+                    // password), rotate `tokenKey`
                     // (invalidating every outstanding session for it)
                     // and purge any existing `_externalAuths` rows
                     // (`DeleteAllExternalAuthsByRecord`) before linking.
@@ -2565,8 +2563,8 @@ async fn has_external_auth_link(
 }
 
 /// Delete every `_externalAuths` row linking `record_id` (in
-/// `collection`) to any provider — PocketBase's
-/// `DeleteAllExternalAuthsByRecord`. See [`resolve_oauth2_record`]'s
+/// `collection`) to any provider.
+/// See [`resolve_oauth2_record`]'s
 /// CRITICAL 3 note for why this runs before trusting a previously
 /// password-only record's first OAuth2 login.
 async fn purge_external_auths(
@@ -2691,14 +2689,14 @@ pub(crate) enum MfaGate {
     Pending(String),
 }
 
-/// A `401 {"mfaId": "..."}` — deliberately not PocketBase's usual error
+/// A `401 {"mfaId": "..."}` — deliberately not the usual error
 /// envelope (no `status`/`message`/`data`), so the SDK's generic error
 /// handling can't mistake it for an ordinary failure.
 pub(crate) fn mfa_pending_response(mfa_id: String) -> Response {
     (StatusCode::UNAUTHORIZED, Json(json!({ "mfaId": mfa_id }))).into_response()
 }
 
-/// Gate a successful single-factor login behind MFA, PocketBase style:
+/// Gate a successful single-factor login behind MFA:
 ///
 /// * MFA disabled, or `mfa.rule` doesn't select this record → straight
 ///   through;
@@ -3010,7 +3008,7 @@ mod oauth2_tests {
     //! linked/matched one" decision actually lives, and it takes an
     //! already-parsed [`cratebase_auth::OAuth2User`] — no HTTP. Exercising
     //! it directly against a real (in-memory) database covers the exact
-    //! branching PocketBase's own `oauth2Submit` implements, without
+    //! branching the OAuth2 submit flow implements, without
     //! needing to mock `reqwest` or reach a real provider; the
     //! token-exchange/userinfo-parsing half of the flow is covered in
     //! `cratebase_auth::oauth2`'s own tests.
@@ -3023,7 +3021,7 @@ mod oauth2_tests {
     /// `api_keys`'s test harness.
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(crate::config::Config::memory(dir.path().join("pb_data")));
+        let app = App::new(crate::config::Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }
@@ -3476,7 +3474,7 @@ mod impersonate_tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }

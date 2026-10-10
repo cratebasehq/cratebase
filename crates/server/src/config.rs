@@ -15,14 +15,14 @@
 //!
 //! | Variable | Default | Meaning |
 //! |---|---|---|
-//! | `CRATEBASE_DATA_DIR` | `./pb_data` | data directory (`--dir`) |
+//! | `CRATEBASE_DATA_DIR` | `./cb_data` | data directory (`--dir`) |
 //! | `DATABASE_URL` | `sqlite:<data_dir>/data.db` | main database |
 //! | `DB_POOL_SIZE` | `10` | Postgres connection pool size (ignored on SQLite) |
 //! | `HOST` | `0.0.0.0` | bind address (`--http`) |
 //! | `PORT` | `8090` | bind port (`--http`) |
-//! | `CB_HOOKS_DIR` | `<data_dir>/../pb_hooks` | JS hooks directory |
-//! | `CB_MIGRATIONS_DIR` | `<data_dir>/../pb_migrations` | JS migrations |
-//! | `CB_SEED_DIR` | `<data_dir>/../pb_seed` | seed data directory for `cratebase seed`/`cratebase dev` (see `crate::seed`) |
+//! | `CB_HOOKS_DIR` | `<data_dir>/../cb_hooks` | JS hooks directory |
+//! | `CB_MIGRATIONS_DIR` | `<data_dir>/../cb_migrations` | JS migrations |
+//! | `CB_SEED_DIR` | `<data_dir>/../cb_seed` | seed data directory for `cratebase seed`/`cratebase dev` (see `crate::seed`) |
 //! | `CB_DEV` | `false` | dev mode (`--dev`) |
 //! | `CB_AUTOMIGRATE` | `true` | write migration files on schema change |
 //! | `LOG_REQUESTS` | `true` | persist request logs (a deliberate divergence, see spec §15.3) |
@@ -57,13 +57,14 @@
 //! these — it's what keeps `.env.example` from drifting (see
 //! `crates/server/tests/env_example.rs`).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cratebase_core::Settings;
 
-/// PocketBase's data directory name, so an existing `pb_data` layout is
-/// recognised without any flags.
-pub const DEFAULT_DATA_DIR: &str = "./pb_data";
+/// Default data directory name.
+pub const DEFAULT_DATA_DIR: &str = "./cb_data";
 /// File holding the generated app secret when none is configured.
 pub const SECRET_FILE: &str = ".secret";
 
@@ -140,13 +141,13 @@ pub struct Config {
     pub db_pool_size: usize,
     pub host: String,
     pub port: u16,
-    /// Directory scanned for `*.pb.js` hooks by the JS runtime (W5).
+    /// Directory scanned for `*.cb.js` hooks by the JS runtime (W5).
     pub hooks_dir: String,
     /// Directory holding `*.js` migrations written by automigrate.
     pub migrations_dir: String,
     /// Convention directory for `cratebase seed`/the (future) `cratebase
     /// dev` auto-seed: a JSON file or a directory of `*.json`/`*.js` seed
-    /// files (`CB_SEED_DIR`, default `<data_dir>/../pb_seed`). Only a
+    /// files (`CB_SEED_DIR`, default `<data_dir>/../cb_seed`). Only a
     /// default location — `cratebase seed <path>` always takes its path
     /// as an explicit argument and ignores this field; it exists so a
     /// caller that wants the convention (`cratebase dev`, a test) has a
@@ -201,6 +202,9 @@ pub struct Config {
     /// timer. Not a real feature flag, not exposed to `settings` or any
     /// env var — a construction-time-only testability seam.
     pub webhook_worker: bool,
+    /// A multi-project host's per-project variables (`project.env`);
+    /// empty in single-app mode. See [`Config::var`].
+    pub vars: Arc<BTreeMap<String, String>>,
 }
 
 /// A cookie's `SameSite` attribute. Parsed case-insensitively from
@@ -250,9 +254,9 @@ impl Config {
         Config {
             database_url: format!("sqlite:{dir}/data.db"),
             db_pool_size: cratebase_db::postgres::DEFAULT_POOL_SIZE,
-            hooks_dir: sibling(&dir, "pb_hooks"),
-            migrations_dir: sibling(&dir, "pb_migrations"),
-            seed_dir: sibling(&dir, "pb_seed"),
+            hooks_dir: sibling(&dir, "cb_hooks"),
+            migrations_dir: sibling(&dir, "cb_migrations"),
+            seed_dir: sibling(&dir, "cb_seed"),
             data_dir: dir,
             host: "0.0.0.0".into(),
             port: 8090,
@@ -272,6 +276,7 @@ impl Config {
             setup_token: None,
             typegen_out: None,
             webhook_worker: true,
+            vars: Arc::default(),
         }
     }
 
@@ -299,63 +304,85 @@ impl Config {
     /// data directory is computed — the database path, the hooks and
     /// migrations directories and, crucially, the generated `.secret`
     /// file, which would otherwise be written into (and read from) the
-    /// default `./pb_data` while the rest of the app used `--dir`.
+    /// default `./cb_data` while the rest of the app used `--dir`.
     pub fn from_env_with_dir(dir: Option<&str>) -> Self {
         let _ = dotenvy::dotenv();
-
+        let get = |k: &str| std::env::var(k).ok();
         let data_dir = match dir {
             Some(dir) if !dir.trim().is_empty() => dir.to_string(),
-            _ => env_or("CRATEBASE_DATA_DIR", DEFAULT_DATA_DIR),
+            _ => env_or(&get, "CRATEBASE_DATA_DIR", DEFAULT_DATA_DIR),
+        };
+        if let Some(message) = legacy_layout_error(Path::new(&data_dir)) {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Config::build(Some(&data_dir), &get)
+    }
+
+    /// A config for one project of a multi-project host: every boot
+    /// variable comes from `vars` (the project's `project.env`), falling
+    /// back to the process environment — except [`PROJECT_ONLY_KEYS`],
+    /// which are read from `vars` alone. A shared `DATABASE_URL` or
+    /// `CB_SECRET` in the host's environment must never leak into a
+    /// project, or two projects would share one database.
+    pub fn from_vars(dir: Option<&str>, vars: BTreeMap<String, String>) -> Self {
+        let mut config = Config::build(dir, &|k| project_var(&vars, k));
+        config.vars = Arc::new(vars);
+        config
+    }
+
+    /// A variable as this app sees it: the project's own value first,
+    /// then the process environment (never for [`PROJECT_ONLY_KEYS`]).
+    /// In single-app mode `vars` is empty and this is plain env access.
+    pub fn var(&self, key: &str) -> Option<String> {
+        project_var(&self.vars, key)
+    }
+
+    fn build(dir: Option<&str>, get: &dyn Fn(&str) -> Option<String>) -> Self {
+        let data_dir = match dir {
+            Some(dir) if !dir.trim().is_empty() => dir.to_string(),
+            _ => env_or(get, "CRATEBASE_DATA_DIR", DEFAULT_DATA_DIR),
         };
         std::fs::create_dir_all(&data_dir).ok();
 
         let mut config = Config::for_data_dir(&data_dir);
-        config.database_url = env_or("DATABASE_URL", &config.database_url);
-        config.db_pool_size = env_or("DB_POOL_SIZE", &config.db_pool_size.to_string())
+        config.database_url = env_or(get, "DATABASE_URL", &config.database_url);
+        config.db_pool_size = env_or(get, "DB_POOL_SIZE", &config.db_pool_size.to_string())
             .parse()
             .unwrap_or(config.db_pool_size);
-        config.host = env_or("HOST", &config.host);
-        config.port = env_or("PORT", "8090").parse().unwrap_or(8090);
-        config.hooks_dir = env_or("CB_HOOKS_DIR", &config.hooks_dir);
-        config.migrations_dir = env_or("CB_MIGRATIONS_DIR", &config.migrations_dir);
-        config.seed_dir = env_or("CB_SEED_DIR", &config.seed_dir);
-        config.dev = env_bool("CB_DEV", false);
-        config.automigrate = env_bool("CB_AUTOMIGRATE", true);
-        config.log_requests = env_bool("LOG_REQUESTS", true);
-        config.encryption_key = std::env::var(cratebase_db::params::ENCRYPTION_ENV)
-            .ok()
-            .filter(|v| !v.is_empty());
-        config.origins = split_csv(&env_or("CORS_ALLOW_ORIGINS", "*"));
-        config.secret = resolve_secret(
-            &data_dir,
-            std::env::var("CB_SECRET").ok(),
-            std::env::var("AUTH_SECRET").ok(),
-        )
-        .unwrap_or_else(|msg| {
-            eprintln!("cratebase: refusing to start: {msg}");
-            std::process::exit(1);
-        });
-        config.session_tracking = env_bool("SESSION_TRACKING", true);
-        config.session_cookie = env_bool("SESSION_COOKIE", false);
-        config.session_cookie_name = env_or("SESSION_COOKIE_NAME", &config.session_cookie_name);
-        config.session_cookie_domain = std::env::var("SESSION_COOKIE_DOMAIN").unwrap_or_default();
-        config.session_cookie_same_site = match std::env::var("SESSION_COOKIE_SAMESITE") {
-            Ok(raw) => SameSite::parse(&raw).unwrap_or_else(|| {
+        config.host = env_or(get, "HOST", &config.host);
+        config.port = env_or(get, "PORT", "8090").parse().unwrap_or(8090);
+        config.hooks_dir = env_or(get, "CB_HOOKS_DIR", &config.hooks_dir);
+        config.migrations_dir = env_or(get, "CB_MIGRATIONS_DIR", &config.migrations_dir);
+        config.seed_dir = env_or(get, "CB_SEED_DIR", &config.seed_dir);
+        config.dev = env_bool(get, "CB_DEV", false);
+        config.automigrate = env_bool(get, "CB_AUTOMIGRATE", true);
+        config.log_requests = env_bool(get, "LOG_REQUESTS", true);
+        config.encryption_key = get(cratebase_db::params::ENCRYPTION_ENV).filter(|v| !v.is_empty());
+        config.origins = split_csv(&env_or(get, "CORS_ALLOW_ORIGINS", "*"));
+        config.secret = resolve_secret(&data_dir, get("CB_SECRET"), get("AUTH_SECRET"))
+            .unwrap_or_else(|msg| {
+                eprintln!("cratebase: refusing to start: {msg}");
+                std::process::exit(1);
+            });
+        config.session_tracking = env_bool(get, "SESSION_TRACKING", true);
+        config.session_cookie = env_bool(get, "SESSION_COOKIE", false);
+        config.session_cookie_name =
+            env_or(get, "SESSION_COOKIE_NAME", &config.session_cookie_name);
+        config.session_cookie_domain = get("SESSION_COOKIE_DOMAIN").unwrap_or_default();
+        config.session_cookie_same_site = match get("SESSION_COOKIE_SAMESITE") {
+            Some(raw) => SameSite::parse(&raw).unwrap_or_else(|| {
                 tracing::warn!(
                     value = %raw,
                     "SESSION_COOKIE_SAMESITE must be Lax, Strict, or None; falling back to Lax"
                 );
                 SameSite::Lax
             }),
-            Err(_) => SameSite::Lax,
+            None => SameSite::Lax,
         };
-        config.session_cookie_secure = env_bool("SESSION_COOKIE_SECURE", true);
-        config.setup_token = std::env::var("CB_SETUP_TOKEN")
-            .ok()
-            .filter(|v| !v.is_empty());
-        config.typegen_out = std::env::var("CB_TYPEGEN_OUT")
-            .ok()
-            .filter(|v| !v.is_empty());
+        config.session_cookie_secure = env_bool(get, "SESSION_COOKIE_SECURE", true);
+        config.setup_token = get("CB_SETUP_TOKEN").filter(|v| !v.is_empty());
+        config.typegen_out = get("CB_TYPEGEN_OUT").filter(|v| !v.is_empty());
         config
     }
 
@@ -373,7 +400,7 @@ impl Config {
         Path::new(&self.data_dir)
     }
 
-    /// The settings a first boot should start from: PocketBase defaults
+    /// The settings a first boot should start from: default settings
     /// with the `CB_*`/`SMTP_*`/`S3_*` env vars folded in. Applied only
     /// when `_params` holds no settings row yet.
     pub fn seed_settings(&self) -> Settings {
@@ -381,56 +408,57 @@ impl Config {
         // Documented as on-by-default (.env.example, docs/deploy); the
         // env var only lets an operator opt out (e.g. already
         // rate-limiting at a reverse proxy in front of Cratebase).
-        s.rate_limits.enabled = env_bool("AUTH_RATE_LIMIT_ENABLED", s.rate_limits.enabled);
-        if let Ok(v) = std::env::var("CB_APP_NAME") {
+        let get = |k: &str| self.var(k);
+        s.rate_limits.enabled = env_bool(&get, "AUTH_RATE_LIMIT_ENABLED", s.rate_limits.enabled);
+        if let Some(v) = get("CB_APP_NAME") {
             s.meta.app_name = v;
         }
-        if let Ok(v) = std::env::var("CB_APP_URL") {
+        if let Some(v) = get("CB_APP_URL") {
             s.meta.app_url = v;
         }
-        if let Ok(v) = std::env::var("CB_SENDER_NAME") {
+        if let Some(v) = get("CB_SENDER_NAME") {
             s.meta.sender_name = v;
         }
-        if let Ok(v) = std::env::var("CB_SENDER_ADDRESS") {
+        if let Some(v) = get("CB_SENDER_ADDRESS") {
             s.meta.sender_address = v;
         }
-        if let Ok(v) = std::env::var("SMTP_HOST") {
+        if let Some(v) = get("SMTP_HOST") {
             s.smtp.host = v;
-            s.smtp.enabled = env_bool("SMTP_ENABLED", true);
+            s.smtp.enabled = env_bool(&get, "SMTP_ENABLED", true);
         }
-        if let Ok(v) = std::env::var("SMTP_PORT") {
+        if let Some(v) = get("SMTP_PORT") {
             s.smtp.port = v.parse().unwrap_or(587);
         }
-        if let Ok(v) = std::env::var("SMTP_USERNAME") {
+        if let Some(v) = get("SMTP_USERNAME") {
             s.smtp.username = v;
         }
-        if let Ok(v) = std::env::var("SMTP_PASSWORD") {
+        if let Some(v) = get("SMTP_PASSWORD") {
             s.smtp.password = v;
         }
-        s.smtp.tls = env_bool("SMTP_TLS", s.smtp.tls);
-        if let Ok(v) = std::env::var("S3_BUCKET") {
+        s.smtp.tls = env_bool(&get, "SMTP_TLS", s.smtp.tls);
+        if let Some(v) = get("S3_BUCKET") {
             s.s3.bucket = v;
-            s.s3.enabled = env_bool("S3_ENABLED", true);
+            s.s3.enabled = env_bool(&get, "S3_ENABLED", true);
         }
-        if let Ok(v) = std::env::var("S3_REGION") {
+        if let Some(v) = get("S3_REGION") {
             s.s3.region = v;
         }
-        if let Ok(v) = std::env::var("S3_ENDPOINT") {
+        if let Some(v) = get("S3_ENDPOINT") {
             s.s3.endpoint = v;
         }
-        if let Ok(v) = std::env::var("S3_ACCESS_KEY") {
+        if let Some(v) = get("S3_ACCESS_KEY") {
             s.s3.access_key = v;
         }
-        if let Ok(v) = std::env::var("S3_SECRET") {
+        if let Some(v) = get("S3_SECRET") {
             s.s3.secret = v;
         }
-        s.s3.force_path_style = env_bool("S3_FORCE_PATH_STYLE", s.s3.force_path_style);
+        s.s3.force_path_style = env_bool(&get, "S3_FORCE_PATH_STYLE", s.s3.force_path_style);
         s
     }
 }
 
-/// `<data_dir>/../<name>`, PocketBase's layout for `pb_hooks` and
-/// `pb_migrations` (siblings of `pb_data`).
+/// `<data_dir>/../<name>`: `cb_hooks` and `cb_migrations` are siblings of
+/// `cb_data`.
 fn sibling(data_dir: &str, name: &str) -> String {
     Path::new(data_dir)
         .parent()
@@ -440,18 +468,70 @@ fn sibling(data_dir: &str, name: &str) -> String {
         .into_owned()
 }
 
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key)
-        .ok()
+/// Fail-fast guard for the pre-rename directory layout. Returns a boot
+/// error when `data_dir` does not exist but a `pb_data` directory sits
+/// next to it (the old default layout): booting would silently create an
+/// empty database beside the real one. This is the only place the old
+/// names appear.
+fn legacy_layout_error(data_dir: &Path) -> Option<String> {
+    if data_dir.exists() {
+        return None;
+    }
+    let parent = match data_dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let legacy = parent.join("pb_data");
+    if !legacy.is_dir() {
+        return None;
+    }
+    Some(format!(
+        "found a legacy data directory at {} but no {}. Rename it and its siblings: \
+         `pb_data` -> `cb_data`, `pb_hooks` -> `cb_hooks`, `pb_migrations` -> `cb_migrations`, \
+         and rename hook/migration files from `*.pb.js` to `*.cb.js`.",
+        legacy.display(),
+        data_dir.display()
+    ))
+}
+
+fn env_or(get: &dyn Fn(&str) -> Option<String>, key: &str, default: &str) -> String {
+    get(key)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| default.to_string())
 }
 
-fn env_bool(key: &str, default: bool) -> bool {
-    match std::env::var(key) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
-        Err(_) => default,
+fn env_bool(get: &dyn Fn(&str) -> Option<String>, key: &str, default: bool) -> bool {
+    match get(key) {
+        Some(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+        None => default,
     }
+}
+
+/// Keys a multi-project host reads from a project's own `project.env`
+/// only, never from the process environment: inheriting one from the
+/// host would point two projects at the same database, secret or port.
+const PROJECT_ONLY_KEYS: &[&str] = &[
+    "DATABASE_URL",
+    "CRATEBASE_DATA_DIR",
+    "CB_SECRET",
+    "AUTH_SECRET",
+    "CB_SETUP_TOKEN",
+    "CB_APP_URL",
+    "CB_HOOKS_DIR",
+    "CB_MIGRATIONS_DIR",
+    "CB_SEED_DIR",
+    "HOST",
+    "PORT",
+];
+
+fn project_var(vars: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    if let Some(v) = vars.get(key) {
+        return Some(v.clone());
+    }
+    if !vars.is_empty() && PROJECT_ONLY_KEYS.contains(&key) {
+        return None;
+    }
+    std::env::var(key).ok()
 }
 
 /// `"a, b ,"` → `["a", "b"]`. Used for `CORS_ALLOW_ORIGINS` and
@@ -522,18 +602,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_follow_pocketbase_layout() {
-        let c = Config::for_data_dir("./pb_data");
-        assert_eq!(c.data_dir, "./pb_data");
-        assert_eq!(c.database_url, "sqlite:./pb_data/data.db");
-        assert!(c.hooks_dir.ends_with("pb_hooks"));
-        assert!(c.migrations_dir.ends_with("pb_migrations"));
-        assert!(c.seed_dir.ends_with("pb_seed"));
+    fn defaults_follow_cratebase_layout() {
+        let c = Config::for_data_dir("./cb_data");
+        assert_eq!(c.data_dir, "./cb_data");
+        assert_eq!(c.database_url, "sqlite:./cb_data/data.db");
+        assert!(c.hooks_dir.ends_with("cb_hooks"));
+        assert!(c.migrations_dir.ends_with("cb_migrations"));
+        assert!(c.seed_dir.ends_with("cb_seed"));
         assert!(c.automigrate);
         assert_eq!(c.port, 8090);
         assert_eq!(
             c.sqlite_main_path(),
-            Some(PathBuf::from("./pb_data/data.db"))
+            Some(PathBuf::from("./cb_data/data.db"))
         );
         assert_eq!(c.db_pool_size, cratebase_db::postgres::DEFAULT_POOL_SIZE);
     }
@@ -606,5 +686,28 @@ mod tests {
             resolve_secret(&data_dir, Some(cb.into()), Some(auth.into())).unwrap(),
             cb
         );
+    }
+}
+
+#[cfg(test)]
+mod legacy_layout_tests {
+    use super::*;
+
+    #[test]
+    fn a_legacy_data_dir_without_the_new_one_is_refused() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(root.path().join("pb_data")).unwrap();
+        let error = legacy_layout_error(&root.path().join("cb_data")).expect("guard fires");
+        assert!(error.contains("`pb_data` -> `cb_data`"), "{error}");
+        assert!(error.contains("`*.pb.js` to `*.cb.js`"), "{error}");
+    }
+
+    #[test]
+    fn the_new_layout_and_fresh_directories_pass() {
+        let root = tempfile::tempdir().expect("temp dir");
+        assert!(legacy_layout_error(&root.path().join("cb_data")).is_none());
+        std::fs::create_dir(root.path().join("pb_data")).unwrap();
+        std::fs::create_dir(root.path().join("cb_data")).unwrap();
+        assert!(legacy_layout_error(&root.path().join("cb_data")).is_none());
     }
 }

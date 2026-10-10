@@ -10,7 +10,7 @@
 // vector out of the exact same embedding pipeline every real card's
 // `embedding` went through, ranks with `nearestTo`, then deletes it — the
 // same round-trip-through-the-real-collection trick
-// examples/docmind/pb_hooks/docmind.pb.js uses ("Why a throwaway record"),
+// examples/docmind/cb_hooks/docmind.cb.js uses ("Why a throwaway record"),
 // except no server hook is needed here at all: any team member already
 // has `create`/`delete` on `cards` (schema.json), and the throwaway row
 // never appears in any client's list *or realtime feed*, including its
@@ -37,7 +37,7 @@ export function useSearch(teamId: string | null) {
       try {
         // `searchText` (not just `title`) is sent explicitly for the
         // same reason src/hooks/useCards.ts's createCard does:
-        // apply_embeddings runs before pb_hooks/team-board.pb.js's
+        // apply_embeddings runs before cb_hooks/team-board.cb.js's
         // onRecordCreate could otherwise derive it, so a hook-only
         // derivation never affects this create's own embedding.
         // `order: 1` (not `0`) — a real Cratebase bug, live-verified

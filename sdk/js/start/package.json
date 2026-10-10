@@ -1,0 +1,43 @@
+{
+  "name": "@cratebase/start",
+  "version": "0.1.0",
+  "description": "Server-side glue for TanStack Start apps on Cratebase: per-request client, cookie sessions with Secure/Max-Age, cached getUser, API-key admin client, and auth middlewares.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cratebasehq/cratebase.git",
+    "directory": "sdk/js/start"
+  },
+  "homepage": "https://github.com/cratebasehq/cratebase/tree/main/sdk/js/start#readme",
+  "bugs": "https://github.com/cratebasehq/cratebase/issues",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@cratebase/client": "^0.6.0",
+    "@tanstack/react-start": "^1.166.0"
+  },
+  "devDependencies": {
+    "@cratebase/client": "^0.6.0",
+    "@tanstack/react-start": "^1.168.58",
+    "bun-types": "^1.4.2",
+    "typescript": "~6.0.2"
+  }
+}

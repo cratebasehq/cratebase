@@ -1,4 +1,4 @@
-//! Id generation matching PocketBase's conventions so ids produced by
+//! Id generation matching Cratebase's conventions so ids produced by
 //! either system are interchangeable in shape.
 
 use rand::rngs::OsRng;
@@ -8,7 +8,7 @@ const RECORD_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 pub const RECORD_ID_LENGTH: usize = 15;
 
 /// A new record id: 15 lowercase alphanumeric characters from the OS
-/// CSPRNG (PocketBase's `[a-z0-9]{15}` default `autogeneratePattern`).
+/// CSPRNG (Cratebase's `[a-z0-9]{15}` default `autogeneratePattern`).
 pub fn record_id() -> String {
     random_string(RECORD_ID_LENGTH, RECORD_ALPHABET)
 }
@@ -21,7 +21,7 @@ pub fn random_string(len: usize, alphabet: &[u8]) -> String {
         .collect()
 }
 
-/// PocketBase derives a collection id from its type and name:
+/// Cratebase derives a collection id from its type and name:
 /// `pbc_<crc32(type + name)>`, e.g. `pbc_2279338944` for base `_mfas`.
 pub fn collection_id(collection_type: &str, name: &str) -> String {
     let mut h = crc32fast::Hasher::new();
@@ -30,13 +30,13 @@ pub fn collection_id(collection_type: &str, name: &str) -> String {
     format!("pbc_{}", h.finalize())
 }
 
-/// PocketBase derives a field id from its type and name:
+/// Cratebase derives a field id from its type and name:
 /// `<type><crc32(name)>`, e.g. `text3208210256` for `id`.
 pub fn field_id(field_type: &str, name: &str) -> String {
     format!("{field_type}{}", crc32fast::hash(name.as_bytes()))
 }
 
-/// Generate a string from a restricted regex-like pattern as PocketBase's
+/// Generate a string from a restricted regex-like pattern as Cratebase's
 /// `autogeneratePattern` does. Supported: literal characters, character
 /// classes (`[a-z0-9]`, `[A-Za-z]`, `[^...]` is not supported), escaped
 /// characters (`\d`, `\w`), and quantifiers `{n}` / `{n,m}` / `+` / `*`
@@ -163,8 +163,8 @@ mod tests {
     }
 
     #[test]
-    fn collection_and_field_ids_match_pocketbase() {
-        // Values observed from PocketBase v0.40.2 (see pb-fixtures).
+    fn collection_and_field_ids_match_cratebase() {
+        // Fixed vectors for the id derivation.
         assert_eq!(collection_id("base", "_mfas"), "pbc_2279338944");
         assert_eq!(collection_id("base", "_otps"), "pbc_1638494021");
         assert_eq!(collection_id("auth", "_superusers"), "pbc_3142635823");

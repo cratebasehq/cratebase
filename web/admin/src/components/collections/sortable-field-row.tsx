@@ -15,6 +15,7 @@ interface SortableFieldRowProps {
   onExpandedChange: (expanded: boolean) => void;
   nameError?: string | null;
   optionsError?: string | null;
+  isNew?: boolean;
 }
 
 /** Drag-and-drop wrapper around `SchemaFieldRow`. The grip handle is the
@@ -34,6 +35,7 @@ export function SortableFieldRow({
   onExpandedChange,
   nameError,
   optionsError,
+  isNew,
 }: SortableFieldRowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: field.id });
 
@@ -61,6 +63,7 @@ export function SortableFieldRow({
         isDragging={isDragging}
         nameError={nameError}
         optionsError={optionsError}
+        isNew={isNew}
       />
     </div>
   );

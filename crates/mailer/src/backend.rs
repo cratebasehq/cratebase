@@ -142,11 +142,11 @@ pub struct SmtpBackend {
 /// How the SMTP connection is secured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmtpTls {
-    /// Implicit TLS from the first byte (usually port 465). PocketBase's
+    /// Implicit TLS from the first byte (usually port 465). Cratebase's
     /// `smtp.tls: true`.
     Implicit,
     /// Connect in the clear and upgrade with `STARTTLS` if the server
-    /// offers it (PocketBase's `smtp.tls: false`, ports 587/25).
+    /// offers it (Cratebase's `smtp.tls: false`, ports 587/25).
     OpportunisticStartTls,
     /// Require a successful `STARTTLS` upgrade.
     RequiredStartTls,

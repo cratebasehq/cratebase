@@ -394,7 +394,7 @@ impl Executor for Transaction {
 
 /// Quote an identifier for either dialect. Callers validate with
 /// `cratebase_core::is_valid_identifier` first; this only wraps in
-/// double quotes (PocketBase-style backticks in `indexes[]` are rewritten
+/// double quotes (backticks in `indexes[]` are rewritten
 /// by the schema layer).
 pub fn quote_ident(ident: &str) -> String {
     format!("\"{}\"", ident.replace('"', "\"\""))

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { extendTheme, type EditorTheme, type ThemeComponentStyles, type ThemeConfig } from "@react-email/editor/plugins";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -107,6 +108,15 @@ const RADIUS_PRESETS: { label: string; value: number }[] = [
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
+function ThemeGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <fieldset className="flex flex-col gap-3 rounded-lg border border-border bg-card p-3">
+      <legend className="px-1 text-xs font-medium text-muted-foreground">{title}</legend>
+      {children}
+    </fieldset>
+  );
+}
+
 function ColorField({
   id,
   label,
@@ -118,6 +128,7 @@ function ColorField({
   value: string;
   onChange: (value: string) => void;
 }) {
+  const invalid = !HEX_COLOR.test(value);
   return (
     <div className="flex flex-col gap-1.5">
       <Label htmlFor={id}>{label}</Label>
@@ -125,18 +136,26 @@ function ColorField({
         <input
           type="color"
           aria-label={`${label} swatch`}
-          value={HEX_COLOR.test(value) ? value : "#000000"}
+          value={invalid ? "#000000" : value}
           onChange={(e) => onChange(e.target.value)}
-          className="h-8 w-10 shrink-0 cursor-pointer rounded-md border border-border bg-transparent p-0.5"
+          className="h-control-md w-10 shrink-0 cursor-pointer rounded-md border border-border bg-transparent p-0.5"
         />
         <Input
           id={id}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="#1055c9"
-          className="h-8 font-mono text-sm"
+          spellCheck={false}
+          className="font-mono"
+          aria-invalid={invalid}
+          aria-describedby={invalid ? `${id}-error` : undefined}
         />
       </div>
+      {invalid ? (
+        <p id={`${id}-error`} role="alert" className="text-xs text-destructive">
+          Use a 6-digit hex colour like #1055c9 — the swatch shows black until it's valid.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -163,95 +182,110 @@ export function ThemePanel({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label>Base theme</Label>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          spacing={0}
-          value={value.base}
-          onValueChange={(next) => {
-            if (next === "basic" || next === "minimal") patch({ base: next });
-          }}
-        >
-          <ToggleGroupItem value="basic">Basic</ToggleGroupItem>
-          <ToggleGroupItem value="minimal">Minimal</ToggleGroupItem>
-        </ToggleGroup>
-        <p className="text-xs text-muted-foreground">
-          Basic ships full typography/spacing defaults; Minimal starts from almost nothing.
-        </p>
-      </div>
-
-      <ColorField
-        id="theme-brand-color"
-        label="Brand color"
-        value={value.brandColor}
-        onChange={(brandColor) => patch({ brandColor })}
-      />
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="theme-font">Font</Label>
-        <Select value={value.fontFamily} onValueChange={(fontFamily) => patch({ fontFamily })}>
-          <SelectTrigger id="theme-font" className="h-8 text-sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {FONT_OPTIONS.map((f) => (
-              <SelectItem key={f.value} value={f.value}>
-                {f.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <ColorField
-        id="theme-background"
-        label="Page background"
-        value={value.backgroundColor}
-        onChange={(backgroundColor) => patch({ backgroundColor })}
-      />
-
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="theme-width">Content width</Label>
-        <div className="flex items-center gap-2">
-          <Input
-            id="theme-width"
-            type="number"
-            min={320}
-            max={800}
-            step={10}
-            value={value.contentWidthPx}
-            onChange={(e) =>
-              patch({ contentWidthPx: Number(e.target.value) || DEFAULT_EMAIL_THEME.contentWidthPx })
-            }
-            className="h-8 w-24 text-sm"
-          />
-          <span className="text-xs text-muted-foreground">px</span>
+    <div className="flex flex-col gap-3">
+      <ThemeGroup title="Base">
+        <div className="flex flex-col gap-1.5">
+          <Label id="theme-base-label">Base theme</Label>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            spacing={0}
+            value={value.base}
+            aria-labelledby="theme-base-label"
+            onValueChange={(next) => {
+              if (next === "basic" || next === "minimal") patch({ base: next });
+            }}
+          >
+            <ToggleGroupItem value="basic">Basic</ToggleGroupItem>
+            <ToggleGroupItem value="minimal">Minimal</ToggleGroupItem>
+          </ToggleGroup>
+          <p className="text-xs text-muted-foreground">
+            Basic ships full typography and spacing defaults; Minimal starts from almost nothing.
+          </p>
         </div>
-      </div>
+      </ThemeGroup>
 
-      <div className="flex flex-col gap-1.5">
-        <Label>Corner radius</Label>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          spacing={0}
-          value={String(value.borderRadiusPx)}
-          onValueChange={(next) => {
-            if (next) patch({ borderRadiusPx: Number(next) });
-          }}
-        >
-          {RADIUS_PRESETS.map((r) => (
-            <ToggleGroupItem key={r.value} value={String(r.value)}>
-              {r.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </div>
+      <ThemeGroup title="Colours">
+        <ColorField
+          id="theme-brand-color"
+          label="Brand colour"
+          value={value.brandColor}
+          onChange={(brandColor) => patch({ brandColor })}
+        />
+        <ColorField
+          id="theme-background"
+          label="Page background"
+          value={value.backgroundColor}
+          onChange={(backgroundColor) => patch({ backgroundColor })}
+        />
+      </ThemeGroup>
+
+      <ThemeGroup title="Type">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="theme-font">Font</Label>
+          <Select value={value.fontFamily} onValueChange={(fontFamily) => patch({ fontFamily })}>
+            <SelectTrigger id="theme-font" className="h-control-md text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {FONT_OPTIONS.map((f) => (
+                <SelectItem key={f.value} value={f.value}>
+                  {f.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">Email clients only reliably render system font stacks.</p>
+        </div>
+      </ThemeGroup>
+
+      <ThemeGroup title="Layout">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="theme-width">Content width</Label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="theme-width"
+              type="number"
+              min={320}
+              max={800}
+              step={10}
+              value={value.contentWidthPx}
+              onChange={(e) =>
+                patch({ contentWidthPx: Number(e.target.value) || DEFAULT_EMAIL_THEME.contentWidthPx })
+              }
+              className="w-24 font-tabular"
+              aria-describedby="theme-width-help"
+            />
+            <span className="text-xs text-muted-foreground">px</span>
+          </div>
+          <p id="theme-width-help" className="text-xs text-muted-foreground">
+            320–800. 600 is the safe default for most clients.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label id="theme-radius-label">Corner radius</Label>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            spacing={0}
+            value={String(value.borderRadiusPx)}
+            aria-labelledby="theme-radius-label"
+            onValueChange={(next) => {
+              if (next) patch({ borderRadiusPx: Number(next) });
+            }}
+          >
+            {RADIUS_PRESETS.map((r) => (
+              <ToggleGroupItem key={r.value} value={String(r.value)}>
+                {r.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <p className="text-xs text-muted-foreground">Applies to buttons.</p>
+        </div>
+      </ThemeGroup>
     </div>
   );
 }

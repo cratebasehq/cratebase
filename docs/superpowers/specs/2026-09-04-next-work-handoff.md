@@ -9,7 +9,7 @@ any of it.
 
 ## 1. Where we actually are
 
-**Conformance against the official `pocketbase` JS SDK v0.28: 155 pass /
+**Conformance against the third-party JS SDK v0.28: 155 pass /
 25 fail / 1 skip, of 181.**
 
 ```
@@ -21,16 +21,16 @@ batch          0/7   ← 7 failures
 ```
 
 The 25 failures are **two features**, not scattered bugs. Everything else
-is byte-compatible with PocketBase v0.40.2.
+is byte-compatible with the original v0.40.2.
 
-### Performance vs PocketBase
+### Performance vs the reference server
 
 24 of 24 benchmark cells are faster (re-run 2026-09-04, see conditions
-note below). Ratio is PocketBase-relative; lower is better for us. Full
-table: `bun run benchmarks/compare.ts benchmarks/results/pocketbase.json
+note below). Ratio is reference-relative; lower is better for us. Full
+table: `bun run benchmarks/compare.ts benchmarks/results/reference.json
 benchmarks/results/cratebase.json`.
 
-| Workload | Conc | PocketBase req/s | Cratebase req/s | Speedup |
+| Workload | Conc | Reference req/s | Cratebase req/s | Speedup |
 |---|---:|---:|---:|---:|
 | search | 50 | 4,053 | 46,057 | **11.4x** |
 | search | 100 | 4,936 | 41,302 | **8.4x** |
@@ -43,7 +43,7 @@ benchmarks/results/cratebase.json`.
 
 The tail is the more interesting half: `create` at 100 concurrent is
 p99 **61.43ms → 13.01ms**, and `search` at 50 is p99 **43.62ms → 1.61ms**.
-PocketBase's p99 blows out under contention; ours stays flat.
+The reference server's p99 blows out under contention; ours stays flat.
 
 This run measured 0 errors on either server across all 24 cells. The
 host was not idle: `free -h` immediately before the run showed 8.5Gi
@@ -53,7 +53,7 @@ its swap ceiling, not a one-off spike. Read the ratios and the p99
 columns above the absolute numbers; a genuinely idle rig was not
 available for this measurement. Raw data:
 [`benchmarks/results/cratebase.json`](../../../benchmarks/results/cratebase.json),
-[`benchmarks/results/pocketbase.json`](../../../benchmarks/results/pocketbase.json).
+[`benchmarks/results/reference.json`](../../../benchmarks/results/reference.json).
 
 ---
 
@@ -81,7 +81,7 @@ Notes:
 - The whole batch is **one transaction**. `App::run_in_transaction` exists.
 - Realtime events must fire **after** commit, once per record, via
   `crate::realtime::publish`. Read that module's contract comment first.
-- Multipart `@jsonPayload` is PocketBase's convention for sending the
+- Multipart `@jsonPayload` is the original's convention for sending the
   JSON body alongside files in one request; `crates/server/src/routes/records.rs`
   already parses multipart for the single-record path.
 
@@ -114,10 +114,10 @@ Describe blocks "auth: OTP" and "auth: MFA".
   non-enumeration rule as W2).
 - The `_otps` and `_mfas` system collections already exist, and the cron
   jobs that sweep them are already registered and visible in the
-  dashboard (`__pbOTPCleanup__`, `__pbMFACleanup__`).
+  dashboard (`__cbOTPCleanup__`, `__cbMFACleanup__`).
 - MFA first factor answers **401 with `{mfaId}`**; the *same* method
-  again is a 400. PocketBase does **not** echo `mfaId` back on the second
-  call — `tests/conformance/auth.test.ts:629` documents this.
+  again is a 400. The original does **not** echo `mfaId` back on the second
+  call — the (since removed) conformance suite documented this.
 - Enabling MFA with fewer than two auth methods must be rejected.
 
 ### W4 — Auth: impersonate, `_authOrigins`, auth-alert mail (3 failures)
@@ -132,7 +132,7 @@ Describe blocks "auth: OTP" and "auth: MFA".
 
 Server-side support exists for all of these; the screens do not.
 - Auth providers + token options — belongs in the auth-collection schema
-  editor, **not** global settings (that's where PocketBase puts it).
+  editor, **not** global settings (that's where the original puts it).
 - Rate limits, trusted proxy, superuser IPs.
 - Backup **restore** and **upload** (`POST /api/backups/upload`,
   `POST /api/backups/{key}/restore` are both implemented and unused).
@@ -148,7 +148,7 @@ worth fixing in this package.
 Close everything, confirm swap is free, then `bash benchmarks/run.sh`.
 Replace `benchmarks/results/*.json` and update every number in §1.
 
-Update, 2026-09-04 re-run: all 24 cells are now faster than PocketBase
+Update, 2026-09-04 re-run: all 24 cells are now faster than the reference server
 (none lost), including `delete` at every concurrency — see §1. Swap was
 not free during that run (still ~7.8/8.0Gi used), so this does not
 satisfy the "idle machine" bar this package asks for; if a genuinely
@@ -163,12 +163,12 @@ core rewrite. Do this **after** W6 so the numbers are real.
 ### W8 — Finish `crates/jsvm` (JS hooks)
 
 Compiles and is in the workspace, but is not wired into the server. It
-gives Cratebase PocketBase's `pb_hooks` story. Read `crates/jsvm/src/bridge.rs`
+gives Cratebase the original's `cb_hooks` story. Read `crates/jsvm/src/bridge.rs`
 first — the prelude implements every global on one native entry point.
 
 ---
 
-## 3. What we offer over PocketBase
+## 3. What we offer over the original
 
 This is the part that answers "why would anyone switch". Grouped by how
 defensible it is today.
@@ -176,22 +176,22 @@ defensible it is today.
 ### Shipping now
 
 **1. Speed, especially under load.** 22 of 24 benchmark cells, and the
-p99 numbers are the real story: PocketBase's tail degrades badly with
+p99 numbers are the real story: the reference server's tail degrades badly with
 concurrency (create p99 69ms at 100 conc) where ours stays flat (12.6ms).
 Reads are 3–13x. A read-heavy app is the clearest win.
 
 **2. Same deal on deployment.** One static binary, no runtime, no CGO —
 plus a Docker path. Nobody has to give anything up to switch.
 
-**3. Drop-in compatibility.** The official `pocketbase` JS SDK works
-unchanged; that is exactly what the conformance suite proves, and it is
+**3. Drop-in compatibility.** The third-party JS SDK works
+unchanged; that is exactly what the (since removed) conformance suite proved, and it is
 why we deleted the in-house SDK. Migration is a one-line base-URL change,
 not a rewrite. Existing bcrypt password hashes are verified on login and
 transparently upgraded to Argon2id.
 
 ### The strategic gap: **Postgres**
 
-PocketBase is SQLite-only, by design and permanently. That is its single
+The original is SQLite-only, by design and permanently. That is its single
 biggest ceiling, and we already have a native `tokio-postgres` + `deadpool`
 backend beside the `rusqlite` one.
 
@@ -203,8 +203,8 @@ That unlocks, in order of value:
   confined to a single process. Today's realtime is single-node; this is
   the natural follow-on.
 
-This is the "grow out of PocketBase without leaving the framework" story,
-and no amount of PocketBase tuning gets there.
+This is the "grow out of SQLite without leaving the framework" story,
+and no amount of tuning the original gets there.
 
 ### Planned, in agreed order
 
@@ -212,7 +212,7 @@ and no amount of PocketBase tuning gets there.
    a real answer rather than a checkbox.
 2. **MCP server + vector search + full-text search** — one endpoint that
    makes a Cratebase instance directly usable as an AI application
-   backend. Nothing in the PocketBase ecosystem covers this.
+   backend. Nothing in the original's ecosystem covers this.
 3. **Schema-as-code + type generation** — collections defined in a
    checked-in file, with generated TypeScript types. Turns migrations
    into a reviewable diff instead of dashboard clicks.
@@ -224,10 +224,10 @@ and no amount of PocketBase tuning gets there.
 
 ### Honest weaknesses to keep in view
 
-- PocketBase's ecosystem, docs and community are years ahead.
-- JS hooks (`pb_hooks`) are not wired up yet (W8). For many PocketBase
-  users that is *the* extension point.
-- We are unproven in production; PocketBase is not.
+- The original's ecosystem, docs and community are years ahead.
+- JS hooks (`cb_hooks`) are not wired up yet (W8). For many users of the original
+  that is *the* extension point.
+- We are unproven in production; the original is not.
 
 ---
 
@@ -235,7 +235,7 @@ and no amount of PocketBase tuning gets there.
 
 Read this before starting. Each of these was a real bug in this repo.
 
-**The API is PocketBase v0.23+, not v0.22.** `/api/admins/*` is gone —
+**The API is the original v0.23+, not v0.22.** `/api/admins/*` is gone —
 superusers are an ordinary auth collection, `POST
 /api/collections/_superusers/auth-with-password` with **`identity`**, not
 `email`. Collections take **`fields`**, not `schema`. Per-field `unique`
@@ -255,8 +255,8 @@ matching row is still delivered *after* the row is gone — so
 `SELECT ... WHERE id = ?` cannot answer. Use
 `cratebase_db::rules::check_rule_against_row`.
 
-**Verify against the real PocketBase binary rather than reasoning.**
-`/home/diwa/Downloads/pocketbase_0.40.2_linux_amd64/pocketbase`. Every
+**Verify against the real reference binary rather than reasoning.**
+Every
 realtime semantic above came from a 100-line probe script that ran both
 servers and diffed the answers. Two separate guesses of mine were wrong
 and the binary corrected them. Do this whenever behaviour is unclear.
@@ -281,7 +281,7 @@ the one you think you're looking at.
 
 ```
 crates/core     domain types: Collection, Record, Settings, errors, ids
-crates/filter   PocketBase filter grammar: lexer, parser, SQL compiler,
+crates/filter   Original filter grammar: lexer, parser, SQL compiler,
                 and an in-process evaluator (eval.rs) used for rules
                 against a record that isn't in the database
 crates/db       rusqlite (1 writer + N readers) and tokio-postgres;
@@ -295,14 +295,13 @@ crates/server   axum routes, extractors, SSE realtime, cron, embedded
                 dashboard (rust-embed)
 web/admin       React 19 + TanStack Router/Query + Tailwind v4, served
                 at /_/ ; dist is committed
-tests/conformance  Bun tests driving the official pocketbase npm SDK
+tests/conformance  (since removed) Bun tests driving the third-party JS SDK
 ```
 
 ## 6. Rules of the house
 
-- **Match PocketBase byte for byte** unless there is a written reason not
-  to. Divergences go in `tests/conformance/KNOWN_DIVERGENCES.md` with the
-  measurement that justifies them.
+- **Match the original byte for byte** unless there is a written reason not
+  to. Divergences were recorded with the measurement that justifies them.
 - **Performance is a feature.** A change that costs throughput needs a
   number defending it.
 - Comments explain *why*, never *what*. Match the surrounding density.
@@ -311,15 +310,8 @@ tests/conformance  Bun tests driving the official pocketbase npm SDK
 ## 7. How to verify anything
 
 ```bash
-# Full conformance suite against Cratebase
+# Build the server (the conformance suite that used to run against it has been removed)
 cargo build --release -p cratebase-server
-cd tests/conformance && SERVER_BIN=$PWD/../../target/release/cratebase bun test
-
-# The same suite against real PocketBase, as the oracle
-cd tests/conformance && PB_BIN=/path/to/pocketbase bun test
-
-# One file
-SERVER_BIN=... bun test realtime.test.ts
 
 # Exactly what CI runs — check every exit code
 cargo fmt --all -- --check
@@ -330,7 +322,7 @@ cd web/admin && bunx tsc -b && cd ../.. && bun run admin:build && bun run --cwd 
 
 # Benchmarks (idle machine only)
 bash benchmarks/run.sh
-bun run benchmarks/compare.ts benchmarks/results/{pocketbase,cratebase}.json
+bun run benchmarks/compare.ts benchmarks/results/{reference,cratebase}.json
 ```
 
 ## 8. Suggested order

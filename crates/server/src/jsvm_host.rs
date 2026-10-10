@@ -18,7 +18,7 @@
 //!
 //! # Why hook registration needs a cell, not the `Runtime` itself
 //!
-//! [`Runtime::start`] evaluates every `*.pb.js` file — which is where
+//! [`Runtime::start`] evaluates every `*.cb.js` file — which is where
 //! `on*`/`routerAdd`/`cronAdd` calls run and reach [`HostApi::register_hook`]
 //! etc. — *before* it returns the [`Runtime`] handle those registrations
 //! need to call back into later. [`App::jsvm_cell`] hands out the
@@ -127,14 +127,12 @@ pub fn wrap_tx_host(tx: TxApp) -> Arc<dyn HostApi> {
 
 /// A process-wide string-keyed JSON store backing `$app.store()`, kept in
 /// `App::store()` (a `TypeId`-keyed side table) under its own type so it
-/// costs nothing when no `pb_hooks` file ever touches it.
+/// costs nothing when no `cb_hooks` file ever touches it.
 #[derive(Default)]
 struct JsStoreState(std::sync::RwLock<HashMap<String, Value>>);
 
-/// PocketBase's own `$http.send` defaults its `timeout` option to 120
-/// (seconds) when the caller doesn't set one; match that rather than
-/// inventing our own number, since a script ported from PocketBase
-/// should time out the same way it did there.
+/// `$http.send` defaults its `timeout` option to 120 (seconds) when the
+/// caller doesn't set one, so a hung call can't block a JS worker forever.
 const DEFAULT_HTTP_SEND_TIMEOUT_SECS: u64 = 120;
 
 /// The `reqwest` timeout to apply for a given `HttpRequest.timeout_secs`
@@ -245,6 +243,10 @@ fn raw_query_sql_param(name: &str, value: &Value) -> Result<Sql, AppError> {
 impl<X: HostExec> HostApi for JsvmHost<X> {
     fn settings(&self) -> Settings {
         (*self.0.app().settings()).clone()
+    }
+
+    fn getenv(&self, key: &str) -> Option<String> {
+        self.0.app().config().var(key)
     }
 
     async fn find_collection(&self, name_or_id: &str) -> Result<Arc<Collection>, AppError> {
@@ -792,7 +794,7 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
                 }
             });
         if let Err(e) = result {
-            tracing::warn!(error = %e, id = %id_owned, "invalid cron expression from pb_hooks");
+            tracing::warn!(error = %e, id = %id_owned, "invalid cron expression from cb_hooks");
         }
     }
 
@@ -1003,19 +1005,19 @@ impl<X: HostExec> HostApi for JsvmHost<X> {
     }
 }
 
-/// `true` when `dir` exists and contains at least one `*.pb.js` file.
+/// `true` when `dir` exists and contains at least one `*.cb.js` file.
 fn has_hook_files(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
     entries.flatten().any(|entry| {
         entry.file_type().is_ok_and(|t| t.is_file())
-            && entry.file_name().to_string_lossy().ends_with(".pb.js")
+            && entry.file_name().to_string_lossy().ends_with(".cb.js")
     })
 }
 
 /// `true` when `dir` exists and contains at least one `*.js` migration
-/// file (any `.js` file — migrations do not use the `.pb.js` naming
+/// file (any `.js` file — migrations do not use the `.cb.js` naming
 /// hooks do; see `write_migration_stub` in `main.rs`).
 fn has_migration_files(dir: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1027,18 +1029,18 @@ fn has_migration_files(dir: &std::path::Path) -> bool {
     })
 }
 
-/// Starts the JS runtime when `pb_hooks/` has at least one `*.pb.js` file,
-/// `pb_migrations/` has at least one `*.js` migration, or the server is
+/// Starts the JS runtime when `cb_hooks/` has at least one `*.cb.js` file,
+/// `cb_migrations/` has at least one `*.js` migration, or the server is
 /// running `--dev`, and stores it on `app` so hooks bound during startup
 /// (see [`bind_js_hook`](crate::hooks::bind_js_hook)) can resolve it,
 /// [`js_router`] can mount its `routerAdd` routes, and `crate::js_migrations`
 /// can apply/revert migrations. The runtime must start for migrations
-/// even when there is no hook file at all — `pb_migrations` alone is a
+/// even when there is no hook file at all — `cb_migrations` alone is a
 /// perfectly normal setup — so this checks both directories.
 ///
 /// `--dev` always starts it, even with both directories empty: hot
 /// reload (the watcher `cfg.hooks_watch` arms below) only ever reloads a
-/// *running* pool, so the very first `pb_hooks/*.pb.js` a developer adds
+/// *running* pool, so the very first `cb_hooks/*.cb.js` a developer adds
 /// needs the runtime already up to be picked up without a restart.
 /// Starting an otherwise-idle pool is cheap (a handful of worker threads
 /// that evaluate zero files and then sit on the job queue), which is what
@@ -1055,10 +1057,10 @@ pub async fn maybe_start(app: &App) -> Result<(), AppError> {
 
     let mut cfg = RuntimeConfig::new(hooks_dir.clone(), migrations_dir);
     cfg.hooks_watch = dev;
-    // PocketBase's own convention (`crates/jsvm/src/types.rs`'s module
+    // The convention (`crates/jsvm/src/types.rs`'s module
     // doc and `types.d.ts` itself): hook and migration files reference
-    // `../pb_data/types.d.ts`, and `pb_data` is a sibling of both
-    // `pb_hooks` and `pb_migrations` (see `config::sibling`), so the file
+    // `../cb_data/types.d.ts`, and `cb_data` is a sibling of both
+    // `cb_hooks` and `cb_migrations` (see `config::sibling`), so the file
     // has to live under the data dir, not under `hooks_dir` as before.
     cfg.types_file = Some(std::path::PathBuf::from(&app.config().data_dir).join("types.d.ts"));
 
@@ -1070,7 +1072,7 @@ pub async fn maybe_start(app: &App) -> Result<(), AppError> {
     Ok(())
 }
 
-/// PocketBase path segments (`{name}`, `{path...}`) to axum 0.8 ones
+/// Route path segments (`{name}`, `{path...}`) to axum 0.8 ones
 /// (`{name}`, `{*path}`); axum already uses `{name}` for a named
 /// parameter, so only the trailing-wildcard form needs rewriting.
 fn convert_pattern(pattern: &str) -> String {
@@ -1110,8 +1112,8 @@ fn method_filter(method: &str) -> MethodFilter {
 }
 
 /// Every `routerAdd` registration, mounted at the exact path it was
-/// registered with (root-level, same as PocketBase — these are not
-/// nested under `/api`). Empty, and therefore free, when no `pb_hooks`
+/// registered with (root-level, these are not
+/// nested under `/api`). Empty, and therefore free, when no `cb_hooks`
 /// file ever called `routerAdd`.
 pub fn js_router(app: &App) -> Router<App> {
     let mut by_pattern: HashMap<String, MethodRouter<App>> = HashMap::new();
@@ -1151,7 +1153,7 @@ pub fn js_router(app: &App) -> Router<App> {
 /// Earlier, `js_router`'s output was merged straight into the assembled
 /// `Router` once, at boot — exactly like every built-in route — which
 /// baked the route *table*, not just the routes, into the server for the
-/// rest of the process's life: a `pb_hooks` file added, changed or
+/// rest of the process's life: a `cb_hooks` file added, changed or
 /// deleted after that could reload the JS *runtime* (the watcher already
 /// did that), but the axum router still dispatched by the stale table,
 /// so the new/changed/removed route never took effect until a restart.
@@ -1185,7 +1187,7 @@ pub fn js_fallback_router(app: &App) -> Router {
 }
 
 /// Build the current `routerAdd` table into a router, self-contained with
-/// PocketBase's own "no matching route or method is a 404, not a 405"
+/// the "no matching route or method is a 404, not a 405"
 /// answer (matching `crate::router`'s handling of the built-in routes),
 /// and dispatch straight to it. Whatever it returns — a real handler's
 /// response, or its own not-found fallback — is exactly the response
@@ -1319,14 +1321,14 @@ mod raw_query_tests {
         let dir = tempfile::tempdir().expect("temp dir");
         // `Config::memory`'s `hooks_dir`/`migrations_dir` are *siblings*
         // of the data dir (see `config::sibling`), so passing `dir.path()`
-        // itself as the data dir would put `pb_hooks` at `dir.path()`'s
+        // itself as the data dir would put `cb_hooks` at `dir.path()`'s
         // *parent* — `/tmp` — shared by every test in the binary that
-        // does the same. A `pb_data` subdirectory keeps every derived
+        // does the same. A `cb_data` subdirectory keeps every derived
         // path under this test's own unique tempdir.
-        let cfg = Config::memory(dir.path().join("pb_data"));
+        let cfg = Config::memory(dir.path().join("cb_data"));
         std::fs::create_dir_all(&cfg.hooks_dir).expect("create hooks dir");
         std::fs::write(
-            std::path::Path::new(&cfg.hooks_dir).join("main.pb.js"),
+            std::path::Path::new(&cfg.hooks_dir).join("main.cb.js"),
             hook_js,
         )
         .expect("write hook file");
@@ -1512,7 +1514,7 @@ mod mails_send_tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }
@@ -1555,7 +1557,7 @@ mod http_send_tests {
     use super::http_send_timeout;
 
     #[test]
-    fn defaults_to_pocketbases_120s_timeout_when_unset() {
+    fn defaults_to_120s_timeout_when_unset() {
         assert_eq!(
             http_send_timeout(0),
             std::time::Duration::from_secs(120),
@@ -1572,7 +1574,7 @@ mod http_send_tests {
 /// The actual ask behind this module's `js_fallback_router`/`maybe_start`
 /// changes: a `--dev` app picks up a brand-new `routerAdd`/`cronAdd`
 /// registration with no restart, because (1) the runtime is already
-/// running even with an empty `pb_hooks/` and (2) the router dispatches
+/// running even with an empty `cb_hooks/` and (2) the router dispatches
 /// JS routes by looking up the *current* table on every request instead
 /// of one baked in at boot.
 #[cfg(test)]
@@ -1678,14 +1680,14 @@ mod hot_reload_tests {
             .expect("token")
     }
 
-    /// A `--dev` app booted against an *empty* `pb_hooks/` directory. Hot
+    /// A `--dev` app booted against an *empty* `cb_hooks/` directory. Hot
     /// reload only ever reloads an already-running pool (`Runtime::reload`
     /// re-evaluates files on the existing workers), so this is only
     /// possible at all when `maybe_start` starts the runtime for `--dev`
     /// unconditionally — see that function's doc.
     async fn dev_app_with_empty_hooks() -> (App, tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let mut cfg = Config::memory(dir.path().join("pb_data"));
+        let mut cfg = Config::memory(dir.path().join("cb_data"));
         cfg.dev = true;
         std::fs::create_dir_all(&cfg.hooks_dir).expect("create hooks dir");
         let hooks_dir = std::path::PathBuf::from(&cfg.hooks_dir);
@@ -1699,7 +1701,7 @@ mod hot_reload_tests {
         let (app, _dir, _hooks) = dev_app_with_empty_hooks().await;
         assert!(
             app.jsvm().is_some(),
-            "--dev must start the runtime even with an empty pb_hooks/, so the first \
+            "--dev must start the runtime even with an empty cb_hooks/, so the first \
              hook file added later can be picked up without a restart"
         );
     }
@@ -1710,7 +1712,7 @@ mod hot_reload_tests {
         // Built once, like the real server does — proving the *router*,
         // not just the runtime, needs no restart.
         let router = crate::router(app.clone());
-        let hook_file = hooks_dir.join("main.pb.js");
+        let hook_file = hooks_dir.join("main.cb.js");
 
         let resp = router.clone().oneshot(get("/hello")).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "no routerAdd yet");
@@ -1763,7 +1765,7 @@ mod hot_reload_tests {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
         let router = crate::router(app.clone());
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"routerAdd("GET", "/api/health", (e) => e.string(200, "js-hijack"));"#,
         )
         .unwrap();
@@ -1781,7 +1783,7 @@ mod hot_reload_tests {
     async fn reload_does_not_duplicate_cron_jobs() {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"cronAdd("seedHotReloadJob", "0 0 * * *", () => {});"#,
         )
         .unwrap();
@@ -1805,7 +1807,7 @@ mod hot_reload_tests {
     #[tokio::test]
     async fn reload_drops_a_cron_job_the_reloaded_files_no_longer_register() {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
-        let hook_file = hooks_dir.join("main.pb.js");
+        let hook_file = hooks_dir.join("main.cb.js");
         std::fs::write(
             &hook_file,
             r#"cronAdd("goneAfterReload", "0 0 * * *", () => {});"#,
@@ -1823,7 +1825,7 @@ mod hot_reload_tests {
         );
     }
 
-    /// Dogfooding bug report: editing a `pb_hooks/*.pb.js` file while
+    /// Dogfooding bug report: editing a `cb_hooks/*.cb.js` file while
     /// `--dev` runs reportedly left record-hook *enforcement* stuck on
     /// the old file's behavior until a restart, unlike `routerAdd`/
     /// `cronAdd` above (already covered, and already working). Reproduce
@@ -1859,7 +1861,7 @@ mod hot_reload_tests {
             .unwrap();
         assert_eq!(create_collection.status(), StatusCode::OK);
 
-        let hook_file = hooks_dir.join("main.pb.js");
+        let hook_file = hooks_dir.join("main.cb.js");
         std::fs::write(
             &hook_file,
             r#"onRecordCreate((e) => {
@@ -1961,7 +1963,7 @@ mod hot_reload_tests {
             assert_eq!(resp.status(), StatusCode::OK, "creating {name}");
         }
 
-        let hook_file = hooks_dir.join("main.pb.js");
+        let hook_file = hooks_dir.join("main.cb.js");
         std::fs::write(
             &hook_file,
             r#"onRecordAfterUpdateSuccess((e) => {
@@ -2064,7 +2066,7 @@ mod hot_reload_tests {
         );
     }
 
-    /// Root cause of the dogfooding bug report ("editing a pb_hooks/*.pb.js
+    /// Root cause of the dogfooding bug report ("editing a cb_hooks/*.cb.js
     /// while --dev runs reportedly disables record-hook enforcement until
     /// restart"): unlike the tests above, which call `Runtime::reload()`
     /// directly, this drives the *actual* `--dev` mechanism a developer
@@ -2129,7 +2131,7 @@ mod hot_reload_tests {
             }
         };
 
-        let hook_file = hooks_dir.join("main.pb.js");
+        let hook_file = hooks_dir.join("main.cb.js");
         std::fs::write(
             &hook_file,
             r#"onRecordCreate((e) => {
@@ -2187,7 +2189,7 @@ mod hot_reload_tests {
         );
     }
 
-    /// Release-blocker regression test: PocketBase's own recommended
+    /// Release-blocker regression test: The recommended
     /// pattern — "send a welcome email after signup" — is `$mails.send`
     /// called from `onRecordAfterCreateSuccess`. That hook's `e.app` is a
     /// `TxApp` bound to the write's still-open transaction
@@ -2226,7 +2228,7 @@ mod hot_reload_tests {
         assert_eq!(create_collection.status(), StatusCode::OK);
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onRecordAfterCreateSuccess((e) => {
                 $mails.send({
                     to: "someone@example.com",
@@ -2336,7 +2338,7 @@ mod hot_reload_tests {
             .to_string();
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onRecordAfterUpdateSuccess((e) => {
                 $mails.send({
                     to: "someone@example.com",
@@ -2418,7 +2420,7 @@ mod hot_reload_tests {
         assert_eq!(create_collection.status(), StatusCode::OK);
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onRecordAfterCreateSuccess((e) => {
                 $mails.send({
                     to: "rollback@example.com",
@@ -2508,7 +2510,7 @@ mod hot_reload_tests {
         assert_eq!(create_collection.status(), StatusCode::OK);
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             format!(
                 r#"onRecordAfterCreateSuccess((e) => {{
                     $notify.send({{ to: "{recipient_id}", type: "t", title: "never", body: "b" }});
@@ -2602,7 +2604,7 @@ mod hot_reload_tests {
         assert_eq!(create_collection.status(), StatusCode::OK);
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             format!(
                 r#"onRecordAfterCreateSuccess((e) => {{
                     $notify.send({{
@@ -2706,7 +2708,7 @@ mod hot_reload_tests {
     async fn onqueuejob_handler_runs_and_receives_the_payload() {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"routerAdd("GET", "/probe", (e) => e.json(200, { seen: null }));
             onQueueJob("greet", (e) => {
                 $app.store().set("queueSeen", e.payload);
@@ -2737,7 +2739,7 @@ mod hot_reload_tests {
     async fn onqueuejob_handler_throwing_retries_with_backoff_then_fails() {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onQueueJob("flaky", (e) => { throw new Error("boom from JS"); });"#,
         )
         .unwrap();
@@ -2781,7 +2783,7 @@ mod hot_reload_tests {
     async fn queue_enqueue_respects_run_at() {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             "onQueueJob(\"later\", (e) => {});",
         )
         .unwrap();
@@ -2815,7 +2817,7 @@ mod hot_reload_tests {
     async fn queue_enqueue_dedupe_key_ignores_a_duplicate_while_pending() {
         let (app, _dir) = {
             let dir = tempfile::tempdir().expect("temp dir");
-            let app = App::new(Config::memory(dir.path().join("pb_data")));
+            let app = App::new(Config::memory(dir.path().join("cb_data")));
             app.bootstrap().await.expect("bootstrap");
             (app, dir)
         };
@@ -2896,7 +2898,7 @@ mod hot_reload_tests {
         assert_eq!(create_collection.status(), StatusCode::OK);
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onRecordAfterCreateSuccess((e) => {
                 $queue.enqueue("widget-created", { id: e.record.get("id") });
                 e.next();
@@ -2973,7 +2975,7 @@ mod hot_reload_tests {
         assert_eq!(create_collection.status(), StatusCode::OK);
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onRecordAfterCreateSuccess((e) => {
                 $queue.enqueue("should-never-run", { id: e.record.get("id") });
                 e.next();
@@ -3030,7 +3032,7 @@ mod hot_reload_tests {
             });
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onQueueJob("shared-name", (e) => {
                 $app.store().set("jsRanInstead", true);
             });"#,
@@ -3066,7 +3068,7 @@ mod hot_reload_tests {
         let (app, _dir, hooks_dir) = dev_app_with_empty_hooks().await;
 
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onQueueJob("versioned", (e) => {
                 $app.store().set("version", "v1");
             });"#,
@@ -3090,7 +3092,7 @@ mod hot_reload_tests {
 
         // v2: the handler body changes.
         std::fs::write(
-            hooks_dir.join("main.pb.js"),
+            hooks_dir.join("main.cb.js"),
             r#"onQueueJob("versioned", (e) => {
                 $app.store().set("version", "v2");
             });"#,
@@ -3114,7 +3116,7 @@ mod hot_reload_tests {
         );
 
         // v3: the file stops registering it at all.
-        std::fs::write(hooks_dir.join("main.pb.js"), "// no more onQueueJob here\n").unwrap();
+        std::fs::write(hooks_dir.join("main.cb.js"), "// no more onQueueJob here\n").unwrap();
         app.jsvm().unwrap().reload().await.expect("reload v3");
 
         let third = crate::queue::enqueue_job(

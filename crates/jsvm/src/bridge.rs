@@ -1,6 +1,6 @@
 //! The native side of the JavaScript globals.
 //!
-//! The prelude (`prelude.js`) implements every PocketBase global in
+//! The prelude (`prelude.js`) implements every Cratebase global in
 //! JavaScript on top of a single native entry point, `__cb.native(op,
 //! args)`, plus `__cb.compile(path, source)` for CommonJS modules. Each
 //! `op` is dispatched here to the [`HostApi`] (blocking the worker thread
@@ -393,6 +393,9 @@ pub(crate) fn dispatch(
             let m = crate::modules::load(&state.cfg.hooks_dir, &from, &a.str(1))?;
             serde_json::to_value(m).map_err(|e| AppError::internal(e.to_string()))
         }
+        "os" if a.str(0) == "getenv" => {
+            Ok(Value::String(host.getenv(&a.str(1)).unwrap_or_default()))
+        }
         "os" => os_op(&a),
         "security" => security_op(&a),
 
@@ -481,7 +484,7 @@ fn token_kind(name: &str) -> Result<RecordTokenKind, AppError> {
 }
 
 /// `$mails.sendRecord*`: render the collection's template with the
-/// PocketBase placeholders and hand it to the host mailer.
+/// Cratebase placeholders and hand it to the host mailer.
 fn send_record_mail(
     state: &WorkerState,
     host: &Arc<dyn HostApi>,
@@ -539,7 +542,6 @@ fn send_record_mail(
 
 fn os_op(a: &Args) -> Result<Value, AppError> {
     match a.str(0).as_str() {
-        "getenv" => Ok(Value::String(std::env::var(a.str(1)).unwrap_or_default())),
         "readFile" => std::fs::read_to_string(a.str(1))
             .map(Value::String)
             .map_err(|e| AppError::bad_request(format!("readFile: {e}"))),

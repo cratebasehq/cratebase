@@ -18,7 +18,11 @@ export function Dashboard() {
   // manual invalidation. `search` runs Cratebase's full-text index over
   // `posts`' searchable fields (title, content), ANDed onto the owner
   // filter the collection's own listRule already applies server-side.
-  const { records: posts, loading } = useRecords("posts", {
+  const {
+    records: posts,
+    loading,
+    error,
+  } = useRecords("posts", {
     sort: "-created",
     search: toPrefixSearch(search),
     realtime: true,
@@ -27,9 +31,9 @@ export function Dashboard() {
   return (
     <div className="mx-auto max-w-2xl px-6 py-10">
       <header className="mb-8 flex items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold">{"{{PROJECT_NAME}}"}</h1>
-          <p className="text-sm text-black/50 dark:text-white/50">Signed in as {user?.email}</p>
+          <p className="muted truncate text-sm">Signed in as {user?.email}</p>
         </div>
         <div className="flex items-center gap-2">
           <NotificationsBell />
@@ -46,15 +50,11 @@ export function Dashboard() {
         </div>
       </header>
 
-      <div className="mb-6">
+      <main className="flex flex-col gap-6">
         <SearchBox value={search} onChange={setSearch} />
-      </div>
-
-      <div className="mb-6">
         <PostForm />
-      </div>
-
-      <PostList posts={posts} loading={loading} />
+        <PostList posts={posts} loading={loading} error={error} searching={search.trim() !== ""} />
+      </main>
     </div>
   );
 }

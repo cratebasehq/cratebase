@@ -15,8 +15,7 @@ stored on SQLite vs Postgres.
 
 A `required` field rejects that type's zero value, not just a missing
 key: `""` for `text`, `[]` for a multi-select/relation — and **`0` for
-`number`**. This matches PocketBase (`core/field_number.go` runs the
-same `Required` check against the raw value), but it surprises people
+`number`**. This surprises people
 writing counters, scores, or quantities that can legitimately be `0`.
 If a `number` field needs to allow `0`, leave it non-required (and
 validate "must be present" some other way, e.g. a `filter`-based rule),

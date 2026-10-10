@@ -18,7 +18,7 @@ export interface LogBucket {
  * matter how sparse the underlying data is.
  */
 export function fillHourlyBuckets(stats: LogBucket[], hours = 24): LogBucket[] {
-  // The server stamps buckets PocketBase-style — `2026-09-04 15:00:00.000Z`,
+  // The server stamps buckets in a space-separated form — `2026-09-04 15:00:00.000Z`,
   // a space where an ISO string has a `T` — so both sides are reduced to
   // `YYYY-MM-DDHH` before they are compared.
   const hourKey = (value: string) => value.replace(" ", "T").slice(0, 13);

@@ -46,7 +46,7 @@ fn select(name: &str, values: &[&str], max_select: i64) -> Field {
 }
 
 fn insert_fields(c: &mut Collection, fields: Vec<Field>) {
-    // Keep `created`/`updated` last like PocketBase's scaffold does.
+    // Keep `created`/`updated` last like Cratebase's scaffold does.
     let pos = c.fields.len() - 2;
     c.fields.splice(pos..pos, fields);
 }

@@ -32,7 +32,7 @@ fn file_backed_config(data_dir: &std::path::Path) -> Config {
 #[tokio::test]
 async fn first_bootstrap_creates_superuser_applies_schema_seeds_and_writes_types() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let data_dir = dir.path().join("pb_data");
+    let data_dir = dir.path().join("cb_data");
 
     let schema_path = dir.path().join("schema.json");
     std::fs::write(
@@ -48,8 +48,8 @@ async fn first_bootstrap_creates_superuser_applies_schema_seeds_and_writes_types
     )
     .expect("write schema.json");
 
-    let seed_dir = dir.path().join("pb_seed");
-    std::fs::create_dir_all(&seed_dir).expect("mkdir pb_seed");
+    let seed_dir = dir.path().join("cb_seed");
+    std::fs::create_dir_all(&seed_dir).expect("mkdir cb_seed");
     std::fs::write(
         seed_dir.join("seed.json"),
         json!({
@@ -140,7 +140,7 @@ async fn first_bootstrap_creates_superuser_applies_schema_seeds_and_writes_types
 #[tokio::test]
 async fn env_superuser_is_upserted_even_when_one_already_exists() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut config = Config::memory(dir.path().join("pb_data"));
+    let mut config = Config::memory(dir.path().join("cb_data"));
     config.dev = true;
     let app = App::new(config);
 
@@ -168,7 +168,7 @@ async fn env_superuser_is_upserted_even_when_one_already_exists() {
 #[tokio::test]
 async fn without_schema_or_seed_or_types_bootstrap_only_creates_the_default_superuser() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut config = Config::memory(dir.path().join("pb_data"));
+    let mut config = Config::memory(dir.path().join("cb_data"));
     config.dev = true;
     let app = App::new(config);
 

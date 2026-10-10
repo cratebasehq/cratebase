@@ -31,7 +31,7 @@
 //! plugin's `viewRule` enforcement can never diverge from the HTTP
 //! endpoint's. It intentionally does **not** fire the
 //! `onRecordViewRequest` hook chain a real HTTP view does — that chain
-//! is `pb_hooks`/compile-time-plugin machinery, out of scope for what
+//! is `cb_hooks`/compile-time-plugin machinery, out of scope for what
 //! this prototype needed to prove (a genuinely rule-enforced read
 //! reachable only through a declared capability).
 

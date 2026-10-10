@@ -1,4 +1,6 @@
-import { HelpCircle } from "lucide-react";
+import { useId } from "react";
+import { AlertCircle, HelpCircle, Lock, LockOpen, ShieldCheck } from "lucide-react";
+import { StatusBadge } from "@/components/layout/stat-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -17,14 +19,62 @@ interface RuleFieldProps {
   nullOption?: { label: string; description: string };
   publicOption?: { label: string; description: string };
   customLabel?: string;
+  /** One sentence on who this rule governs, e.g. "Who can list and search
+   * records." Shown under the label. */
+  description?: string;
+  /** Name of the field holding a record's owner id. When set, an "Owner"
+   * preset (`field = @request.auth.id`) is offered. Only used in the
+   * default API-rule mode. */
+  ownerField?: string | null;
 }
 
-type RuleMode = "admin" | "public" | "custom";
+type RuleMode = "admin" | "public" | "auth" | "owner" | "custom";
 
-function modeOf(value: string | null): RuleMode {
+const AUTH_EXPR = '@request.auth.id != ""';
+
+function ownerExpr(ownerField: string): string {
+  return `${ownerField} = @request.auth.id`;
+}
+
+function modeOf(value: string | null, ownerField: string | null | undefined): RuleMode {
   if (value === null) return "admin";
   if (value === "") return "public";
+  const normalised = value.trim().replace(/'/g, '"');
+  if (normalised === AUTH_EXPR) return "auth";
+  if (ownerField && normalised === ownerExpr(ownerField)) return "owner";
   return "custom";
+}
+
+/** A cheap structural check — unbalanced quotes/parentheses, a dangling
+ * operator, an empty body. It is not the real parser (that runs on save
+ * server-side) but catches the typos that otherwise only surface as a 400. */
+function lintRuleExpression(expr: string): string | null {
+  const text = expr.trim();
+  if (text.length === 0) return "Enter an expression, or pick Public / Superusers only.";
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth < 0) return "Unmatched closing parenthesis.";
+    }
+  }
+  if (quote) return `Unclosed ${quote === '"' ? "double" : "single"} quote.`;
+  if (depth > 0) return "Unclosed parenthesis.";
+  if (/(&&|\|\||[=<>~]|!=|!~)\s*$/.test(text)) return "Expression ends with an operator.";
+  if (/^\s*(&&|\|\|)/.test(text)) return "Expression starts with an operator.";
+  if (!/[=<>~]/.test(text) && !/^(true|false)$/i.test(text)) {
+    return "No comparison found — use an operator such as = or ~.";
+  }
+  return null;
 }
 
 const OPERATORS: { op: string; desc: string }[] = [
@@ -103,27 +153,69 @@ function SyntaxHelp() {
 
 /** One API rule (list/view/create/update/delete). `null` = superusers
  * only, `""` = public, anything else = a filter expression evaluated
- * against the caller/record. */
+ * against the caller/record. In the default mode the rule also gets
+ * presets (signed-in, owner-only) and a status chip that says plainly
+ * whether it is locked or open. */
 export function RuleField({
   label,
   value,
   onChange,
-  nullOption = { label: "Admins", description: "Only superusers can do this." },
-  publicOption = { label: "Public", description: "Anyone, including anonymous callers, can do this." },
+  nullOption,
+  publicOption,
   customLabel = "Custom",
+  description,
+  ownerField,
 }: RuleFieldProps) {
-  const mode = modeOf(value);
+  const apiMode = !nullOption && !publicOption;
+  const nullOpt = nullOption ?? { label: "Superusers", description: "Locked — only superusers can do this." };
+  const publicOpt = publicOption ?? { label: "Public", description: "Open — anyone, including anonymous callers." };
+  const mode = modeOf(value, apiMode ? ownerField : null);
+  const id = useId();
+  const lint = mode === "custom" ? lintRuleExpression(value ?? "") : null;
 
   function setMode(next: string) {
     if (next === "admin") onChange(null);
     else if (next === "public") onChange("");
-    else onChange(value && value.length > 0 ? value : " ");
+    else if (next === "auth") onChange(AUTH_EXPR);
+    else if (next === "owner" && ownerField) onChange(ownerExpr(ownerField));
+    else onChange(mode === "custom" && value ? value : " ");
   }
 
+  const hint: Record<RuleMode, string> = {
+    admin: nullOpt.description,
+    public: publicOpt.description,
+    auth: "Any signed-in user (any auth collection). Anonymous callers are rejected.",
+    owner: `Signed in, and the record's ${ownerField ?? "owner"} field must be the caller's own id.`,
+    custom: "Matches when the expression below is true for the caller and the record.",
+  };
+
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-foreground">{label}</span>
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card px-3 py-2.5">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
+        <div className="flex min-w-0 flex-col">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-foreground">{label}</span>
+            {apiMode ? (
+              mode === "admin" ? (
+                <StatusBadge tone="neutral">
+                  <Lock className="size-3" />
+                  Locked
+                </StatusBadge>
+              ) : mode === "public" ? (
+                <StatusBadge tone="warning">
+                  <LockOpen className="size-3" />
+                  Open to all
+                </StatusBadge>
+              ) : (
+                <StatusBadge tone="info">
+                  <ShieldCheck className="size-3" />
+                  Rule
+                </StatusBadge>
+              )
+            ) : null}
+          </div>
+          {description ? <span className="text-xs text-muted-foreground">{description}</span> : null}
+        </div>
         <ToggleGroup
           type="single"
           variant="outline"
@@ -137,27 +229,40 @@ export function RuleField({
             if (next) setMode(next);
           }}
         >
-          <ToggleGroupItem value="admin">{nullOption.label}</ToggleGroupItem>
-          <ToggleGroupItem value="public">{publicOption.label}</ToggleGroupItem>
+          <ToggleGroupItem value="admin">{nullOpt.label}</ToggleGroupItem>
+          {apiMode ? <ToggleGroupItem value="auth">Signed in</ToggleGroupItem> : null}
+          {apiMode && ownerField ? <ToggleGroupItem value="owner">Owner</ToggleGroupItem> : null}
+          <ToggleGroupItem value="public">{publicOpt.label}</ToggleGroupItem>
           <ToggleGroupItem value="custom">{customLabel}</ToggleGroupItem>
         </ToggleGroup>
       </div>
       {mode === "custom" ? (
-        <div className="flex items-center gap-1.5">
-          <Input
-            type="text"
-            value={value ?? ""}
-            onChange={(e) => onChange(e.target.value)}
-            placeholder="e.g. owner = @request.auth.id"
-            aria-label={`${label} rule expression`}
-            className="h-control-md min-w-0 flex-1 font-mono text-sm"
-          />
-          <SyntaxHelp />
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="text"
+              value={value ?? ""}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder="e.g. owner = @request.auth.id"
+              aria-label={`${label} rule expression`}
+              aria-invalid={lint ? true : undefined}
+              aria-describedby={`${id}-msg`}
+              spellCheck={false}
+              className="h-control-md min-w-0 flex-1 font-mono text-sm"
+            />
+            <SyntaxHelp />
+          </div>
+          <p
+            id={`${id}-msg`}
+            role={lint ? "alert" : undefined}
+            className={lint ? "flex items-center gap-1 text-xs font-medium text-destructive" : "text-xs text-muted-foreground"}
+          >
+            {lint ? <AlertCircle className="size-3 shrink-0" /> : null}
+            {lint ?? hint.custom}
+          </p>
         </div>
       ) : (
-        <p className="text-xs text-muted-foreground">
-          {mode === "admin" ? nullOption.description : publicOption.description}
-        </p>
+        <p className="text-xs text-muted-foreground">{hint[mode]}</p>
       )}
     </div>
   );

@@ -1,7 +1,7 @@
 //! Storage-layer errors and their mapping onto the HTTP-facing
 //! [`AppError`]. Anything that reaches a client goes through
 //! `From<DbError> for AppError`, which deliberately redacts driver
-//! messages (PocketBase's generic "Something went wrong..." wording)
+//! messages (Cratebase's generic "Something went wrong..." wording)
 //! while keeping the machine-readable validation codes.
 
 use std::collections::BTreeMap;
@@ -70,7 +70,7 @@ impl From<tokio::task::JoinError> for DbError {
 /// reported:
 ///
 /// - SQLite: `posts.slug` or `posts.a, posts.b` → `slug` (first column).
-/// - Postgres: the index name. PocketBase names its indexes
+/// - Postgres: the index name. Cratebase names its indexes
 ///   `idx_<field>_<collectionId>` (`idx_email_pbc_123`), so the segment
 ///   after `idx_` is the field; otherwise the segment after the last `_`.
 pub fn unique_violation_field(detail: &str) -> String {

@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { RecordFieldInput } from "@/components/records/record-field-input";
+import { Kbd } from "@/components/ui/kbd";
 import { FileField } from "@/components/records/file-field";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useRecordMutations } from "@/hooks/use-records";
@@ -45,6 +46,8 @@ import {
 interface RecordDrawerProps {
   collection: CollectionModel;
   record: RecordModel | null;
+  /** Values to start a new record from ("Duplicate"). Ignored when editing. */
+  template?: RecordModel | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -135,7 +138,7 @@ function MetaValue({ label, value, mono = true }: { label: string; value: string
  * picked from the first 100 rows, the record's own identifiers are visible
  * and copyable, and closing with unsaved edits asks first.
  */
-export function RecordDrawer({ collection, record, open, onOpenChange }: RecordDrawerProps) {
+export function RecordDrawer({ collection, record, template = null, open, onOpenChange }: RecordDrawerProps) {
   const isNew = record === null;
   const identityField =
     collection.type === "auth"
@@ -144,9 +147,19 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
 
   const fields = useMemo(() => userFields(collection), [collection]);
   const seed = useMemo(
-    () => buildDraft(record, fields, identityField),
-    [record, fields, identityField],
+    () => buildDraft(record ?? template, fields, identityField),
+    [record, template, fields, identityField],
   );
+  // A form with many fields is easier to scan in labelled sections; one with
+  // only a few plain fields is not improved by headings.
+  const groups = useMemo(() => {
+    const all = [
+      { key: "fields", title: "Fields", items: fields.filter((f) => f.type !== "relation" && f.type !== "file") },
+      { key: "relations", title: "Relations", items: fields.filter((f) => f.type === "relation") },
+      { key: "files", title: "Files", items: fields.filter((f) => f.type === "file") },
+    ];
+    return all.filter((g) => g.items.length > 0);
+  }, [fields]);
 
   const [values, setValues] = useState<Draft>(seed);
   const [seedKey, setSeedKey] = useState(seed);
@@ -416,6 +429,43 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     }
   }
 
+  function renderField(field: FieldSchema) {
+    const error = errorFor(field.name);
+    return (
+      <div
+        key={field.id || field.name}
+        className="flex flex-col gap-1.5"
+        onBlur={() => setTouched((t) => ({ ...t, [field.name]: true }))}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <Label className="font-mono">
+            {field.name}
+            {field.required ? <span className="text-destructive"> *</span> : null}
+          </Label>
+          <span className="shrink-0 text-2xs text-muted-foreground/70">{field.type}</span>
+        </div>
+
+        {field.type === "file" ? (
+          <FileField
+            field={field}
+            record={record}
+            value={(values[field.name] ?? { keep: [], added: [] }) as FileDraft}
+            onChange={(next) => setValue(field.name, next)}
+            invalid={Boolean(error)}
+          />
+        ) : (
+          <RecordFieldInput
+            field={field}
+            value={values[field.name]}
+            onChange={(value) => setValue(field.name, value)}
+            error={error}
+          />
+        )}
+        <FieldError message={error} />
+      </div>
+    );
+  }
+
   return (
     <>
       <Sheet open={open} onOpenChange={requestClose}>
@@ -427,11 +477,27 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
               value makes the browser cancel the submit and show its own
               tooltip, so React's handler never runs and none of the field
               errors below ever appear. Validation is this form's job. */}
-          <form onSubmit={handleSubmit} noValidate className="flex h-full min-h-0 flex-col">
+          <form
+            onSubmit={handleSubmit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault();
+                event.currentTarget.requestSubmit();
+              }
+            }}
+            noValidate
+            className="flex h-full min-h-0 flex-col"
+          >
             <SheetHeader className="gap-1">
-              <SheetTitle>{isNew ? `New ${singularize(collection.name)}` : "Edit record"}</SheetTitle>
+              <SheetTitle>
+                {isNew ? (template ? `Duplicate ${singularize(collection.name)}` : `New ${singularize(collection.name)}`) : "Edit record"}
+              </SheetTitle>
               <SheetDescription>
-                {isNew ? `Add a row to ${collection.name}.` : `Editing a row in ${collection.name}.`}
+                {isNew
+                  ? template
+                    ? `Starting from another row in ${collection.name}. Files and passwords are not copied.`
+                    : `Add a row to ${collection.name}.`
+                  : `Editing a row in ${collection.name}.`}
               </SheetDescription>
             </SheetHeader>
 
@@ -485,42 +551,20 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
 
               {(identityField && fields.length > 0) ? <Separator /> : null}
 
-              {fields.map((field) => {
-                const error = errorFor(field.name);
-                return (
-                  <div
-                    key={field.id || field.name}
-                    className="flex flex-col gap-1.5"
-                    onBlur={() => setTouched((t) => ({ ...t, [field.name]: true }))}
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <Label className="font-mono">
-                        {field.name}
-                        {field.required ? <span className="text-destructive"> *</span> : null}
-                      </Label>
-                      <span className="shrink-0 text-2xs text-muted-foreground/70">{field.type}</span>
+              {groups.map((group) => (
+                <section key={group.key} className="flex flex-col gap-4" aria-label={group.title}>
+                  {groups.length > 1 ? (
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+                        {group.title}
+                      </h3>
+                      <span className="font-tabular text-2xs text-muted-foreground/70">{group.items.length}</span>
+                      <Separator className="flex-1" />
                     </div>
-
-                    {field.type === "file" ? (
-                      <FileField
-                        field={field}
-                        record={record}
-                        value={(values[field.name] ?? { keep: [], added: [] }) as FileDraft}
-                        onChange={(next) => setValue(field.name, next)}
-                        invalid={Boolean(error)}
-                      />
-                    ) : (
-                      <RecordFieldInput
-                        field={field}
-                        value={values[field.name]}
-                        onChange={(value) => setValue(field.name, value)}
-                        error={error}
-                      />
-                    )}
-                    <FieldError message={error} />
-                  </div>
-                );
-              })}
+                  ) : null}
+                  {group.items.map(renderField)}
+                </section>
+              ))}
 
               {isAuth && record ? (
                 <>
@@ -650,6 +694,11 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
               ) : null}
 
               <div className="flex-1" />
+              <span className="hidden items-center gap-1 text-2xs text-muted-foreground md:inline-flex">
+                <Kbd>⌘</Kbd>
+                <Kbd>↵</Kbd>
+                to save
+              </span>
               <Button type="button" variant="ghost" size="sm" onClick={() => requestClose(false)} disabled={pending}>
                 Cancel
               </Button>

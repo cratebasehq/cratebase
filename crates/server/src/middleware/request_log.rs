@@ -6,11 +6,11 @@
 //! ran its own `INSERT`. On SQLite that turned every *read-only* API call
 //! into a write transaction competing for the single writer lock with
 //! user traffic — measured in `benchmarks/` as the largest single
-//! contributor to the read gap against PocketBase. Pushing onto an
+//! contributor to the read gap against the reference baseline. Pushing onto an
 //! unbounded channel and letting one task drain it into a multi-row
 //! `INSERT` per batch made reads roughly 3x faster, so that design is
-//! kept here verbatim; only the row shape changed (PocketBase's
-//! `_logs`, not the old `_request_logs`).
+//! kept here verbatim; only the row shape changed (`_logs`,
+//! not the old `_request_logs`).
 //!
 //! [`LogWriter::flush`] exists so `GET /api/logs` can show a request that
 //! happened milliseconds ago instead of waiting out the flush interval.
@@ -33,7 +33,7 @@ use crate::middleware::client_ip;
 /// Longest an entry sits in the buffer before being written.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 
-/// PocketBase's numeric levels (`slog`): debug -4, info 0, warn 4,
+/// Numeric levels (`slog`): debug -4, info 0, warn 4,
 /// error 8. Request rows are always `info`.
 pub const LEVEL_DEBUG: i64 = -4;
 pub const LEVEL_INFO: i64 = 0;
@@ -226,7 +226,7 @@ pub async fn log_requests(State(app): State<App>, req: Request, next: Next) -> R
     let response = next.run(Request::from_parts(parts, body)).await;
     let exec_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-    // PocketBase logs a failed request at `error` level and records the
+    // A failed request is logged at `error` level and records the
     // message. `ApiError` stamps the message on the response extensions on
     // its way out, so nothing has to buffer the response body to get it.
     let status = response.status();
@@ -297,7 +297,7 @@ pub async fn log_requests(State(app): State<App>, req: Request, next: Next) -> R
 #[derive(Clone, Debug)]
 pub struct LoggedError(pub String);
 
-/// PocketBase's `message` is `"<METHOD> <path>"` without the query
+/// The log `message` is `"<METHOD> <path>"` without the query
 /// string, while `data.url` keeps it.
 fn strip_query(data: &Map<String, Value>) -> String {
     let url = data.get("url").and_then(Value::as_str).unwrap_or("");

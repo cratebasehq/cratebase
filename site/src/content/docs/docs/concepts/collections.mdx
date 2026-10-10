@@ -20,7 +20,18 @@ System collections ship built in: `_superusers`, `_mfas`, `_otps`,
 `_cron_jobs`, `_webhooks`, `_audit_log`, `_push_subscriptions`, and the
 default `users` auth collection.
 
-Collection ids are deterministic — `pbc_<crc32(type + name)>` — the same
-formula PocketBase itself uses internally, which is what lets
-[`migrate-from-pocketbase`](/docs/migrating/migration-tool/) skip an
-id-remapping step entirely.
+Collection ids are deterministic — `pbc_<crc32(type + name)>` — so the
+same collection name and type always yield the same id across instances.
+
+## Strict collection bodies
+
+The collections API (`POST`/`PATCH /api/collections`, `PUT /collections/import`,
+`POST /api/schema/apply`) rejects unknown keys. A collection's field list is
+`fields`, and each field's options are flat keys on the field itself. The
+legacy top-level `schema` key and a per-field `options` object are both
+rejected with `400` and the error code `validation_unknown_key`, so a typo
+or an outdated payload fails loudly instead of being silently ignored.
+
+```json
+{ "name": "posts", "type": "base", "fields": [ { "name": "title", "type": "text", "max": 120 } ] }
+```

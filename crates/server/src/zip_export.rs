@@ -13,7 +13,7 @@
 //! generic: the job row names a *source collection*, a *filter expression*,
 //! and a *file field* — it has no idea what a "photo" or a "guest" is.
 //!
-//! # Why a Rust plugin and not a `pb_hooks` script
+//! # Why a Rust plugin and not a `cb_hooks` script
 //!
 //! Building a ZIP archive is not itself something `$os.exec` is needed for
 //! (unlike, say, video rendering), but a JS hook has no primitive for
@@ -43,7 +43,7 @@
 //! guest's display name, a customer's company name) becomes a real
 //! filesystem path component the moment someone unzips the result.
 //! [`sanitize_zip_name`] strips anything outside letters/digits/space/dash
-//! rather than escaping it, matching the same reasoning PocketBase-style
+//! rather than escaping it, matching the reasoning other
 //! filename sanitizers use elsewhere in this codebase.
 
 use std::path::{Path, PathBuf};
@@ -645,7 +645,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         ensure_collection(&app).await.expect("ensure collection");
         (app, dir)

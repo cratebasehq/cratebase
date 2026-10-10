@@ -1,4 +1,4 @@
-// Cratebase JSVM prelude: implements the PocketBase globals on top of the
+// Cratebase JSVM prelude: implements the globals on top of the
 // native bridge `__cb.native(op, args)` installed by bridge.rs.
 //
 // Everything here runs once per worker context. Handler tables are keyed
@@ -412,7 +412,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // DateTime (minimal PocketBase shape)
+  // DateTime (minimal Cratebase shape)
   // ---------------------------------------------------------------------
 
   function pad(n, w) {
@@ -632,7 +632,7 @@
     isBootstrapped: () => true,
     isDev: () => false,
     dataDir: () => "",
-    // A small subset of PocketBase's `$app.db()` query-builder: just the
+    // A small subset of Cratebase's `$app.db()` query-builder: just the
     // one write-capable escape hatch (`exec`) this runtime needs for
     // versioning things a filter/record write can't express — an
     // extension, a bespoke index, ... — from a migration or hook. See

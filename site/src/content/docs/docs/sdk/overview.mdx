@@ -7,10 +7,7 @@ sidebar:
 
 `@cratebase/client` is Cratebase's first-party TypeScript SDK — typed
 end to end, with the vector/LLM/queue/presence value-adds built in
-rather than bolted on. It's the recommended client for new projects;
-the official `pocketbase` npm package still works unmodified against
-Cratebase (see [PocketBase SDK interop](/docs/sdk/pocketbase-interop/))
-if you're already using it.
+rather than bolted on. It's the recommended client for Cratebase.
 
 ```sh
 bun add @cratebase/client
@@ -58,9 +55,7 @@ const post = await cb.collection("posts").one("abc123"); // typed as PostsRecord
 - `admin` — superuser-only management endpoints (see
   [Batch & admin](/docs/sdk/batch-and-admin/)).
 - `vector`, `llm`, `mcp`, `queue`, `presence` — Cratebase-only
-  value-add surface, built into this SDK (also available as
-  `@cratebase/extras` for projects staying on the official
-  `pocketbase` SDK).
+  value-add surface, built into this SDK.
 - `send(path, options)` — raw escape hatch for anything not wrapped.
 
 `CreateClientOptions`:
@@ -78,4 +73,4 @@ interface CreateClientOptions {
 ```
 
 Errors are `CratebaseError` (`.status`, `.message`, `.response`,
-`.isAbort`), never PocketBase's `ClientResponseError`.
+`.isAbort`).

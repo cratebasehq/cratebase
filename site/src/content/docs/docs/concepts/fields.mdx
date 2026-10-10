@@ -5,8 +5,7 @@ description: "Every field type and how it's physically stored on SQLite vs Postg
 
 Cratebase supports `text`, `editor`, `number`, `bool`, `email`, `url`,
 `date`, `autodate`, `select`, `json`, `relation`, `file`, `password`,
-`geoPoint`, and `vector` fields — every PocketBase field type, plus
-`vector` as a Cratebase addition.
+`geoPoint`, and `vector` fields — `vector` stores embeddings for similarity search.
 
 Physically, only three column shapes exist regardless of field type:
 `number` fields are `REAL`/`DOUBLE PRECISION`, `bool` fields are

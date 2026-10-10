@@ -1,11 +1,8 @@
-//! Shared domain types for Cratebase, shaped to be byte-compatible with
-//! PocketBase v0.23+'s JSON API: collections, fields, records, settings,
-//! errors, ids and dates. Deliberately free of any I/O so every other
+//! Shared domain types for Cratebase's JSON API: collections, fields,
+//! records, settings, errors, ids and dates. Deliberately free of any I/O so every other
 //! crate can depend on it without pulling in database or HTTP machinery.
 //!
-//! The compatibility contract is the set of captured PocketBase responses
-//! in `docs/superpowers/specs/pb-fixtures/`; when a shape here and a
-//! fixture disagree, the fixture wins.
+//! The wire shapes are pinned by the tests in this crate.
 
 pub mod collection;
 pub mod datetime;
@@ -81,7 +78,7 @@ pub const NOTIFICATIONS_COLLECTION: &str = "_notifications";
 /// `Collection::is_channels` and `Collection::default_system_collections`'s
 /// comment on `channels`.
 pub const CHANNELS_COLLECTION: &str = "_channels";
-/// PocketBase's literal id for the built-in `users` collection.
+/// Cratebase's literal id for the built-in `users` collection.
 pub const USERS_COLLECTION_ID: &str = "_pb_users_auth_";
 
 /// `_superusers.role` values. `Owner` is the only role that may create

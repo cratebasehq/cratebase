@@ -219,7 +219,7 @@ pub fn provider_for(config: &EmbeddingConfig, dimensions: usize) -> Arc<dyn Embe
 
 /// Cosine similarity between two vectors; `0.0` when they differ in
 /// length, either is empty, or either has zero magnitude (all of which
-/// PocketBase-style filters would otherwise turn into a `NaN` that sorts
+/// degenerate inputs would otherwise turn into a `NaN` that sorts
 /// unpredictably).
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {

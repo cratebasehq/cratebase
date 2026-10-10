@@ -33,10 +33,7 @@ body:
       label: Proposed solution
       description: >-
         What would solve the problem above? If it's an API change, sketch
-        the request/response shape. If it overlaps with existing
-        PocketBase behavior, say whether you're asking Cratebase to match
-        PocketBase or to diverge from it (and why) — see CONTRIBUTING.md's
-        compatibility rule.
+        the request/response shape.
     validations:
       required: true
 

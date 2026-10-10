@@ -4,7 +4,7 @@
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
-/// PocketBase's default `otp.length`.
+/// The default `otp.length`.
 pub const DEFAULT_OTP_LENGTH: usize = 8;
 
 /// Generates a fresh numeric one-time code of exactly `length` digits

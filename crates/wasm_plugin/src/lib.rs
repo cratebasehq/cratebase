@@ -13,7 +13,7 @@
 //!   checked before install and re-checked on every call;
 //! * a narrow [`host::PluginHostApi`] a plugin calls back into, in the
 //!   same "runtime never touches the database directly" shape
-//!   `cratebase_jsvm::HostApi` uses for `pb_hooks`.
+//!   `cratebase_jsvm::HostApi` uses for `cb_hooks`.
 //!
 //! What this crate deliberately does not attempt: a component-model /
 //! WIT-typed interface (the ABI in [`runtime`] is hand-rolled instead —

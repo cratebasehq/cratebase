@@ -31,7 +31,7 @@ interface Option {
   secondary: string;
 }
 
-/** The field a related record should be shown as. PocketBase marks one with
+/** The field a related record should be shown as. A field is marked with
  * `presentable`; failing that, the first text field is the best guess, and
  * failing that the id is all there is. */
 function displayFieldOf(fields: ReturnType<typeof userFields>): string | undefined {

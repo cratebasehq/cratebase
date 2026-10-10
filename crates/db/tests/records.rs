@@ -1,9 +1,9 @@
 //! End-to-end tests for the record read/write layer against an in-memory
 //! SQLite database.
 //!
-//! The expectations here are PocketBase v0.40.2's, as measured by
-//! `tests/conformance` — including the places where it coerces instead of
-//! rejecting, and the places where a rule failure is not an error.
+//! The expectations here include the places where Cratebase coerces
+//! instead of rejecting, and the places where a rule failure is not an
+//! error.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -28,7 +28,7 @@ fn text(name: &str) -> Field {
 }
 
 fn insert_fields(c: &mut Collection, fields: Vec<Field>) {
-    // Keep `created`/`updated` last, as PocketBase's scaffold does.
+    // Keep `created`/`updated` last, as Cratebase's scaffold does.
     let pos = c.fields.len() - 2;
     c.fields.splice(pos..pos, fields);
 }
@@ -269,7 +269,7 @@ async fn crud_round_trip_with_zero_values_and_autodate() {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()));
     assert!(!created.is_new());
 
-    // Every field's zero value, exactly as PocketBase reports it.
+    // Every field's zero value, exactly as Cratebase reports it.
     let json = created.to_json(SerializeOptions::default());
     assert_eq!(json["title"], "Created");
     assert_eq!(json["views"], 1);
@@ -358,7 +358,7 @@ async fn every_field_type_round_trips_through_its_column() {
     assert_eq!(v["published"], true);
     assert_eq!(v["contact"], "a@b.co");
     assert_eq!(v["site"], "https://example.com/x");
-    // Dates are normalized to UTC in PocketBase's format.
+    // Dates are normalized to UTC in Cratebase's format.
     assert_eq!(v["when"], "2024-05-05 10:30:00.000Z");
     assert_eq!(v["author"], author.id());
     assert_eq!(v["category"], "news");
@@ -901,7 +901,7 @@ async fn multi_relation_expands_to_an_array() {
 }
 
 #[tokio::test]
-async fn validation_codes_match_pocketbase() {
+async fn validation_codes_match_cratebase() {
     let db = fixture().await;
     let author = create(&db, "authors", json!({"name": "Ann"})).await;
 

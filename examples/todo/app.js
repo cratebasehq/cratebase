@@ -4,18 +4,21 @@
 // != ""`), so this one page exercises both the auth API and record CRUD +
 // realtime end to end.
 //
-// Imported via the bare specifier "pocketbase", resolved by the import map
-// in index.html to the official PocketBase JS SDK on esm.sh — no npm
-// install or build step needed. Cratebase's API is byte-compatible with
-// PocketBase v0.23+, so the official client works unchanged. See README.md.
-import PocketBase from "pocketbase";
+// Imported via the bare specifier "@cratebase/client", resolved by the
+// import map in index.html to the browser bundle `examples/serve.sh`
+// builds into examples/lib/ — no npm install in the example itself.
+// See README.md.
+import { createClient } from "@cratebase/client";
 
 const BASE_URL = "http://localhost:8090";
 const COLLECTION = "todos";
 const REMOVE_ANIMATION_MS = 220;
 
-const cb = new PocketBase(BASE_URL);
-const users = cb.collection("users");
+// The ticker below wraps `window.fetch` *after* the client exists, so hand
+// the client a thunk that resolves `window.fetch` per request instead of
+// the construction-time binding.
+const cb = createClient(BASE_URL, { fetch: (input, init) => window.fetch(input, init) });
+const users = cb.auth;
 const todos = cb.collection(COLLECTION);
 
 // ---------------------------------------------------------------------
@@ -143,28 +146,27 @@ async function handleAuthForm(form, action) {
 }
 
 function describeError(err) {
-  if (err && err.data && err.data.data) {
-    const fieldErrors = Object.entries(err.data.data)
+  if (err && err.response && err.response.data) {
+    const fieldErrors = Object.entries(err.response.data)
       .map(([field, info]) => `${field}: ${(info && info.message) || "invalid"}`)
       .join("; ");
     if (fieldErrors) return fieldErrors;
   }
-  if (err && err.data && err.data.message) return err.data.message;
+  if (err && err.response && err.response.message) return err.response.message;
   return err && err.message ? err.message : "Something went wrong.";
 }
 
 handleAuthForm(formLogin, async (data) => {
-  await users.authWithPassword(data.identity, data.password);
+  await users.signIn.password({ identity: data.identity, password: data.password });
 });
 
 handleAuthForm(formRegister, async (data) => {
-  await users.create({ email: data.email, password: data.password, passwordConfirm: data.passwordConfirm });
-  await users.authWithPassword(data.email, data.password);
+  await users.signUp({ email: data.email, password: data.password, passwordConfirm: data.passwordConfirm });
 });
 
 document.getElementById("btn-logout").addEventListener("click", () => {
-  cb.realtime.disconnect();
-  cb.authStore.clear();
+  cb.realtime.stop();
+  cb.auth.signOut();
 });
 
 // ---------------------------------------------------------------------
@@ -290,7 +292,7 @@ composerForm.addEventListener("submit", async (event) => {
 
 async function loadTodos() {
   setEmptyState("Loading…");
-  const result = await todos.getList(1, 200, { sort: "-created" });
+  const result = await todos.list({ page: 1, perPage: 200, sort: "-created" });
   listEl.innerHTML = "";
   for (const record of result.items) renderTodo(record);
   setEmptyState("No todos yet — add one above.");
@@ -335,15 +337,13 @@ async function bootTodos() {
 // ---------------------------------------------------------------------
 
 function renderAuthState() {
-  const authed = cb.authStore.isValid;
+  const authed = cb.auth.isValid;
   viewGuest.classList.toggle("hidden", authed);
   viewTodos.classList.toggle("hidden", !authed);
   whoamiEl.classList.toggle("hidden", !authed);
 
   if (authed) {
-    // `.record`, not the older `.model` — the official SDK renamed it and
-    // the alias is gone in the v0.28 the import map pins.
-    whoamiEmailEl.textContent = cb.authStore.record?.email || "";
+    whoamiEmailEl.textContent = cb.auth.record?.email || "";
   } else {
     setStatus("disconnected", "signed out");
     listEl.innerHTML = "";
@@ -352,13 +352,13 @@ function renderAuthState() {
 }
 
 let wasAuthed = false;
-cb.authStore.onChange(() => {
+cb.auth.onChange(() => {
   renderAuthState();
-  const authed = cb.authStore.isValid;
+  const authed = cb.auth.isValid;
   if (authed && !wasAuthed) {
     bootTodos();
   } else if (!authed && wasAuthed) {
-    cb.realtime.disconnect();
+    cb.realtime.stop();
   }
   wasAuthed = authed;
 });
@@ -366,5 +366,5 @@ cb.authStore.onChange(() => {
 // --- Boot -------------------------------------------------------------------
 
 renderAuthState();
-wasAuthed = cb.authStore.isValid;
+wasAuthed = cb.auth.isValid;
 if (wasAuthed) bootTodos();

@@ -1,5 +1,5 @@
 //! The `types.d.ts` file hook authors reference with
-//! `/// <reference path="../pb_data/types.d.ts" />`.
+//! `/// <reference path="../cb_data/types.d.ts" />`.
 
 use std::path::Path;
 

@@ -10,6 +10,81 @@ first real tagged release.
 
 ## [Unreleased]
 
+### BREAKING — Cratebase is now fully its own API
+
+Compatibility with the PocketBase wire format, file layout and SDKs has
+been removed. Cratebase is documented, tested and versioned as a standalone
+backend.
+
+- **Directory and file names** — `pb_data` → `cb_data`, `pb_hooks` →
+  `cb_hooks`, `pb_migrations` → `cb_migrations`, `pb_seed` → `cb_seed`,
+  `pb_public` → `cb_public`; hook files `*.pb.js` → `*.cb.js`.
+- **`PB_CONNECT` → `CB_CONNECT`** (the first event on the `/api/realtime` SSE stream).
+- **Built-in cron job ids** `__pbDBOptimize__`, `__pbMFACleanup__`,
+  `__pbOTPCleanup__`, `__pbLogsCleanup__`, `__pbAutoBackup__` →
+  `__cbDBOptimize__`, `__cbMFACleanup__`, `__cbOTPCleanup__`,
+  `__cbLogsCleanup__`, `__cbAutoBackup__`.
+- **Dropped**: the conformance suite, the PocketBase migration tool and
+  guide, and support for the third-party `pocketbase` JS SDK (use
+  `@cratebase/client`). **`@cratebase/extras` is removed**; its helpers are
+  built into `@cratebase/client` (`cb.vector`, `cb.llm`, `cb.mcp`,
+  `cb.queue`, `cb.presence`).
+
+**Upgrade checklist for an existing project**
+
+1. Stop the server and rename `pb_data`, `pb_hooks`, `pb_migrations`,
+   `pb_seed` (and `pb_public`) to their `cb_*` names; rename each hook file
+   from `*.pb.js` to `*.cb.js`.
+2. Update `CRATEBASE_DATA_DIR`, `CB_HOOKS_DIR`, `CB_MIGRATIONS_DIR`,
+   `CB_SEED_DIR`, `--dir` flags, Docker volume mounts and `.gitignore`
+   entries that mention the old names; any client parsing the realtime hello
+   must expect `CB_CONNECT` instead of `PB_CONNECT`.
+3. Replace the `pocketbase` and `@cratebase/extras` npm packages with
+   `@cratebase/client`, and any reference to the old cron job ids with the
+   `__cb*__` ids.
+4. Collection definitions must use the Cratebase shape: fields under
+   `fields` with flat options (`{"type":"text","max":100}`); a top-level
+   `schema` key or a per-field `options` object is now rejected with a 400.
+
+### Added
+
+- **Collection input validation** — `POST/PATCH /api/collections`,
+  `/api/collections/import` and `/api/schema/apply` reject a top-level
+  `schema` key and per-field `options` objects with a 400
+  (`validation_unknown_key`) that names the correct shape, instead of
+  silently creating a collection with no fields.
+- **`@cratebase/start`** — server helpers for TanStack Start:
+  `createCratebaseStart()` returns `client()`, `adminClient()` (API key),
+  `getUser()` with a single-flight session cache, `setSession`/`clearSession`
+  and `authMiddleware`/`freshAuthMiddleware`/`optionalAuthMiddleware`;
+  the session cookie is `Secure` when the request arrived over HTTPS.
+  `create-cratebase` gains a `tanstack-start` template.
+- **`@cratebase/client`** — `createClient(url, { token })` for a bearer
+  token or `cb_…` API key, and `authStore.exportCookie(name, { secure,
+  maxAge, sameSite, path })`.
+- **`@cratebase/schema`** — typed schema-as-code DSL (`defineSchema`,
+  `defineCollection`, field builders, `idx`, `collectionId`) that writes the
+  `schema.json` consumed by `cratebase dev`, `cratebase schema` and
+  `POST /api/schema/apply`.
+- **Fused search** — `?search=` combined with `?nearestTo=` now ranks by
+  reciprocal rank fusion of the full-text and vector lists (it used to ignore
+  `search`).
+- **Host mode** — `cratebase host serve --root ./projects` runs many isolated
+  projects (each with its own database, settings, hooks and workers) in one
+  process, routed by the `Host` header; `cratebase host new <name> --host <h>`
+  scaffolds a project's `project.env`. `$os.getenv` in hooks reads the
+  project's own variables. See the Host mode deployment guide.
+- **Real LLM usage ledger** — `_llm_usage` now records cached/reasoning
+  tokens, latency, finish reason, ok/error, surface/purpose/actor/session/
+  run/call ids and a `costUsd` computed from the per-model price table in
+  `settings.llm.prices` (USD per 1M tokens; `priceVersion` is stamped on
+  each row; set through `PATCH /api/settings`). `POST /api/llm/usage`
+  (superuser/API key) lets apps that call their provider directly log exact
+  usage, and `GET /api/llm/usage/summary?groupBy=model|surface|purpose|actor|day`
+  totals calls, tokens and cost; `cb.llm.logUsage`/`cb.llm.usageSummary` wrap
+  them. Migration `23_extend_llm_usage.rs` adds the columns to existing
+  databases.
+
 ### Fixed
 
 - **`create-cratebase` search box returned nothing while typing** —
@@ -26,7 +101,7 @@ one-command starter kits (`bun create cratebase`).
 ### Added
 
 - **JS job handlers** — `onQueueJob("name", (e) => {...})` in a
-  `pb_hooks/*.pb.js` file handles background jobs with the same claim,
+  `cb_hooks/*.cb.js` file handles background jobs with the same claim,
   retry and backoff as a Rust handler (a Rust handler for the same name
   wins). `$queue.enqueue(name, payload, { runAt, delay, maxAttempts,
   dedupeKey, priority })` is deferred past commit inside a record-write
@@ -64,8 +139,8 @@ one-command starter kits (`bun create cratebase`).
   timing-dependent. Single-node SQLite behaves as before.
 - **`create-cratebase`** — a scaffolding CLI (`bun create cratebase my-app` /
   `npm create cratebase@latest my-app`) with three templates (`nextjs`,
-  `vite-react`, `expo`), each shipping a `schema.json`, `pb_seed/` demo
-  data, a `pb_hooks/welcome.pb.js` signup email, and a `dev` script that
+  `vite-react`, `expo`), each shipping a `schema.json`, `cb_seed/` demo
+  data, a `cb_hooks/welcome.cb.js` signup email, and a `dev` script that
   runs `cratebase dev` and the frontend together. `nextjs`/`vite-react`
   wire up the full `@cratebase/client`/`@cratebase/react` surface (auth —
   password/OTP/magic-link/OAuth/TOTP — a realtime dashboard, file upload,
@@ -285,9 +360,9 @@ every setting is configurable. Highlights:
     TTL) and verified against the issuer's own JWKS (cached with rotation
     handling — a forced refresh retry on an unrecognized `kid`).
   - **Linked accounts**: `GET`/`DELETE
-    .../records/{id}/external-auths[/{provider}]` (PocketBase's
-    `listExternalAuths`/`unlinkExternalAuth` shape, owner-or-superuser),
-    with a check PocketBase doesn't have — unlinking refuses when it
+    .../records/{id}/external-auths[/{provider}]` (`listExternalAuths`/
+    `unlinkExternalAuth` shape, owner-or-superuser),
+    with an extra check — unlinking refuses when it
     would leave the record with no password, no other provider, and
     OTP/magic-link both disabled. SDK: `cb.auth.accounts.list()`/
     `.unlink(provider)`, plus `admin.listExternalAuths`/
@@ -405,7 +480,7 @@ every setting is configurable. Highlights:
   NOT EXISTS` with an optional schema; `DELETE` refuses `CASCADE` unless
   `?cascade=true` is passed. Every install/drop is audited. `$app.db().exec(sql,
   params?)` — a new write-capable escape hatch alongside the existing
-  read-only `$app.rawQuery` — lets a `pb_migrations/*.js` file version
+  read-only `$app.rawQuery` — lets a `cb_migrations/*.js` file version
   `CREATE EXTENSION postgis` the same way it versions schema changes.
 - **Custom SQL RPC**: the `_rpc` system collection (`name`, `sql` with
   `:name`-style named placeholders, a `params` json-schema-lite array,
@@ -509,13 +584,13 @@ every setting is configurable. Highlights:
   — and, more importantly, every other test built the same way — passed a
   bare `tempfile::tempdir()` root straight to `Config::memory`/
   `Config::for_data_dir`. `Config`'s `hooks_dir`/`migrations_dir` are
-  *siblings* of the data dir (`<data_dir>/../pb_hooks`), so a `data_dir`
+  *siblings* of the data dir (`<data_dir>/../cb_hooks`), so a `data_dir`
   that *is* the tempdir root resolves those siblings one level up, outside
   the tempdir entirely — into the real, shared OS temp directory, where
   they collide with every other test (and every other run) computing the
   same path. Fixed at the root: every affected test now nests the data
-  dir under the tempdir (`dir.path().join("pb_data")`), so `pb_hooks`/
-  `pb_migrations` land inside the tempdir like everything else the test
+  dir under the tempdir (`dir.path().join("cb_data")`), so `cb_hooks`/
+  `cb_migrations` land inside the tempdir like everything else the test
   creates, instead of leaking into `/tmp`.
 
 ## 0.3.0 — 2026-09-25
@@ -572,8 +647,8 @@ privilege-escalation, stored-XSS and data-loss paths.
 - **`cratebase typegen`**, `GET /api/typegen` and a `--dev` watch
   (`CB_TYPEGEN_OUT`); select unions, relation `expand` and Create/Update
   input types.
-- **`cratebase seed` / `cratebase reset`**, `pb_seed/` / `CB_SEED_DIR`.
-- **JS migrations actually run** (`pb_migrations/`, on boot and via
+- **`cratebase seed` / `cratebase reset`**, `cb_seed/` / `CB_SEED_DIR`.
+- **JS migrations actually run** (`cb_migrations/`, on boot and via
   `migrate up/down/collections/history-sync`), and `--automigrate`
   writes migration files.
 - **Postgres**: TLS via `sslmode` (including `verify-full`),
@@ -595,7 +670,7 @@ privilege-escalation, stored-XSS and data-loss paths.
   (create/update/remove with pending/error state and optional
   optimistic apply/rollback), and `usePresence` (wraps
   `client.presence.track`). `useAuth` now also returns `isLoading` and
-  `signIn`/`signOut`. `sdk/js/{client,react,extras}` joined the root bun
+  `signIn`/`signOut`. `sdk/js/{client,react}` joined the root bun
   workspace and CI (`bun run sdk:check`), with a new bun-test suite for
   every hook against a mocked client and a `tsc`-checked
   type-inference regression fixture.
@@ -607,7 +682,7 @@ privilege-escalation, stored-XSS and data-loss paths.
   embedded against stale pre-hook text, since `apply_embeddings` ran
   before any request hook had a chance to run at all. Embeddings are now
   computed inside `write_record`, after the create/update hook has run
-  and before the record is persisted, matching PocketBase's own
+  and before the record is persisted, matching the
   `onRecordCreate -> e.next() -> persist` ordering — fixed for
   create, update, and `POST /api/batch` alike.
 - **`settings.teams.enabled` needed a restart to take effect.**
@@ -618,7 +693,7 @@ privilege-escalation, stored-XSS and data-loss paths.
   bound and checks the current setting live, on every `_teams` create.
 - **The `--dev` hook-file watcher missed same-mtime content edits.**
   `spawn_watcher`'s change detection compared only path and modification
-  time; rewriting a `pb_hooks/*.pb.js` file's content while its mtime
+  time; rewriting a `cb_hooks/*.cb.js` file's content while its mtime
   happened to land on the same value as before (trivial editing a short
   string constant in place) went unnoticed, leaving the stale hook bound
   until some later, differently-timed edit came along. The watcher now
@@ -651,7 +726,7 @@ privilege-escalation, stored-XSS and data-loss paths.
   `POST auth-with-oauth2`; and session/ban/impersonation routes
   (sign-out, sessions list/revoke/revoke-others/revoke-all,
   stop-impersonating, ban/unban). The admin dashboard migrated off the
-  `pocketbase` npm SDK onto `@cratebase/client`, gained a Sessions
+  third-party npm SDK onto `@cratebase/client`, gained a Sessions
   settings panel and Impersonate/Ban actions on auth records, and its
   OAuth2 provider editor now shows the exact callback URL to register
   plus a per-provider (Google/GitHub/GitLab/Discord/Microsoft) setup
@@ -684,7 +759,7 @@ privilege-escalation, stored-XSS and data-loss paths.
   agent-memory pattern example).
 - **Third-party adoption pass**: contribution/security/changelog docs,
   the published `@cratebase/extras` npm package, GHCR Docker image
-  publishing, a PocketBase migration tool/guide, OSS community health
+  publishing, a migration guide for other backends, OSS community health
   files (Code of Conduct, issue/PR templates), and
   `@cratebase/schema-codegen` made publish-ready (schema-as-code to
   generated TypeScript types).
@@ -710,11 +785,9 @@ privilege-escalation, stored-XSS and data-loss paths.
   batch API, email verification/password reset/email-change confirmation,
   OTP passwordless login, MFA, superuser impersonation, new-location
   login alerts, first-run setup (no CLI required), and JS hooks
-  (PocketBase-parity `pb_hooks/*.pb.js` support) — closing conformance to
-  180/181 against the real PocketBase test suite.
+  (`cb_hooks/*.cb.js` support) — closing the remaining API gaps.
 - **Realtime (SSE)** (PR [#3](https://github.com/cratebasehq/cratebase/pull/3)):
-  `GET /api/realtime` subscriptions, reaching 7/7 realtime conformance
-  tests and 155/181 overall against the PocketBase SDK conformance suite.
+  `GET /api/realtime` subscriptions, reaching 7/7 realtime tests.
 - Manual macOS ARM64 build workflow (PR [#4](https://github.com/cratebasehq/cratebase/pull/4)).
 - Initial worktree/project revamp establishing the current crate layout
   (`crates/core`, `crates/db`, `crates/filter`, `crates/storage`,

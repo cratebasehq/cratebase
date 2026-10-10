@@ -16,7 +16,7 @@
 //!    built-in default as (1), rendered the same legacy way — so a
 //!    database with no customization and an intact `_emailTemplates`
 //!    seed, and one with the seed row deleted, both still send the
-//!    original PocketBase-style email.
+//!    original built-in email.
 //!
 //! This keeps every existing deployment's mail byte-for-byte unchanged
 //! unless it opts in, either by editing the collection's own template
@@ -303,7 +303,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }

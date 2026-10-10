@@ -2,10 +2,8 @@
 
 <!--
 Describe the change and the motivation. If it's a behavioral change to
-the REST API surface, note whether it matches real PocketBase behavior
-or is an intentional divergence — and if it's a divergence, where you
-documented it in tests/conformance/KNOWN_DIVERGENCES.md (see
-CONTRIBUTING.md's "compatibility rule").
+the REST API surface, call it out explicitly (it may break existing
+clients) and note it in CHANGELOG.md.
 -->
 
 ## How this was verified
@@ -22,8 +20,8 @@ measurements rather than unqualified claims). For example:
     TEST_POSTGRES_URL=postgres://... cargo test --workspace
     -> 412 passed; 0 failed
 
-    bun run conformance
-    -> 180 passed, 1 skipped against real PocketBase; 181 pass against Cratebase
+    bun run sdk:check
+    -> client, react, start and schema packages typecheck and pass
 -->
 
 ## Checklist
@@ -44,9 +42,6 @@ locally; CI will re-run all of it regardless.
 - [ ] If this changes dependencies: `cargo audit` and
       `bun audit --audit-level=high` are clean, or the new advisory is
       already tracked/ignored with a written reason (job `dependency-scan`)
-- [ ] If this touches the REST API surface: ran `bun run conformance`
-      locally against real PocketBase-compatible behavior (not wired into
-      CI yet — see CONTRIBUTING.md)
-- [ ] Any intentional PocketBase divergence is documented in
-      `tests/conformance/KNOWN_DIVERGENCES.md`
+- [ ] If this touches the REST API surface: `openapi.yaml` and the site's
+      REST reference pages are updated to match
 

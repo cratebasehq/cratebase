@@ -8,7 +8,7 @@
 //!
 //! A successful `PATCH` persists, swaps the in-memory settings and
 //! rebuilds everything derived from them (storage driver, mailer, the
-//! `__pbAutoBackup__` cron), so no restart is required.
+//! `__cbAutoBackup__` cron), so no restart is required.
 
 use axum::extract::State;
 use axum::routing::{get, post};
@@ -21,7 +21,7 @@ use crate::app::App;
 use crate::extract::{RequestInfo, RequireSuperuser};
 use crate::http_error::{ApiError, ApiJson, ApiResult};
 
-/// PocketBase's wrapper message for a rejected settings save.
+/// Wrapper message for a rejected settings save.
 const SAVE_FAILED: &str = "An error occurred while saving the new settings.";
 
 pub fn router() -> Router<App> {
@@ -84,7 +84,7 @@ async fn update(
     Ok(Json(app.settings().to_public_json()))
 }
 
-/// Field-level validation, reported as PocketBase's nested tree
+/// Field-level validation, reported as a nested tree
 /// (`data.meta.appName.code`).
 fn validate(s: &Settings) -> Result<(), ApiError> {
     let mut errors: Map<String, Value> = Map::new();
@@ -153,7 +153,7 @@ fn validate(s: &Settings) -> Result<(), ApiError> {
         add("s3", "bucket", codes::REQUIRED, "Cannot be blank.");
     }
 
-    // Rate-limit rules are a list, and PocketBase keys list errors by
+    // Rate-limit rules are a list, and list errors are keyed by
     // index (`data.rateLimits.rules["0"]`).
     let mut rule_errors = Map::new();
     for (index, rule) in s.rate_limits.rules.iter().enumerate() {
@@ -220,7 +220,7 @@ struct TestS3Body {
 }
 
 /// Round-trips a probe object through the selected filesystem.
-/// PocketBase reports failures as one multi-line message prefixed with
+/// Failures are reported as one multi-line message prefixed with
 /// `Failed to test the S3 filesystem.`, which the dashboard shows raw.
 async fn test_s3(
     State(app): State<App>,
@@ -233,7 +233,7 @@ async fn test_s3(
             settings.backups.s3.enabled,
             app.backups_storage().map_err(ApiError),
         ),
-        // PocketBase defaults to the record-file store.
+        // Defaults to the record-file store.
         _ => (settings.s3.enabled, Ok((*app.storage()).clone())),
     };
     let label = if body.filesystem == "backups" {
@@ -346,7 +346,7 @@ async fn test_email(
         _ => &collection.auth.verification_template,
     };
     // A test send has no real record behind it, so the placeholders get
-    // obviously-fake values, exactly as PocketBase does.
+    // obviously-fake values.
     let (subject, html) = cratebase_mailer::render_template(
         template,
         &[

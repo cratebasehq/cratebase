@@ -5,7 +5,7 @@ description: "Multipart upload, multi-file append/remove, thumbnails, and protec
 
 A `file` field accepts multipart uploads; local disk is the zero-config
 default, or point at any S3-compatible bucket. Multi-file fields support
-PocketBase's append/remove convention: a field named `field+` appends
+an append/remove convention: a field named `field+` appends
 newly uploaded files without disturbing the rest, `field-` removes named
 files (deleting their storage blobs, not just the JSON list entry), and
 an unsuffixed field name fully replaces. `?thumb=WxH` (and the

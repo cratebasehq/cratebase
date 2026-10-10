@@ -139,7 +139,7 @@ impl QueueHandle {
     /// is the only caller. Returns `false`, and leaves the existing
     /// handler (if any) untouched, when `queue` was already claimed by a
     /// Rust [`QueueHandle::register_handler`] call: "Rust handlers still
-    /// take precedence for their names" (spec) means a `pb_hooks` file
+    /// take precedence for their names" (spec) means a `cb_hooks` file
     /// can never shadow, say, the built-in mail-delivery queue. A second
     /// `onQueueJob` call for a name JS itself already owns *does* replace
     /// the handler, since that's exactly what a `--dev` hot reload needs
@@ -1017,7 +1017,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         ensure_collection(&app).await.expect("ensure collection");
         (app, dir)

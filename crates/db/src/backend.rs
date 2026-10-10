@@ -65,7 +65,7 @@ impl Backend {
 
     /// Booleans are stored as `0`/`1` integers on both backends and
     /// converted at the JSON boundary, so the filter compiler emits one
-    /// comparison for both and PocketBase-style view queries
+    /// comparison for both and view queries
     /// (`WHERE verified = 1`) keep working.
     pub fn bool_type(&self) -> &'static str {
         "INTEGER"

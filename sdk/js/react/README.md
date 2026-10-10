@@ -302,12 +302,12 @@ This package versions independently from the `cratebase` server binary and from
 `@cratebase/client` peer dependency it targets, not the server release cadence, is what actually
 constrains breaking changes here. Publishing is triggered by pushing a `react-v<version>` tag (see
 `.github/workflows/publish-react.yml`), kept deliberately separate from the server's own `v*`
-release tags and from `client-v*`/`extras-v*`, so a server or client release never forces an
+release tags and from `client-v*`, so a server or client release never forces an
 unrelated hooks publish, and a hooks hotfix never waits on one.
 
 ## Development
 
-This package is part of the root bun workspace (`sdk/js/client`, `sdk/js/react`, `sdk/js/extras`),
+This package is part of the root bun workspace (`sdk/js/client`, `sdk/js/react`, …),
 so `bun install` at the repo root sets it up too.
 
 ```

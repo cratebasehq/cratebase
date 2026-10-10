@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
- * Cratebase vs PocketBase benchmark driver.
+ * Cratebase benchmark driver.
  *
- * Runs the same fixed sequence of HTTP calls against a single running
- * server (either product — this script only speaks plain HTTP/JSON, it
- * does not import either SDK) and reports p50/p95/p99 latency plus
+ * Runs a fixed sequence of HTTP calls against a single running
+ * Cratebase server (this script only speaks plain HTTP/JSON, it does not
+ * import the SDK) and reports p50/p95/p99 latency plus
  * requests/sec per category+concurrency combination.
  *
- * Categories (the first four mirror https://github.com/pocketbase/benchmarks):
+ * Categories:
  *   - create:      insert records (also populates the DB for search)
  *   - auth:        repeated password logins against the built-in superuser
  *   - search:      paginated list requests, perPage=30, anonymous
@@ -41,7 +41,6 @@ interface Args {
   warmup: number;
   out?: string;
   label: string;
-  adminAuthPath: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -68,10 +67,6 @@ function parseArgs(argv: string[]): Args {
     warmup: Number(map.get("warmup") ?? 50),
     out: map.get("out"),
     label: map.get("label") ?? "server",
-    // Cratebase: /api/admins/auth-with-password. PocketBase: the
-    // _superusers auth collection's auth-with-password. Auto-detected
-    // below by probing, but can be forced with --admin-auth-path.
-    adminAuthPath: map.get("admin-auth-path") ?? "",
   };
 }
 
@@ -167,25 +162,11 @@ async function timedFetch(url: string, init: RequestInit): Promise<Sample> {
   }
 }
 
-async function detectAdminAuthPath(args: Args): Promise<string> {
-  if (args.adminAuthPath) return args.adminAuthPath;
-  const cratebasePath = "/api/admins/auth-with-password";
-  const res = await fetch(args.baseUrl + cratebasePath, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email: args.adminEmail, password: args.adminPassword }),
-  });
-  await res.arrayBuffer();
-  if (res.ok) return cratebasePath;
-  return "/api/collections/_superusers/auth-with-password";
-}
+const ADMIN_AUTH_PATH = "/api/collections/_superusers/auth-with-password";
 
-async function adminLogin(args: Args, path: string): Promise<{ token: string; body: unknown }> {
-  const isPb = path.includes("_superusers");
-  const body = isPb
-    ? { identity: args.adminEmail, password: args.adminPassword }
-    : { email: args.adminEmail, password: args.adminPassword };
-  const res = await fetch(args.baseUrl + path, {
+async function adminLogin(args: Args): Promise<{ token: string; body: unknown }> {
+  const body = { identity: args.adminEmail, password: args.adminPassword };
+  const res = await fetch(args.baseUrl + ADMIN_AUTH_PATH, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -227,9 +208,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   console.error(`[${args.label}] target ${args.baseUrl}`);
 
-  const adminAuthPath = await detectAdminAuthPath(args);
-  const { token: adminToken, body: loginBody } = await adminLogin(args, adminAuthPath);
-  console.error(`[${args.label}] admin auth path: ${adminAuthPath}`);
+  const { token: adminToken, body: loginBody } = await adminLogin(args);
 
   const recordsUrl = `${args.baseUrl}/api/collections/${args.collection}/records`;
   const results: CategoryResult[] = [];
@@ -270,7 +249,7 @@ async function main() {
 
   // --- AUTH ---------------------------------------------------------------
   const login = () =>
-    timedFetch(args.baseUrl + adminAuthPath, {
+    timedFetch(args.baseUrl + ADMIN_AUTH_PATH, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(loginBody),

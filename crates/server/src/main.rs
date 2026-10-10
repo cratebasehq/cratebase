@@ -1,5 +1,4 @@
-//! The `cratebase` binary. Flags mirror PocketBase's (spec §11) so an
-//! existing `pocketbase serve ...` command line keeps working.
+//! The `cratebase` binary (CLI flags: spec §11).
 
 use clap::{Parser, Subcommand};
 use cratebase_server::app::App;
@@ -40,14 +39,6 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
-    /// PocketBase-compatible alias of `superuser`.
-    #[command(hide = true)]
-    Admin {
-        #[command(subcommand)]
-        action: SuperuserAction,
-        #[arg(long = "dir", global = true)]
-        dir: Option<String>,
-    },
     /// Apply, revert and inspect migrations.
     Migrate {
         #[command(subcommand)]
@@ -62,18 +53,6 @@ enum Command {
         #[command(subcommand)]
         action: SchemaAction,
         #[arg(long = "dir", global = true)]
-        dir: Option<String>,
-    },
-    /// One-shot import of an existing PocketBase installation's
-    /// collections, records and files into this Cratebase instance. See
-    /// `docs/migrating-from-pocketbase.md`.
-    MigrateFromPocketbase {
-        /// PocketBase's data directory (what `pocketbase serve --dir`
-        /// pointed at); must contain `data.db` and, if any collection has
-        /// file fields, a `storage/` subdirectory.
-        pb_dir: String,
-        /// Cratebase's own data directory to migrate into.
-        #[arg(long = "dir")]
         dir: Option<String>,
     },
     /// Manage locally installed third-party WASM plugins (R&D
@@ -121,6 +100,35 @@ enum Command {
         #[arg(long = "dir", global = true)]
         dir: Option<String>,
     },
+    /// Run many isolated projects in one process, routed by `Host` header.
+    Host {
+        #[command(subcommand)]
+        action: HostAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HostAction {
+    /// Serve every project under `--root` (`<root>/<name>/project.env`).
+    Serve {
+        /// Directory holding one subdirectory per project.
+        #[arg(long, default_value = "./projects")]
+        root: std::path::PathBuf,
+        /// `host:port` to listen on.
+        #[arg(long, default_value = "0.0.0.0:8090")]
+        http: String,
+    },
+    /// Create `<root>/<name>/project.env` with a fresh secret and setup token.
+    New {
+        /// Project name (`^[a-z0-9][a-z0-9_-]{0,31}$`).
+        name: String,
+        /// Host name the project answers to.
+        #[arg(long)]
+        host: String,
+        /// Directory holding one subdirectory per project.
+        #[arg(long, default_value = "./projects")]
+        root: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -154,7 +162,7 @@ struct DevArgs {
     /// `host:port` to listen on.
     #[arg(long = "http")]
     http: Option<String>,
-    /// Data directory (default `./pb_data`).
+    /// Data directory (default `./cb_data`).
     #[arg(long = "dir")]
     dir: Option<String>,
     /// Schema-as-code JSON file to apply additively. Default: `./schema.json`
@@ -162,7 +170,7 @@ struct DevArgs {
     #[arg(long = "schema")]
     schema: Option<String>,
     /// A seed file or directory (see `cratebase seed --help`). Default:
-    /// `CB_SEED_DIR`/`./pb_seed` if it exists.
+    /// `CB_SEED_DIR`/`./cb_seed` if it exists.
     #[arg(long = "seed")]
     seed: Option<String>,
     /// Where to write generated TypeScript types. Default:
@@ -189,7 +197,7 @@ struct ServeArgs {
     /// `host:port` for TLS. Not implemented yet; use a reverse proxy.
     #[arg(long = "https")]
     https: Option<String>,
-    /// Data directory (default `./pb_data`).
+    /// Data directory (default `./cb_data`).
     #[arg(long = "dir")]
     dir: Option<String>,
     /// Directory served at `/` instead of the embedded dashboard.
@@ -252,7 +260,7 @@ enum MigrateAction {
     /// Apply every unapplied migration.
     Up,
     /// Revert the last `n` migrations (default 1) from each of the core
-    /// and JS (`pb_migrations`) histories independently — they keep
+    /// and JS (`cb_migrations`) histories independently — they keep
     /// separate ledgers, so `n` is not a count across a merged history.
     Down { n: Option<usize> },
     /// Scaffold a new migration file.
@@ -289,18 +297,27 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => serve(args).await,
         Command::Dev(args) => dev_cmd(args).await,
-        Command::Superuser { action, dir } | Command::Admin { action, dir } => {
-            superuser(dir, action).await
-        }
+        Command::Superuser { action, dir } => superuser(dir, action).await,
         Command::Migrate { action, dir } => migrate(dir, action).await,
         Command::Schema { action, dir } => schema(dir, action).await,
-        Command::MigrateFromPocketbase { pb_dir, dir } => {
-            migrate_from_pocketbase(dir, pb_dir).await
-        }
         Command::Plugin { action, dir } => plugin_cmd(dir, action).await,
         Command::Typegen { out, dir } => typegen(dir, out).await,
         Command::Seed { path, upsert, dir } => seed_cmd(dir, path, upsert).await,
         Command::Reset { yes, dir } => reset_cmd(dir, yes).await,
+        Command::Host { action } => host_cmd(action).await,
+    }
+}
+
+async fn host_cmd(action: HostAction) -> anyhow::Result<()> {
+    match action {
+        HostAction::Serve { root, http } => cratebase_server::host::serve(root, http).await,
+        HostAction::New { name, host, root } => {
+            let token = cratebase_server::host::new_project(&root, &name, &host)?;
+            println!("Project created: {}", root.join(&name).display());
+            println!("Setup URL: https://{host}/_/login?token={token}");
+            println!("Setup token: {token}");
+            Ok(())
+        }
     }
 }
 
@@ -508,7 +525,7 @@ fn print_dev_banner(app: &App, report: &cratebase_server::dev::DevReport) {
 /// no database, no running server — so `install` against a data
 /// directory a live server is currently serving takes effect the next
 /// time that server restarts, exactly like dropping a file into
-/// `pb_hooks/` does.
+/// `cb_hooks/` does.
 async fn plugin_cmd(dir: Option<String>, action: PluginAction) -> anyhow::Result<()> {
     let data_dir = config_for(dir).data_dir;
     match action {
@@ -754,7 +771,7 @@ async fn migrate(dir: Option<String>, action: MigrateAction) -> anyhow::Result<(
     Ok(())
 }
 
-/// PocketBase's `migrate create` writes a JS file the JS runtime
+/// `migrate create` writes a JS file the JS runtime
 /// executes; the CLI only has to lay down the skeleton.
 fn write_migration_stub(app: &App, name: &str) -> anyhow::Result<std::path::PathBuf> {
     let dir = std::path::Path::new(&app.config().migrations_dir);
@@ -766,7 +783,7 @@ fn write_migration_stub(app: &App, name: &str) -> anyhow::Result<std::path::Path
     let path = dir.join(format!("{}_{}.js", chrono::Utc::now().timestamp(), slug));
     std::fs::write(
         &path,
-        "/// <reference path=\"../pb_data/types.d.ts\" />\nmigrate((app) => {\n  // up\n}, (app) => {\n  // down\n});\n",
+        "/// <reference path=\"../cb_data/types.d.ts\" />\nmigrate((app) => {\n  // up\n}, (app) => {\n  // down\n});\n",
     )?;
     Ok(path)
 }
@@ -897,72 +914,6 @@ async fn typegen(dir: Option<String>, out: Option<String>) -> anyhow::Result<()>
             std::fs::write(DEFAULT_TYPEGEN_OUT, &generated)?;
             println!("wrote types to {DEFAULT_TYPEGEN_OUT}");
         }
-    }
-    Ok(())
-}
-
-/// `cratebase migrate-from-pocketbase <pb_dir>`. Bootstraps a target
-/// Cratebase instance (creating it fresh if `--dir` is new) and imports
-/// `pb_dir`'s collections, records and files into it. See
-/// `crates/server/src/pocketbase_migrate.rs` for the mechanics and
-/// `docs/migrating-from-pocketbase.md` for what does and doesn't transfer.
-async fn migrate_from_pocketbase(dir: Option<String>, pb_dir: String) -> anyhow::Result<()> {
-    let app = App::new(config_for(dir));
-    app.bootstrap().await?;
-
-    let report = cratebase_server::pocketbase_migrate::run(&app, &pb_dir).await?;
-
-    println!("collections created: {}", report.collections_created.len());
-    for name in &report.collections_created {
-        println!("  + {name}");
-    }
-    println!(
-        "collections updated (existing schema, fields merged): {}",
-        report.collections_updated.len()
-    );
-    for name in &report.collections_updated {
-        println!("  ~ {name}");
-    }
-    if !report.collections_skipped_system.is_empty() {
-        println!(
-            "PocketBase system collections skipped (already exist identically in Cratebase, or are ephemeral auth state not carried across): {}",
-            report.collections_skipped_system.join(", ")
-        );
-    }
-    if !report.unsupported_fields.is_empty() {
-        println!("fields with no Cratebase equivalent (N/A, dropped):");
-        for f in &report.unsupported_fields {
-            println!("  ! {}.{} (type: {})", f.collection, f.field, f.field_type);
-        }
-    }
-    if !report.oauth2_needs_reconfiguration.is_empty() {
-        println!(
-            "OAuth2 providers NOT migrated (client secrets are never carried across instances) — reconfigure manually: {}",
-            report.oauth2_needs_reconfiguration.join(", ")
-        );
-    }
-    println!("records migrated:");
-    for (name, count) in &report.records_migrated {
-        println!("  {name}: {count}");
-    }
-    println!("files copied: {}", report.files_copied);
-    if !report.failed_files.is_empty() {
-        println!("files that failed to copy:");
-        for f in &report.failed_files {
-            println!(
-                "  ! {}/{}/{}: {}",
-                f.collection, f.record_id, f.filename, f.error
-            );
-        }
-    }
-
-    app.terminate(false).await;
-
-    if !report.failed_files.is_empty() {
-        anyhow::bail!(
-            "migration completed with {} file copy failure(s); see above",
-            report.failed_files.len()
-        );
     }
     Ok(())
 }

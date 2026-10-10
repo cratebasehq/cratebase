@@ -10,7 +10,7 @@ model behind these two endpoints.
 
 ### `GET /realtime` — opens an SSE stream
 
-`Content-Type: text/event-stream`. The first event, `PB_CONNECT`,
+`Content-Type: text/event-stream`. The first event, `CB_CONNECT`,
 carries `{ "clientId": "..." }`. Every subsequent `message` event carries
 `{ "action": "create" | "update" | "delete", "record": { ... } }` for
 whatever topics the client has subscribed to. The connection stays open

@@ -1,10 +1,17 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "{{PROJECT_NAME}}",
-  description: "Built with create-cratebase.",
+  description: "A Next.js app on Cratebase.",
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f6f4ef" },
+    { media: "(prefers-color-scheme: dark)", color: "#16181d" },
+  ],
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -25,6 +25,9 @@ dependencies and run `git init`) — or skip all of them non-interactively:
 bun create cratebase my-app --template nextjs --pm bun --yes
 ```
 
+Use `--template tanstack-start` for a TanStack Start app wired with
+[`@cratebase/start`](/docs/sdk/start/).
+
 Then:
 
 ```sh
@@ -52,6 +55,8 @@ Cratebase instance within a minute of running the first command.
 | Notifications bell | ✅ `useNotifications` | ✅ | not included — same API, see the template's README |
 | Rendering | SSR-safe `CratebaseProvider` boundary | Client-only SPA | Native + web (SPA export) |
 
+`tanstack-start` is a TanStack Start app that uses [`@cratebase/start`](/docs/sdk/start/) for its httpOnly session cookie and server-function auth middleware.
+
 `nextjs` and `vite-react` ship the full feature set: password/OTP/magic-link
 sign-in with OAuth buttons (rendered only for providers you've actually
 configured) and TOTP challenge handling, a protected dashboard with a
@@ -69,10 +74,10 @@ Every template ships with:
   searchable; an optional `cover` file field; an `owner` relation), scoped
   with `owner = @request.auth.id` rules — see
   [Schema as code](/docs/extending/schema-as-code/).
-- **`pb_seed/`** — a demo user (`demo@example.com` / `password123`) and a
+- **`cb_seed/`** — a demo user (`demo@example.com` / `password123`) and a
   couple of seeded notes, applied once on an empty database — see
   [Seeding data](/docs/getting-started/first-run/#seeding-data).
-- **`pb_hooks/welcome.pb.js`** — emails the built-in `welcome`
+- **`cb_hooks/welcome.cb.js`** — emails the built-in `welcome`
   [email template](/docs/email/templates/) to every new signup via
   `$mails.send`.
 - **`.env.example`**, a `dev` script that runs `cratebase dev` and the

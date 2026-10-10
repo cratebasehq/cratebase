@@ -6,7 +6,7 @@
 //! [`Join`]s it depends on; this module is what turns those into a
 //! runnable statement. Joins are deduplicated by [`Join::key`] and force
 //! `SELECT DISTINCT`, because a `LEFT JOIN` onto a back-relation
-//! multiplies the driving row (PocketBase does exactly the same).
+//! multiplies the driving row (Cratebase does exactly the same).
 
 use cratebase_core::{codes, Collection, FieldError};
 use cratebase_filter::{
@@ -195,7 +195,7 @@ impl Query {
 }
 
 /// An unusable `sort` is a plain `400` with an empty `data` object, not
-/// a per-field validation error: PocketBase answers
+/// a per-field validation error: Cratebase answers
 /// `?sort=nope` with `{"status":400,"message":"Something went wrong
 /// while processing your request.","data":{}}`
 /// (`tests/conformance/records.test.ts`). Routing it through
@@ -205,7 +205,7 @@ fn invalid_sort(path: &str) -> DbError {
     DbError::Filter(FilterError::UnknownField(path.to_string()))
 }
 
-/// Compile PocketBase's `sort` parameter into an `ORDER BY` list, plus any
+/// Compile Cratebase's `sort` parameter into an `ORDER BY` list, plus any
 /// parameters it bound (only ever non-empty for a `geoDistance(...)` sort
 /// call, the one `sort` construct with literal arguments of its own — see
 /// below). `param_offset` is where those parameters start (1-based `$n`),
@@ -246,7 +246,7 @@ pub fn order_by(
             return Err(invalid_sort(token));
         }
         parts.push(match path {
-            // PocketBase ignores the direction of `@random`.
+            // Cratebase ignores the direction of `@random`.
             "@random" => "RANDOM()".to_string(),
             "@rowid" => format!("{} {direction}", rowid_expr(resolver)),
             _ if path.contains('(') => {
@@ -406,7 +406,7 @@ pub fn in_placeholders(start: usize, count: usize) -> String {
 ///
 /// SQLite reports `table.column`; Postgres reports the index name, which
 /// only maps back to a column through the collection's own `indexes[]`
-/// (PocketBase names them `idx_<hash>_<collection>`, so the name alone is
+/// (Cratebase names them `idx_<hash>_<collection>`, so the name alone is
 /// not enough). Falling back to the heuristic in [`crate::error`] keeps
 /// something useful when neither matches.
 pub fn unique_violation(collection: &Collection, detail: &str) -> DbError {

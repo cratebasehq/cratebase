@@ -96,7 +96,7 @@ jobs:
         working-directory: web/email
 
   sdk:
-    name: SDK (sdk/js/{client,react,extras})
+    name: SDK (sdk/js/{client,react,start,schema})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -181,8 +181,8 @@ jobs:
           bun-version: 1.4.0
       - run: bun install
       # npm-registry advisory database against the committed `bun.lock`
-      # — covers `web/admin`, `web/email`, `tests/conformance`, and
-      # `sdk/js/{client,react,extras}` (see the root `package.json`
+      # — covers `web/admin`, `web/email`, `packages/create-cratebase`, and
+      # `sdk/js/{client,react,start,schema}` (see the root `package.json`
       # workspace list) in one pass.
       - run: bun audit --audit-level=high
 

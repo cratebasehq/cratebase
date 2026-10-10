@@ -3,8 +3,9 @@
 @theme {
   --color-ink: #16181d;
   --color-paper: #f6f4ef;
-  --color-accent: #e8622c;
-  --color-accent-dark: #ff8552;
+  --color-accent: #d9531e;
+  --color-accent-dark: #b8430f;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 }
 
 :root {
@@ -14,6 +15,8 @@
 body {
   background: var(--color-paper);
   color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -21,6 +24,12 @@ body {
     background: var(--color-ink);
     color: var(--color-paper);
   }
+}
+
+/* Visible keyboard focus everywhere, not just on inputs. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .card {
@@ -39,5 +48,23 @@ body {
 }
 
 .input {
-  @apply w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none ring-[var(--color-accent)] focus:ring-2 dark:border-white/15 dark:bg-black/30 dark:text-white;
+  @apply w-full rounded-lg border border-black/15 bg-white px-3 py-2 text-sm text-black outline-none ring-[var(--color-accent)] placeholder:text-black/40 focus:ring-2 dark:border-white/15 dark:bg-black/30 dark:text-white dark:placeholder:text-white/40;
+}
+
+.muted {
+  @apply text-black/60 dark:text-white/60;
+}
+
+.error-text {
+  @apply text-sm text-red-600 dark:text-red-400;
+}
+
+.skeleton {
+  @apply animate-pulse rounded-xl bg-black/5 dark:bg-white/10;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
 }

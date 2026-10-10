@@ -60,12 +60,12 @@ detection on the SFX stem vs. the 163 non-swell cues).
 ### 3 worst problems
 1. **44.0 s notification rows vanish** when the panel joins the wall (its sub-timeline restarted) — a continuity pop.
 2. **Mastering used loudnorm's dynamic mode** (true-peak constraint forced it), which can pump the mix.
-3. **9:16 only reviewed as stills** — data chapter framing, 10.47× clipping, CTA chips off-frame and PocketBase code overflow were found and fixed from stills; the vertical cut still needs a full-render round.
+3. **9:16 only reviewed as stills** — data chapter framing, headline number clipping, CTA chips off-frame and SDK snippet overflow were found and fixed from stills; the vertical cut still needs a full-render round.
 
 ### Fixes
 1. The wall continues the solo's state: read rows stay on screen and re-arriving notifications light their row and badge up again.
 2. Linear mastering: measured static gain to −14 LUFS, then a 4× oversampled look-ahead limiter → −14.2 LUFS, −1.7 dBTP.
-3. Portrait-specific ROIs (names → types rack, 250 px rule ROI, narrower record columns), tabular-width probe for 10.47×, line-broken PocketBase snippet, lockup raised. Full 9:16 render is round 3.
+3. Portrait-specific ROIs (names → types rack, 250 px rule ROI, narrower record columns), tabular-width probe for the headline number, line-broken SDK snippet, lockup raised. Full 9:16 render is round 3.
 
 ## v2 · Round 3 — final 60 fps masters (16:9 and 9:16) + delivery encodes
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the local Cratebase server for development: `cratebase dev` creates
 // the data directory, provisions a superuser, applies ./schema.json,
-// seeds ./pb_seed/ on a first run, and keeps ./cratebase-types.d.ts up to
+// seeds ./cb_seed/ on a first run, and keeps ./cratebase-types.d.ts up to
 // date — all in one command. See https://cratebase.dev/docs/getting-started/first-run/.
 //
 // This wrapper's only job beyond that is to fail with a helpful message

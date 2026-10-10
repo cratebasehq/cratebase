@@ -1,43 +1,34 @@
 ---
 /**
- * Grouped horizontal bar chart: Cratebase vs PocketBase req/s, from the
- * idle-host run recorded in benchmarks/README.md (2026-09-04). Two-entity
- * comparison, so color is assigned by entity (ink = Cratebase, a muted
- * outline = PocketBase) and held fixed across every row — never by rank,
- * never re-painted if rows are reordered. Direct labels replace a legend
- * for "which bar is which" is still spelled out once, since bars aren't
- * colored by the brand's reserved orange (that's illustrations/mark-only
- * per tokens.css — a chart's data-ink stays in ink/neutral tokens).
- * A full data table ships alongside for anyone who wants exact numbers
- * or is using a screen reader / print / forced-colors mode.
+ * Horizontal bar chart of Cratebase req/s, from the idle-host run recorded
+ * in benchmarks/README.md (2026-09-04). Data-ink stays in the neutral/orange
+ * chart tokens used by the swatch. A full data table ships alongside for
+ * exact numbers, screen readers, print and forced-colors mode.
  */
 interface Row {
   category: string;
   detail: string;
   conc: number;
   cb: number;
-  pb: number;
-  ratio: string;
 }
 const rows: Row[] = [
-  { category: "search", detail: "GET .../records, perPage=30", conc: 50, cb: 49986, pb: 4774, ratio: "10.47x" },
-  { category: "search-auth", detail: "same, authenticated", conc: 100, cb: 38768, pb: 3989, ratio: "9.72x" },
-  { category: "search-wide", detail: "perPage=200", conc: 100, cb: 16414, pb: 1924, ratio: "8.53x" },
-  { category: "create", detail: "POST .../records", conc: 100, cb: 11960, pb: 6606, ratio: "1.81x" },
-  { category: "delete", detail: "DELETE .../records/:id", conc: 100, cb: 11321, pb: 5030, ratio: "2.25x" },
+  { category: "search", detail: "GET .../records, perPage=30", conc: 50, cb: 49986 },
+  { category: "search-auth", detail: "same, authenticated", conc: 100, cb: 38768 },
+  { category: "search-wide", detail: "perPage=200", conc: 100, cb: 16414 },
+  { category: "create", detail: "POST .../records", conc: 100, cb: 11960 },
+  { category: "delete", detail: "DELETE .../records/:id", conc: 100, cb: 11321 },
 ];
-const max = Math.max(...rows.flatMap((r) => [r.cb, r.pb]));
+const max = Math.max(...rows.map((r) => r.cb));
 const fmt = (n: number) => n.toLocaleString("en-US");
 ---
 
 <div class="bench-chart">
   <div class="bench-legend">
     <span class="legend-item"><i class="swatch swatch-cb"></i>Cratebase</span>
-    <span class="legend-item"><i class="swatch swatch-pb"></i>PocketBase</span>
     <span class="legend-note">requests/sec, higher is better — median of 3 runs</span>
   </div>
 
-  <div class="bench-rows" role="img" aria-label="Bar chart comparing Cratebase and PocketBase throughput across five request categories; see the data table below for exact figures.">
+  <div class="bench-rows" role="img" aria-label="Bar chart of Cratebase throughput across five request categories; see the data table below for exact figures.">
     {
       rows.map((r) => (
         <div class="bench-row">
@@ -50,12 +41,7 @@ const fmt = (n: number) => n.toLocaleString("en-US");
               <div class="bar bar-cb" style={`--v:${r.cb / max}`} title={`Cratebase: ${fmt(r.cb)} req/s`}></div>
               <span class="bar-value mono">{fmt(r.cb)}</span>
             </div>
-            <div class="bar-track">
-              <div class="bar bar-pb" style={`--v:${r.pb / max}`} title={`PocketBase: ${fmt(r.pb)} req/s`}></div>
-              <span class="bar-value mono muted">{fmt(r.pb)}</span>
-            </div>
           </div>
-          <div class="bench-ratio mono">{r.ratio}</div>
         </div>
       ))
     }
@@ -65,9 +51,9 @@ const fmt = (n: number) => n.toLocaleString("en-US");
     <summary>View as a data table</summary>
     <div class="bench-table-scroll">
     <table class="bench-table">
-      <caption class="sr-only">Cratebase vs PocketBase requests per second by category</caption>
+      <caption class="sr-only">Cratebase requests per second by category</caption>
       <thead>
-        <tr><th scope="col">Category</th><th scope="col">Concurrency</th><th scope="col">Cratebase req/s</th><th scope="col">PocketBase req/s</th><th scope="col">Ratio</th></tr>
+        <tr><th scope="col">Category</th><th scope="col">Concurrency</th><th scope="col">Cratebase req/s</th></tr>
       </thead>
       <tbody>
         {rows.map((r) => (
@@ -75,8 +61,6 @@ const fmt = (n: number) => n.toLocaleString("en-US");
             <td class="mono">{r.category}</td>
             <td class="mono">{r.conc}</td>
             <td class="mono">{fmt(r.cb)}</td>
-            <td class="mono">{fmt(r.pb)}</td>
-            <td class="mono ratio-cell">{r.ratio}</td>
           </tr>
         ))}
       </tbody>
@@ -112,14 +96,8 @@ const fmt = (n: number) => n.toLocaleString("en-US");
   .swatch-cb {
     background: #e0692a;
   }
-  .swatch-pb {
-    background: #a3afbc;
-  }
   :root[data-theme="dark"] .swatch-cb {
     background: #d9652a;
-  }
-  :root[data-theme="dark"] .swatch-pb {
-    background: #5f7389;
   }
   .legend-note {
     color: var(--color-text-secondary);
@@ -132,7 +110,7 @@ const fmt = (n: number) => n.toLocaleString("en-US");
   }
   .bench-row {
     display: grid;
-    grid-template-columns: 10rem 1fr 4.5rem;
+    grid-template-columns: 10rem 1fr;
     gap: 1rem;
     align-items: center;
   }
@@ -169,32 +147,14 @@ const fmt = (n: number) => n.toLocaleString("en-US");
   .bar-cb {
     background: #e0692a;
   }
-  .bar-pb {
-    background: #a3afbc;
-  }
   :root[data-theme="dark"] .bar-cb {
     background: #d9652a;
-  }
-  :root[data-theme="dark"] .bar-pb {
-    background: #5f7389;
   }
   .bar-value {
     font-size: 0.76rem;
     font-weight: 600;
     color: var(--color-text);
     white-space: nowrap;
-  }
-  .bar-value.muted {
-    font-weight: 400;
-    color: var(--color-text-secondary);
-  }
-  .bench-ratio {
-    font-family: var(--font-display);
-    font-size: 1.3rem;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    text-align: right;
-    color: var(--color-ink);
   }
 
   .bench-table-toggle {
@@ -222,9 +182,6 @@ const fmt = (n: number) => n.toLocaleString("en-US");
     padding: 0.45rem 0.7rem;
     border-bottom: 1px solid var(--color-border);
   }
-  .ratio-cell {
-    font-weight: 700;
-  }
   .sr-only {
     position: absolute;
     width: 1px;
@@ -235,16 +192,11 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 
   @media (max-width: 640px) {
     .bench-row {
-      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr);
       gap: 0.4rem 1rem;
     }
     .bench-bars {
-      grid-column: 1 / -1;
       grid-row: 2;
-    }
-    .bench-ratio {
-      grid-column: 2;
-      grid-row: 1;
     }
   }
 </style>

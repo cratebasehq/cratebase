@@ -1,0 +1,2 @@
+# Browser bundle of @cratebase/client, built by examples/serve.sh.
+lib/cratebase-client.js

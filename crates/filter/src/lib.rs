@@ -1,4 +1,4 @@
-//! PocketBase's filter / API-rule expression language for Cratebase.
+//! Cratebase's filter / API-rule expression language.
 //!
 //! Parses strings like
 //!
@@ -26,7 +26,7 @@
 //!   `@collection.name.path`.
 //! * Function calls: `geoDistance(lonA, latA, lonB, latB)`.
 //!
-//! # Semantics the compiler mirrors from PocketBase
+//! # Compiler semantics
 //!
 //! * `null` and `""` are the same "empty" value; `!=` also matches
 //!   `NULL` columns.
@@ -46,7 +46,7 @@
 //!   difference matters on an API rule, where "any" is the permissive
 //!   reading.
 //! * `:length` on a single-valued path is ignored rather than rejected,
-//!   which is what PocketBase does.
+//!   which is what Cratebase does.
 //!
 //! The host implements [`Resolver`] to supply the schema and the request
 //! context; [`parse_cached`] keeps parsed rules in a bounded LRU.

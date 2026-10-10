@@ -1,9 +1,7 @@
-/** Cratebase-only endpoints with no PocketBase equivalent: vector
- * search, the LLM chat gateway, MCP tool schemas, the durable job queue,
- * a client-side presence pattern, and custom SQL RPC. Written against
- * the minimal `Sender` shape rather than `Transport` directly, so
- * `@cratebase/extras` (which wraps the official `pocketbase` client's
- * `pb.send`) can reuse these implementations without a second copy. */
+/** Cratebase-specific endpoints: vector search, the LLM chat gateway,
+ * MCP tool schemas, the durable job queue, a client-side presence
+ * pattern, and custom SQL RPC. Written against the minimal `Sender`
+ * shape rather than `Transport` directly. */
 
 import type { RealtimeClient } from "./realtime.js";
 import type { ListResult, RecordModel } from "./types.js";
@@ -204,7 +202,7 @@ export interface EnqueuedJob {
 /** `cb.queue.enqueue(queue, payload, options)` — `POST /api/queue/enqueue`
  * (the `POST /api/plugins/queue/enqueue` alias still works server-side,
  * but this SDK always calls the canonical route). Superuser or API key
- * — the same trust tier as `_cron_jobs`/`_webhooks`: `pb.authStore` needs
+ * — the same trust tier as `_cron_jobs`/`_webhooks`: the client needs
  * a `_superusers` session, or an API key header, before calling this.
  * Works even while `settings.queue.enabled` is off; the job just sits
  * `pending` until an operator turns processing on. */
@@ -290,6 +288,67 @@ export interface SendMailResult {
  * superuser/API key, or 5 for anyone else. */
 export async function sendMail(sender: Sender, options: SendMailOptions): Promise<SendMailResult> {
   return sender.send<SendMailResult>("/api/mails/send", { method: "POST", body: options });
+}
+
+export interface LogLlmUsageOptions {
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  tokensCached?: number;
+  tokensReasoning?: number;
+  latencyMs?: number;
+  ttftMs?: number;
+  finishReason?: string;
+  ok?: boolean;
+  error?: string;
+  surface?: string;
+  purpose?: string;
+  actor?: string;
+  sessionId?: string;
+  runId?: string;
+  callId?: string;
+  source?: string;
+  note?: string;
+}
+
+export interface LogLlmUsageResult {
+  id: string;
+  /** `null` when the model has no entry in `settings.llm.prices`. */
+  costUsd: number | null;
+}
+
+/** `POST /api/llm/usage` — records one call in the `_llm_usage` ledger;
+ * the server prices it from `settings.llm.prices`. Superuser/API key only. */
+export async function logLlmUsage(sender: Sender, options: LogLlmUsageOptions): Promise<LogLlmUsageResult> {
+  return sender.send<LogLlmUsageResult>("/api/llm/usage", { method: "POST", body: options });
+}
+
+export interface LlmUsageSummaryOptions {
+  groupBy?: "model" | "surface" | "purpose" | "actor" | "day";
+  /** ISO timestamp, compared to `created`. */
+  from?: string;
+  to?: string;
+}
+
+export interface LlmUsageSummaryItem {
+  key: string;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+}
+
+export interface LlmUsageSummaryResult {
+  items: LlmUsageSummaryItem[];
+}
+
+/** `GET /api/llm/usage/summary` — ledger totals grouped by `groupBy`
+ * (default `model`), highest cost first. Superuser/API key only. */
+export async function llmUsageSummary(sender: Sender, options: LlmUsageSummaryOptions = {}): Promise<LlmUsageSummaryResult> {
+  return sender.send<LlmUsageSummaryResult>("/api/llm/usage/summary", {
+    method: "GET",
+    query: { groupBy: options.groupBy, from: options.from, to: options.to },
+  });
 }
 
 export type PreviewMailOptions = Omit<SendMailOptions, "to" | "cc" | "bcc" | "from" | "replyTo">;

@@ -36,8 +36,8 @@ operand that already contains a literal `%` is treated as a hand-written
 LIKE pattern and used verbatim rather than re-escaped.
 
 `null` and `""` (empty string) are the same "empty" value on both sides
-of a comparison; `!=` also matches SQL `NULL` columns, matching
-PocketBase's own semantics rather than three-valued SQL logic.
+of a comparison; `!=` also matches SQL `NULL` columns, using
+Cratebase's own semantics rather than three-valued SQL logic.
 
 ## The `?` "any of" prefix — read this before using it
 
@@ -69,7 +69,7 @@ modifier:
 | Modifier | Effect |
 | --- | --- |
 | `:isset` | True if the path resolves to a non-null value at all — the only way to test presence independent of a value comparison. |
-| `:length` | Compares the element count of a multi-value field instead of its contents (`tags:length > 0`). Ignored (not rejected) on a single-valued path, matching PocketBase. |
+| `:length` | Compares the element count of a multi-value field instead of its contents (`tags:length > 0`). Ignored (not rejected) on a single-valued path. |
 | `:each` | Unpacks a multi-value field so the comparison applies per-element instead of to the raw JSON text — required to make `?=`-style "contains" queries work on a plain array column. |
 | `:lower` | Lower-cases both sides before comparing, for a case-insensitive `=`/`!=` (`~` is already case-insensitive). |
 

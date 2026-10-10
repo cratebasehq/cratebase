@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Copy, FileText, Plus, Trash2 } from "lucide-react";
+import { Copy, Eye, FileText, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cb, describeFailure } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
-import { Badge } from "@/components/ui/badge";
+import { DataTableToolbar } from "@/components/layout/data-table-toolbar";
+import { StatusBadge } from "@/components/layout/stat-card";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,10 +17,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { SettingsPage } from "@/components/settings/settings-form";
+import { TimeAgo } from "@/components/settings/time-ago";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** An `_emailTemplates` record, as `crates/server/src/mail_templates.rs`
@@ -36,28 +40,23 @@ interface TemplateRecord {
   description: string;
   sendRule: string | null;
   editor: "visual" | "html" | "";
+  updated?: string;
+  created?: string;
+}
+
+type KindFilter = "all" | "system" | "custom";
+
+/** Auth flows look their template up as `auth.<kind>`
+ * (`crates/server/src/mail_templates.rs`); a row with such a key overrides
+ * the built-in default, and deleting it restores the default. */
+function isSystemTemplate(template: TemplateRecord): boolean {
+  return template.key.startsWith("auth.");
 }
 
 function SendRuleBadge({ sendRule }: { sendRule: string | null }) {
-  if (sendRule === null) {
-    return (
-      <Badge variant="outline" className="font-normal text-muted-foreground">
-        Superuser only
-      </Badge>
-    );
-  }
-  if (sendRule === "") {
-    return (
-      <Badge variant="destructive" className="font-normal">
-        Public
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="secondary" className="font-mono font-normal">
-      Rule
-    </Badge>
-  );
+  if (sendRule === null) return <StatusBadge tone="neutral">Superuser only</StatusBadge>;
+  if (sendRule === "") return <StatusBadge tone="danger">Public</StatusBadge>;
+  return <StatusBadge tone="info">Rule</StatusBadge>;
 }
 
 /**
@@ -65,16 +64,28 @@ function SendRuleBadge({ sendRule }: { sendRule: string | null }) {
  * (via `sendRule`) who besides a superuser/API key may trigger one
  * through `POST /api/mails/send`. Editing happens on its own route
  * (`EmailTemplateEditorPage`); this page is create/duplicate/delete plus
- * the list.
+ * the list and a quick preview.
  */
 export function EmailTemplatesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [q, setQ] = useState("");
+  const [kind, setKind] = useState<KindFilter>("all");
   const [deleteTarget, setDeleteTarget] = useState<TemplateRecord | null>(null);
 
-  const { data, isLoading, error } = useQuery({
+  const [previewTarget, setPreviewTarget] = useState<TemplateRecord | null>(null);
+
+  const { data, isPending, error, refetch } = useQuery({
     queryKey: ["email-templates"],
     queryFn: () => cb.collection("_emailTemplates").fullList({ sort: "key,locale" }) as unknown as Promise<TemplateRecord[]>,
+  });
+
+  const preview = useQuery({
+    queryKey: ["email-templates", "preview", previewTarget?.id, previewTarget?.updated],
+    queryFn: () =>
+      cb.mails.preview({ template: previewTarget!.key, locale: previewTarget!.locale || undefined }),
+    enabled: previewTarget !== null,
+    retry: false,
   });
 
   const duplicate = useMutation({
@@ -93,153 +104,282 @@ export function EmailTemplatesPage() {
         editor: template.editor || "html",
       });
     },
-    onSuccess: (created) => {
-      toast.success("Template duplicated");
+    onSuccess: (created, template) => {
+      toast.success(`Duplicated “${template.key}” as “${template.key}-copy”`);
       void queryClient.invalidateQueries({ queryKey: ["email-templates"] });
       const record = created as unknown as { id: string };
       void navigate({ to: "/settings/email-templates/$id", params: { id: record.id } });
     },
     onError: (failure) => {
       const described = describeFailure(failure);
-      toast.error(described.title, { description: described.detail });
+      toast.error("Couldn't duplicate the template", {
+        description: Object.values(described.fields)[0] ?? described.serverMessage ?? described.detail,
+      });
     },
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => cb.collection("_emailTemplates").delete(id),
-    onSuccess: () => {
-      toast.success("Template deleted");
+    mutationFn: (template: TemplateRecord) => cb.collection("_emailTemplates").delete(template.id),
+    onSuccess: (_result, template) => {
+      toast.success(isSystemTemplate(template) ? `Reset “${template.key}” to the built-in default` : `Deleted “${template.key}”`);
       void queryClient.invalidateQueries({ queryKey: ["email-templates"] });
-      setDeleteTarget(null);
+      closeDelete();
     },
     onError: (failure) => {
       const described = describeFailure(failure);
-      toast.error(described.title, { description: described.detail });
+      toast.error("Couldn't remove the template", { description: described.serverMessage || described.detail });
     },
   });
 
-  const templates = data ?? [];
+  function closeDelete() {
+    setDeleteTarget(null);
+  }
+
+  const templates = useMemo(() => data ?? [], [data]);
+  const visible = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return templates.filter((template) => {
+      if (kind === "system" && !isSystemTemplate(template)) return false;
+      if (kind === "custom" && isSystemTemplate(template)) return false;
+      if (!needle) return true;
+      return [template.key, template.name, template.subject].some((text) => text.toLowerCase().includes(needle));
+    });
+  }, [templates, q, kind]);
   const item = settingsItemFor("/settings/email-templates")!;
+  const deleteIsReset = deleteTarget ? isSystemTemplate(deleteTarget) : false;
+
+
+  const newTemplateButton = (
+    <Button size="sm" asChild>
+      <Link to="/settings/email-templates/$id" params={{ id: "new" }}>
+        <Plus />
+        New template
+      </Link>
+    </Button>
+  );
 
   return (
-    <SettingsPage
-      title={item.label}
-      description={item.description}
-      width="wide"
-      action={
-        <Button size="sm" className="gap-1.5" asChild>
-          <Link to="/settings/email-templates/$id" params={{ id: "new" }}>
-            <Plus className="size-3.5" />
-            New template
-          </Link>
-        </Button>
-      }
-    >
-      {error ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <FileText />
-            </EmptyMedia>
-            <EmptyTitle>Couldn't load templates</EmptyTitle>
-            <EmptyDescription>{describeFailure(error).detail}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : isLoading ? (
-        <div className="flex flex-col gap-2">
-          {Array.from({ length: 4 }, (_, i) => (
-            <Skeleton key={i} className="h-row w-full" />
-          ))}
-        </div>
+    <SettingsPage title={item.label} description={item.description} width="wide" action={newTemplateButton}>
+      {templates.length > 0 ? (
+        <DataTableToolbar
+          search={{ value: q, onChange: setQ, placeholder: "Search by key, name or subject…" }}
+          filters={
+            <Select value={kind} onValueChange={(next) => setKind(next as KindFilter)}>
+              <SelectTrigger aria-label="Filter by kind" className="h-control-sm w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All templates</SelectItem>
+                <SelectItem value="system">System</SelectItem>
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
+          }
+          actions={
+            <span className="font-tabular text-xs text-muted-foreground">
+              {visible.length} of {templates.length}
+            </span>
+          }
+        />
+      ) : null}
+
+      {error && !data ? (
+        <ErrorState title="Couldn't load templates" error={error} onRetry={() => void refetch()} />
+      ) : isPending ? (
+        <ListSkeleton rows={5} />
       ) : templates.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <FileText />
-            </EmptyMedia>
-            <EmptyTitle>No templates yet</EmptyTitle>
-            <EmptyDescription>Create one to start sending branded, editable email.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <EmptyState
+          compact
+          icon={<FileText />}
+          title="No templates yet"
+          description="Templates are the branded, editable emails this app sends. Auth emails (auth.verification, auth.passwordReset…) use a built-in default until you create a template with that key."
+          action={newTemplateButton}
+        />
+      ) : visible.length === 0 ? (
+        <EmptyState
+          compact
+          icon={<FileText />}
+          title="No templates match"
+          description="Try a different search or kind."
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setQ("");
+                setKind("all");
+              }}
+            >
+              Clear filters
+            </Button>
+          }
+        />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Key</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Locale</TableHead>
-              <TableHead>Editor</TableHead>
-              <TableHead>Who can send it</TableHead>
-              <TableHead className="w-24 text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {templates.map((template) => (
-              <TableRow key={template.id} className="align-top">
-                <TableCell className="py-3">
-                  <Link
-                    to="/settings/email-templates/$id"
-                    params={{ id: template.id }}
-                    className="font-mono text-sm font-medium hover:underline"
-                  >
-                    {template.key}
-                  </Link>
-                </TableCell>
-                <TableCell className="py-3 text-sm">{template.name}</TableCell>
-                <TableCell className="py-3 text-sm text-muted-foreground">{template.locale || "(default)"}</TableCell>
-                <TableCell className="py-3 text-sm capitalize text-muted-foreground">
-                  {template.editor || "html"}
-                </TableCell>
-                <TableCell className="py-3">
-                  <SendRuleBadge sendRule={template.sendRule} />
-                </TableCell>
-                <TableCell className="py-3 text-right">
-                  <div className="flex justify-end gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Duplicate ${template.key}`}
-                      disabled={duplicate.isPending}
-                      onClick={() => duplicate.mutate(template)}
-                    >
-                      <Copy className="size-3.5" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Delete ${template.key}`}
-                      onClick={() => setDeleteTarget(template)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </TableCell>
+        <div className="overflow-x-auto rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Template</TableHead>
+                <TableHead>Subject</TableHead>
+                <TableHead>Kind</TableHead>
+                <TableHead>Locale</TableHead>
+                <TableHead>Who can send it</TableHead>
+                <TableHead>Edited</TableHead>
+                <TableHead className="w-40 text-right">Actions</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {visible.map((template) => {
+                const system = isSystemTemplate(template);
+                return (
+                  <TableRow key={template.id}>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <Link
+                          to="/settings/email-templates/$id"
+                          params={{ id: template.id }}
+                          className="w-fit rounded-sm font-mono text-sm font-medium hover:underline"
+                        >
+                          {template.key}
+                        </Link>
+                        {template.name ? <span className="text-xs text-muted-foreground">{template.name}</span> : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="max-w-64 truncate text-sm" title={template.subject}>
+                      {template.subject || <span className="text-muted-foreground italic">(none)</span>}
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge tone={system ? "info" : "neutral"}>{system ? "System" : "Custom"}</StatusBadge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">{template.locale || "default"}</TableCell>
+                    <TableCell>
+                      <SendRuleBadge sendRule={template.sendRule} />
+                    </TableCell>
+                    <TableCell className="text-xs whitespace-nowrap text-muted-foreground">
+                      <TimeAgo value={template.updated} />
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Preview ${template.key}`}
+                          title="Preview"
+                          onClick={() => setPreviewTarget(template)}
+                        >
+                          <Eye />
+                        </Button>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Edit ${template.key}`} title="Edit" asChild>
+                          <Link to="/settings/email-templates/$id" params={{ id: template.id }}>
+                            <Pencil />
+                          </Link>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Duplicate ${template.key}`}
+                          title="Duplicate"
+                          disabled={duplicate.isPending}
+                          onClick={() => duplicate.mutate(template)}
+                        >
+                          <Copy />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={system ? `Reset ${template.key} to default` : `Delete ${template.key}`}
+                          title={system ? "Reset to default" : "Delete"}
+                          onClick={() => setDeleteTarget(template)}
+                        >
+                          {system ? <RotateCcw /> : <Trash2 />}
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
-      <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+      <Dialog open={previewTarget !== null} onOpenChange={(open) => !open && setPreviewTarget(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-mono">{previewTarget?.key}</DialogTitle>
+            <DialogDescription>
+              Rendered by the server with no template data, so variables may show empty. Open the editor to preview
+              with sample data.
+            </DialogDescription>
+          </DialogHeader>
+          {preview.isPending ? (
+            <Skeleton className="h-96 w-full" />
+          ) : preview.error ? (
+            <ErrorState compact title="Couldn't render the preview" error={preview.error} onRetry={() => void preview.refetch()} />
+          ) : (
+            <div className="flex flex-col gap-2">
+              <p className="truncate text-sm">
+                <span className="text-muted-foreground">Subject: </span>
+                {preview.data?.subject}
+              </p>
+              <iframe
+                title={`Preview of ${previewTarget?.key ?? "template"}`}
+                srcDoc={preview.data?.html ?? ""}
+                // Untrusted HTML: no scripts, no same-origin, no popups. White
+                // like a mail client, regardless of the admin theme.
+                sandbox=""
+                className="h-96 w-full rounded-md border border-border bg-white"
+              />
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreviewTarget(null)}>
+              Close
+            </Button>
+            {previewTarget ? (
+              <Button asChild>
+                <Link to="/settings/email-templates/$id" params={{ id: previewTarget.id }}>
+                  <Pencil />
+                  Edit template
+                </Link>
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <TypedConfirmDialog
+        open={deleteTarget !== null && !deleteIsReset}
+        onOpenChange={(open) => !open && closeDelete()}
+        title={`Delete “${deleteTarget?.key ?? ""}”?`}
+        description="Any auth flow or trigger still pointing at this key falls back to the built-in default, if there is one, or fails to send. There is no undo."
+        confirmValue={deleteTarget?.key ?? ""}
+        confirmLabel="Delete template"
+        pendingLabel="Deleting…"
+        pending={remove.isPending}
+        onConfirm={() => deleteTarget && remove.mutate(deleteTarget)}
+      />
+
+      <Dialog open={deleteTarget !== null && deleteIsReset} onOpenChange={(open) => !open && !remove.isPending && closeDelete()}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete "{deleteTarget?.key}"?</DialogTitle>
+            <DialogTitle>Reset “{deleteTarget?.key}” to the default?</DialogTitle>
             <DialogDescription>
-              Any auth flow or trigger still pointing at this key falls back to the built-in default, if there is one,
-              or fails to send. There is no undo.
+              Your customised version is removed and auth emails go back to the built-in default template. There is no
+              undo.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+            <Button variant="outline" onClick={closeDelete} disabled={remove.isPending}>
               Cancel
             </Button>
             <Button
               variant="destructive"
               disabled={remove.isPending}
-              onClick={() => deleteTarget && remove.mutate(deleteTarget.id)}
+              onClick={() => deleteTarget && remove.mutate(deleteTarget)}
             >
-              {remove.isPending ? <Spinner className="size-3.5" /> : null}
-              Delete
+              {remove.isPending ? <Spinner /> : null}
+              Reset to default
             </Button>
           </DialogFooter>
         </DialogContent>

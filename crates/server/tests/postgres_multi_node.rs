@@ -34,7 +34,7 @@ fn node_config(url: &str, dir: &std::path::Path) -> Config {
         database_url: url.to_string(),
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir.join("pb_data"))
+        ..Config::for_data_dir(dir.join("cb_data"))
     }
 }
 
@@ -164,7 +164,7 @@ async fn cross_node_realtime_round_trip_through_postgres_listen_notify() {
 
     let client = reqwest::Client::new();
 
-    // Open the SSE stream on instance A and read its PB_CONNECT hello.
+    // Open the SSE stream on instance A and read its CB_CONNECT hello.
     let sse = client
         .get(format!("http://{addr_a}/api/realtime"))
         .send()
@@ -177,8 +177,8 @@ async fn cross_node_realtime_round_trip_through_postgres_listen_notify() {
     let (event, hello) =
         tokio::time::timeout(Duration::from_secs(5), next_sse_frame(&mut body, &mut buf))
             .await
-            .expect("PB_CONNECT hello timed out");
-    assert_eq!(event.as_deref(), Some("PB_CONNECT"));
+            .expect("CB_CONNECT hello timed out");
+    assert_eq!(event.as_deref(), Some("CB_CONNECT"));
     let client_id = hello["clientId"]
         .as_str()
         .expect("hello carries a clientId")

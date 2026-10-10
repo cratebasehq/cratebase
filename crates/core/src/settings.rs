@@ -1,4 +1,4 @@
-//! App settings, shaped like `GET /api/settings` in PocketBase v0.23+ and
+//! App settings, returned by `GET /api/settings` and
 //! persisted as JSON in `_params`. Secrets (`smtp.password`, `s3.secret`,
 //! `backups.s3.secret`, `llm.apiKey`, `push.vapid.privateKey`,
 //! `push.fcm.serviceAccountJson`, `push.apns.key`) are accepted on input
@@ -99,6 +99,20 @@ pub struct Llm {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    /// USD per 1M tokens, keyed by exact model name. Drives `costUsd` in
+    /// the `_llm_usage` ledger; a model with no entry is recorded unpriced.
+    pub prices: std::collections::BTreeMap<String, ModelPrice>,
+    /// Free-form label copied into each ledger row's `priceVersion`.
+    pub price_version: String,
+}
+
+/// One model's price, USD per 1M tokens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModelPrice {
+    pub input: f64,
+    pub output: f64,
+    pub cached_input: Option<f64>,
 }
 
 impl Default for Llm {
@@ -109,6 +123,8 @@ impl Default for Llm {
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
             model: "gpt-4o-mini".into(),
+            prices: std::collections::BTreeMap::new(),
+            price_version: String::new(),
         }
     }
 }
@@ -585,6 +601,11 @@ fn deep_merge(target: &mut Value, patch: &Value) {
                     Some(existing) if existing.is_object() && v.is_object() => {
                         deep_merge(existing, v)
                     }
+                    // `null` over an existing object removes the key (e.g.
+                    // deleting one entry of `llm.prices`).
+                    Some(existing) if existing.is_object() && v.is_null() => {
+                        t.remove(k);
+                    }
                     _ => {
                         t.insert(k.clone(), v.clone());
                     }
@@ -608,7 +629,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_pocketbase_fixture() {
+    fn defaults_match_cratebase_fixture() {
         let s = Settings::default();
         let v = s.to_public_json();
         assert_eq!(v["meta"]["appName"], "Acme");
@@ -661,5 +682,17 @@ mod tests {
         assert_eq!(patched.smtp.host, "mail.example.com");
         assert_eq!(patched.smtp.password, "hunter2");
         assert_eq!(patched.smtp.port, 587);
+    }
+
+    #[test]
+    fn null_patch_removes_an_existing_object_key() {
+        let mut s = Settings::default();
+        s.llm.prices.insert("m1".into(), ModelPrice::default());
+        s.llm.prices.insert("m2".into(), ModelPrice::default());
+        let patched = s
+            .patched(&serde_json::json!({"llm": {"prices": {"m1": null}}}))
+            .unwrap();
+        assert!(!patched.llm.prices.contains_key("m1"));
+        assert!(patched.llm.prices.contains_key("m2"));
     }
 }

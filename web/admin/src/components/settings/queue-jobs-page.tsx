@@ -1,10 +1,15 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ListChecks, RotateCcw, Trash2 } from "lucide-react";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Check, CircleAlert, Copy, Eye, ListChecks, LoaderCircle, RotateCcw, Timer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { cb, describeFailure, parseServerDate } from "@/lib/api";
+import { Link } from "@tanstack/react-router";
+import { cb, describeFailure } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
-import { Badge } from "@/components/ui/badge";
+import { useSettings } from "@/hooks/use-settings";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { DataTableToolbar } from "@/components/layout/data-table-toolbar";
+import { StatCard, StatusBadge, type Tone } from "@/components/layout/stat-card";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -14,18 +19,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { SettingsPage } from "@/components/settings/settings-form";
+import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
+import { TimeAgo } from "@/components/settings/time-ago";
 
 const STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
 type JobStatus = (typeof STATUSES)[number];
@@ -47,33 +46,48 @@ interface QueueJob {
 
 const PAGE_SIZE = 50;
 
-function statusBadgeClass(status: JobStatus): string {
-  switch (status) {
-    case "completed":
-      return "font-normal text-success";
-    case "failed":
-      return "font-normal text-destructive";
-    case "in_progress":
-      return "font-normal text-info";
-    default:
-      return "font-normal text-muted-foreground";
-  }
-}
+/** What each stored status is called on screen. */
+const STATUS_LABEL: Record<JobStatus, string> = {
+  pending: "Pending",
+  in_progress: "Running",
+  completed: "Done",
+  failed: "Failed",
+};
+
+const STATUS_TONE: Record<JobStatus, Tone> = {
+  pending: "neutral",
+  in_progress: "info",
+  completed: "success",
+  failed: "danger",
+};
 
 /**
  * Durable, retrying background jobs (`_queue_jobs`) — handled by a JS
- * `onQueueJob` handler in `pb_hooks/*.pb.js` or a Rust
+ * `onQueueJob` handler in `cb_hooks/*.cb.js` or a Rust
  * `QueueHandle::register_handler`. This page is read/retry/delete only:
  * jobs are created by application code (`$queue.enqueue`/
- * `POST /api/queue/enqueue`), never by hand from here.
+ * `POST /api/queue/enqueue`), never by hand from here. It refreshes itself
+ * every few seconds while the tab is visible and no dialog is open.
  */
 export function QueueJobsPage() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
+  const [search, setSearch] = useState("");
   const [payloadJob, setPayloadJob] = useState<QueueJob | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<QueueJob | null>(null);
 
-  const { data, isLoading, error } = useQuery({
+  const [live, setLive] = useState(true);
+  // Hold still while a dialog is open so rows don't shift under the operator.
+  const refetchInterval = live && payloadJob === null && deleteTarget === null ? LIVE_INTERVAL_MS : false;
+
+  // The queue is a toggle-gated module: while it is off its collection does not
+  // exist, so don't query it at all.
+  const settings = useSettings();
+  const queueOff = settings.data?.queue?.enabled === false;
+  const queryEnabled = !settings.isPending && !queueOff;
+
+  const jobsQuery = useQuery({
+    enabled: queryEnabled,
     queryKey: ["queue-jobs", statusFilter],
     queryFn: () =>
       cb.collection("_queue_jobs").list({
@@ -82,17 +96,61 @@ export function QueueJobsPage() {
         sort: "-created",
         filter: statusFilter === "all" ? undefined : `status = "${statusFilter}"`,
       }) as unknown as Promise<{ items: QueueJob[]; totalItems: number }>,
+    refetchInterval,
   });
+
+  // Exact totals per status: a one-row page whose `totalItems` is the count.
+  const countQueries = useQueries({
+    queries: STATUSES.map((status) => ({
+      enabled: queryEnabled,
+      queryKey: ["queue-jobs-count", status],
+      queryFn: () =>
+        cb.collection("_queue_jobs").list({
+          page: 1,
+          perPage: 1,
+          filter: `status = "${status}"`,
+        }) as unknown as Promise<{ totalItems: number }>,
+      refetchInterval,
+    })),
+  });
+  const countOf = (status: JobStatus) => countQueries[STATUSES.indexOf(status)]?.data?.totalItems;
+  const countsLoading = countQueries.some((q) => q.isPending);
+
+  function refreshAll() {
+    void queryClient.invalidateQueries({ queryKey: ["queue-jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["queue-jobs-count"] });
+  }
 
   const retry = useMutation({
     mutationFn: (id: string) => cb.send<void>(`/api/queue/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" }),
     onSuccess: () => {
       toast.success("Job reset to pending");
-      void queryClient.invalidateQueries({ queryKey: ["queue-jobs"] });
+      refreshAll();
     },
     onError: (failure) => {
       const described = describeFailure(failure);
-      toast.error(described.title, { description: described.detail });
+      toast.error("Couldn't retry the job", { description: described.detail });
+    },
+  });
+
+  const retryAll = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map((id) => cb.send<void>(`/api/queue/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" })),
+      );
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length === results.length) throw (failed[0] as PromiseRejectedResult).reason;
+      return { ok: results.length - failed.length, failed: failed.length };
+    },
+    onSuccess: ({ ok, failed }) => {
+      if (failed === 0) toast.success(`Reset ${ok} failed ${ok === 1 ? "job" : "jobs"} to pending`);
+      else toast.warning(`Reset ${ok} jobs; ${failed} couldn't be retried`);
+      refreshAll();
+    },
+    onError: (failure) => {
+      const described = describeFailure(failure);
+      toast.error("Couldn't retry the failed jobs", { description: described.detail });
+      refreshAll();
     },
   });
 
@@ -100,199 +158,273 @@ export function QueueJobsPage() {
     mutationFn: (id: string) => cb.send<void>(`/api/queue/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
     onSuccess: () => {
       toast.success("Job deleted");
-      void queryClient.invalidateQueries({ queryKey: ["queue-jobs"] });
+      refreshAll();
       setDeleteTarget(null);
     },
     onError: (failure) => {
       const described = describeFailure(failure);
-      toast.error(described.title, { description: described.detail });
+      toast.error("Couldn't delete the job", { description: described.detail });
     },
   });
 
-  const jobs = data?.items ?? [];
-
-  // Per-queue counts, grouped from the fetched page — an aggregate across
-  // every job ever enqueued would need a dedicated endpoint this doesn't
-  // have yet, so with more than `PAGE_SIZE` jobs outstanding this is a
-  // sample, not a total.
-  const counts = new Map<string, Map<JobStatus, number>>();
-  for (const job of jobs) {
-    const byStatus = counts.get(job.queue) ?? new Map<JobStatus, number>();
-    byStatus.set(job.status, (byStatus.get(job.status) ?? 0) + 1);
-    counts.set(job.queue, byStatus);
-  }
+  const needle = search.trim().toLowerCase();
+  const jobs = (jobsQuery.data?.items ?? []).filter(
+    (job) =>
+      !needle ||
+      job.queue.toLowerCase().includes(needle) ||
+      job.id.toLowerCase().includes(needle) ||
+      (job.dedupeKey ?? "").toLowerCase().includes(needle),
+  );
+  const failedJobs = jobs.filter((job) => job.status === "failed");
+  const total = jobsQuery.data?.totalItems ?? 0;
+  const failedCount = countOf("failed") ?? 0;
+  const filtering = statusFilter !== "all" || needle !== "";
 
   const item = settingsItemFor("/settings/queue")!;
+  if (queueOff) {
+    return (
+      <SettingsPage title={item.label} description={item.description} width="wide">
+        <EmptyState
+          compact
+          icon={<ListChecks />}
+          title="The Queue module is turned off"
+          description="Background jobs with retries are an optional module. Turn it on under Application → Modules, then enqueue jobs from a hook or the API."
+          action={
+            <Button size="sm" asChild>
+              <Link to="/settings/application" search={{ tab: "modules" }}>
+                Open Modules
+              </Link>
+            </Button>
+          }
+        />
+      </SettingsPage>
+    );
+  }
   return (
-    <SettingsPage
-      title={item.label}
-      description={item.description}
-      width="wide"
-      action={
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as JobStatus | "all")}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All statuses</SelectItem>
-            {STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      }
-    >
-      {counts.size > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {Array.from(counts.entries()).map(([queue, byStatus]) => (
-            <Badge key={queue} variant="outline" className="font-normal">
-              {queue}:{" "}
-              {Array.from(byStatus.entries())
-                .map(([status, n]) => `${n} ${status}`)
-                .join(" · ")}
-            </Badge>
-          ))}
-        </div>
-      ) : null}
+    <SettingsPage title={item.label} description={item.description} width="wide">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <StatCard
+          index={0}
+          label="Pending"
+          icon={<Timer />}
+          loading={countsLoading}
+          value={countOf("pending") ?? 0}
+          hint="Waiting for a worker"
+        />
+        <StatCard
+          index={1}
+          label="Running"
+          icon={<LoaderCircle />}
+          loading={countsLoading}
+          value={countOf("in_progress") ?? 0}
+          hint="Being handled now"
+        />
+        <StatCard
+          index={2}
+          label="Failed"
+          icon={<CircleAlert />}
+          loading={countsLoading}
+          value={failedCount}
+          tone={failedCount > 0 ? "danger" : "neutral"}
+          hint={failedCount > 0 ? "Out of attempts — retry or delete" : "Nothing needs attention"}
+        />
+        <StatCard
+          index={3}
+          label="Done"
+          icon={<Check />}
+          loading={countsLoading}
+          value={countOf("completed") ?? 0}
+          hint="Completed successfully"
+        />
+      </div>
 
-      {error ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <ListChecks />
-            </EmptyMedia>
-            <EmptyTitle>Couldn't load queue jobs</EmptyTitle>
-            <EmptyDescription>{describeFailure(error).detail}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : isLoading ? (
-        <div className="flex flex-col gap-2">
-          {Array.from({ length: 3 }, (_, i) => (
-            <Skeleton key={i} className="h-row w-full" />
-          ))}
-        </div>
+      <DataTableToolbar
+        search={{ value: search, onChange: setSearch, placeholder: "Filter by queue, id or key…", label: "Filter jobs" }}
+        filters={
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as JobStatus | "all")}>
+            <SelectTrigger size="sm" aria-label="Filter by status" className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {STATUSES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {STATUS_LABEL[s]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        }
+        actions={
+          <>
+            <LiveToggle live={live} onLiveChange={setLive} fetching={jobsQuery.isFetching} onRefresh={refreshAll} />
+            {failedJobs.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={retryAll.isPending}
+                onClick={() => retryAll.mutate(failedJobs.map((job) => job.id))}
+              >
+                {retryAll.isPending ? <Spinner /> : <RotateCcw />}
+                Retry {failedJobs.length} failed
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+
+      {jobsQuery.isError ? (
+        <ErrorState
+          title="Couldn't load queue jobs"
+          error={jobsQuery.error}
+          onRetry={() => void jobsQuery.refetch()}
+          compact
+        />
+      ) : jobsQuery.isPending ? (
+        <ListSkeleton rows={6} />
       ) : jobs.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <ListChecks />
-            </EmptyMedia>
-            <EmptyTitle>No jobs</EmptyTitle>
-            <EmptyDescription>
-              Nothing enqueued yet — call <code>$queue.enqueue(...)</code> from a hook, or{" "}
-              <code>POST /api/queue/enqueue</code>.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        filtering ? (
+          <EmptyState
+            compact
+            icon={<ListChecks />}
+            title={needle ? "No jobs match" : `No ${STATUS_LABEL[statusFilter as JobStatus].toLowerCase()} jobs`}
+            description="Nothing in the newest jobs fits this filter."
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSearch("");
+                  setStatusFilter("all");
+                }}
+              >
+                Clear filters
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            compact
+            icon={<ListChecks />}
+            title="The queue is empty"
+            description={
+              <>
+                Jobs are created by your code, never by hand. Call{" "}
+                <code className="font-mono">$queue.enqueue(name, payload)</code> from a{" "}
+                <code className="font-mono">cb_hooks/*.cb.js</code> hook, or{" "}
+                <code className="font-mono">POST /api/queue/enqueue</code>. Handle them with{" "}
+                <code className="font-mono">onQueueJob</code>.
+              </>
+            }
+          />
+        )
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Queue</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Attempts</TableHead>
-              <TableHead>Runs at</TableHead>
-              <TableHead className="w-32 text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {jobs.map((job) => (
-              <TableRow key={job.id} className="align-top">
-                <TableCell className="py-3">
-                  <button
-                    type="button"
-                    className="font-medium underline-offset-2 hover:underline"
-                    onClick={() => setPayloadJob(job)}
-                  >
-                    {job.queue}
-                  </button>
-                  {job.dedupeKey ? (
-                    <div className="mt-1 font-mono text-[11px] text-muted-foreground/70">
-                      dedupeKey: {job.dedupeKey}
-                    </div>
-                  ) : null}
-                </TableCell>
-                <TableCell className="py-3">
-                  <Badge variant="outline" className={statusBadgeClass(job.status)}>
-                    {job.status}
-                  </Badge>
-                  {job.status === "failed" && job.lastError ? (
-                    <div className="mt-1 max-w-xs truncate text-xs text-muted-foreground" title={job.lastError}>
-                      {job.lastError}
-                    </div>
-                  ) : null}
-                </TableCell>
-                <TableCell className="py-3 text-sm">
-                  {job.attempts} / {job.maxAttempts}
-                </TableCell>
-                <TableCell className="py-3 text-xs text-muted-foreground">
-                  {parseServerDate(job.runAfter).toLocaleString()}
-                </TableCell>
-                <TableCell className="py-3 text-right">
-                  <div className="flex justify-end gap-1">
-                    {job.status === "failed" ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Retry ${job.queue}`}
-                        disabled={retry.isPending && retry.variables === job.id}
-                        onClick={() => retry.mutate(job.id)}
-                      >
-                        {retry.isPending && retry.variables === job.id ? (
-                          <Spinner className="size-3.5" />
-                        ) : (
-                          <RotateCcw className="size-3.5" />
-                        )}
-                      </Button>
-                    ) : null}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Delete ${job.queue} job`}
-                      onClick={() => setDeleteTarget(job)}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                </TableCell>
+        <div className="rounded-lg border border-border bg-card overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Queue</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Attempts</TableHead>
+                <TableHead>Runs at</TableHead>
+                <TableHead>Enqueued</TableHead>
+                <TableHead className="w-28 text-right">Actions</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {jobs.map((job) => {
+                const retrying = retry.isPending && retry.variables === job.id;
+                return (
+                  <TableRow key={job.id} className="align-top">
+                    <TableCell className="py-2.5">
+                      <button
+                        type="button"
+                        className="rounded-sm font-mono text-sm font-medium underline-offset-2 hover:underline"
+                        onClick={() => setPayloadJob(job)}
+                      >
+                        {job.queue}
+                      </button>
+                      <div className="font-mono text-xs text-muted-foreground">{job.id}</div>
+                      {job.dedupeKey ? (
+                        <div className="font-mono text-xs text-muted-foreground">dedupeKey: {job.dedupeKey}</div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="py-2.5">
+                      <StatusBadge tone={STATUS_TONE[job.status]}>{STATUS_LABEL[job.status]}</StatusBadge>
+                      {job.status === "failed" && job.lastError ? (
+                        <div
+                          className="mt-1 max-w-xs truncate font-mono text-xs text-destructive"
+                          title={job.lastError}
+                        >
+                          {job.lastError}
+                        </div>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="font-tabular py-2.5 font-mono text-sm">
+                      {job.attempts} / {job.maxAttempts}
+                    </TableCell>
+                    <TableCell className="py-2.5 text-xs">
+                      <TimeAgo value={job.runAfter} />
+                    </TableCell>
+                    <TableCell className="py-2.5 text-xs text-muted-foreground">
+                      <TimeAgo value={job.created} />
+                    </TableCell>
+                    <TableCell className="py-2.5 text-right">
+                      <div className="flex justify-end gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={`View payload of ${job.queue} job ${job.id}`}
+                          onClick={() => setPayloadJob(job)}
+                        >
+                          <Eye />
+                        </Button>
+                        {job.status === "failed" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            aria-label={`Retry ${job.queue} job ${job.id}`}
+                            disabled={retrying}
+                            onClick={() => retry.mutate(job.id)}
+                          >
+                            {retrying ? <Spinner className="size-3" /> : <RotateCcw />}
+                          </Button>
+                        ) : null}
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={`Delete ${job.queue} job ${job.id}`}
+                          onClick={() => setDeleteTarget(job)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
-      <Dialog open={payloadJob !== null} onOpenChange={(open) => !open && setPayloadJob(null)}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{payloadJob?.queue}</DialogTitle>
-            <DialogDescription>Payload and, if present, the most recent error.</DialogDescription>
-          </DialogHeader>
-          <pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">
-            {JSON.stringify(payloadJob?.payload, null, 2)}
-          </pre>
-          {payloadJob?.lastError ? (
-            <div className="flex flex-col gap-1.5">
-              <p className="text-sm font-medium">Last error</p>
-              <pre className="max-h-40 overflow-auto rounded-md bg-destructive/10 p-3 text-xs text-destructive">
-                {payloadJob.lastError}
-              </pre>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPayloadJob(null)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {jobsQuery.data && total > PAGE_SIZE ? (
+        <p className="font-tabular text-xs text-muted-foreground">
+          Showing the newest {PAGE_SIZE} of {total} jobs{statusFilter === "all" ? "" : ` (${STATUS_LABEL[statusFilter].toLowerCase()})`}.
+        </p>
+      ) : null}
+
+      <PayloadDialog job={payloadJob} onClose={() => setPayloadJob(null)} />
 
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete this "{deleteTarget?.queue}" job?</DialogTitle>
-            <DialogDescription>There is no undo.</DialogDescription>
+            <DialogDescription>
+              Job <code className="font-mono">{deleteTarget?.id}</code>
+              {deleteTarget?.status === "in_progress" ? " is running right now; deleting it won't stop the handler." : " will be removed from the queue."}{" "}
+              There is no undo.
+            </DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeleteTarget(null)}>
@@ -304,11 +436,65 @@ export function QueueJobsPage() {
               onClick={() => deleteTarget && remove.mutate(deleteTarget.id)}
             >
               {remove.isPending ? <Spinner className="size-3.5" /> : null}
-              Delete
+              Delete job
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </SettingsPage>
+  );
+}
+
+function PayloadDialog({ job, onClose }: { job: QueueJob | null; onClose: () => void }) {
+  const { copy, copied } = useCopyToClipboard();
+  const payload = job ? (JSON.stringify(job.payload, null, 2) ?? "null") : "";
+  return (
+    <Dialog open={job !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="font-mono">{job?.queue}</DialogTitle>
+          <DialogDescription>
+            {job ? (
+              <>
+                <span className="font-mono">{job.id}</span> · {STATUS_LABEL[job.status]} ·{" "}
+                <span className="font-tabular">
+                  {job.attempts}/{job.maxAttempts}
+                </span>{" "}
+                attempts · priority <span className="font-tabular">{job.priority}</span>
+              </>
+            ) : null}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Payload</p>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => void copy(payload).then((ok) => (ok ? toast.success("Payload copied") : toast.error("Couldn't copy the payload")))}
+            >
+              {copied ? <Check /> : <Copy />}
+              {copied ? "Copied" : "Copy"}
+            </Button>
+          </div>
+          <pre className="max-h-80 overflow-auto rounded-md border border-border bg-surface-sunken p-3 font-mono text-xs">
+            {payload}
+          </pre>
+        </div>
+        {job?.lastError ? (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-sm font-medium">Last error</p>
+            <pre className="max-h-40 overflow-auto rounded-md bg-destructive/10 p-3 font-mono text-xs break-words whitespace-pre-wrap text-destructive">
+              {job.lastError}
+            </pre>
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

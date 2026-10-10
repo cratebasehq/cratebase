@@ -10,6 +10,7 @@ describe("parseArgs", () => {
     expect(opts.yes).toBe(false);
     expect(opts.install).toBe(true);
     expect(opts.git).toBe(true);
+    expect(opts.force).toBe(false);
     expect(opts.help).toBe(false);
   });
 
@@ -26,6 +27,7 @@ describe("parseArgs", () => {
     expect(parseArgs(["--template", "nextjs"]).template).toBe("nextjs");
     expect(parseArgs(["-t", "vite-react"]).template).toBe("vite-react");
     expect(parseArgs(["--template=expo"]).template).toBe("expo");
+    expect(parseArgs(["--template", "tanstack-start"]).template).toBe("tanstack-start");
   });
 
   test("rejects invalid --template", () => {
@@ -45,6 +47,10 @@ describe("parseArgs", () => {
   test("--yes / -y", () => {
     expect(parseArgs(["--yes"]).yes).toBe(true);
     expect(parseArgs(["-y"]).yes).toBe(true);
+  });
+
+  test("--force", () => {
+    expect(parseArgs(["--force"]).force).toBe(true);
   });
 
   test("--no-install and --no-git", () => {
@@ -79,6 +85,7 @@ describe("parseArgs", () => {
       yes: true,
       install: false,
       git: true,
+      force: false,
       help: false,
       version: false,
     });

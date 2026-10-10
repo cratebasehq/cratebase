@@ -1,4 +1,4 @@
-//! Collection field definitions, shaped exactly like PocketBase v0.23+'s
+//! Collection field definitions, shaped exactly like Cratebase's
 //! `fields[]` entries: every type-specific option lives flat on the
 //! field object next to the common attributes, e.g.
 //!
@@ -86,7 +86,7 @@ impl FieldType {
 }
 
 /// Type-specific options. Internally tagged on `type` and flattened into
-/// [`Field`], which produces PocketBase's flat layout.
+/// [`Field`], which produces Cratebase's flat layout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FieldKind {
@@ -233,7 +233,7 @@ fn one() -> i64 {
     1
 }
 
-/// PocketBase serializes an unset date bound as `""`.
+/// Cratebase serializes an unset date bound as `""`.
 mod empty_datetime {
     use super::DateTime;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -685,7 +685,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serializes_flat_like_pocketbase() {
+    fn serializes_flat_like_cratebase() {
         let f = Field::id_field();
         let v = serde_json::to_value(&f).unwrap();
         assert_eq!(v["type"], "text");
@@ -698,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_pocketbase_fixture_field() {
+    fn deserializes_cratebase_fixture_field() {
         let raw = r#"{
             "help": "", "hidden": false, "id": "file376926767", "maxSelect": 1,
             "maxSize": 0, "mimeTypes": ["image/jpeg"], "name": "avatar",

@@ -5,7 +5,7 @@
 //! [`bootstrap`] takes a freshly-constructed (not yet [`App::bootstrap`]ed)
 //! [`App`] and a resolved [`DevOptions`], and:
 //!
-//! 1. creates the data directory and the sibling `pb_hooks`/`pb_migrations`
+//! 1. creates the data directory and the sibling `cb_hooks`/`cb_migrations`
 //!    directories if they don't exist yet;
 //! 2. calls [`App::bootstrap`] (opens the database, runs the core
 //!    migrations, starts the JS runtime — same as `serve`);
@@ -40,7 +40,7 @@ use crate::seed::SeedReport;
 
 /// Resolved inputs for [`bootstrap`]. The `cratebase dev` CLI command
 /// builds this from flags, env vars and filesystem conventions
-/// (`--schema`/`./schema.json`, `--seed`/`CB_SEED_DIR`/`./pb_seed`,
+/// (`--schema`/`./schema.json`, `--seed`/`CB_SEED_DIR`/`./cb_seed`,
 /// `--types`/`CB_TYPEGEN_OUT`/`./cratebase-types.d.ts`); a test can build
 /// one directly.
 #[derive(Debug, Default, Clone)]
@@ -110,7 +110,7 @@ pub async fn bootstrap(app: &App, opts: &DevOptions) -> anyhow::Result<DevReport
 /// Step 1: the data dir (also created by `App::bootstrap`, but doing it
 /// here too means the hooks/migrations dirs below are guaranteed to exist
 /// alongside it even if a caller inspects the filesystem before
-/// bootstrapping) and its `pb_hooks`/`pb_migrations` siblings.
+/// bootstrapping) and its `cb_hooks`/`cb_migrations` siblings.
 fn ensure_dirs(app: &App) -> anyhow::Result<()> {
     let config = app.config();
     std::fs::create_dir_all(&config.data_dir)?;

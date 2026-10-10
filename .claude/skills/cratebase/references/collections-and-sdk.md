@@ -1,12 +1,11 @@
-# Collections, fields, and the `pocketbase` SDK
+# Collections, fields, and the client SDK
 
 ## Field types
 
 `text`, `editor`, `number`, `bool`, `email`, `url`, `date`, `autodate`
 (server-managed timestamp, used for `created`/`updated`), `select`,
 `json`, `relation`, `file`, `password`, `geoPoint`
-(`crates/core/src/field.rs:45-49`,
-`crates/server/src/pocketbase_migrate.rs:68-71`). `openapi.yaml`'s
+(`crates/core/src/field.rs:45-49`). `openapi.yaml`'s
 `FieldSchema`/`CollectionInput` schema is stale on the exact wire shape
 — trust the real request shape below and `examples/*/setup.sh` over it.
 
@@ -49,8 +48,8 @@ structs in `crates/core/src/collection.rs:296-297,515-516`.) Superuser
 only — this is schema management, not record CRUD. Real, runnable
 examples of this shape:
 
-**Footgun: `required: true` on a `number` field rejects `0`.** PocketBase
-treats a field's zero value as "blank" for `required` purposes (`""` for
+**Footgun: `required: true` on a `number` field rejects `0`.** A field's
+zero value counts as "blank" for `required` purposes (`""` for
 text, `[]` for multi-relation, and `0` for number) — Cratebase matches
 this (`crates/db/src/validate.rs`'s `required`/`is_blank`). A counter,
 score, or quantity field that can legitimately be `0` should be left
@@ -69,12 +68,11 @@ fields/rules; it's already been run against a real instance.
 
 Cratebase ships a first-party SDK, `@cratebase/client` — recommend it by
 default: `npm install @cratebase/client`, typed methods, built-in auth
-state, realtime, plus Cratebase-only extras (vector search, LLM chat, MCP
-tool schemas, presence) with no extra package. Cratebase's API is also
-byte-compatible with PocketBase v0.23+, so the official `pocketbase` SDK
-still works unmodified for projects already on it (the examples below use
-it, since the reference apps predate `@cratebase/client`). Either way,
-don't hand-roll `fetch`/`axios` calls against `/api/...` when the SDK
+state, realtime, plus vector search, LLM chat, MCP tool schemas and
+presence with no extra package. For a non-interactive client (scripts,
+servers) pass a bearer token — an API key or a minted JWT:
+`createClient(url, { token: "cb_…" })`. Don't hand-roll `fetch`/`axios`
+calls against `/api/...` when the SDK
 already has a typed method for it — you'll lose `AuthStore` persistence,
 multipart handling, and realtime reconnect logic for free by using it
 properly.
@@ -104,17 +102,16 @@ every collection create/update/delete — no manual re-run needed while iteratin
 ### Init and auth state
 
 ```typescript
-// examples/kanban/src/pocketbase.ts:1-15
-import PocketBase from "pocketbase";
-export const pb = new PocketBase(BASE_URL);
+// examples/kanban/src/cratebase.ts
+import { createClient } from "@cratebase/client";
+export const cb = createClient(BASE_URL);
 ```
 
 ```typescript
-// examples/kanban/src/hooks/useAuth.ts:26-38
-pb.authStore.onChange(() => setUser(pb.authStore.record));
-await pb.collection("users").create({ email, password, passwordConfirm });
-await pb.collection("users").authWithPassword(email, password);
-pb.authStore.clear(); // logout
+// examples/kanban/src/hooks/useAuth.ts
+await cb.auth.signUp({ email, password, passwordConfirm });
+await cb.auth.signIn.password({ identity: email, password });
+await cb.auth.signOut(); // logout
 ```
 
 `authStore` persists to `localStorage` in the browser automatically —
@@ -123,24 +120,24 @@ don't build your own token-storage layer alongside it.
 ### CRUD
 
 ```javascript
-// examples/todo/app.js:254-265
+// examples/todo/app.js
 const record = await todos.create({ title, done: false });
 await todos.update(id, { done: true });
 await todos.delete(id);
 ```
 
 ```javascript
-// examples/todo/app.js:286-298
-const list = await todos.getList(1, 200, { sort: "-created" });
+// examples/todo/app.js:295
+const list = await todos.list({ page: 1, perPage: 200, sort: "-created" });
 ```
 
 ```typescript
-// examples/kanban/src/hooks/useCards.ts:68-81
-const all = await pb.collection<Card>("cards").getFullList({ sort: "order" });
+// examples/kanban/src/hooks/useCards.ts:37
+const all = await cb.collection("cards").fullList({ sort: "order" });
 ```
 
-Use `getFullList` when you need every record and will paginate/sort
-client-side (small collections, e.g. cards on a board); use `getList`
+Use `fullList` when you need every record and will paginate/sort
+client-side (small collections, e.g. cards on a board); use `list`
 for server-paginated views. Both accept the same `filter`/`sort` options
 as the raw `?filter=`/`?sort=` query params — see
 `references/filter-syntax.md` for what's legal in `filter`.
@@ -155,9 +152,8 @@ author, teammate, ...) comes back empty for everyone but the record
 owner unless you relax `users`' `viewRule`, e.g. to any signed-in user
 (`@request.auth.id != ""`) or to members of a shared team
 (`id = @request.auth.id || @collection._team_members.userRef ?= @request.auth.id`,
-see `examples/team-board/scripts/gen-schema.ts`). This matches
-PocketBase's own expand behavior — not a Cratebase bug, just easy to
-mistake for one.
+`examples/team-board/scripts/gen-schema.ts`). This is by design, not a
+bug, just easy to mistake for one.
 
 ### Realtime
 
@@ -214,7 +210,7 @@ runs at the trusted tier (no `publishRule` check, same as `$app.save`).
 ### Notifications (in-app + email + push, one call)
 
 ```javascript
-// pb_hooks/*.pb.js — after creating a comment, say
+// cb_hooks/*.cb.js — after creating a comment, say
 $notify.send({
   to: post.get("authorId"),
   type: "comment",
@@ -275,7 +271,7 @@ string in a JSON body:
 const formData = new FormData();
 formData.append("title", "My post");
 formData.append("cover", fileInput.files[0]);
-await pb.collection("posts").create(formData);
+await cb.collection("posts").create(formData);
 ```
 
 The SDK detects `FormData` and switches transport automatically — you
@@ -392,7 +388,7 @@ capped at 5 recipients — and `sendRule` is evaluated once per `to`
 address against `@request.auth.*`/`@request.body.{to,data,locale}` (no
 bare field reference; there's no "record" a send is about). `null`
 (the default) keeps a template superuser-only; `""` opens it to anyone.
-Prefer this over a custom `pb_hooks` route whenever the check is
+Prefer this over a custom `cb_hooks` route whenever the check is
 expressible as a rule — it's strictly less code to maintain.
 
 **Recipe: email triggers (no code, fires on a record write).** For
@@ -418,7 +414,7 @@ merges onto the default `{ record }` template data. It fires from an
 after-success hook and can never fail the triggering request — a
 `toField` that resolves to nothing usable is logged to `_mailLog` as a
 failure instead of raising an error. Reach for `$mails.send(...)` in a
-`pb_hooks/*.pb.js` hook instead when the trigger needs logic `condition`/
+`cb_hooks/*.cb.js` hook instead when the trigger needs logic `condition`/
 `dataMap` can't express (calling another API first, computed content).
 
 **Recipe: magic-link + TOTP login.** Enable magic links on an auth

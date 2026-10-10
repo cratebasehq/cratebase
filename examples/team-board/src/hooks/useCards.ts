@@ -83,7 +83,7 @@ export function useCards(teamId: string | null) {
       const order = orderForIndex(columnCards, columnCards.length);
       // `searchText` (the vector field's auto-embed source, see
       // schema.json) is included directly in the create body rather than
-      // left for pb_hooks/team-board.pb.js's onRecordCreate to derive:
+      // left for cb_hooks/team-board.cb.js's onRecordCreate to derive:
       // `apply_embeddings` (crates/server/src/embeddings.rs) runs in
       // routes::records::create_record *before* any JS hook gets a
       // chance to mutate the record (crates/server/src/routes/records.rs:554),

@@ -48,6 +48,9 @@ boolean filter predicate, combinable with `&&`/`||` like any other:
 listRule: search("treasure") && author = @request.auth.id
 ```
 
+Combined with `?nearestTo=`, `search` takes part in a fused ranking instead — see
+[Vector search → Hybrid search](/docs/ai/vector-search/#hybrid-search-nearestto--search).
+
 A collection with no searchable fields rejects `search()`/`?search=` with a `400` rather than
 silently matching nothing.
 

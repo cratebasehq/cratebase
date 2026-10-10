@@ -664,7 +664,7 @@ async fn update_item(
 }
 
 /// `PUT .../records` with an `id` in the body: update if that id already
-/// exists, otherwise create it with that exact id — PocketBase's batch
+/// exists, otherwise create it with that exact id — the batch
 /// upsert. A blank/absent id behaves like a plain create.
 async fn upsert_item(
     ictx: &ItemCtx<'_>,
@@ -962,7 +962,7 @@ mod superuser_guard_tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         let mut settings = (*app.settings()).clone();
         settings.batch.enabled = true;

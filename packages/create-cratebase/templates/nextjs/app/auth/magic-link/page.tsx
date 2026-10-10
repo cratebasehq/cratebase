@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMagicLinkCallback } from "@/lib/cratebase";
 
@@ -19,11 +20,18 @@ export default function MagicLinkCallbackPage() {
   }, [status, router]);
 
   return (
-    <div className="mx-auto mt-24 max-w-sm text-center">
-      {status === "pending" && <p>Signing you in…</p>}
+    <main className="mx-auto mt-24 max-w-sm text-center" aria-live="polite">
+      {status === "pending" && <p className="muted">Signing you in…</p>}
       {status === "error" && (
-        <p className="text-red-500">That link didn't work{error ? `: ${String(error)}` : "."}</p>
+        <>
+          <p role="alert" className="error-text">
+            That link didn't work{error instanceof Error ? `: ${error.message}` : "."}
+          </p>
+          <Link href="/sign-in" className="btn-secondary mt-4">
+            Back to sign in
+          </Link>
+        </>
       )}
-    </div>
+    </main>
   );
 }

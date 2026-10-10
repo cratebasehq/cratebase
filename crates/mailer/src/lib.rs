@@ -2,7 +2,7 @@
 //! [`MailBackend`] (SMTP from `settings.smtp`, Resend from env config, a
 //! `tracing` log fallback, and an in-memory recorder for tests), the
 //! transport-agnostic [`Message`] envelope, and [`render_template`] for
-//! the per-collection PocketBase-style email templates.
+//! the per-collection email templates.
 
 mod backend;
 mod config;
@@ -62,7 +62,7 @@ impl Mailer {
         self
     }
 
-    /// Builds from the app settings, PocketBase style: SMTP when
+    /// Builds from the app settings, Cratebase style: SMTP when
     /// `smtp.enabled`, otherwise the log backend with its own private,
     /// short-lived dev mailbox. `meta.senderAddress` / `meta.senderName`
     /// become the default sender.

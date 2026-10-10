@@ -1,5 +1,4 @@
-//! `App::store()`: a process-wide typed side-table, PocketBase's
-//! `app.Store()`.
+//! `App::store()`: a process-wide typed side-table.
 //!
 //! Plugins need somewhere to keep state that outlives a request but does
 //! not belong in the database (a connection pool, a compiled template

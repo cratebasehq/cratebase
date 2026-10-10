@@ -1,5 +1,5 @@
-//! PKCE (RFC 7636) helpers for the OAuth2 flow, matching what PocketBase
-//! puts in `authMethods.oauth2.providers[]` (`codeVerifier`,
+//! PKCE (RFC 7636) helpers for the OAuth2 flow, as
+//! put in `authMethods.oauth2.providers[]` (`codeVerifier`,
 //! `codeChallenge`, `codeChallengeMethod: "S256"`, `state`).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 const ALPHANUMERIC: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
-/// Length of the verifier PocketBase generates (`security.RandomString(43)`).
+/// Length of the code verifier we generate.
 pub const CODE_VERIFIER_LENGTH: usize = 43;
 /// Length of the OAuth2 `state` we generate.
 pub const STATE_LENGTH: usize = 32;

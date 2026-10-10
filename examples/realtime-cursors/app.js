@@ -1,11 +1,10 @@
 // Cratebase — realtime multiplayer cursors example.
 //
-// Uses the official PocketBase JS SDK, imported via the bare specifier
-// "pocketbase" (resolved by the import map in index.html to the published
-// package on esm.sh — no npm install or build step needed). Cratebase's
-// API is byte-compatible with PocketBase v0.23+, so the official client
-// works unchanged.
-import PocketBase, { ClientResponseError } from "pocketbase";
+// Uses `@cratebase/client`, imported via the bare specifier
+// "@cratebase/client" (resolved by the import map in index.html to the
+// browser bundle `examples/serve.sh` builds into examples/lib/ — no npm
+// install in the example itself).
+import { createClient, CratebaseError } from "@cratebase/client";
 
 // Defaults to the Cratebase server's usual dev port. Override with
 // `?api=http://host:port` if you're serving this example from somewhere
@@ -13,7 +12,7 @@ import PocketBase, { ClientResponseError } from "pocketbase";
 const API_BASE = new URL(window.location.href).searchParams.get("api") || "http://localhost:8090";
 const COLLECTION = "cursors";
 
-const cb = new PocketBase(API_BASE);
+const cb = createClient(API_BASE);
 const cursors = cb.collection(COLLECTION);
 
 // ---------------------------------------------------------------------
@@ -76,7 +75,7 @@ async function upsertCursor(x, y) {
       await cursors.update(myRecordId, payload);
       return;
     } catch (err) {
-      if (!(err instanceof ClientResponseError) || err.status !== 404) throw err;
+      if (!(err instanceof CratebaseError) || err.status !== 404) throw err;
       // Our remembered id is stale — fall through to create.
       myRecordId = null;
       localStorage.removeItem("cursors:recordId");
@@ -92,18 +91,18 @@ function deleteOwnCursor() {
   if (!myRecordId) return;
   // Best-effort cleanup on tab close, using raw `fetch` (not the SDK)
   // specifically for its `keepalive` flag, which lets the request survive
-  // page unload — `RecordService.delete` doesn't expose that fetch
+  // page unload — `collection.delete` doesn't expose that fetch
   // option, and there's no response to handle at this point anyway.
   fetch(`${API_BASE}/api/collections/${COLLECTION}/records/${myRecordId}`, { method: "DELETE", keepalive: true }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------
-// Realtime subscription via the SDK's RealtimeService.
+// Realtime subscription via the SDK's realtime client.
 // ---------------------------------------------------------------------
 
 async function subscribeCursors(onEvent, onStatus) {
   const unsubscribe = await cursors.subscribe("*", onEvent);
-  // RecordService.subscribe() resolving means the subscription is live;
+  // `collection.subscribe()` resolving means the subscription is live;
   // it doesn't expose a connection-status stream (drops/reconnects happen
   // transparently under the hood), so this pill is "did we ever connect",
   // not a continuously accurate live/offline indicator.
@@ -267,10 +266,10 @@ upsertCursor(-100, -100).catch((err) => {
   // session where localStorage lost the record id (private browsing,
   // cleared storage) — the unique constraint on `clientId` rejects our
   // create. Recover by looking the record up and reusing it.
-  const status = err instanceof ClientResponseError ? err.status : undefined;
+  const status = err instanceof CratebaseError ? err.status : undefined;
   if (status === 400 && !myRecordId) {
     cursors
-      .getList(1, 1, { filter: `clientId = "${identity.clientId}"` })
+      .list({ page: 1, perPage: 1, filter: `clientId = "${identity.clientId}"` })
       .then((list) => {
         const existing = list?.items?.[0];
         if (existing) {

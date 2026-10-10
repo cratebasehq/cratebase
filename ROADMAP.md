@@ -81,8 +81,8 @@ than always-on background cost or a permanently deleted feature:
   hook itself checks the *current* setting on every `_teams` create and
   falls straight through (a no-op, `e.next()`) while disabled, so a
   `PATCH /api/settings` toggle takes effect immediately on a running
-  server rather than needing a restart, matching PocketBase's own
-  settings-are-live-immediately behaviour. The `_teams`/`_team_members`
+  server rather than needing a restart, like every other
+  settings-are-live-immediately toggle. The `_teams`/`_team_members`
   system collections always exist regardless (cheap, and avoids a
   migration-reversibility story), but stay out of the dashboard sidebar's
   System group until enabled.
@@ -144,14 +144,10 @@ until someone happens to restart the server.
 - **Write throughput under contention and wide pages.** The single-writer
   pool + native-driver storage engine (`crates/db`) resolved the
   contention this item used to track. Measured on an idle host
-  (`benchmarks/run.sh --skip-build`, 0 errors both sides): Cratebase beats
-  PocketBase on 22 of 24 cells, several by an order of magnitude
-  (`search` at concurrency 50: 49986 vs 4774 req/s, 10.47x; `search-auth`
-  at concurrency 100: 38768 vs 3989 req/s, 9.72x). The two remaining
-  cells, `delete` at concurrency 1 and 20, are within noise of parity
-  (0.95x and 0.97x) — not a regression to chase, just not yet a win.
-  Full table: `benchmarks/README.md`; raw numbers:
-  `benchmarks/results/{cratebase,pocketbase}.json`.
+  (`benchmarks/run.sh --skip-build`, 0 errors): `search` at concurrency 50
+  sustains 49986 req/s and `search-auth` at concurrency 100 sustains
+  38768 req/s. Full table: `benchmarks/README.md`; raw numbers:
+  `benchmarks/results/cratebase.json`.
 - **Auth rate limiting.** `/collections/{c}/auth-with-password`, and the
   `request-*`/`confirm-*` email and OTP flows, are rate-limited per client
   IP (`AUTH_RATE_LIMIT_ENABLED`, on by default). `auth-refresh` is
@@ -239,16 +235,16 @@ collection has no address to send them to.
   the ordinary `auth-with-password` flow. `cratebase superuser create`
   still works for scripted/headless setup; the endpoint re-checks "does a
   superuser exist" at write time and is permanently closed once one does.
-- **JS hooks (PocketBase parity).** A `pb_hooks/*.pb.js` file next to the
+- **JS hooks.** A `cb_hooks/*.cb.js` file next to the
   data directory is evaluated at startup by an embedded QuickJS runtime
-  (`crates/jsvm`): PocketBase-style `onRecordCreate`/`onRecordUpdate`-style
+  (`crates/jsvm`): `onRecordCreate`/`onRecordUpdate`-style
   lifecycle hooks bound through native hook registration, and `routerAdd`
   for mounting custom root-level HTTP routes (`cronAdd` for JS-defined
   cron jobs too). The glue lives in `crates/server/src/jsvm_host.rs`,
   which implements `cratebase_jsvm::HostApi` once over the plain `App`
   and once over an open `TxApp` so a hook's own `$app.save`/`$app.delete`
   inside a record write-path hook joins that write's own transaction. No
-  `pb_hooks/` directory (or an empty one) is a complete no-op.
+  `cb_hooks/` directory (or an empty one) is a complete no-op.
 - **Batch API.** `POST /api/batch` — transactional multi-record
   create/update/delete in one request, sharing one SQL transaction with
   the same rule/validation logic the individual record routes use.
@@ -365,7 +361,7 @@ collection has no address to send them to.
   (`GET/POST/DELETE /api/db/extensions[/{name}]`, superuser only,
   Postgres only) plus a `Settings → Database extensions` page, audited
   end to end; `$app.db().exec(sql, params?)`, a write-capable escape
-  hatch for `pb_migrations/*.js` alongside the existing read-only
+  hatch for `cb_migrations/*.js` alongside the existing read-only
   `$app.rawQuery`. **Custom SQL RPC**: the `_rpc` system collection
   (`name`, `sql` with `:name` placeholders bound as real driver
   parameters, `params`, `rule`, `readOnly`/`timeoutMs`/`maxRows`) plus
@@ -380,9 +376,8 @@ collection has no address to send them to.
 - **Multi-file append/remove semantics.** A multipart update field named
   `field+` appends newly uploaded files to an existing multi-file field
   without disturbing the rest; `field-` removes named files (deleting
-  their storage blobs, not just the JSON list entry) — verified against
-  real PocketBase v0.40.2 to confirm removing a name that isn't present
-  is a silent no-op, not an error. An unsuffixed field name still fully
+  their storage blobs, not just the JSON list entry); removing a name that
+  isn't present is a silent no-op, not an error. An unsuffixed field name still fully
   replaces, unchanged (`crates/server/src/routes/records.rs`).
 - **Admin audit log.** A new append-only `_audit_log` system collection
   (`crates/server/src/audit.rs`) records collection schema changes,

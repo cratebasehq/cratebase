@@ -341,7 +341,7 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     let search_elapsed = started.elapsed();
     assert_eq!(rows1.len(), 3);
 
-    // `~` — a portable case-insensitive LIKE scan, PocketBase/Cratebase's
+    // `~` — a portable case-insensitive LIKE scan, Cratebase's
     // pre-existing substring operator, over the same column.
     let like_filter = "title ~ \"xenolithography\"";
     let like_compiled = cratebase_filter::parse_and_compile(like_filter, &r, 0).unwrap();

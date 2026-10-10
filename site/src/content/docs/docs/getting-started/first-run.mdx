@@ -12,11 +12,11 @@ cratebase dev
 ```
 
 is the fast path for working on a project locally: it creates the data
-directory (and `pb_hooks/`/`pb_migrations/` next to it) if they don't
+directory (and `cb_hooks/`/`cb_migrations/` next to it) if they don't
 exist, provisions a superuser (a one-time `admin@localhost` with a
 random, printed-once password, unless `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD`
 say otherwise), applies `./schema.json` additively if present, seeds
-`./pb_seed/` if the database is otherwise empty, writes
+`./cb_seed/` if the database is otherwise empty, writes
 `./cratebase-types.d.ts` and keeps it up to date, then starts listening
 with the same verbose logging and hook hot-reload as `serve --dev`. A
 startup banner prints everything it did — the API and dashboard URLs,
@@ -116,7 +116,7 @@ data/
 └── storage/          # local file storage (uploads), unless S3-compatible storage is configured
 ```
 
-A `pb_hooks/` directory placed next to the data directory (or pointed at
+A `cb_hooks/` directory placed next to the data directory (or pointed at
 via `CB_HOOKS_DIR`) is picked up at startup for
 [JavaScript hooks](/docs/extending/js-hooks/); its absence is a
 complete no-op.
@@ -128,7 +128,7 @@ directory of them) through the ordinary record-creation path — the same
 validation, relation checks and password hashing a real
 `POST /api/collections/<name>/records` gets — instead of raw SQL:
 
-```json title="pb_seed/01-users.json"
+```json title="cb_seed/01-users.json"
 {
   "users": [
     { "id": "seeduser0000001", "email": "demo@example.com", "password": "supersecret123" }
@@ -137,7 +137,7 @@ validation, relation checks and password hashing a real
 ```
 
 ```bash
-cratebase seed pb_seed/
+cratebase seed cb_seed/
 ```
 
 A `path` that's a directory applies every `*.json` file in it in

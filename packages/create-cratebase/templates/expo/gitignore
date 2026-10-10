@@ -23,8 +23,8 @@ expo-env.d.ts
 # cratebase — schema.json is checked in (it's the source of truth); the
 # data directory, its auto-replayed migrations, and the generated types
 # file are not.
-/pb_data
-/pb_migrations
+/cb_data
+/cb_migrations
 /cratebase-types.d.ts
 
 # misc

@@ -1,8 +1,8 @@
 //! `_logs` in the auxiliary database: request and application log rows
-//! in PocketBase's shape (`{id, level, message, data, created}`).
+//! in Cratebase's shape (`{id, level, message, data, created}`).
 //!
 //! Filters arrive pre-compiled as `(where_sql, params)` with `$n`
-//! placeholders; the service layer compiles PocketBase filter
+//! placeholders; the service layer compiles Cratebase filter
 //! expressions against the virtual schema (`level`, `message`,
 //! `data.*`, `created`) before calling in here.
 
@@ -30,7 +30,7 @@ pub struct LogEntry {
     pub data: Value,
     pub created: DateTime,
     /// Kept in the table for symmetry with every other system table;
-    /// PocketBase does not expose it in the API, so neither do we.
+    /// Cratebase does not expose it in the API, so neither do we.
     #[serde(skip)]
     pub updated: DateTime,
 }
@@ -59,7 +59,7 @@ pub struct ListParams {
     pub page: i64,
     pub per_page: i64,
     pub filter: Option<Filter>,
-    /// PocketBase sort syntax over [`SORTABLE`] columns:
+    /// Cratebase sort syntax over [`SORTABLE`] columns:
     /// `-created,level`. Defaults to `-created`.
     pub sort: Option<String>,
 }
@@ -114,7 +114,7 @@ pub async fn insert_batch(ex: &dyn Executor, entries: Vec<LogEntry>) -> DbResult
     Ok(())
 }
 
-/// Translate a PocketBase sort string into an `ORDER BY` clause over
+/// Translate a Cratebase sort string into an `ORDER BY` clause over
 /// the log columns.
 pub fn order_by(sort: Option<&str>) -> DbResult<String> {
     let sort = sort
@@ -151,7 +151,7 @@ fn where_clause(filter: Option<&Filter>) -> (String, Vec<Sql>) {
     }
 }
 
-/// One page of logs plus the total, PocketBase envelope shape.
+/// One page of logs plus the total, Cratebase envelope shape.
 pub async fn list(ex: &dyn Executor, params: ListParams) -> DbResult<LogPage> {
     let page = params.page.max(1);
     let per_page = params.per_page.clamp(1, 1000);
@@ -278,14 +278,18 @@ mod tests {
     #[tokio::test]
     async fn insert_list_get_stats_and_cleanup() {
         let e = engine().await;
+        // Relative to now so the 30-day retention check below never rots.
+        let day = (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
         let mut entries = vec![
-            at(0, "GET /api/health", "2026-09-03 12:44:06.380Z"),
+            at(0, "GET /api/health", &format!("{day} 12:44:06.380Z")),
             at(
                 0,
                 "POST /api/collections/_superusers/auth-with-password",
-                "2026-09-03 12:44:06.470Z",
+                &format!("{day} 12:44:06.470Z"),
             ),
-            at(8, "boom", "2026-09-03 13:01:00.000Z"),
+            at(8, "boom", &format!("{day} 13:01:00.000Z")),
         ];
         // Past the batch boundary.
         for i in 0..BATCH_MAX {
@@ -356,21 +360,21 @@ mod tests {
             s,
             vec![
                 LogStat {
-                    date: DateTime::parse("2026-09-03 12:00:00.000Z").unwrap(),
+                    date: DateTime::parse(&format!("{day} 12:00:00.000Z")).unwrap(),
                     total: 2
                 },
                 LogStat {
-                    date: DateTime::parse("2026-09-03 13:00:00.000Z").unwrap(),
+                    date: DateTime::parse(&format!("{day} 13:00:00.000Z")).unwrap(),
                     total: 1
                 },
             ]
         );
         assert_eq!(
             serde_json::to_value(&s[0]).unwrap()["date"],
-            "2026-09-03 12:00:00.000Z"
+            format!("{day} 12:00:00.000Z")
         );
 
-        // The 2020 rows are older than 30 days; the 2026 rows are not.
+        // The 2020 rows are older than 30 days; yesterday's rows are not.
         let removed = delete_older_than(&e, 30).await.unwrap();
         assert_eq!(removed, BATCH_MAX as u64);
         let removed = delete_older_than(&e, 0).await.unwrap();

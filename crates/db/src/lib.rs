@@ -18,7 +18,7 @@
 //! - [`query`]: the `SELECT` builder (joins, sort, pagination).
 //! - [`records`]: the public read/write API the server layer calls.
 //! - [`expand`]: relation expansion, one query per collection per level.
-//! - [`validate`]: per-field validation with PocketBase's codes.
+//! - [`validate`]: per-field validation with Cratebase's codes.
 
 pub mod backend;
 pub mod collections;

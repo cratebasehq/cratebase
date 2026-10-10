@@ -8,7 +8,7 @@
 //! is modified concurrently.
 //!
 //! Two server processes sharing one database used to never see each
-//! other's schema changes until restart (the same limitation PocketBase
+//! other's schema changes until restart (the same limitation Cratebase
 //! has) — a running server's own snapshot only ever got reloaded by its
 //! *own* writes (see [`CollectionStore::insert`]/[`update`](CollectionStore::update)/
 //! [`delete`](CollectionStore::delete) below). [`watermark`] backs a
@@ -343,7 +343,7 @@ pub async fn fetch(ex: &dyn Executor, name_or_id: &str) -> DbResult<Collection> 
     row_to_collection(&row)
 }
 
-/// The keys of the PocketBase collection JSON that live in their own
+/// The keys of the Cratebase collection JSON that live in their own
 /// columns; everything else goes into `options`.
 const COLUMN_KEYS: &[&str] = &[
     "id",
@@ -410,7 +410,7 @@ fn nullable(row: &Row, col: &str) -> Value {
     }
 }
 
-/// Rebuild the PocketBase JSON from a row and let `Collection`'s
+/// Rebuild the Cratebase JSON from a row and let `Collection`'s
 /// `Deserialize` impl (defaults included) do the rest.
 pub fn row_to_collection(row: &Row) -> DbResult<Collection> {
     let fields: Value = serde_json::from_str(&text(row, "fields")).unwrap_or_else(|_| json!([]));

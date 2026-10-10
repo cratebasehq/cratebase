@@ -9,29 +9,29 @@ display-name field (stored in `localStorage`, no login) so the focus stays
 on realtime record subscriptions. See `examples/todo` for a real
 register/login-gated flow.
 
-## Importing `pocketbase` with zero build step
+## Importing `@cratebase/client` with zero build step
 
-Cratebase's API is byte-compatible with PocketBase v0.23+, so this example
-uses the official PocketBase JS SDK straight off a CDN instead of a
-bespoke client. `index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
-mapping the bare specifier to the published package on esm.sh:
+This example uses the first-party `@cratebase/client` SDK. `index.html`
+declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+mapping the bare specifier to a single-file browser bundle of
+`sdk/js/client`, which `examples/serve.sh` builds (with `bun build`) into
+`examples/lib/cratebase-client.js` before serving:
 
 ```html
 <script type="importmap">
-  { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
+  { "imports": { "@cratebase/client": "/examples/lib/cratebase-client.js" } }
 </script>
 ```
 
 so `app.js` can just write:
 
 ```js
-import PocketBase from "pocketbase";
+import { createClient } from "@cratebase/client";
 ```
 
-No npm install and no bundler step needed. Swapping the import map's one
-entry for a local `node_modules/pocketbase` resolution (or dropping the
-import map entirely and using a bundler) is a drop-in change if you'd
-rather not depend on a CDN — `app.js` doesn't change at all.
+No npm install in the example itself. In your own app, install
+`@cratebase/client` from npm and import it the same way (with or without a
+bundler) — `app.js` doesn't change at all.
 
 ## 1. Start Cratebase
 
@@ -83,12 +83,12 @@ subscription — no page refresh, no polling.
 
 ## How it works
 
-- `app.js` creates one `PocketBase` client pointed at `http://localhost:8090`.
+- `app.js` creates one `@cratebase/client` client pointed at `http://localhost:8090`.
 - On load, it fetches the most recent 50 messages with
-  `cb.collection("messages").getList(1, 50, { sort: "created" })` and
+  `cb.collection("messages").list({ page: 1, perPage: 50, sort: "created" })` and
   renders them.
 - It then calls `cb.collection("messages").subscribe("*", callback)`, which
-  opens an SSE connection to `/api/realtime`, waits for the `PB_CONNECT`
+  opens an SSE connection to `/api/realtime`, waits for the `CB_CONNECT`
   event to get a `clientId`, and posts a subscription for the
   `messages/*` topic. Every subsequent `create`/`delete` event on that
   collection calls the callback, which appends or removes the

@@ -7,6 +7,6 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 CRATEBASE_BIN="${CRATEBASE_BIN:-cratebase}"
-CB_DATA_DIR="${CB_DATA_DIR:-./pb_data}"
+CB_DATA_DIR="${CB_DATA_DIR:-./cb_data}"
 
 "$CRATEBASE_BIN" typegen -o src/cratebase-types.d.ts --dir "$CB_DATA_DIR"

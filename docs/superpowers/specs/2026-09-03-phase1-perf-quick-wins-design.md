@@ -5,7 +5,7 @@ Source: `docs/superpowers/audits/2026-09-03-full-audit.md`, Part 2.
 
 ## Goal
 
-Close the measured gap against PocketBase on the existing benchmark with
+Close the measured gap against the reference server on the existing benchmark with
 changes that are local, low-risk, and survive the later core rewrite
 (Phase 2). Establish a benchmark harness whose numbers can be trusted.
 
@@ -55,7 +55,7 @@ shape change. Those are Phase 2.
 - `helpers::load_collection` becomes: cache-by-name, then cache-by-id, then
   one DB query `WHERE name = $1 OR id = $1`.
 - Known limitation: two server processes on one SQLite file will not see
-  each other's schema changes until restart. Same as PocketBase.
+  each other's schema changes until restart. Same as the original.
 
 ### 5. Argon2 off the async runtime (`crates/auth/src/password.rs`, call sites)
 - Add `hash_password_async` / `verify_password_async` wrappers using
@@ -103,7 +103,7 @@ shape change. Those are Phase 2.
 - Before/after benchmark numbers in `benchmarks/README.md`.
 
 ## Success criteria
-Cratebase ≥ PocketBase req/s on `search` c1 and c20, and within 10% or
+Cratebase ≥ reference req/s on `search` c1 and c20, and within 10% or
 better on `create`/`delete` c20, on the same machine, same run, median of
 3. If not met, the remaining delta is documented with a profile and
 carried into Phase 2's structural items.

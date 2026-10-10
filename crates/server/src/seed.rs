@@ -51,7 +51,7 @@
 //! seeding is meant to be run once against a fresh database. With
 //! `--upsert`, a record whose `id` already exists is updated in place
 //! instead (existing fields not mentioned in the seed record are left
-//! alone, PocketBase's own `PATCH` semantics — see
+//! alone, `PATCH` semantics — see
 //! `cratebase_db::records::apply_body`), making the whole run idempotent;
 //! a record with no `id` is always created fresh either way, since there
 //! is nothing to match an existing row against.
@@ -71,8 +71,8 @@
 //! atomically, first; each `*.js` file then runs afterward, in file-name
 //! order, each in its own transaction, so a `.js` seed file can rely on
 //! data every `.json` file seeded but not vice versa. When no JS runtime
-//! is already running (a non-`--dev` boot with empty `pb_hooks`/
-//! `pb_migrations`), one is started on demand for the duration of the
+//! is already running (a non-`--dev` boot with empty `cb_hooks`/
+//! `cb_migrations`), one is started on demand for the duration of the
 //! seed run.
 
 use std::collections::BTreeMap;
@@ -262,9 +262,9 @@ async fn seed_one_record(
 }
 
 /// The JS runtime, starting one on demand (scoped to `app`'s configured
-/// `pb_hooks`/`pb_migrations` directories, same as a normal boot would)
+/// `cb_hooks`/`cb_migrations` directories, same as a normal boot would)
 /// when `*.js` seed files are used but nothing started it already — e.g.
-/// a non-`--dev` boot against an empty `pb_hooks`/`pb_migrations`.
+/// a non-`--dev` boot against an empty `cb_hooks`/`cb_migrations`.
 async fn ensure_runtime(app: &App) -> Result<cratebase_jsvm::Runtime, AppError> {
     if let Some(rt) = app.jsvm() {
         return Ok(rt);
@@ -306,7 +306,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let cfg = Config::memory(dir.path().join("pb_data"));
+        let cfg = Config::memory(dir.path().join("cb_data"));
         let app = App::new(cfg);
         app.bootstrap().await.expect("bootstrap");
         (app, dir)

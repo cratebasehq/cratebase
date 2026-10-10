@@ -98,8 +98,8 @@ record. `0` disables enforcement entirely — no collection is ever gated, regar
 | `s3` | a nested [`s3`](#s3-file-storage)-shaped block for uploading backups somewhere other than local disk |
 
 Setting `backups.cron` to a non-empty cron expression is what makes the
-`__pbAutoBackup__` scheduled job appear alongside the always-present
-`__pbDBOptimize__`/`__pbMFACleanup__`/`__pbOTPCleanup__`/`__pbLogsCleanup__`
+`__cbAutoBackup__` scheduled job appear alongside the always-present
+`__cbDBOptimize__`/`__cbMFACleanup__`/`__cbOTPCleanup__`/`__cbLogsCleanup__`
 jobs — see [Crons](/docs/reference/rest-api/crons/).
 
 ## `rateLimits`
@@ -181,6 +181,8 @@ cadence as `maxDays` prunes `_logs`; `<= 0` disables cleanup.
 | `baseUrl` | `"https://api.openai.com/v1"` | |
 | `apiKey` | *(write-only)* | |
 | `model` | `"gpt-4o-mini"` | |
+| `prices` | `{}` | Per-model price map, USD per 1M tokens, keyed by exact model name: `{ "gpt-4o-mini": { "input": 0.15, "output": 0.6, "cachedInput": 0.075 } }` (`cachedInput` optional). Drives `costUsd` in the [usage ledger](/docs/ai/llm-usage-ledger/); a model with no entry is recorded unpriced. |
+| `priceVersion` | `""` | Free-form label copied onto each ledger row so cost changes stay traceable. |
 
 ## `push`
 

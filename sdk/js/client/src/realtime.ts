@@ -123,7 +123,7 @@ export class RealtimeClient {
 
     const clientIdPromise = new Promise<string>((resolve) => {
       this.readFrames(res.body!, (event, data) => {
-        if (event === "PB_CONNECT") {
+        if (event === "CB_CONNECT") {
           const parsed = JSON.parse(data) as { clientId: string };
           this.clientId = parsed.clientId;
           this.reconnectDelay = RECONNECT_MIN_MS;

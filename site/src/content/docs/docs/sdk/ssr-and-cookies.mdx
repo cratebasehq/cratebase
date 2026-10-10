@@ -34,9 +34,17 @@ To write a session back into your framework's own cookie handling
 setCookie(cb.auth.exportCookie("my_app_session"));
 ```
 
-`exportCookie(name = "cb_session")` returns a `Set-Cookie`-shaped
-string (`HttpOnly`, `Path=/`, `SameSite=Lax`) for a host framework's
-own cookie API to apply.
+`exportCookie(name = "cb_session", { secure, maxAge, sameSite, path })`
+returns a `Set-Cookie`-shaped string (`HttpOnly`, `Path=/`,
+`SameSite=Lax` by default; pass `secure: true` to add `Secure`) for a
+host framework's own cookie API to apply.
+
+If you already have a token (a user token or an API key) and don't need
+cookie hydration, `createClient(url, { token })` is a bearer-token
+shortcut.
+
+On TanStack Start, [`@cratebase/start`](/docs/sdk/start/) wires all of
+this up — cookie, per-request client, and auth middleware.
 
 ## Server-side cookie sessions
 

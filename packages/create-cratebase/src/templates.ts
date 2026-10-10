@@ -1,4 +1,4 @@
-export type TemplateId = "nextjs" | "vite-react" | "expo";
+export type TemplateId = "nextjs" | "vite-react" | "expo" | "tanstack-start";
 
 export interface TemplateInfo {
   id: TemplateId;
@@ -16,6 +16,11 @@ export const TEMPLATES: TemplateInfo[] = [
     id: "vite-react",
     title: "Vite + React",
     description: "Vite, React, TypeScript, Tailwind — a single-page app",
+  },
+  {
+    id: "tanstack-start",
+    title: "TanStack Start",
+    description: "TanStack Start on Cloudflare Workers — SSR cookie sessions via @cratebase/start",
   },
   {
     id: "expo",
@@ -52,29 +57,24 @@ export function installCommand(pm: PackageManager): { command: string; args: str
   }
 }
 
-/** The `run <script>` invocation for a given package manager. */
-export function runScriptCommand(pm: PackageManager, script: string): { command: string; args: string[] } {
-  switch (pm) {
-    case "bun":
-      return { command: "bun", args: ["run", script] };
-    case "npm":
-      return { command: "npm", args: ["run", script] };
-    case "pnpm":
-      return { command: "pnpm", args: ["run", script] };
-    case "yarn":
-      return { command: "yarn", args: [script] };
-  }
+/** A script invocation as the user would type it, e.g. `bun run dev` / `pnpm dev`. */
+export function scriptCommandLine(pm: PackageManager, script: string): string {
+  return pm === "pnpm" || pm === "yarn" ? `${pm} ${script}` : `${pm} run ${script}`;
 }
 
 export function devCommand(pm: PackageManager): string {
-  switch (pm) {
-    case "bun":
-      return "bun run dev";
-    case "npm":
-      return "npm run dev";
-    case "pnpm":
-      return "pnpm dev";
-    case "yarn":
-      return "yarn dev";
+  return scriptCommandLine(pm, "dev");
+}
+
+/** Where the frontend's dev server listens, for the "next steps" output. */
+export function devUrl(template: TemplateId): string {
+  switch (template) {
+    case "vite-react":
+      return "http://localhost:5173";
+    case "expo":
+      return "http://localhost:8081";
+    case "nextjs":
+    case "tanstack-start":
+      return "http://localhost:3000";
   }
 }

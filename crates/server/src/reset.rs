@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn refuses_a_postgres_url() {
-        let mut config = Config::for_data_dir("./pb_data");
+        let mut config = Config::for_data_dir("./cb_data");
         config.database_url = "postgres://user:pass@localhost/db".into();
         let err = refuse_if_postgres(&config).expect_err("postgres must be refused");
         assert!(err.to_string().contains("SQLite"));
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn accepts_a_sqlite_url() {
-        let config = Config::for_data_dir("./pb_data");
+        let config = Config::for_data_dir("./cb_data");
         refuse_if_postgres(&config).expect("sqlite must be allowed");
     }
 
@@ -115,7 +115,7 @@ mod tests {
     #[tokio::test]
     async fn wiping_and_rebootstrapping_yields_a_clean_database() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let data_dir = dir.path().join("pb_data");
+        let data_dir = dir.path().join("cb_data");
         let mut config = Config::for_data_dir(data_dir.to_string_lossy().into_owned());
         config.secret = "test-secret-0123456789012345678901".into();
 

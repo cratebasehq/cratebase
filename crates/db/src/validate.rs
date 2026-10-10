@@ -1,21 +1,21 @@
-//! Per-field record validation, using PocketBase's `validation_*` codes
+//! Per-field record validation, using Cratebase's `validation_*` codes
 //! and wording so SDK clients that branch on `code` keep working.
 //!
 //! Each field type has its own function returning `Option<FieldError>`;
 //! [`record`] runs them all and collects the failures into the map that
 //! becomes the `data` object of a `400` response.
 //!
-//! Three PocketBase behaviors worth calling out, because they surprise
+//! Three Cratebase behaviors worth calling out, because they surprise
 //! people (all three are pinned by `tests/conformance`):
 //!
 //! * "Blank" means the zero value, not just `null`: `""`, `[]`, `0` and
 //!   `false` are all blank, so a required `bool` must be `true` and a
 //!   required `number` must be non-zero (this is ozzo-validation's
-//!   `Required`, which PocketBase uses).
+//!   `Required`, which Cratebase uses).
 //! * A blank *optional* value skips every other check — an empty string
 //!   in an `email` field is fine, an empty string in a `required` one is
 //!   not.
-//! * **PocketBase coerces far more than it rejects.** `views: "abc"` on a
+//! * **Cratebase coerces far more than it rejects.** `views: "abc"` on a
 //!   number field stores `0`, an unparsable date stores `""`, and a
 //!   single-valued select handed an array keeps the *last* element. Only
 //!   `onlyInt`, the min/max bounds and the format checks are real errors.
@@ -35,11 +35,11 @@ use crate::engine::{quote_ident, Executor, Sql};
 use crate::error::{DbError, DbResult};
 use crate::query::in_placeholders;
 
-/// Codes PocketBase uses that are not in [`cratebase_core::codes`], or
+/// Codes Cratebase uses that are not in [`cratebase_core::codes`], or
 /// that differ from the obvious guess. All four are pinned by
 /// `tests/conformance/records.test.ts`.
 const JSON_SIZE_LIMIT: &str = "validation_json_size_limit";
-/// Not `validation_is_url` — PocketBase's url field uses its own code.
+/// Not `validation_is_url` — Cratebase's url field uses its own code.
 const INVALID_URL: &str = "validation_invalid_url";
 /// Date bounds reuse ozzo's comparison codes rather than a date-specific
 /// one, and render the threshold in Go's default time format.
@@ -47,7 +47,7 @@ const MIN_DATE: &str = "validation_min_greater_equal_than_required";
 const MAX_DATE: &str = "validation_max_less_equal_than_required";
 /// Files have their own "too many" code, distinct from select's.
 const TOO_MANY_FILES: &str = "validation_too_many_files";
-/// Cratebase-specific: PocketBase has no `vector` field type, so there is
+/// Cratebase-specific: there is
 /// no upstream code to match.
 const VECTOR_DIMENSION_MISMATCH: &str = "validation_vector_dimension_mismatch";
 
@@ -77,7 +77,7 @@ fn err(code: &str, message: impl Into<String>) -> FieldError {
     FieldError::new(code, message)
 }
 
-/// PocketBase's notion of a blank value: the type's zero value.
+/// Cratebase's notion of a blank value: the type's zero value.
 pub fn is_blank(value: &Value) -> bool {
     match value {
         Value::Null => true,
@@ -91,9 +91,7 @@ pub fn is_blank(value: &Value) -> bool {
 
 /// `Cannot be blank.` when a required field holds its zero value.
 ///
-/// Matches PocketBase (`core/field_number.go`'s `Required` validator,
-/// which runs `validation.Required` against the raw Go value): a
-/// required `number` field's zero value is `0`, so `0` is treated as
+/// A required `number` field's zero value is `0`, so `0` is treated as
 /// blank exactly like `""` for text or `[]` for a multi-relation. This
 /// trips people up in practice (a literal `0` is a meaningful value for
 /// counters, scores, etc.), so the `number` case gets a more specific
@@ -199,7 +197,7 @@ pub fn text(field: &Field, value: &Value) -> Option<FieldError> {
 }
 
 /// `number`. A non-numeric value never reaches here — [`coerce`] has
-/// already turned it into `0`, which is what PocketBase stores — so the
+/// already turned it into `0`, which is what Cratebase stores — so the
 /// only failures are `onlyInt` and the bounds.
 pub fn number(field: &Field, value: &Value) -> Option<FieldError> {
     let FieldKind::Number { min, max, only_int } = &field.kind else {
@@ -247,7 +245,7 @@ pub fn boolean(value: &Value) -> Option<FieldError> {
     }
 }
 
-/// A deliberately permissive check, the same shape PocketBase's
+/// A deliberately permissive check, the same shape Cratebase's
 /// `is.EmailFormat` accepts: `local@domain.tld`.
 fn looks_like_email(s: &str) -> bool {
     let Some((local, domain)) = s.rsplit_once('@') else {
@@ -262,7 +260,7 @@ fn looks_like_email(s: &str) -> bool {
         && !local.contains(' ')
 }
 
-/// `onlyDomains` wins when both lists are set, matching PocketBase.
+/// `onlyDomains` wins when both lists are set, matching Cratebase.
 fn domain_allowed(domain: &str, only: &[String], except: &[String]) -> bool {
     let eq = |d: &String| d.eq_ignore_ascii_case(domain);
     if !only.is_empty() {
@@ -369,7 +367,7 @@ fn threshold(dt: &DateTime) -> String {
 }
 
 /// Go's default `time.Time` rendering, which is what ends up in
-/// PocketBase's date-bound messages: `2020-01-01 00:00:00 +0000 UTC`.
+/// Cratebase's date-bound messages: `2020-01-01 00:00:00 +0000 UTC`.
 fn go_time(dt: &DateTime) -> String {
     dt.inner().format("%Y-%m-%d %H:%M:%S +0000 UTC").to_string()
 }
@@ -446,7 +444,7 @@ pub fn json(field: &Field, value: &Value) -> Option<FieldError> {
         return None;
     };
     // A json field submitted as a string is accepted only if the string
-    // itself is valid JSON, matching PocketBase's `json.Valid` check.
+    // itself is valid JSON, as a strict JSON validity check.
     let encoded = match value {
         Value::String(s) => {
             if serde_json::from_str::<Value>(s).is_err() {
@@ -625,7 +623,7 @@ pub async fn relation(
 }
 
 /// The `id` of a record being created: format from the field definition
-/// (PocketBase's default is `^[a-z0-9]+$`, exactly 15 characters) plus a
+/// (Cratebase's default is `^[a-z0-9]+$`, exactly 15 characters) plus a
 /// uniqueness probe, so a duplicate is a `validation_not_unique` on `id`
 /// rather than an opaque primary-key violation.
 pub async fn id_on_create(
@@ -654,10 +652,10 @@ pub async fn id_on_create(
     Ok(None)
 }
 
-/// Shape a submitted value into what PocketBase actually stores.
+/// Shape a submitted value into what Cratebase actually stores.
 ///
 /// This is the counterpart of Go's `field.PrepareValue`, and it is the
-/// reason so few of the checks above ever fire: PocketBase casts first
+/// reason so few of the checks above ever fire: Cratebase casts first
 /// and validates second, so `views: "abc"` becomes `0`, `when: "not a
 /// date"` becomes `""`, `published: "true"` becomes `true` and a
 /// single-valued `category: ["news", "blog"]` keeps `"blog"`.
@@ -724,7 +722,7 @@ fn coerce_changed(field: &Field, value: &Value) -> Option<Value> {
             _ => None,
         },
         // Single-valued select/file/relation handed a list keep the last
-        // element, which is where PocketBase's cast lands.
+        // element, which is where Cratebase's cast lands.
         FieldType::Select | FieldType::File | FieldType::Relation => match value {
             Value::String(_) => None,
             other => Some(Value::String(string_list(other).pop().unwrap_or_default())),
@@ -736,7 +734,7 @@ fn coerce_changed(field: &Field, value: &Value) -> Option<Value> {
     }
 }
 
-/// Go's `cast.ToFloat64` with its error swallowed: anything unparsable
+/// Lenient number cast: anything unparsable
 /// is `0`.
 fn to_f64(value: &Value) -> f64 {
     match value {
@@ -747,7 +745,7 @@ fn to_f64(value: &Value) -> f64 {
     }
 }
 
-/// Go's `cast.ToBool`: only the canonical truthy spellings count.
+/// Lenient bool cast: only the canonical truthy spellings count.
 fn to_bool(value: &Value) -> bool {
     match value {
         Value::Bool(b) => *b,
@@ -757,7 +755,7 @@ fn to_bool(value: &Value) -> bool {
     }
 }
 
-/// Go's `cast.ToString`: scalars stringify, containers become `""`.
+/// Lenient string cast: scalars stringify, containers become `""`.
 fn to_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -871,7 +869,7 @@ pub async fn check(
     }
 }
 
-/// PocketBase's append/prepend/remove modifiers on multi-valued
+/// Cratebase's append/prepend/remove modifiers on multi-valued
 /// `select` / `relation` / `file` fields:
 ///
 /// * `"tags+": ["c"]` appends,
@@ -969,9 +967,8 @@ mod tests {
 
     #[test]
     fn required_number_zero_is_blank_with_explanatory_message() {
-        // Matches PocketBase: a required number field's zero value (0) is
-        // blank, same as `""` for text. This is intentional (see PB's
-        // `core/field_number.go`), but the message should explain it since
+        // A required number field's zero value (0) is
+        // blank, same as `""` for text. This is intentional, but the message should explain it since
         // it surprises people writing counters/scores that can be 0.
         let mut field = f(
             "score",
@@ -1090,7 +1087,7 @@ mod tests {
             too_early.message,
             "Must be no less than 2026-01-01 00:00:00 +0000 UTC."
         );
-        // PocketBase carries the bound machine-readably alongside the
+        // Cratebase carries the bound machine-readably alongside the
         // prose, RFC3339 with trailing zero fractions trimmed (Go's
         // time.Time JSON form), asserted in
         // tests/conformance/records.test.ts.
@@ -1245,7 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn coercion_matches_pocketbase_casts() {
+    fn coercion_matches_cratebase_casts() {
         let views = f(
             "views",
             FieldKind::Number {

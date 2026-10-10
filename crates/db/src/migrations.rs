@@ -2,7 +2,7 @@
 //! for core (Rust) migrations.
 //!
 //! Core migrations are registered in order on a [`Runner`]; JS
-//! migrations (`pb_migrations/*.js`) are executed by the JS runtime and
+//! migrations (`cb_migrations/*.js`) are executed by the JS runtime and
 //! recorded through the same ledger via [`mark_applied`] /
 //! [`mark_reverted`], so `migrate history-sync` and the dashboard see
 //! one list.
@@ -291,6 +291,16 @@ impl Runner {
             Box::new(|db| Box::pin(add_cron_tick_claim_up(db))),
             Box::new(|db| Box::pin(add_cron_tick_claim_down(db))),
         ));
+        // Extends `_llm_usage` from a word-count-only ledger into a real
+        // usage ledger (cached/reasoning tokens, latency, cost, surface,
+        // purpose, ...). Purely additive and optional, so no backfill.
+        // Named `23_...`: the next core migration number after
+        // `ADD_CRON_TICK_CLAIM` (`22_...`).
+        r.register(Migration::new(
+            ADD_LLM_USAGE_LEDGER,
+            Box::new(|db| Box::pin(add_llm_usage_ledger_up(db))),
+            Box::new(|_db| Box::pin(async { Ok(()) })),
+        ));
         r
     }
 
@@ -435,7 +445,7 @@ pub async fn mark_reverted(ex: &dyn Executor, file: &str) -> DbResult<()> {
 }
 
 /// Drop ledger rows whose file is no longer known (deleted from
-/// `pb_migrations/` or unregistered). Returns the removed files.
+/// `cb_migrations/` or unregistered). Returns the removed files.
 pub async fn history_sync(ex: &dyn Executor, known_files: &[String]) -> DbResult<Vec<String>> {
     let mut removed = Vec::new();
     for (file, _) in applied(ex).await? {
@@ -449,7 +459,7 @@ pub async fn history_sync(ex: &dyn Executor, known_files: &[String]) -> DbResult
 
 pub const INIT_SYSTEM: &str = "1_init_system.rs";
 
-/// The collections PocketBase seeds on first run, in creation order.
+/// The collections Cratebase seeds on first run, in creation order.
 fn seed_collections() -> Vec<Collection> {
     let mut all = vec![
         Collection::default_superusers(),
@@ -1463,6 +1473,51 @@ async fn add_jobs_and_webhooks_reliability_down(db: &Db) -> DbResult<()> {
     Ok(())
 }
 
+pub const ADD_LLM_USAGE_LEDGER: &str = "23_extend_llm_usage.rs";
+
+/// Fields `23_...` adds to `_llm_usage`, cloned from the default template.
+const LLM_USAGE_LEDGER_FIELDS: [&str; 17] = [
+    "surface",
+    "purpose",
+    "actor",
+    "sessionId",
+    "runId",
+    "callId",
+    "finishReason",
+    "error",
+    "priceVersion",
+    "source",
+    "note",
+    "tokensCached",
+    "tokensReasoning",
+    "latencyMs",
+    "ttftMs",
+    "costUsd",
+    "ok",
+];
+
+/// Adds the ledger columns to an existing `_llm_usage`; a no-op when the
+/// collection is absent or already has them. No `down`: like the other
+/// additive migrations, the columns are harmless to keep.
+async fn add_llm_usage_ledger_up(db: &Db) -> DbResult<()> {
+    let Some(previous) = db.collections.get_by_name("_llm_usage") else {
+        return Ok(());
+    };
+    let template = Collection::default_system_collections()
+        .into_iter()
+        .find(|c| c.name == "_llm_usage")
+        .expect("_llm_usage is a default system collection");
+    let fields = LLM_USAGE_LEDGER_FIELDS.into_iter().map(|name| {
+        template
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("_llm_usage template has {name}"))
+            .clone()
+    });
+    add_missing_fields(db, &previous, fields).await
+}
+
 pub const ADD_CRON_TICK_CLAIM: &str = "22_cron_tick_claim.rs";
 
 /// See `crate::migrations`'s `_cronRuns` template
@@ -1684,6 +1739,7 @@ mod tests {
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
                 ADD_JOBS_AND_WEBHOOKS_RELIABILITY.to_string(),
                 ADD_CRON_TICK_CLAIM.to_string(),
+                ADD_LLM_USAGE_LEDGER.to_string(),
             ]
         );
         assert_eq!(
@@ -1763,10 +1819,11 @@ mod tests {
         assert!(Runner::core().up(&db).await.unwrap().is_empty());
         assert!(is_applied(&db, INIT_SYSTEM).await.unwrap());
 
-        let reverted = Runner::core().down(&db, 22).await.unwrap();
+        let reverted = Runner::core().down(&db, 23).await.unwrap();
         assert_eq!(
             reverted,
             vec![
+                ADD_LLM_USAGE_LEDGER.to_string(),
                 ADD_CRON_TICK_CLAIM.to_string(),
                 ADD_JOBS_AND_WEBHOOKS_RELIABILITY.to_string(),
                 ADD_NOTIFICATIONS_AND_CHANNELS.to_string(),
@@ -1796,6 +1853,52 @@ mod tests {
         assert!(!is_applied(&db, INIT_SYSTEM).await.unwrap());
     }
 
+    #[tokio::test]
+    async fn llm_usage_ledger_migration_adds_fields_and_is_idempotent() {
+        let db = fresh().await;
+        Runner::core().up(&db).await.unwrap();
+
+        // Shape a database migrated only through `22_...`: strip the
+        // ledger fields and forget that `23_...` ran.
+        assert_eq!(
+            Runner::core().down(&db, 1).await.unwrap(),
+            vec![ADD_LLM_USAGE_LEDGER.to_string()]
+        );
+        let mut stripped = (*db.collections.get_by_name("_llm_usage").unwrap()).clone();
+        stripped
+            .fields
+            .retain(|f| !LLM_USAGE_LEDGER_FIELDS.contains(&f.name.as_str()));
+        db.collections.update(&*db.engine, &stripped).await.unwrap();
+        let has = |db: &Db| {
+            let c = db.collections.get_by_name("_llm_usage").unwrap();
+            LLM_USAGE_LEDGER_FIELDS
+                .iter()
+                .all(|n| c.fields.iter().any(|f| f.name == *n))
+        };
+        assert!(!has(&db));
+
+        assert_eq!(
+            Runner::core().up(&db).await.unwrap(),
+            vec![ADD_LLM_USAGE_LEDGER.to_string()]
+        );
+        assert!(has(&db));
+        let fields = &db.collections.get_by_name("_llm_usage").unwrap().fields;
+        let n = fields.len();
+        assert_eq!(fields[n - 2].name, "created");
+        assert_eq!(fields[n - 1].name, "updated");
+
+        // Running the body again changes nothing.
+        add_llm_usage_ledger_up(&db).await.unwrap();
+        assert_eq!(
+            db.collections
+                .get_by_name("_llm_usage")
+                .unwrap()
+                .fields
+                .len(),
+            n
+        );
+    }
+
     /// Inserts one raw `_cronRuns` row with no `tickAt` (as every row
     /// looked before migration `22_...`), for
     /// [`cron_tick_claim_backfills_unambiguous_rows_and_nulls_duplicates`].
@@ -1819,8 +1922,11 @@ mod tests {
         // `tickAt` column or index, as a database migrated only through
         // `21_...` would be.
         assert_eq!(
-            Runner::core().down(&db, 1).await.unwrap(),
-            vec![ADD_CRON_TICK_CLAIM.to_string()]
+            Runner::core().down(&db, 2).await.unwrap(),
+            vec![
+                ADD_LLM_USAGE_LEDGER.to_string(),
+                ADD_CRON_TICK_CLAIM.to_string()
+            ]
         );
         assert!(!db
             .collections
@@ -1843,7 +1949,10 @@ mod tests {
         // whole point of leaving ambiguous rows `NULL`.
         assert_eq!(
             Runner::core().up(&db).await.unwrap(),
-            vec![ADD_CRON_TICK_CLAIM.to_string()]
+            vec![
+                ADD_CRON_TICK_CLAIM.to_string(),
+                ADD_LLM_USAGE_LEDGER.to_string()
+            ]
         );
 
         async fn tick_at(db: &Db, id: &str) -> Option<String> {

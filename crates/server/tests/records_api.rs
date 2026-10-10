@@ -3,7 +3,7 @@
 //! in-memory database — no listener, no ports.
 //!
 //! The conformance suite (`tests/conformance`) is the behavioural
-//! specification and runs against the real PocketBase binary too; what
+//! specification; what
 //! lives here is what a Rust-level regression would break first: the rule
 //! outcomes, the serialization options, the transaction boundary and the
 //! "one token resolution per request" performance invariant.
@@ -29,7 +29,7 @@ struct Harness {
 impl Harness {
     async fn new() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         let id = app
             .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
@@ -127,23 +127,23 @@ fn posts(name: &str) -> Value {
 
 // ------------------------------------------------------------- collections
 
-/// `--automigrate` (on by default, but only writes once `pb_migrations/`
+/// `--automigrate` (on by default, but only writes once `cb_migrations/`
 /// exists or `--dev` is set — see `crate::automigrate`'s module doc):
-/// creating a collection through the HTTP API writes a `pb_migrations/
+/// creating a collection through the HTTP API writes a `cb_migrations/
 /// *.js` file whose `up()`, applied to a *different*, fresh database,
 /// recreates the exact same collection.
 ///
 /// Builds its own app/dir rather than the shared `Harness` — `Config::
 /// memory`'s `hooks_dir`/`migrations_dir` are *siblings* of the data dir,
-/// so `Harness`'s bare `tempfile::tempdir()` would put `pb_migrations` at
+/// so `Harness`'s bare `tempfile::tempdir()` would put `cb_migrations` at
 /// that tempdir's *parent* (`/tmp`, shared by the whole test binary); a
-/// `pb_data` subdirectory keeps this test's `pb_migrations` under its own
+/// `cb_data` subdirectory keeps this test's `cb_migrations` under its own
 /// unique tempdir instead (same reasoning as `jsvm_host`'s own
 /// `test_app_with_hook` test helper).
 #[tokio::test]
 async fn automigrate_writes_a_migration_that_recreates_the_collection_elsewhere() {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = Config::memory(dir.path().join("pb_data"));
+    let cfg = Config::memory(dir.path().join("cb_data"));
     // Opt in, the same way an operator who wants automigrate on a
     // production data dir would: create the directory once.
     std::fs::create_dir_all(&cfg.migrations_dir).unwrap();
@@ -191,7 +191,7 @@ async fn automigrate_writes_a_migration_that_recreates_the_collection_elsewhere(
     // (`js_migrations::run_up`, exactly what `cratebase migrate up` and
     // `serve` boot call) recreates the collection there too.
     let dir2 = tempfile::tempdir().unwrap();
-    let cfg2 = Config::memory(dir2.path().join("pb_data"));
+    let cfg2 = Config::memory(dir2.path().join("cb_data"));
     std::fs::create_dir_all(&cfg2.migrations_dir).unwrap();
     std::fs::copy(
         std::path::Path::new(&migrations_dir).join(&file_name),
@@ -274,7 +274,7 @@ async fn collections_crud_and_the_paginated_envelope() {
 }
 
 #[tokio::test]
-async fn collection_validation_matches_pocketbase_shapes() {
+async fn collection_validation_shapes() {
     let harness = Harness::new().await;
     harness.collection(posts("posts")).await;
 
@@ -540,7 +540,7 @@ async fn validation_errors_use_the_operation_wrapper() {
     assert_eq!(body["data"], json!({}));
 }
 
-/// PocketBase answers a failed rule four different ways; collapsing them
+/// A failed rule is answered four different ways; collapsing them
 /// into one would be an information leak in one direction and a broken
 /// client in the other.
 #[tokio::test]
@@ -792,7 +792,7 @@ async fn password_auth_refresh_and_methods() {
     let harness = Harness::new().await;
     let (id, token) = member(&harness).await;
 
-    // The claims are PocketBase's exactly; the SDK reads `refreshable`.
+    // The SDK reads `refreshable`.
     let payload = token.split('.').nth(1).expect("a jwt payload");
     let decoded = base64_url(payload);
     let claims: Value = serde_json::from_slice(&decoded).unwrap();
@@ -1390,8 +1390,8 @@ async fn file_tokens_are_minted_for_any_authenticated_record() {
     );
 }
 
-/// `protected: true` does not mean "always needs a token": PocketBase
-/// runs the collection's `viewRule` for the token owner, so a protected
+/// `protected: true` does not mean "always needs a token": the
+/// collection's `viewRule` is run for the token owner, so a protected
 /// file in a public collection is public (KNOWN_DIVERGENCES §29).
 #[tokio::test]
 async fn protected_files_follow_the_view_rule_not_the_flag() {

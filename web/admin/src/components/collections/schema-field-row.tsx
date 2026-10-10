@@ -1,8 +1,29 @@
-import { useId } from "react";
-import { AlertCircle, ChevronRight, GripVertical, Trash2 } from "lucide-react";
+import { useId, useState } from "react";
+import {
+  AlertCircle,
+  Braces,
+  Calendar,
+  ChevronRight,
+  Clock,
+  FileText,
+  Globe,
+  GripVertical,
+  Hash,
+  KeyRound,
+  Link2,
+  ListChecks,
+  Mail,
+  MapPin,
+  Paperclip,
+  ToggleLeft,
+  Trash2,
+  Type,
+  Waypoints,
+  type LucideIcon,
+} from "lucide-react";
 import type { CollectionModel } from "@cratebase/client";
 import { cn } from "@/lib/utils";
-import { FIELD_TYPES, type FieldSchema, isMultiValue, newField } from "@/lib/field-types";
+import { FIELD_TYPES, type FieldSchema, type FieldType, isMultiValue, newField } from "@/lib/field-types";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -24,6 +45,8 @@ interface SchemaFieldRowProps {
   isDragging?: boolean;
   nameError?: string | null;
   optionsError?: string | null;
+  /** Added in this editing session and not yet saved. */
+  isNew?: boolean;
 }
 
 /** A single labeled control inside an `OptionGroup`, with helper text
@@ -220,6 +243,24 @@ function optionsSummary(field: FieldSchema, collections: CollectionModel[]): str
   return parts.join(" · ");
 }
 
+const TYPE_ICONS: Record<FieldType, LucideIcon> = {
+  text: Type,
+  editor: FileText,
+  number: Hash,
+  bool: ToggleLeft,
+  email: Mail,
+  url: Globe,
+  date: Calendar,
+  autodate: Clock,
+  select: ListChecks,
+  json: Braces,
+  relation: Link2,
+  file: Paperclip,
+  password: KeyRound,
+  geoPoint: MapPin,
+  vector: Waypoints,
+};
+
 export function SchemaFieldRow({
   field,
   collections,
@@ -234,7 +275,9 @@ export function SchemaFieldRow({
   isDragging,
   nameError,
   optionsError,
+  isNew = false,
 }: SchemaFieldRowProps) {
+  const [nameTouched, setNameTouched] = useState(false);
   const multiple = isMultiValue(field);
   const expandable = hasOptions(field.type);
   const open = expanded && expandable;
@@ -250,43 +293,66 @@ export function SchemaFieldRow({
     patch({ maxSelect: checked ? Math.max((field.maxSelect as number | undefined) ?? 0, 2) : 1 });
   }
 
+  const shownNameError = nameError ?? (nameTouched && field.name.length === 0 ? "Field name is required" : null);
+  const TypeIcon = TYPE_ICONS[field.type] ?? Type;
+
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-lg border bg-card transition-shadow",
+        "overflow-hidden rounded-lg border bg-card shadow-xs transition-[box-shadow,border-color] duration-fast ease-out-strong",
         isDragging
           ? "border-primary shadow-e3"
-          : nameError || optionsError
+          : shownNameError || optionsError
             ? "border-destructive/50"
-            : "border-border",
+            : open
+              ? "border-border-strong"
+              : "border-border",
       )}
     >
-      <div className="flex items-center gap-2 px-2 py-2">
+      <div className="flex items-center gap-1.5 px-1.5 py-1.5 sm:gap-2 sm:px-2">
         <button
           type="button"
-          onKeyDown={(e) => {
-            if (e.key === "ArrowUp") onMoveUp?.();
-            if (e.key === "ArrowDown") onMoveDown?.();
-          }}
           className={cn(
-            "group grid size-control-sm shrink-0 cursor-grab touch-none place-items-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground active:cursor-grabbing",
+            "group grid size-control-sm shrink-0 cursor-grab touch-none place-items-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground active:cursor-grabbing",
             isDragging && "bg-accent text-foreground",
           )}
-          aria-label="Drag to reorder, or use the arrow keys"
-          title="Drag to reorder, or focus and use the arrow keys"
+          aria-label={`Reorder ${field.name || "field"}: drag, or press space then arrow keys`}
+          title="Drag to reorder · Space then ↑ / ↓ · or Alt + ↑ / ↓"
           {...dragHandleAttributes}
           {...dragHandleListeners}
+          onKeyDown={(e) => {
+            // Alt+arrow is an instant one-step move; plain keys fall through
+            // to dnd-kit's own Space-to-lift keyboard drag.
+            if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+              e.preventDefault();
+              if (e.key === "ArrowUp") onMoveUp?.();
+              else onMoveDown?.();
+              return;
+            }
+            (dragHandleListeners?.onKeyDown as ((event: React.KeyboardEvent<HTMLButtonElement>) => void) | undefined)?.(e);
+          }}
         >
           <GripVertical className="size-4" />
         </button>
+
+        <span
+          aria-hidden
+          className="grid size-control-sm shrink-0 place-items-center rounded-md bg-surface-sunken text-muted-foreground"
+          title={field.type}
+        >
+          <TypeIcon className="size-3.5" />
+        </span>
 
         <Input
           type="text"
           value={field.name}
           onChange={(e) => onChange({ ...field, name: e.target.value })}
+          onBlur={() => setNameTouched(true)}
           placeholder="field_name"
           aria-label="Field name"
-          aria-invalid={nameError ? true : undefined}
+          aria-invalid={shownNameError ? true : undefined}
+          autoFocus={field.name.length === 0}
+          spellCheck={false}
           className="h-control-md min-w-0 max-w-80 flex-1 font-mono text-sm"
         />
 
@@ -310,19 +376,34 @@ export function SchemaFieldRow({
             <SelectValue placeholder="Type…" />
           </SelectTrigger>
           <SelectContent>
-            {FIELD_TYPES.map((t) => (
-              <SelectItem key={t.value} value={t.value}>
-                {t.label}
-              </SelectItem>
-            ))}
+            {FIELD_TYPES.map((t) => {
+              const Icon = TYPE_ICONS[t.value] ?? Type;
+              return (
+                <SelectItem key={t.value} value={t.value}>
+                  <Icon className="size-3.5 text-muted-foreground" />
+                  {t.label}
+                </SelectItem>
+              );
+            })}
           </SelectContent>
         </Select>
 
         {/* The collapsed row still has to say what the field does; the open
             one keeps the same spacer so nothing shifts when it opens. */}
-        <span className="hidden min-w-0 flex-1 truncate font-mono text-2xs text-muted-foreground/80 xl:block">
-          {open ? "" : optionsSummary(field, collections)}
+        <span className="hidden min-w-0 flex-1 items-center gap-1.5 overflow-hidden lg:flex">
+          {isNew ? (
+            <span className="shrink-0 rounded-full bg-success/12 px-1.5 text-2xs font-medium text-success">new</span>
+          ) : null}
+          {field.primaryKey ? (
+            <span className="shrink-0 rounded-full bg-brand-soft px-1.5 text-2xs font-medium text-brand-text">
+              primary key
+            </span>
+          ) : null}
+          <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">
+            {open ? "" : optionsSummary(field, collections)}
+          </span>
         </span>
+        <span className="flex-1 lg:hidden" />
 
         <CheckboxOption
           checked={field.required ?? false}
@@ -337,9 +418,12 @@ export function SchemaFieldRow({
             onClick={() => onExpandedChange(!expanded)}
             aria-expanded={open}
             aria-label={open ? "Hide options" : "Show options"}
-            className="grid size-control-sm shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            title={open ? "Hide options" : "Show options"}
+            className="grid size-control-sm shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground"
           >
-            <ChevronRight className={cn("size-4 transition-transform", open && "rotate-90")} />
+            <ChevronRight
+              className={cn("size-4 transition-transform duration-fast ease-out-strong", open && "rotate-90")}
+            />
           </button>
         ) : (
           <span className="size-control-sm shrink-0" />
@@ -348,17 +432,18 @@ export function SchemaFieldRow({
         <button
           type="button"
           onClick={onRemove}
-          className="grid size-control-sm shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+          className="grid size-control-sm shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-fast hover:bg-destructive/10 hover:text-destructive"
           aria-label={`Remove ${field.name || "field"}`}
+          title="Remove field"
         >
           <Trash2 className="size-3.5" />
         </button>
       </div>
 
-      {nameError ? (
-        <p className="flex items-center gap-1 px-3 pb-2 pl-11 text-xs font-medium text-destructive">
+      {shownNameError ? (
+        <p role="alert" className="flex items-center gap-1 px-3 pb-2 pl-12 text-xs font-medium text-destructive">
           <AlertCircle className="size-3 shrink-0" />
-          {nameError}
+          {shownNameError}
         </p>
       ) : null}
 

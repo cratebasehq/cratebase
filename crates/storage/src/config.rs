@@ -30,7 +30,7 @@ impl StorageConfig {
         }
     }
 
-    /// The S3 driver described by a PocketBase-shaped `s3` settings block
+    /// The S3 driver described by a `s3` settings block
     /// (used for both `settings.s3` and `settings.backups.s3`). An empty
     /// `endpoint` targets AWS itself. Ignores `enabled`; callers decide
     /// whether to use this or [`StorageConfig::local`].

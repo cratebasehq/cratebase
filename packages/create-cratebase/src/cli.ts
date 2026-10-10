@@ -1,34 +1,51 @@
 #!/usr/bin/env node
 import * as p from "@clack/prompts";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { ArgParseError, HELP_TEXT, parseArgs, type CliOptions } from "./args.js";
-import { copyTemplate, isNonEmptyDir, projectNameFromDir } from "./copy-template.js";
-import { TEMPLATES, installCommand, devCommand, type PackageManager, type TemplateId } from "./templates.js";
+import { copyTemplate, emptyDir, isNonEmptyDir, projectNameFromDir, validateProjectDir } from "./copy-template.js";
+import { displayPath, nextSteps } from "./output.js";
+import { commandExists, detectPackageManager, initGit, run } from "./post-steps.js";
+import {
+  PACKAGE_MANAGERS,
+  TEMPLATES,
+  installCommand,
+  type PackageManager,
+  type TemplateId,
+} from "./templates.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // dist/cli.js -> ../templates ; src/cli.ts (bun run) -> ../templates. Same relative depth either way.
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const TEMPLATES_DIR = path.join(PACKAGE_ROOT, "templates");
 
-function run(command: string, args: string[], cwd: string): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd, stdio: "inherit", shell: process.platform === "win32" });
-    child.on("close", (code) => resolve(code ?? 1));
-    child.on("error", () => resolve(1));
-  });
+const DEFAULT_PROJECT_DIR = "cratebase-app";
+const DEFAULT_TEMPLATE: TemplateId = "nextjs";
+
+/** Exit code for a user-cancelled run (Ctrl+C / Esc), matching the shell's SIGINT convention. */
+const EXIT_CANCELLED = 130;
+
+function cancelled(): never {
+  p.cancel("Cancelled — nothing was written.");
+  process.exit(EXIT_CANCELLED);
 }
 
-async function detectPackageManager(): Promise<PackageManager> {
-  const ua = process.env.npm_config_user_agent ?? "";
-  if (ua.startsWith("bun")) return "bun";
-  if (ua.startsWith("pnpm")) return "pnpm";
-  if (ua.startsWith("yarn")) return "yarn";
-  if (ua.startsWith("npm")) return "npm";
-  return "bun";
+/** Unwraps a clack prompt result, exiting cleanly if the user cancelled. */
+function ask<T>(value: T | symbol): T {
+  if (p.isCancel(value)) cancelled();
+  return value as T;
+}
+
+function fail(message: string): never {
+  p.cancel(message);
+  process.exit(1);
+}
+
+async function readVersion(): Promise<string> {
+  const pkg = JSON.parse(await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as { version: string };
+  return pkg.version;
 }
 
 async function main(): Promise<void> {
@@ -49,142 +66,153 @@ async function main(): Promise<void> {
     console.log(HELP_TEXT);
     return;
   }
-
   if (options.version) {
-    const pkgRaw = await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8");
-    const pkg = JSON.parse(pkgRaw) as { version: string };
-    console.log(pkg.version);
+    console.log(await readVersion());
     return;
   }
 
-  p.intro("create-cratebase");
+  // Prompts need a terminal. Piped/CI runs behave like `--yes` instead of hanging.
+  const interactive = !options.yes && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+  p.intro(`create-cratebase v${await readVersion()}`);
 
   // 1. Project directory.
   let projectDir = options.projectDir;
   if (!projectDir) {
-    if (options.yes) {
-      projectDir = "./cratebase-app";
-    } else {
-      const answer = await p.text({
-        message: "Where should we create your project?",
-        placeholder: "./my-app",
-        validate: (value) => (value.trim().length === 0 ? "Please enter a directory name." : undefined),
-      });
-      if (p.isCancel(answer)) {
-        p.cancel("Cancelled.");
-        process.exit(1);
-      }
-      projectDir = answer;
-    }
+    projectDir = interactive
+      ? ask(
+          await p.text({
+            message: "Where should we create your project?",
+            placeholder: `./${DEFAULT_PROJECT_DIR}`,
+            defaultValue: `./${DEFAULT_PROJECT_DIR}`,
+            validate: (value) => (value.trim() === "" ? undefined : validateProjectDir(value)),
+          }),
+        )
+      : `./${DEFAULT_PROJECT_DIR}`;
   }
+  projectDir = projectDir.trim();
+  const invalid = validateProjectDir(projectDir);
+  if (invalid) fail(invalid);
 
   const targetDir = path.resolve(process.cwd(), projectDir);
+  const relDir = displayPath(process.cwd(), targetDir);
+  const projectName = projectNameFromDir(targetDir);
+  if (path.basename(targetDir).toLowerCase() !== projectName) {
+    p.log.info(`Package name will be "${projectName}".`);
+  }
+
+  // 2. Target directory conflicts.
   if (await isNonEmptyDir(targetDir)) {
-    p.cancel(`Refusing to scaffold into non-empty directory: ${targetDir}`);
-    process.exit(1);
-  }
-
-  // 2. Template.
-  let template: TemplateId | undefined = options.template;
-  if (!template) {
-    if (options.yes) {
-      template = "nextjs";
+    if (options.force) {
+      p.log.warn(`${relDir} isn't empty — clearing it (--force, .git is kept).`);
+      await emptyDir(targetDir);
+    } else if (interactive) {
+      const choice = ask(
+        await p.select({
+          message: `${relDir === "." ? "The current directory" : relDir} isn't empty. What now?`,
+          options: [
+            { value: "cancel", label: "Cancel" },
+            { value: "merge", label: "Keep existing files", hint: "template files overwrite same-named ones" },
+            { value: "empty", label: "Remove existing files and continue", hint: ".git is kept" },
+          ],
+          initialValue: "cancel",
+        }),
+      );
+      if (choice === "cancel") cancelled();
+      if (choice === "empty") await emptyDir(targetDir);
     } else {
-      const answer = await p.select({
-        message: "Which template?",
-        options: TEMPLATES.map((t) => ({ value: t.id, label: t.title, hint: t.description })),
-      });
-      if (p.isCancel(answer)) {
-        p.cancel("Cancelled.");
-        process.exit(1);
-      }
-      template = answer;
+      fail(`${targetDir} isn't empty. Pick another directory, or pass --force to clear it.`);
     }
   }
 
-  // 3. Package manager.
-  let pm: PackageManager | undefined = options.pm;
-  if (!pm) {
-    if (options.yes) {
-      pm = await detectPackageManager();
-    } else {
-      const detected = await detectPackageManager();
-      const answer = await p.select({
-        message: "Which package manager?",
-        options: [
-          { value: "bun", label: "bun" },
-          { value: "npm", label: "npm" },
-          { value: "pnpm", label: "pnpm" },
-          { value: "yarn", label: "yarn" },
-        ],
-        initialValue: detected,
-      });
-      if (p.isCancel(answer)) {
-        p.cancel("Cancelled.");
-        process.exit(1);
-      }
-      pm = answer as PackageManager;
-    }
-  }
+  // 3. Template.
+  const template: TemplateId =
+    options.template ??
+    (interactive
+      ? ask(
+          await p.select({
+            message: "Which template?",
+            options: TEMPLATES.map((t) => ({ value: t.id, label: t.title, hint: t.description })),
+            initialValue: DEFAULT_TEMPLATE,
+          }),
+        )
+      : DEFAULT_TEMPLATE);
 
-  // 4. Install deps? Init git?
+  // 4. Package manager.
+  const detectedPm = await detectPackageManager();
+  const pm: PackageManager =
+    options.pm ??
+    (interactive
+      ? ask(
+          await p.select({
+            message: "Which package manager?",
+            options: PACKAGE_MANAGERS.map((value) => ({
+              value,
+              label: value,
+              hint: value === detectedPm ? "detected" : undefined,
+            })),
+            initialValue: detectedPm,
+          }),
+        )
+      : detectedPm);
+
+  // 5. Install deps? Init git? Only ask what a flag didn't already decide.
   let install = options.install;
   let git = options.git;
-  if (!options.yes) {
-    const installAnswer = await p.confirm({ message: "Install dependencies?", initialValue: options.install });
-    if (p.isCancel(installAnswer)) {
-      p.cancel("Cancelled.");
-      process.exit(1);
-    }
-    install = installAnswer;
-
-    const gitAnswer = await p.confirm({ message: "Initialize a git repository?", initialValue: options.git });
-    if (p.isCancel(gitAnswer)) {
-      p.cancel("Cancelled.");
-      process.exit(1);
-    }
-    git = gitAnswer;
+  if (interactive) {
+    install = ask(await p.confirm({ message: `Install dependencies with ${pm}?`, initialValue: install }));
+    git = ask(await p.confirm({ message: "Initialize a git repository?", initialValue: git }));
   }
 
-  const projectName = projectNameFromDir(targetDir);
-  const templateDir = path.join(TEMPLATES_DIR, template);
-
+  // 6. Do the work.
+  const templateInfo = TEMPLATES.find((t) => t.id === template)!;
   const copySpinner = p.spinner();
-  copySpinner.start(`Scaffolding ${template} into ${path.relative(process.cwd(), targetDir) || "."}`);
-  await copyTemplate(templateDir, targetDir, { projectName });
-  copySpinner.stop(`Scaffolded ${TEMPLATES.find((t) => t.id === template)?.title} into ${targetDir}`);
+  copySpinner.start(`Creating ${templateInfo.title} project in ${relDir}`);
+  try {
+    await copyTemplate(path.join(TEMPLATES_DIR, template), targetDir, { projectName });
+  } catch (err) {
+    copySpinner.stop("Couldn't write the project files.", 1);
+    fail(err instanceof Error ? err.message : String(err));
+  }
+  copySpinner.stop(`Created ${templateInfo.title} project in ${relDir}`);
 
+  let installed = false;
   if (install) {
     const { command, args } = installCommand(pm);
-    p.log.step(`Installing dependencies with ${pm}…`);
-    const code = await run(command, args, targetDir);
-    if (code !== 0) {
-      p.log.warn(`${command} ${args.join(" ")} exited with code ${code}. You can re-run it yourself later.`);
+    const installSpinner = p.spinner();
+    installSpinner.start(`Installing dependencies with ${pm} (this can take a minute)`);
+    const result = await run(command, args, targetDir);
+    installed = result.code === 0;
+    if (installed) {
+      installSpinner.stop("Installed dependencies");
+    } else {
+      installSpinner.stop(`${command} ${args.join(" ")} failed (exit ${result.code})`, 2);
+      p.log.warn(`${result.output.trim().split("\n").slice(-12).join("\n")}\n\nRun \`${pm} install\` yourself once that's fixed.`);
     }
   }
 
   if (git) {
-    p.log.step("Initializing git repository…");
-    await run("git", ["init"], targetDir);
-    await run("git", ["add", "-A"], targetDir);
-    await run("git", ["commit", "-m", "Initial commit from create-cratebase"], targetDir);
+    const gitSpinner = p.spinner();
+    gitSpinner.start("Initializing git repository");
+    switch (await initGit(targetDir)) {
+      case "committed":
+        gitSpinner.stop("Initialized git repository with a first commit");
+        break;
+      case "initialized":
+        gitSpinner.stop("Initialized git repository (first commit skipped — set git user.name/user.email)");
+        break;
+      case "skipped-existing-repo":
+        gitSpinner.stop("Already inside a git repository — left git alone");
+        break;
+      case "unavailable":
+        gitSpinner.stop("git isn't available — skipped", 1);
+        break;
+    }
   }
 
-  const relDir = path.relative(process.cwd(), targetDir) || ".";
-  const steps = [`cd ${relDir}`];
-  if (!install) steps.push(`${pm} install`);
-  steps.push(devCommand(pm));
-
-  p.outro(
-    [
-      "Next steps:",
-      "",
-      ...steps.map((s) => `  ${s}`),
-      "",
-      "`dev` starts the Cratebase server (installing the binary on first run if needed), watches types, and runs the frontend.",
-      "Docs: https://cratebase.dev/docs/getting-started/starter-kits/",
-    ].join("\n"),
-  );
+  const cratebaseInstalled = await commandExists("cratebase");
+  p.note(nextSteps({ relDir, pm, template, installed, cratebaseInstalled }), "Next steps");
+  p.outro("Happy building!");
 }
 
 main().catch((err) => {

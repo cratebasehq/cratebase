@@ -2,13 +2,13 @@
 
 ## Context
 
-Cratebase's auth surface is wire-complete against PocketBase (13 routes,
+Cratebase's auth surface is wire-complete against the original API (13 routes,
 `crates/server/src/routes/auth.rs:109-154`) but the *developer-facing* API is
-still "install the `pocketbase` npm SDK and call `pb.collection(...)`". The ask:
+still "install the third-party npm SDK and call `pb.collection(...)`". The ask:
 make auth genuinely first-class — Better-Auth-grade OAuth sign-in, impersonation
 including *stopping* it, session management — behind a **first-party typed
 TypeScript SDK**, and update the docs, which currently tell everyone to use the
-official PocketBase client.
+third-party client.
 
 Four decisions are binding:
 
@@ -17,13 +17,13 @@ Four decisions are binding:
    list/revoke, ban/unban) *and* a typed client over them.
 2. **A full first-party SDK**, `@cratebase/client` — records, auth, realtime,
    files, batch, admin APIs — typed off `@cratebase/schema-codegen` output. This
-   overrides the earlier "don't fork the SDK, bolt onto `pocketbase`" stance at
+   overrides the earlier "don't fork the SDK, bolt onto the third-party one" stance at
    `docs/superpowers/specs/2026-09-04-value-add-strategy.md:85-103`; that section
    gets a superseding note and every doc repeating it is rewritten (Phase 9).
 3. **Docs are a first-class requirement, not a cleanup tail** — explicitly asked
    for. The docs site, README, landing page, `llms.txt`, `openapi.yaml` and the
-   AI/extras pages present the `pocketbase` SDK as *the* client today; they must
-   present `@cratebase/client` as the recommended one and demote the PocketBase
+   AI/extras pages present the third-party SDK as *the* client today; they must
+   present `@cratebase/client` as the recommended one and demote that
    SDK to a compatibility/interop note.
 4. **The dashboard dogfoods the SDK** — `web/admin` is the only in-repo consumer
    and its call sites define the surface the SDK must actually cover.
@@ -33,7 +33,7 @@ End state: `bun add @cratebase/client`, `createClient<Schema>(url)`, typed
 `client.auth.signIn.social({ provider: "google" })` completing through a
 server-side redirect that sets an httpOnly cookie, and
 `client.auth.admin.impersonate(id)` / `.stopImpersonating()` — all documented,
-with the `pocketbase` SDK still passing conformance.
+with the third-party SDK still passing conformance.
 
 ### Hard constraints (verified; do not violate)
 
@@ -54,7 +54,7 @@ with the `pocketbase` SDK still passing conformance.
   and `_bans` will be visible there — intended.
 - `tests/conformance/crons.test.ts:14-22` asserts the four built-in cron ids but
   only `jobs.length >= 4`, so adding a cron id is safe.
-- The `pocketbase` npm SDK (`^0.28.0`) must keep passing unchanged. Every server
+- The third-party npm SDK (`^0.28.0`) must keep passing unchanged. Every server
   addition is additive: new routes, new boot config, new Cratebase-only system
   collections. No existing response shape, status code, or error message changes.
 - Tokens stay stateless (`crates/server/src/extract.rs:12-24`: signing key is
@@ -212,7 +212,7 @@ Foundation for session list/revoke, real sign-out, ban and stop-impersonating.
 9. **Hourly sweep.** `crates/server/src/cron.rs`: add
    `pub const JOB_SESSION_SWEEP: &str = "__cbSessionSweep__";` next to
    `JOB_AUTO_BACKUP` (`:37`), with a comment noting it is Cratebase-only (the
-   four existing ids are PocketBase's verbatim). Register it in `app.rs` beside
+   four existing ids are the original's verbatim). Register it in `app.rs` beside
    `JOB_LOGS_CLEANUP` (`:608-627`) with expression `"0 * * * *"`, body
    `sessions::sweep_expired(&app)`.
 
@@ -314,7 +314,7 @@ hot-swappable setting could not turn on credentialed CORS.
    (restructured in Phase 1 step 8) and in `impersonate`, when
    `cfg.session_cookie`, attach `cookie::session(cfg, &token, ttl)` with
    `ttl = collection.auth.auth_token.duration`. The JSON body is unchanged —
-   `{token, record}` still carries the bearer token, so the PocketBase SDK is
+   `{token, record}` still carries the bearer token, so the third-party SDK is
    unaffected.
 
 ### Phase 3 — Server-driven OAuth2 redirect flow
@@ -418,7 +418,7 @@ extended in Phase 1 step 4.
    `except: None`, and clears the session cookie.
 5. `POST /collections/{collection}/auth-signout` — `Auth` → `204`;
    `sessions::revoke_digest(.., &digest(&auth.token))` and clear the session
-   cookie. PocketBase has no such endpoint; it is additive, and it is what makes
+   cookie. The original has no such endpoint; it is additive, and it is what makes
    `client.auth.signOut()` more than a client-side store wipe.
 6. `POST /collections/{collection}/stop-impersonating` — reads the
    `cb_session_prev` cookie, promotes it back into the session cookie, clears
@@ -496,7 +496,7 @@ declarationMap). No runtime dependencies.
    `tests/conformance`. One line is added to the Dockerfile —
    `COPY sdk/js/client sdk/js/client` beside the existing `COPY web/admin` — and
    its stage comment at `Dockerfile:3-7`, which currently states the dashboard
-   uses "the official `pocketbase` npm client — no in-house SDK to build here
+   uses "the third-party npm client — no in-house SDK to build here
    anymore", is corrected.
 2. **`src/transport.ts`**
    - `export class CratebaseError extends Error` with
@@ -514,13 +514,13 @@ declarationMap). No runtime dependencies.
      configuration) — naive prefixing yields `//api/...`, a protocol-relative URL
      resolved against a host literally named `api`, the bug documented at
      `web/admin/src/components/settings/file-manager-page.tsx:68-77`.
-   - **No auto-cancellation.** PocketBase auto-cancels same-key in-flight
+   - **No auto-cancellation.** The third-party SDK auto-cancels same-key in-flight
      requests, which is why the dashboard sprinkles `requestKey: null`. Callers
      pass an `AbortSignal` instead.
 3. **`src/types.ts`** — `RecordModel`
    (`{ id: string; collectionId: string; collectionName: string; [k: string]: unknown }`),
    `CollectionModel` and `CollectionField` (the shapes `GET /api/collections`
-   returns; the dashboard imports `CollectionModel` from `pocketbase` in ten
+   returns; the dashboard imported `CollectionModel` from the third-party SDK in ten
    files, e.g. `web/admin/src/components/layout/app-sidebar.tsx:2`,
    `.../dashboard/dashboard-home.tsx:5`, so the SDK must export it),
    `RecordSubscription<T>`, `ListResult<T>`
@@ -560,7 +560,7 @@ declarationMap). No runtime dependencies.
    header and needs a polyfill outside browsers. That makes the stream itself
    authenticated and removes the polyfill requirement `@cratebase/extras`
    documents. Parse `event:`/`data:`/`id:` frames; the first is
-   `event: PB_CONNECT` with `data: {"clientId": "<40 alphanumerics>"}`
+   `event: CB_CONNECT` with `data: {"clientId": "<40 alphanumerics>"}`
    (`crates/server/src/realtime.rs:380-400`). Subscriptions are declared with
    `POST /api/realtime` `{clientId, subscriptions}`; a topic is `collection`,
    `collection/recordId`, `collection/*`, or
@@ -594,7 +594,7 @@ declarationMap). No runtime dependencies.
     through the client's own realtime connection (`llm_chunk` / `llm_done` /
     `llm_error` frames).
     `@cratebase/extras` keeps its own implementations and is **not** rebased onto
-    this module: it peer-depends on `pocketbase`, has an independent lockfile,
+    this module: it peer-depends on the third-party SDK, has an independent lockfile,
     and `publish-extras.yml:26-48` runs `bun install --frozen-lockfile` inside
     `sdk/js/extras` before `npm publish`, so a `workspace:`/source dependency
     could neither resolve nor publish. The overlap is five thin wrappers over
@@ -697,7 +697,7 @@ Bump the package version and document the new export in
 
 `web/admin` is the proof the surface is complete.
 
-1. `web/admin/package.json`: drop `pocketbase`. Add the `resolve.alias` entry to
+1. `web/admin/package.json`: drop the third-party SDK dependency. Add the `resolve.alias` entry to
    `web/admin/vite.config.ts` and the matching `paths` entry to
    `web/admin/tsconfig.json`, both pointing `"@cratebase/client"` at
    `../../sdk/js/client/src/index.ts`.
@@ -714,7 +714,7 @@ Bump the package version and document the new export in
    `getFullList(o)` → `fullList(o)`; `getOne` → `one`;
    `cb.getFileUrl` / `cb.files.getURL` → `cb.files.url`;
    `cb.authStore.token` → `cb.auth.token`;
-   `CollectionModel` imports repoint from `pocketbase` to `@cratebase/client`;
+   `CollectionModel` imports repoint from the third-party SDK to `@cratebase/client`;
    `cb.send(...)` becomes the typed `cb.admin.*` method where one exists
    (`/api/backups*`, `/api/crons`, `/api/logs*`, `/api/storage/objects*`,
    `/api/sql`, `/api/functions`, `/api/api-keys`, `/api/mcp`), otherwise stays
@@ -742,8 +742,8 @@ custom Starlight components.
    `skipTotal`), `auth.mdx` (3, the whole `client.auth` namespace including the
    four `signIn.social` modes and the MFA 401), `realtime.mdx` (4),
    `files.mdx` (5), `batch-and-admin.mdx` (6), `ssr-and-cookies.mdx` (7),
-   `pocketbase-interop.mdx` (8, `@cratebase/extras` and moving off the
-   `pocketbase` SDK).
+   `interop.mdx` (8, `@cratebase/extras` and moving off the
+   third-party SDK).
 2. **New auth concept pages** under
    `site/src/content/docs/docs/concepts/authentication/` (autogenerated sidebar,
    ordered by frontmatter): `sessions.mdx` (12), `cookie-sessions.mdx` (13),
@@ -767,10 +767,10 @@ custom Starlight components.
 5. **Reposition the existing SDK pages**:
    `getting-started/using-js-sdk.mdx` becomes the `@cratebase/client`
    quickstart (title "Using the TypeScript SDK") closing with a pointer to
-   `pocketbase-interop.mdx`; `getting-started/other-sdks.mdx` distinguishes the
-   first-party TypeScript SDK from the PocketBase-family SDKs that still work;
+   `interop.mdx`; `getting-started/other-sdks.mdx` distinguishes the
+   first-party TypeScript SDK from the third-party-family SDKs that still work;
    `ai/extras-package.mdx` reframes `@cratebase/extras` as the companion for
-   projects staying on the `pocketbase` SDK and points at `client.vector` /
+   projects staying on the third-party SDK and points at `client.vector` /
    `client.llm` / `client.mcp` / `client.queue` / `client.presence`.
 6. **Root and marketing copy**: `README.md:44-47` and `:59-63`,
    `site/src/pages/index.astro:105-109`,
@@ -786,21 +786,21 @@ custom Starlight components.
    `sdk/js/extras/README.md:4-20`; update `.claude/skills/cratebase/SKILL.md:36-38`
    and `.claude/skills/cratebase/references/collections-and-sdk.md:63-66` to
    recommend `@cratebase/client`; note in `CONTRIBUTING.md:84` that
-   `tests/conformance` deliberately keeps its `pocketbase`-SDK suites while the
+   `tests/conformance` deliberately keeps its third-party-SDK suites while the
    new `client*.test.ts` files exercise the first-party one;
-   `docs/migrating-from-pocketbase.md` and
+   the migration doc and
    `site/src/content/docs/docs/migrating/compatibility.mdx:8` keep the wire
-   promise and add that the `pocketbase` SDK works unchanged.
+   promise and add that the third-party SDK works unchanged.
 8. **Examples.** `examples/kanban` is the only example with a real npm
-   dependency (`"pocketbase": "^0.28.0"`,
-   `examples/kanban/src/pocketbase.ts:6-13`). Migrate it to `@cratebase/client`
+   dependency (the third-party SDK at `^0.28.0`, wrapped in
+   `examples/kanban/src/`). Migrate it to `@cratebase/client`
    as the flagship typed example: rename the module to `src/cratebase.ts`,
    export a `createClient<Schema>` singleton, and update
    `src/hooks/useAuth.ts` (`signIn.password`, `signUp`, `auth.onChange`),
    `useCards.ts` and `usePresence.ts`. The four zero-build examples (`todo`,
-   `realtime-chat`, `realtime-cursors`, `docmind`) resolve `"pocketbase"`
+   `realtime-chat`, `realtime-cursors`, `docmind`) resolve the third-party SDK
    through an `esm.sh` import map, which cannot point at an unpublished package —
-   they stay on the `pocketbase` SDK, with one README line each noting
+   they stay on the third-party SDK, with one README line each noting
    `@cratebase/client` is the first-party option for build-based apps. Migrate
    them once `client-v0.1.0` is on npm.
 
@@ -834,7 +834,7 @@ Prerequisites: repo root, `cargo` toolchain, `bun`.
    `system_collections_match_fixture_ids`
    (`crates/core/src/collection.rs:1240-1258`) is the canary that a new system
    collection was registered without updating the fixture.
-2. **PocketBase-SDK conformance must stay green** —
+2. **Third-party-SDK conformance must stay green** —
    `cargo build --release && SERVER_BIN=target/release/cratebase bun run conformance`.
    `tests/conformance/auth.test.ts:102` is the canary for an accidental extra JWT
    claim; `collections.test.ts:249-266` for the system-collection set.
@@ -845,7 +845,7 @@ Prerequisites: repo root, `cargo` toolchain, `bun`.
    `SESSION_COOKIE_SECURE: "0"` and
    `CORS_ALLOW_ORIGINS: "http://127.0.0.1:<spawned port>"` to that branch's env
    block. Cookie auth is purely additive, so the existing bearer-token suites are
-   unaffected, and the `PB_BIN` flavour ignores the variables.
+   unaffected, and the reference-server flavour ignores the variables.
 4. **New first-party SDK suite.** Two files in `tests/conformance/` reusing the
    existing harness (server spawn, SMTP sink, `uniq`, `expectError`), with
    `"@cratebase/client"` resolved through the `tsconfig` `paths` entry from
@@ -883,7 +883,7 @@ Prerequisites: repo root, `cargo` toolchain, `bun`.
 5. **Typecheck the packages** —
    `bun install && bun run --cwd sdk/js/client typecheck && bun run --cwd tools/schema-codegen typecheck`.
 6. **Dashboard** — `bun run admin:build` succeeds and
-   `grep -rn "from \"pocketbase\"" web/admin/src` returns nothing. Then serve the
+   the third-party SDK is no longer imported anywhere under `web/admin/src`. Then serve the
    built dashboard against a local server and confirm by hand: log in, list
    records, upload a file, open the Sessions panel and revoke a session,
    impersonate a user and stop impersonating.
@@ -891,7 +891,7 @@ Prerequisites: repo root, `cargo` toolchain, `bun`.
    `COPY sdk/js/client` line and the untouched workspace list are consistent).
 8. **Docs build** — `bun run --cwd site build`; the "TypeScript SDK" group
    renders with its eight pages, and
-   `grep -rn "bun add pocketbase" site/src README.md` shows it only as an interop
+   `grep -rn "bun add" site/src README.md` shows the third-party SDK only as an interop
    note.
 
 ## Assumptions & contingencies
@@ -912,7 +912,7 @@ Prerequisites: repo root, `cargo` toolchain, `bun`.
   consumer to the npm version — do not add the directory to the root
   `workspaces` array without also adding a `COPY` line to `Dockerfile:10-18` and
   a `sdk/js/client` build step to `ci.yml:55-58` and `release.yml:37-38`.
-- **The four `esm.sh` examples stay on the `pocketbase` SDK** until
+- **The four `esm.sh` examples stay on the third-party SDK** until
   `client-v0.1.0` is published. If publishing happens during execution, migrate
   them in the same pass by pointing the import map at
   `https://esm.sh/@cratebase/client@0.1`.

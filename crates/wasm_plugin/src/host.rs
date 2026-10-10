@@ -1,5 +1,5 @@
 //! The contract between a WASM plugin and the application that embeds
-//! it — the same split `cratebase_jsvm::HostApi` uses for `pb_hooks`
+//! it — the same split `cratebase_jsvm::HostApi` uses for `cb_hooks`
 //! (see that crate's module doc): the runtime never touches a database
 //! or an HTTP client itself, every host import a plugin calls ends up on
 //! [`PluginHostApi`], and the server crate implements it on top of
@@ -7,7 +7,7 @@
 //! with no server, database or axum in the dependency tree at all.
 //!
 //! This surface is deliberately much narrower than `HostApi`: a plugin
-//! is untrusted third-party code, not first-party `pb_hooks`, so it gets
+//! is untrusted third-party code, not first-party `cb_hooks`, so it gets
 //! exactly the two capabilities [`crate::manifest::Capabilities`] can
 //! declare — reading a record through the normal rule-enforced path, and
 //! finding out who the caller is — rather than arbitrary `$app.*` access.

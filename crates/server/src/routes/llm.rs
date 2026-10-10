@@ -136,6 +136,7 @@ async fn chat(
     let request_id = ids::random_string(REQUEST_ID_LEN, REQUEST_ID_ALPHABET);
     let provider = llm::provider_from_settings(&app.settings().llm);
 
+    let started = std::time::Instant::now();
     let mut stream = provider.chat_stream(messages.clone()).await.map_err(|e| {
         notify_error(&app, body.client_id.as_deref(), &request_id, &e);
         provider_error(e)
@@ -185,10 +186,17 @@ async fn chat(
     let model = app.settings().llm.model.clone();
     llm::log_usage(
         &app,
-        info.auth.as_ref(),
-        &model,
-        prompt_tokens,
-        completion_tokens,
+        llm::UsageEntry {
+            caller_id: info.auth.as_ref().map(|a| a.id.clone()),
+            model,
+            prompt_tokens,
+            completion_tokens,
+            latency_ms: Some(started.elapsed().as_millis() as i64),
+            ok: Some(true),
+            source: Some("gateway".into()),
+            note: Some("tokens estimated by word count".into()),
+            ..Default::default()
+        },
     )
     .await;
 

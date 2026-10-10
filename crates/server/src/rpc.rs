@@ -81,8 +81,8 @@ pub fn router() -> Router<App> {
 /// the dashboard — is a plain string or `null`, exactly like a
 /// collection's own `listRule`/`viewRule`. The generic `json` field
 /// validator (`crates/db/src/validate.rs`'s `json`) requires a *string*
-/// value to itself already be valid JSON text — PocketBase's
-/// `json.Valid` check, meant for a pre-encoded multipart field — so a
+/// value to itself already be valid JSON text (a `json.Valid` check, meant for a pre-encoded multipart
+/// field), so a
 /// bare filter expression like `@request.auth.id != ''` fails it
 /// outright. Wrapping it in one more layer of JSON-string-encoding here,
 /// before it ever reaches that validator, satisfies it (the encoded text

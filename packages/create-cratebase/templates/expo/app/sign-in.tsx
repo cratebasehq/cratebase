@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { router } from "expo-router";
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Link, router } from "expo-router";
 import { cb } from "@/lib/cratebase";
+import { useTheme } from "@/lib/theme";
+import { Button } from "@/components/Button";
+import { TextField } from "@/components/TextField";
 
 type Tab = "password" | "otp";
 
@@ -12,168 +15,163 @@ type Tab = "password" | "otp";
 // see the nextjs template's sign-in screen for a reference implementation)
 // — they're just left out here to keep this starter lean.
 export default function SignIn() {
+  const theme = useTheme();
   const [tab, setTab] = useState<Tab>("password");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [identity, setIdentity] = useState("demo@example.com");
-  const [password, setPassword] = useState("password123");
+  const [identity, setIdentity] = useState("");
+  const [password, setPassword] = useState("");
 
   const [otpEmail, setOtpEmail] = useState("");
   const [otpId, setOtpId] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState("");
 
-  async function signInWithPassword() {
+  async function attempt(action: () => Promise<void>, fallback: string) {
     setPending(true);
     setError(null);
     try {
-      await cb.auth.signIn.password({ identity, password });
-      router.replace("/notes");
+      await action();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign-in failed.");
+      setError(err instanceof Error ? err.message : fallback);
     } finally {
       setPending(false);
     }
   }
 
-  async function requestOtp() {
-    setPending(true);
-    setError(null);
-    try {
-      const { otpId } = await cb.auth.otp.request({ email: otpEmail });
+  const signInWithPassword = () =>
+    attempt(async () => {
+      await cb.auth.signIn.password({ identity: identity.trim(), password });
+      router.replace("/notes");
+    }, "Sign-in failed.");
+
+  const requestOtp = () =>
+    attempt(async () => {
+      const { otpId } = await cb.auth.otp.request({ email: otpEmail.trim() });
       setOtpId(otpId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't send a code.");
-    } finally {
-      setPending(false);
-    }
-  }
+    }, "Couldn't send a code.");
 
-  async function confirmOtp() {
-    if (!otpId) return;
-    setPending(true);
-    setError(null);
-    try {
-      await cb.auth.signIn.otp({ otpId, code: otpCode });
+  const confirmOtp = () =>
+    attempt(async () => {
+      if (!otpId) return;
+      await cb.auth.signIn.otp({ otpId, code: otpCode.trim() });
       router.replace("/notes");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "That code didn't work.");
-    } finally {
-      setPending(false);
-    }
-  }
+    }, "That code didn't work.");
 
   return (
-    <View style={styles.screen}>
-      <Text style={styles.title}>{"{{PROJECT_NAME}}"}</Text>
-      <Text style={styles.subtitle}>Sign in to continue</Text>
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
+        <Text accessibilityRole="header" style={[styles.title, { color: theme.text }]}>
+          {"{{PROJECT_NAME}}"}
+        </Text>
+        <Text style={[styles.subtitle, { color: theme.muted }]}>
+          Sign in to continue, or{" "}
+          <Link href="/sign-up" style={{ color: theme.link }}>
+            create an account
+          </Link>
+        </Text>
 
-      <View style={styles.tabs}>
-        {(["password", "otp"] as const).map((t) => (
-          <Pressable
-            key={t}
-            style={[styles.tab, tab === t && styles.tabActive]}
-            onPress={() => {
-              setTab(t);
-              setError(null);
-            }}
-          >
-            <Text style={tab === t ? styles.tabTextActive : styles.tabText}>
-              {t === "password" ? "Password" : "Email code"}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {tab === "password" && (
-        <View style={styles.form}>
-          <TextInput
-            style={styles.input}
-            placeholder="you@example.com"
-            autoCapitalize="none"
-            keyboardType="email-address"
-            value={identity}
-            onChangeText={setIdentity}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Password"
-            secureTextEntry
-            value={password}
-            onChangeText={setPassword}
-          />
-          <Pressable style={styles.button} onPress={signInWithPassword} disabled={pending}>
-            <Text style={styles.buttonText}>{pending ? "Signing in…" : "Sign in"}</Text>
-          </Pressable>
+        <View style={[styles.tabs, { backgroundColor: theme.border }]} accessibilityRole="tablist">
+          {(["password", "otp"] as const).map((t) => (
+            <Pressable
+              key={t}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: tab === t }}
+              style={[styles.tab, tab === t && { backgroundColor: theme.card }]}
+              onPress={() => {
+                setTab(t);
+                setError(null);
+              }}
+            >
+              <Text style={{ color: tab === t ? theme.text : theme.muted, fontWeight: tab === t ? "600" : "400" }}>
+                {t === "password" ? "Password" : "Email code"}
+              </Text>
+            </Pressable>
+          ))}
         </View>
-      )}
 
-      {tab === "otp" &&
-        (otpId === null ? (
+        {tab === "password" && (
           <View style={styles.form}>
-            <TextInput
-              style={styles.input}
-              placeholder="you@example.com"
+            <TextField
+              label="Email"
               autoCapitalize="none"
+              autoComplete="email"
               keyboardType="email-address"
-              value={otpEmail}
-              onChangeText={setOtpEmail}
+              placeholder="you@example.com"
+              value={identity}
+              onChangeText={setIdentity}
             />
-            <Pressable style={styles.button} onPress={requestOtp} disabled={pending}>
-              <Text style={styles.buttonText}>{pending ? "Sending…" : "Send me a code"}</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <View style={styles.form}>
-            <Text style={styles.hint}>
-              We sent a code to {otpEmail}. In dev, check the mail inbox printed by `cratebase dev`.
-            </Text>
-            <TextInput
-              style={styles.input}
-              placeholder="123456"
-              keyboardType="number-pad"
-              value={otpCode}
-              onChangeText={setOtpCode}
+            <TextField
+              label="Password"
+              autoComplete="current-password"
+              secureTextEntry
+              value={password}
+              onChangeText={setPassword}
+              onSubmitEditing={signInWithPassword}
             />
-            <Pressable style={styles.button} onPress={confirmOtp} disabled={pending}>
-              <Text style={styles.buttonText}>{pending ? "Verifying…" : "Verify code"}</Text>
-            </Pressable>
+            <Button title="Sign in" onPress={signInWithPassword} loading={pending} disabled={!identity || !password} />
+            {__DEV__ && (
+              <Pressable
+                onPress={() => {
+                  setIdentity("demo@example.com");
+                  setPassword("password123");
+                }}
+              >
+                <Text style={[styles.hint, { color: theme.muted }]}>Fill in the seeded demo account</Text>
+              </Pressable>
+            )}
           </View>
-        ))}
+        )}
 
-      {error && <Text style={styles.error}>{error}</Text>}
+        {tab === "otp" &&
+          (otpId === null ? (
+            <View style={styles.form}>
+              <TextField
+                label="Email"
+                autoCapitalize="none"
+                autoComplete="email"
+                keyboardType="email-address"
+                placeholder="you@example.com"
+                value={otpEmail}
+                onChangeText={setOtpEmail}
+              />
+              <Button title="Send me a code" onPress={requestOtp} loading={pending} disabled={!otpEmail} />
+            </View>
+          ) : (
+            <View style={styles.form}>
+              <Text style={{ color: theme.muted }}>
+                We sent a code to {otpEmail}. In dev, open the Mail inbox in the Cratebase dashboard
+                (localhost:8090/_/).
+              </Text>
+              <TextField
+                label="Code"
+                autoComplete="one-time-code"
+                keyboardType="number-pad"
+                placeholder="123456"
+                value={otpCode}
+                onChangeText={setOtpCode}
+              />
+              <Button title="Verify code" onPress={confirmOtp} loading={pending} disabled={!otpCode} />
+            </View>
+          ))}
 
-      <Text style={styles.hint}>Demo login: demo@example.com / password123</Text>
-    </View>
+        {error && (
+          <Text accessibilityRole="alert" style={{ color: theme.danger, marginTop: 8 }}>
+            {error}
+          </Text>
+        )}
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, justifyContent: "center", padding: 24, gap: 12 },
+  flex: { flex: 1 },
+  screen: { flexGrow: 1, justifyContent: "center", padding: 24, gap: 8 },
   title: { fontSize: 28, fontWeight: "700" },
-  subtitle: { fontSize: 14, color: "#666", marginBottom: 12 },
-  tabs: { flexDirection: "row", backgroundColor: "#eee", borderRadius: 10, padding: 4, marginBottom: 12 },
+  subtitle: { fontSize: 14, marginBottom: 12 },
+  tabs: { flexDirection: "row", borderRadius: 10, padding: 4, marginBottom: 12 },
   tab: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center" },
-  tabActive: { backgroundColor: "#fff" },
-  tabText: { color: "#666" },
-  tabTextActive: { color: "#111", fontWeight: "600" },
-  form: { gap: 10 },
-  input: {
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 16,
-  },
-  button: {
-    backgroundColor: "#e8622c",
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-    marginTop: 4,
-  },
-  buttonText: { color: "#fff", fontWeight: "600", fontSize: 16 },
-  error: { color: "#d33", marginTop: 8 },
-  hint: { color: "#888", fontSize: 12, marginTop: 16, textAlign: "center" },
+  form: { gap: 14 },
+  hint: { fontSize: 12, textAlign: "center", textDecorationLine: "underline" },
 });

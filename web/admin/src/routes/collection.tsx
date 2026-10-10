@@ -2,7 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowRight, MoreHorizontal, Plus, ShieldUser, X } from "lucide-react";
+import {
+  ArrowRight,
+  Copy,
+  Database,
+  Eye,
+  MoreHorizontal,
+  Plus,
+  RefreshCw,
+  ShieldUser,
+  X,
+} from "lucide-react";
 import { CratebaseError, type CollectionModel, type RecordModel } from "@cratebase/client";
 import { avatarUrl, cb, describeFailure } from "@/lib/api";
 import { userFields, type FieldSchema } from "@/lib/field-types";
@@ -29,7 +39,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { settingsItemForCollection } from "@/lib/settings-nav";
@@ -47,6 +63,23 @@ import { GridFooter } from "@/components/records/grid-footer";
 import { RecordDrawer } from "@/components/records/record-drawer";
 import { CollectionSettings } from "@/components/collections/collection-settings";
 import { ApiDocsTab } from "@/components/collections/api-docs-tab";
+import { PageHeader } from "@/components/layout/page";
+import { StatusBadge } from "@/components/layout/stat-card";
+import { ErrorState, ListSkeleton } from "@/components/layout/states";
+import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+/** Dragged column widths: collection name → column id → px. */
+type WidthMap = Record<string, Record<string, number>>;
+const NO_WIDTHS: Record<string, number> = {};
+
+function isWidthMap(value: unknown): value is WidthMap {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Bulk deletes this large ask for the collection name, not just a click. */
+const BULK_TYPED_CONFIRM_AT = 25;
 
 /** Column widths, in px, by field type. Fixed widths are what let the grid
  * virtualize and still keep the header, the rows and the scrollbar in
@@ -114,9 +147,23 @@ function CollectionPage() {
 
   const [density, setDensity] = useLocalState<Density>("cratebase:grid-density", "comfortable", isDensity);
   const [countTotal, setCountTotal] = useLocalState<boolean>("cratebase:grid-count-total", true, isBoolean);
+  // Column widths a person dragged, per collection, in one storage key.
+  const [allWidths, setAllWidths] = useLocalState<WidthMap>("cratebase:grid-col-widths", {}, isWidthMap);
+  const columnWidths = allWidths[name] ?? NO_WIDTHS;
+  const resizeColumn = useCallback(
+    (id: string, width: number | null) => {
+      const next = { ...(allWidths[name] ?? {}) };
+      if (width === null) delete next[id];
+      else next[id] = width;
+      setAllWidths({ ...allWidths, [name]: next });
+    },
+    [allWidths, name, setAllWidths],
+  );
+  const [bulkConfirm, setBulkConfirm] = useState("");
 
   const [editing, setEditing] = useState<RecordModel | null | undefined>(undefined);
   const [deleting, setDeleting] = useState<RecordModel | null>(null);
+  const [duplicating, setDuplicating] = useState<RecordModel | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [newSince, setNewSince] = useState(0);
@@ -149,6 +196,36 @@ function CollectionPage() {
   // Already in cache for the sidebar; used here to resolve relation targets
   // for sort keys and value labels without a request of its own.
   const { data: allCollections } = useCollections();
+
+  // `n` starts a new record and `/` jumps to the filter — the two things done
+  // dozens of times a session. Ignored while typing or while a dialog is up.
+  useEffect(() => {
+    if (tab !== "records" || !collection || editing !== undefined) return;
+    const creatable = !(collection.system && settingsItemForCollection(collection.name));
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return;
+      const el = event.target as HTMLElement | null;
+      if (
+        el &&
+        (el.isContentEditable ||
+          /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) ||
+          el.closest('[role="dialog"],[role="alertdialog"],[role="menu"]'))
+      )
+        return;
+      if (event.key === "n" && creatable) {
+        event.preventDefault();
+        setEditing(null);
+      } else if (event.key === "/") {
+        const input = document.getElementById("records-filter");
+        if (input) {
+          event.preventDefault();
+          input.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab, collection, editing]);
 
   // A relation-value popover elsewhere in the dashboard links here with
   // `?openId=<id>` instead of a full record — fetch it once, pop the
@@ -183,7 +260,7 @@ function CollectionPage() {
   }
 
   const fields = useMemo(() => (collection ? userFields(collection) : []), [collection]);
-  // `created` is part of PocketBase's own scaffold but not guaranteed: a
+  // `created` is part of the standard scaffold but not guaranteed: a
   // collection created through the API with an explicit `fields` array may
   // not have it, and sorting by a column that doesn't exist is a 400.
   const hasCreated = collection?.fields.some((f) => f.name === "created") ?? false;
@@ -354,25 +431,28 @@ function CollectionPage() {
       });
     }
 
-    return columnPrefs.visible.map((id) => byId.get(id)).filter((c): c is GridColumn<RecordModel> => Boolean(c));
-  }, [collection, fields, identityField, columnPrefs.visible, openDrawer, allCollections, hasCreated]);
+    return columnPrefs.visible
+      .map((id) => byId.get(id))
+      .filter((c): c is GridColumn<RecordModel> => Boolean(c))
+      .map((c) => (columnWidths[c.id] ? { ...c, width: columnWidths[c.id]! } : c));
+  }, [collection, fields, identityField, columnPrefs.visible, openDrawer, allCollections, hasCreated, columnWidths]);
 
   if (collectionError) {
-    const failed = describeFailure(collectionError);
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-page text-center">
-        <p className="text-lg font-medium">{failed.title}</p>
-        <p className="max-w-measure text-sm text-muted-foreground">{failed.detail || failed.serverMessage}</p>
+      <div className="p-page">
+        <ErrorState title="Couldn't load this collection" error={collectionError} />
       </div>
     );
   }
 
   if (!collection) {
     return (
-      <div className="flex flex-col gap-2 p-page">
-        {Array.from({ length: 8 }).map((_, i) => (
-          <Skeleton key={i} className="h-row w-full" />
-        ))}
+      <div className="flex flex-col gap-3 p-page" aria-busy="true">
+        <div className="flex items-center gap-3">
+          <Skeleton className="size-8 rounded-lg" />
+          <Skeleton className="h-5 w-40" />
+        </div>
+        <ListSkeleton rows={10} />
       </div>
     );
   }
@@ -385,45 +465,88 @@ function CollectionPage() {
   // page that owns the collection instead of pretending to manage it.
   const managingItem = collection.system ? settingsItemForCollection(collection.name) : undefined;
 
+  const selectedRows = rows.filter((row) => selected.has(row.id));
+  const needsTypedConfirm = selected.size >= BULK_TYPED_CONFIRM_AT;
+
+  function copyText(text: string, done: string) {
+    void navigator.clipboard
+      .writeText(text)
+      .then(() => toast.success(done))
+      .catch(() => toast.error("Couldn't copy to the clipboard"));
+  }
+
+  function exportSelected() {
+    const blob = new Blob([JSON.stringify(selectedRows, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${collection!.name}-${selectedRows.length}-records.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-topbar shrink-0 items-center justify-between gap-3 border-b border-border px-page">
-        <div className="flex min-w-0 shrink-0 items-center gap-2">
-          {collection.type === "auth" ? <ShieldUser className="size-4 shrink-0 text-muted-foreground" /> : null}
-          <h1 className="truncate text-base font-semibold tracking-tight">{collection.name}</h1>
-          {tab === "records" ? (
-            <span className="shrink-0 font-tabular text-xs text-muted-foreground">
-              {totalKnown ? `${result!.totalItems.toLocaleString()} rows` : `page ${page}`}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex flex-1 items-center justify-end gap-2">
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            spacing={0}
-            aria-label="View"
-            value={tab}
-            onValueChange={(next) => {
-              // A segmented control always has exactly one option picked —
-              // Radix reports "" when the pressed item is toggled off.
-              if (next) goToTab(next as CollectionSearch["tab"]);
-            }}
-          >
-            <ToggleGroupItem value="records">Records</ToggleGroupItem>
-            <ToggleGroupItem value="schema">Schema</ToggleGroupItem>
-            <ToggleGroupItem value="api">API</ToggleGroupItem>
-          </ToggleGroup>
-          {tab === "records" && !managingItem ? (
-            <Button size="sm" className="h-control-sm gap-1.5" onClick={() => setEditing(null)}>
-              <Plus className="size-3.5" />
-              New record
-            </Button>
-          ) : null}
-        </div>
-      </header>
+      <PageHeader
+        className="shrink-0 px-page pt-3 pb-2"
+        mono
+        icon={collection.type === "auth" ? <ShieldUser /> : collection.type === "view" ? <Eye /> : <Database />}
+        title={collection.name}
+        meta={
+          <>
+            <StatusBadge tone={collection.type === "auth" ? "brand" : "neutral"}>{collection.type}</StatusBadge>
+            {collection.system ? <StatusBadge tone="info">system</StatusBadge> : null}
+            {tab === "records" ? (
+              <span className="font-tabular">
+                {totalKnown ? `${result!.totalItems.toLocaleString()} rows` : `page ${page}`}
+              </span>
+            ) : null}
+          </>
+        }
+        actions={
+          <>
+            {tab === "records" ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Refresh records"
+                    onClick={() => void records.refetch()}
+                  >
+                    <RefreshCw className={records.isFetching ? "size-3.5 motion-safe:animate-spin" : "size-3.5"} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Refresh</TooltipContent>
+              </Tooltip>
+            ) : null}
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              spacing={0}
+              aria-label="View"
+              value={tab}
+              onValueChange={(next) => {
+                // A segmented control always has exactly one option picked —
+                // Radix reports "" when the pressed item is toggled off.
+                if (next) goToTab(next as CollectionSearch["tab"]);
+              }}
+            >
+              <ToggleGroupItem value="records">Records</ToggleGroupItem>
+              <ToggleGroupItem value="schema">Schema</ToggleGroupItem>
+              <ToggleGroupItem value="api">API</ToggleGroupItem>
+            </ToggleGroup>
+            {tab === "records" && !managingItem ? (
+              <Button size="sm" className="h-control-sm gap-1.5" onClick={() => setEditing(null)}>
+                <Plus className="size-3.5" />
+                New record
+                <Kbd className="ml-0.5 hidden bg-primary-foreground/20 text-primary-foreground lg:inline-flex">N</Kbd>
+              </Button>
+            ) : null}
+          </>
+        }
+      />
 
       {managingItem ? (
         <Alert className="mx-page mt-3 shrink-0">
@@ -450,9 +573,9 @@ function CollectionPage() {
         </div>
       ) : (
         <>
-          <div className="flex shrink-0 items-start gap-2 border-b border-border px-page py-1.5">
+          <div className="flex shrink-0 flex-wrap items-start gap-2 border-b border-border px-page py-1.5">
             <FilterBar
-              className="min-w-0 flex-1"
+              className="min-w-64 flex-1 basis-72"
               value={userFilter}
               onApply={(next) => updateSearch({ filter: next || undefined, page: undefined })}
               error={filterError}
@@ -485,7 +608,17 @@ function CollectionPage() {
           <SelectionBar
             count={selected.size}
             onClear={() => setSelected(new Set())}
-            onDelete={() => setBulkDeleting(true)}
+            onDelete={() => {
+              setBulkConfirm("");
+              setBulkDeleting(true);
+            }}
+            onCopy={() => {
+              copyText(JSON.stringify(selectedRows, null, 2), `Copied ${selectedRows.length} as JSON`);
+              if (selectedRows.length < selected.size)
+                toast.info("Only the selected rows on this page were copied.");
+            }}
+            onExport={exportSelected}
+            onPageCount={selectedRows.length}
             batchEnabled={batch.data?.enabled !== false}
             busy={removeMany.isPending}
           />
@@ -508,6 +641,12 @@ function CollectionPage() {
             <RecordsGrid
               label={`${collection.name} records`}
               rows={rows}
+              onResizeColumn={resizeColumn}
+              getCellText={(row, column) => {
+                const value = (row as Record<string, unknown>)[column.id];
+                if (value === null || value === undefined) return "";
+                return typeof value === "object" ? JSON.stringify(value) : String(value);
+              }}
               columns={columns}
               getRowId={(row) => row.id}
               sort={sortParam}
@@ -579,6 +718,24 @@ function CollectionPage() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={() => setEditing(row)}>Edit record</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        const copy: Record<string, unknown> = { ...row };
+                        for (const key of ["id", "created", "updated"]) delete copy[key];
+                        for (const field of fields) if (field.type === "file" || field.type === "password") delete copy[field.name];
+                        setDuplicating(copy as RecordModel);
+                        setEditing(null);
+                      }}
+                    >
+                      Duplicate…
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => copyText(row.id, "Copied record id")}>
+                      <Copy /> Copy id
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => copyText(JSON.stringify(row, null, 2), "Copied record as JSON")}>
+                      <Copy /> Copy as JSON
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem variant="destructive" onClick={() => setDeleting(row)}>
                       Delete record
                     </DropdownMenuItem>
@@ -603,8 +760,14 @@ function CollectionPage() {
         <RecordDrawer
           collection={collection}
           record={editing}
+          template={editing === null ? duplicating : null}
           open={editing !== undefined}
-          onOpenChange={(open) => !open && setEditing(undefined)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEditing(undefined);
+              setDuplicating(null);
+            }
+          }}
         />
       ) : null}
 
@@ -679,10 +842,27 @@ function CollectionPage() {
               undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {needsTypedConfirm ? (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="bulk-confirm" className="text-xs text-muted-foreground">
+                That is a lot of rows. Type <span className="font-mono text-foreground">{collection.name}</span> to
+                confirm.
+              </label>
+              <Input
+                id="bulk-confirm"
+                value={bulkConfirm}
+                onChange={(event) => setBulkConfirm(event.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                className="h-control-md font-mono"
+              />
+            </div>
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
+              disabled={needsTypedConfirm && bulkConfirm !== collection.name}
               onClick={() => {
                 const ids = [...selected];
                 setBulkDeleting(false);

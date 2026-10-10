@@ -1,6 +1,5 @@
 //! Authentication primitives shared by the server: password hashing
-//! (Argon2id, with bcrypt verification for hashes imported from
-//! PocketBase), PocketBase-compatible HS256 record tokens, OTP codes,
+//! (Argon2id), HS256 record tokens, OTP codes,
 //! PKCE helpers for OAuth2, and the `_authOrigins` fingerprint.
 //!
 //! Everything here is pure computation over strings and bytes; the only

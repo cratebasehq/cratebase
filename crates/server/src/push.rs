@@ -518,7 +518,7 @@ impl PushProvider for ApnsProvider {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// Built once per call from the live `settings.push`, PocketBase/mailer
+/// Built once per call from the live `settings.push`, mailer
 /// style — see the module doc comment. Each backend is `None` when its
 /// `enabled` flag is off or its own settings fail to parse (an invalid
 /// FCM service-account JSON, say), so a misconfigured backend degrades to

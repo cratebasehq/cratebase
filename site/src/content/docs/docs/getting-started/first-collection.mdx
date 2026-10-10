@@ -11,7 +11,7 @@ sidebar:
 curl -X POST localhost:8090/api/collections \
   -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/json' \
   -d '{"name":"posts","type":"base",
-       "schema":[{"id":"f1","name":"title","type":"text","required":true},
+       "fields":[{"id":"f1","name":"title","type":"text","required":true},
                  {"id":"f2","name":"published","type":"bool"}],
        "listRule":"","viewRule":"","createRule":"","updateRule":"","deleteRule":null}'
 

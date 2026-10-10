@@ -11,8 +11,8 @@ with a database behind it.
 
 `todo/`, `realtime-chat/`, and `realtime-cursors/` are deliberately
 zero-build: a single `app.js` loaded as a native ES module, with an
-`importmap` in `index.html` resolving the bare specifier `"pocketbase"` to
-the published package on esm.sh. That's the right call for those three —
+`importmap` in `index.html` resolving the bare specifier
+`"@cratebase/client"` to a browser bundle of the SDK. That's the right call for those three —
 each is a few hundred lines of vanilla DOM manipulation, and a build step
 would be pure overhead.
 
@@ -23,11 +23,10 @@ component tree with real state management than as hand-rolled
 `document.createElement` calls. So this one has an actual `package.json`
 and runs on Vite + React + TypeScript with its own dev server. It talks to
 Cratebase with the first-party `@cratebase/client` SDK (`src/cratebase.ts`)
-and its `@cratebase/react` hooks package for auth, rather than the
-`pocketbase` npm package the zero-build examples use — neither is
-published yet, so this example resolves both straight from `sdk/js/{client,
-react}/src` via a Vite alias, which only works from inside this monorepo
-checkout; once they ship to npm this becomes an ordinary dependency.
+and its `@cratebase/react` hooks package for auth, resolving both
+straight from `sdk/js/{client,react}/src` via a Vite alias, which only
+works from inside this monorepo checkout; in your own app they are
+ordinary npm dependencies.
 `app.js`'s realtime/optimistic-update pattern carries
 over unchanged in spirit — see "How it works" below — it's just spread
 across hooks and components instead of one file.
@@ -217,7 +216,7 @@ app's default port.
   optimistic push then added a second copy of the same id instead of
   finding it already present. Fixed by checking for an existing id before
   pushing (`src/hooks/useCards.ts`). Re-tested after the fix with a fresh
-  server (wiped `pb_data`, re-ran `setup.sh`, re-registered both users):
+  server (wiped `cb_data`, re-ran `setup.sh`, re-registered both users):
   creating a card produced exactly one DOM node.
 - Dragged the card from Todo to In Progress in tab 1 (native
   `DragEvent`s dispatched with a rendering yield between `dragstart` /

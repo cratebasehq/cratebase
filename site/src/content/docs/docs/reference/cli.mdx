@@ -1,11 +1,11 @@
 ---
 title: "CLI"
-description: "dev, serve, superuser, migrate, schema, plugin, typegen, seed, reset, migrate-from-pocketbase, and env precedence."
+description: "dev, serve, superuser, migrate, schema, plugin, typegen, seed, reset, and env precedence."
 ---
 
 ```
 cratebase dev                                     # one command: bootstrap + serve --dev for local development
-cratebase dev --schema schema.json --seed pb_seed --types cratebase-types.d.ts
+cratebase dev --schema schema.json --seed cb_seed --types cratebase-types.d.ts
 
 cratebase serve                                   # start the server
 cratebase serve --dev --automigrate=false         # verbose logging + hook reloading; don't write migration files
@@ -16,9 +16,9 @@ cratebase superuser upsert <email> <password>     # create or update, whichever 
 cratebase superuser delete <email>
 cratebase superuser otp <email>                   # print a one-time OTP code/id, for a locked-out dashboard
 
-cratebase migrate up                              # apply every pending migration (core + pb_migrations/*.js)
+cratebase migrate up                              # apply every pending migration (core + cb_migrations/*.js)
 cratebase migrate down [n]                        # revert the last n (default 1) from each history
-cratebase migrate create <name>                   # scaffold a pb_migrations/<timestamp>_<name>.js stub
+cratebase migrate create <name>                   # scaffold a cb_migrations/<timestamp>_<name>.js stub
 cratebase migrate collections                     # snapshot every current collection into a migration
 cratebase migrate history-sync                     # drop ledger rows whose migration file no longer exists
 
@@ -31,7 +31,6 @@ cratebase plugin list
 cratebase seed <path> [--upsert]                  # populate collections from *.json/*.js seed file(s)
 cratebase reset [--yes]                           # wipe the SQLite database and re-run migrations
 
-cratebase migrate-from-pocketbase <pb_data> --dir <dir>   # one-shot PocketBase import
 cratebase typegen [-o path]                       # write TypeScript types for the local schema
 ```
 
@@ -51,7 +50,7 @@ The one-command way to work on a project locally — everything below runs
 once, in order, before the server starts listening exactly like `serve
 --dev` would:
 
-1. Creates the data directory and its `pb_hooks/`/`pb_migrations/`
+1. Creates the data directory and its `cb_hooks/`/`cb_migrations/`
    siblings if they don't exist yet.
 2. **Superuser**: `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD` set → upserts that
    account on every run; otherwise, if no superuser exists yet, creates
@@ -64,7 +63,7 @@ once, in order, before the server starts listening exactly like `serve
    created, changed fields are retyped, and a field a rerun omits is only
    *reported* (`pendingRemoval: true`) unless `--force-schema` is passed.
 4. **Seed**: if no non-system collection holds any record yet, and a
-   seed path resolves (`--seed`, `CB_SEED_DIR`, or `./pb_seed` if it
+   seed path resolves (`--seed`, `CB_SEED_DIR`, or `./cb_seed` if it
    exists), runs it with `--upsert` semantics — see
    [Seeding data](/docs/getting-started/first-run/#seeding-data).
    `--no-seed` skips this step outright, and a database that already has
@@ -90,7 +89,7 @@ directory of `*.json`/`*.js` seed files — through the same
 create/validate path the HTTP API uses (never raw SQL), so an auth
 collection's `password` is hashed exactly like a real create and a bad
 record is rejected exactly like a bad request would be. `path` is always
-an explicit argument; `CB_SEED_DIR`/a `pb_seed/` directory next to the
+an explicit argument; `CB_SEED_DIR`/a `cb_seed/` directory next to the
 data directory is only the convention `cratebase dev`'s auto-seed (above)
 uses. See [Seeding data](/docs/getting-started/first-run/#seeding-data)
 for the file format, `--upsert`'s idempotency guarantee and the
@@ -100,7 +99,7 @@ transaction/rollback behavior on an invalid record.
 data directory — the main database (and its `-wal`/`-shm` sidecars) and
 the auxiliary logs database — then re-bootstraps (recreating system
 tables and re-running every core migration) and re-applies every JS
-migration in `pb_migrations/`, leaving a schema-only, empty database.
+migration in `cb_migrations/`, leaving a schema-only, empty database.
 This is destructive and requires confirmation: without `--yes` it prints
 exactly which files it's about to delete and asks for a typed `yes` on
 stdin; `--yes` skips the prompt for scripted use (a fresh CI database, a
@@ -130,7 +129,7 @@ Writes a `.d.ts` file with the local data directory's schema, using the same gen
 cratebase typegen                    # writes ./cratebase-types.d.ts
 cratebase typegen -o types.d.ts      # writes to a named file
 cratebase typegen -o -               # writes to stdout
-cratebase typegen --dir ./pb_data    # read a different data directory
+cratebase typegen --dir ./cb_data    # read a different data directory
 ```
 
 - `-o, --out <path>` — output path, or `-` for stdout. Default: `./cratebase-types.d.ts`.

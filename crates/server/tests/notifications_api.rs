@@ -26,7 +26,7 @@ struct Harness {
 impl Harness {
     async fn new() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         let id = app
             .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
@@ -472,7 +472,7 @@ async fn unread_count_query_is_index_backed_on_postgres() {
         database_url: url,
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir.path().join("pb_data"))
+        ..Config::for_data_dir(dir.path().join("cb_data"))
     });
     app.bootstrap().await.expect("bootstrap");
 

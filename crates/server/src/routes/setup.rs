@@ -3,7 +3,7 @@
 //!
 //! A fresh `cratebase serve` against an empty database has no superuser
 //! and, until now, no way to create one short of dropping to a terminal
-//! (`cratebase superuser create ...`). PocketBase's own dashboard instead
+//! (`cratebase superuser create ...`). The dashboard instead
 //! detects "no superuser exists yet" and renders an inline setup form —
 //! this is that endpoint pair.
 //!
@@ -16,8 +16,8 @@
 //! instance":
 //!
 //! * **A token.** `App::init_setup_token` prints a one-time install token
-//!   (and the dashboard URL carrying it) to the log at boot, mirroring
-//!   PocketBase's own installer link. `POST /api/setup` requires it,
+//!   (and the dashboard URL carrying it) to the log at boot, as an
+//!   installer link. `POST /api/setup` requires it,
 //!   compared in constant time ([`tokens_match`]) — without one, whoever
 //!   finds a freshly deployed public instance first would otherwise get
 //!   to create its owner account.

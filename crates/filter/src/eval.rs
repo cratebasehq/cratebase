@@ -2,8 +2,8 @@
 //! value-comparison semantics shared with the SQL compiler (which uses
 //! them to constant-fold comparisons between two bound values).
 //!
-//! The semantics mirror what the compiled SQL does, which in turn mirrors
-//! PocketBase:
+//! The semantics mirror what the compiled SQL does, which is the
+//! reference for:
 //!
 //! * `null` and `""` are the same "empty" value: `x = ""` is true for
 //!   both, and `x != "a"` is true when `x` is empty.
@@ -14,7 +14,7 @@
 //!   without a `%` is escaped and wrapped in `%...%`.
 //! * A multi-valued field is only unpacked by `:each`; bare, it compares
 //!   as the raw JSON text of the column (`["a","b"]`), matching what
-//!   PocketBase's SQL does.
+//!   Cratebase's SQL does.
 //! * Element operands (`:each`): `?op` is satisfied by any element, the
 //!   bare operator requires every element to match (and at least one
 //!   element unless the operator tolerates the missing row: `!=`, or `=`
@@ -63,7 +63,7 @@ impl EvalTerm {
     }
 }
 
-/// PocketBase's notion of an empty value.
+/// Cratebase's notion of an empty value.
 pub fn is_empty(v: &Value) -> bool {
     match v {
         Value::Null => true,
@@ -142,7 +142,7 @@ fn order(l: &Value, r: &Value) -> Ordering {
 /// Escape `\`, `%` and `_` for a `LIKE ... ESCAPE '\'` pattern, leaving
 /// sequences the author already escaped alone.
 ///
-/// This is PocketBase's `escapeUnescapedChars`, which decides right to
+/// The escaping decides right to
 /// left: a special character is escaped unless the character in front of it
 /// is a backslash, and that backslash is then not itself escaped. So `a_b`
 /// becomes `a\_b`, `a\b` becomes `a\\b` (a literal backslash) and `a\_b` is
@@ -169,7 +169,7 @@ pub fn escape_like(raw: &str) -> String {
     out.iter().rev().collect()
 }
 
-/// PocketBase's LIKE operand normalization: an operand that already carries
+/// Cratebase's LIKE operand normalization: an operand that already carries
 /// a `%` is a hand-written pattern and is used verbatim; anything else is
 /// escaped and wrapped in `%...%`. The compiled SQL always declares
 /// `ESCAPE '\'`.
@@ -239,7 +239,7 @@ pub fn like_match(subject: &str, pattern: &str) -> bool {
     pi == p.len()
 }
 
-/// Compare two scalar values with SQL/PocketBase semantics.
+/// Compare two scalar values with SQL/Cratebase semantics.
 pub fn compare_scalars(l: &Value, op: CompareOp, r: &Value) -> bool {
     match op {
         CompareOp::Eq => {
@@ -331,7 +331,7 @@ pub fn compare_terms(
     })
 }
 
-/// Evaluate `expr` against a record snapshot (PocketBase-shaped JSON:
+/// Evaluate `expr` against a record snapshot (JSON:
 /// multi-valued fields as arrays, dates as strings) of `ctx.root()`.
 pub fn evaluate(
     expr: &Expr,
@@ -486,7 +486,7 @@ fn eval_field(
         Some(Modifier::IsSet) => Err(FilterError::InvalidModifier(format!(
             "{path}:isset is only valid on @request.body fields"
         ))),
-        // `:length` on a single-valued field is a no-op in PocketBase, not
+        // `:length` on a single-valued field is a no-op in Cratebase, not
         // an error: the raw value is compared.
         Some(Modifier::Length) if !multi => Ok(EvalTerm::Scalar(value)),
         Some(Modifier::Length) => Ok(EvalTerm::Scalar(Value::from(length_of(&value)))),

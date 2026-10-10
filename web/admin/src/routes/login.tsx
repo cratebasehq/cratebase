@@ -270,7 +270,7 @@ function LoginPage() {
       {/* --- Inspector column --------------------------------------------
           Hidden below lg: every failure the panel explains is also stated in
           the alert above, so nothing is only here. */}
-      <aside className="hidden items-center border-l border-border bg-surface-sunken px-10 py-page lg:flex">
+      <aside className="hidden items-center border-l border-border bg-surface-sunken bg-[radial-gradient(55%_45%_at_80%_0%,color-mix(in_oklab,var(--primary)_11%,transparent),transparent)] px-10 py-page lg:flex">
         <div className="flex w-full max-w-measure flex-col gap-5">
           <RequestInspector
             identity={identity.trim()}

@@ -17,7 +17,6 @@ sha1 = "0.10"
 hmac = "0.12"
 thiserror.workspace = true
 base64 = "0.22"
-bcrypt = "0.17"
 
 [dependencies.argon2]
 version = "0.5"

@@ -754,7 +754,7 @@ mod tests {
     /// own tests relying on `settings.queue.enabled` defaulting `false`.
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let mut cfg = Config::memory(dir.path().join("pb_data"));
+        let mut cfg = Config::memory(dir.path().join("cb_data"));
         cfg.webhook_worker = false;
         let app = App::new(cfg);
         app.bootstrap().await.expect("bootstrap");
