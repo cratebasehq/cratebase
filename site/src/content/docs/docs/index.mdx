@@ -8,10 +8,12 @@ Cratebase is a fast, self-hostable backend — dynamic collections, auth,
 file storage, and realtime — in one Rust binary. Use `@cratebase/client`,
 its first-party TypeScript SDK, or call the REST API directly.
 
-**New in [v0.6.0](https://github.com/cratebasehq/cratebase/releases/tag/v0.6.0):**
-background jobs from JS hooks (`$queue.enqueue` + `onQueueJob`), durable webhook
-deliveries with retries and replay, multi-node-safe cron with run history, and
-one-command starter kits (`bun create cratebase`). See the [changelog](/docs/project/changelog/) for the full list.
+**New in [v0.7.0](https://github.com/cratebasehq/cratebase/releases/tag/v0.7.0):**
+Cratebase is now fully its own API (breaking: `cb_*` directories, `*.cb.js`
+hooks — see the upgrade checklist), host mode for many isolated projects in one
+process, `@cratebase/start` and `@cratebase/schema`, an LLM usage ledger, logo
+upload, a redesigned dashboard, and a polished `bun create cratebase`. See the
+[changelog](/docs/project/changelog/) for the full list.
 
 - New here? Start with **[Install](/docs/getting-started/install/)** and
   **[First run](/docs/getting-started/first-run/)**.

@@ -50,6 +50,9 @@ backend.
 
 ### Added
 
+- **`@cratebase/react` 0.5.0** — peer range moves to `@cratebase/client ^0.6.0`
+  (it was stuck on `^0.4.0`). `@cratebase/client` 0.6.x listens for the
+  `CB_CONNECT` realtime event, so it needs server 0.7.0 or newer.
 - **Collection input validation** — `POST/PATCH /api/collections`,
   `/api/collections/import` and `/api/schema/apply` reject a top-level
   `schema` key and per-field `options` objects with a 400

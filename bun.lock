@@ -29,9 +29,9 @@
     },
     "sdk/js/react": {
       "name": "@cratebase/react",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "devDependencies": {
-        "@cratebase/client": "^0.4.0",
+        "@cratebase/client": "^0.6.0",
         "@happy-dom/global-registrator": "^20.14.5",
         "@testing-library/react": "^16.3.3",
         "@types/react": "^19.0.0",
@@ -42,7 +42,7 @@
         "typescript": "~6.0.2",
       },
       "peerDependencies": {
-        "@cratebase/client": "^0.4.0",
+        "@cratebase/client": "^0.6.0",
         "react": "^18 || ^19",
       },
     },
@@ -1652,8 +1652,6 @@
     "@babel/helper-replace-supers/@babel/traverse": ["@babel/traverse@7.29.8", "", { "dependencies": { "@babel/code-frame": "^7.29.7", "@babel/generator": "^7.29.8", "@babel/helper-globals": "^7.29.7", "@babel/parser": "^7.29.8", "@babel/template": "^7.29.7", "@babel/types": "^7.29.8", "debug": "^4.3.1" } }, "sha512-I5z7H3bf/41ktsNVLtpN0wAa336HkqIHQ5BuPLEhTkt1jVSyZpeNKIzTgEWmlxjdg81R0IgUCcaE+Ok3NvrfZg=="],
 
     "@babel/helper-skip-transparent-expression-wrappers/@babel/traverse": ["@babel/traverse@7.29.8", "", { "dependencies": { "@babel/code-frame": "^7.29.7", "@babel/generator": "^7.29.8", "@babel/helper-globals": "^7.29.7", "@babel/parser": "^7.29.8", "@babel/template": "^7.29.7", "@babel/types": "^7.29.8", "debug": "^4.3.1" } }, "sha512-I5z7H3bf/41ktsNVLtpN0wAa336HkqIHQ5BuPLEhTkt1jVSyZpeNKIzTgEWmlxjdg81R0IgUCcaE+Ok3NvrfZg=="],
-
-    "@cratebase/react/@cratebase/client": ["@cratebase/client@0.4.0", "", {}, "sha512-ZkcGEtzttM0u5WPhrRcIL3d8+NbRSZGS/RrX67BpNHH3BOt1XE2cv2ItjeCdsz3+kFu55aXyGNtE4BKDL9LIew=="],
 
     "@dotenvx/dotenvx/commander": ["commander@11.1.0", "", {}, "sha512-yPVavfyCcRhmorC7rWlkHn15b4wDVgVmBA7kV4QVBsF7kv/9TKJAbAXVTxvTnwP8HHKjRCJDClKbciiYS7p0DQ=="],
 
