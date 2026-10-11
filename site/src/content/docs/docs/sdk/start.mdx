@@ -1,0 +1,88 @@
+---
+title: "TanStack Start"
+description: "@cratebase/start — server-side session, client and auth middleware helpers for TanStack Start apps."
+sidebar:
+  order: 10
+---
+
+`@cratebase/start` is the server-side glue for
+[TanStack Start](https://tanstack.com/start) apps: an httpOnly session
+cookie, a per-request `@cratebase/client`, a cached `getUser()`, and
+ready-made server-function middleware. It is **server-only** — import it
+from `*.server.ts` modules or inside server-function handlers.
+
+```sh
+bun add @cratebase/start @cratebase/client
+```
+
+Or scaffold a complete app with it:
+
+```sh
+bun create cratebase my-app --template tanstack-start
+```
+
+## Setup
+
+```ts title="src/lib/cratebase.server.ts"
+import { createCratebaseStart } from "@cratebase/start";
+
+export const cb = createCratebaseStart({
+  url: process.env.CRATEBASE_URL!,
+  apiKey: process.env.CRATEBASE_API_KEY, // optional, only for adminClient()
+});
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `url` | — | Cratebase base URL, e.g. `http://127.0.0.1:8090`. |
+| `apiKey` | unset | A `cb_…` API key, used by `adminClient()`. |
+| `cookieName` | `cb_session` | Session cookie name. |
+| `authCollection` | `users` | Auth collection that backs the session. |
+| `maxAgeSeconds` | `2592000` (30 days) | Session cookie lifetime. |
+| `sessionCacheTtlMs` | `240000` | How long `getUser()` trusts an already-verified token. |
+
+## What it returns
+
+| Member | Purpose |
+| --- | --- |
+| `client()` | A fresh `@cratebase/client` hydrated from the incoming request's cookie. When its auth state changes (sign-in, refresh, sign-out) it writes the matching `Set-Cookie` itself. |
+| `adminClient()` | A client authenticated with `apiKey`. Throws if no `apiKey` was configured. |
+| `getUser({ fresh })` | The signed-in record or `null`. The token is verified with `auth.refresh()` and cached per token for `sessionCacheTtlMs`, with concurrent calls de-duplicated; `fresh: true` skips the cache. Expired JWTs return `null` without a network call. |
+| `setSession(token)` | Writes the session cookie for a token you obtained yourself. |
+| `clearSession()` | Expires the cookie and drops the cached user. |
+| `authMiddleware` | Server-function middleware: responds `401` without a valid session, otherwise adds `user` to the context. |
+| `freshAuthMiddleware` | Same, but always re-verifies against Cratebase (use for sensitive actions). |
+| `optionalAuthMiddleware` | Adds `user` (or `null`) to the context, never rejects. |
+
+The cookie is `HttpOnly; Path=/; SameSite=Lax`. The `Secure` attribute is
+detected per request: the first value of `x-forwarded-proto` wins when a
+reverse proxy sets it, otherwise the request URL's scheme is used.
+
+## Example
+
+```ts
+import { createServerFn } from "@tanstack/react-start";
+import { cb } from "./cratebase.server";
+
+export const login = createServerFn({ method: "POST" })
+  .inputValidator((d: { email: string; password: string }) => d)
+  .handler(async ({ data }) => {
+    const client = cb.client();
+    await client.collection("users").authWithPassword(data.email, data.password);
+    return { ok: true }; // the Set-Cookie header was written for you
+  });
+
+export const myPosts = createServerFn()
+  .middleware([cb.authMiddleware])
+  .handler(async ({ context }) =>
+    cb.client().collection("posts").list({ filter: `author = "${context.user.id}"` }),
+  );
+```
+
+## Related client helpers
+
+- `createClient(url, { token })` creates a client that sends a bearer
+  token (a user token or an API key) without any cookie handling.
+- `authStore.exportCookie(name, { secure, maxAge, sameSite, path })`
+  renders a `Set-Cookie` string for the current session; see
+  [SSR & cookies](/docs/sdk/ssr-and-cookies/).

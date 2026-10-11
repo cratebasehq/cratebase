@@ -3,7 +3,7 @@ import { type FieldSchema, userFields } from "@/lib/field-types";
 
 /** One OAuth2 provider, as this dashboard edits it. The SDK types `pkce`
  * as `boolean | undefined`; this form treats "unset" as a real third state
- * (auto-detect, PocketBase's own default) rather than collapsing it into
+ * (auto-detect, the default) rather than collapsing it into
  * `false`, so it's re-typed as `boolean | null`. `extra` carries whatever a
  * preset needs beyond client id/secret + the three URLs (Apple's
  * `teamId`/`keyId`/`privateKey`, Microsoft's `tenant`, GitLab's `baseUrl`,
@@ -227,7 +227,7 @@ export const KNOWN_PRESET_NAMES: ReadonlySet<string> = new Set([
 /** A provider configured with nothing but an issuer URL — auto-discovered
  * at login time (`GET {issuer}/.well-known/openid-configuration`), so it
  * needs none of the three endpoint URLs a hand-configured provider does.
- * Matches any name (conventionally `oidc`/`oidc2`/`oidc3`, PocketBase's own
+ * Matches any name (conventionally `oidc`/`oidc2`/`oidc3`, the
  * convention for more than one), keyed on `extra.issuer` being set — same
  * rule `crates/server/src/routes/auth.rs`'s `oidc_issuer` uses. */
 export function isGenericOidcProvider(extra: Record<string, string>): boolean {
@@ -304,8 +304,8 @@ export function randomTokenSecret(): string {
 
 /** Options errors, folded into the same list `collectionFormErrors`
  * returns. A provider needs a name (it keys the OAuth2 login endpoint) and
- * the three URLs every non-preset provider requires; PocketBase's own
- * dashboard enforces the same three before letting a custom provider save. */
+ * the three URLs every non-preset provider requires; the dashboard
+ * enforces the same three before letting a custom provider save. */
 export function validateAuthOptions(auth: AuthOptionsValue): string[] {
   const errors: string[] = [];
   if (auth.oauth2Enabled) {

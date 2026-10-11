@@ -30,6 +30,15 @@ secret on an update keeps its stored value rather than blanking it.
 shown at the top of every layout-wrapped email, and `brandColor`
 replaces the layout's default `#16161a` button/accent color.
 
+`logoUrl` can be any absolute image URL, or — easiest — an uploaded file:
+`POST /api/settings/logo` (superuser, multipart field `file`; PNG, JPEG,
+WebP or GIF up to 1 MiB — SVG is rejected) stores the image and sets
+`logoUrl` to `<appURL>/api/branding/logo?v=<hash>`, a public URL mail
+clients can fetch. `DELETE /api/settings/logo` removes it again (a custom
+external URL is left alone). `appURL` must be the instance's public
+address for the emailed image to load. The dashboard offers the same
+upload under Settings → Application → Branding.
+
 ## `smtp`
 
 | Key | Default | Notes |
@@ -98,8 +107,8 @@ record. `0` disables enforcement entirely — no collection is ever gated, regar
 | `s3` | a nested [`s3`](#s3-file-storage)-shaped block for uploading backups somewhere other than local disk |
 
 Setting `backups.cron` to a non-empty cron expression is what makes the
-`__pbAutoBackup__` scheduled job appear alongside the always-present
-`__pbDBOptimize__`/`__pbMFACleanup__`/`__pbOTPCleanup__`/`__pbLogsCleanup__`
+`__cbAutoBackup__` scheduled job appear alongside the always-present
+`__cbDBOptimize__`/`__cbMFACleanup__`/`__cbOTPCleanup__`/`__cbLogsCleanup__`
 jobs — see [Crons](/docs/reference/rest-api/crons/).
 
 ## `rateLimits`
@@ -181,6 +190,8 @@ cadence as `maxDays` prunes `_logs`; `<= 0` disables cleanup.
 | `baseUrl` | `"https://api.openai.com/v1"` | |
 | `apiKey` | *(write-only)* | |
 | `model` | `"gpt-4o-mini"` | |
+| `prices` | `{}` | Per-model price map, USD per 1M tokens, keyed by exact model name: `{ "gpt-4o-mini": { "input": 0.15, "output": 0.6, "cachedInput": 0.075 } }` (`cachedInput` optional). Drives `costUsd` in the [usage ledger](/docs/ai/llm-usage-ledger/); a model with no entry is recorded unpriced. |
+| `priceVersion` | `""` | Free-form label copied onto each ledger row so cost changes stay traceable. |
 
 ## `push`
 

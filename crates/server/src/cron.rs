@@ -10,7 +10,7 @@
 //! cannot delay every other job — and a panicking job is caught by the
 //! join handle and logged instead of killing the scheduler.
 //!
-//! Ids are PocketBase's, verbatim (`__pbDBOptimize__`, ...), because the
+//! Ids are fixed (`__cbDBOptimize__`, ...) because the
 //! dashboard and the `crons` API fixture list them by id.
 
 use std::collections::HashMap;
@@ -36,21 +36,20 @@ pub type TickAt = DateTime<Utc>;
 /// the scheduler uses.
 pub type JobFn = Arc<dyn Fn(TickAt) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// System job ids, kept identical to PocketBase's.
-pub const JOB_DB_OPTIMIZE: &str = "__pbDBOptimize__";
-pub const JOB_MFA_CLEANUP: &str = "__pbMFACleanup__";
-pub const JOB_OTP_CLEANUP: &str = "__pbOTPCleanup__";
+/// System job ids.
+pub const JOB_DB_OPTIMIZE: &str = "__cbDBOptimize__";
+pub const JOB_MFA_CLEANUP: &str = "__cbMFACleanup__";
+pub const JOB_OTP_CLEANUP: &str = "__cbOTPCleanup__";
 /// Purges `_totps` rows still `pending` (never confirmed) an hour after
 /// `.../totp/setup` created them — a confirmed row is never touched by
 /// this job, only an abandoned setup attempt.
 pub const JOB_TOTP_CLEANUP: &str = "__cbTOTPCleanup__";
-pub const JOB_LOGS_CLEANUP: &str = "__pbLogsCleanup__";
+pub const JOB_LOGS_CLEANUP: &str = "__cbLogsCleanup__";
 /// The scheduled backup. Unlike the four above it is only registered once
 /// `settings.backups.cron` is non-empty, so `GET /api/crons` lists it only
-/// then — PocketBase behaves the same way.
-pub const JOB_AUTO_BACKUP: &str = "__pbAutoBackup__";
-/// Hourly `_sessions` sweep (`crate::sessions::sweep_expired`). Cratebase-only
-/// — the four ids above are PocketBase's, verbatim.
+/// then.
+pub const JOB_AUTO_BACKUP: &str = "__cbAutoBackup__";
+/// Hourly `_sessions` sweep (`crate::sessions::sweep_expired`). Cratebase-only.
 pub const JOB_SESSION_SWEEP: &str = "__cbSessionSweep__";
 /// `_mailLog` retention (`settings.logs.mailLogMaxDays`), same cadence as
 /// [`JOB_LOGS_CLEANUP`]. Cratebase-only.
@@ -82,8 +81,7 @@ pub struct CronJob {
 
 #[derive(Default)]
 struct Inner {
-    /// Insertion-ordered so `list()` is stable; PocketBase's own order is
-    /// registration order and the fixture relies on it.
+    /// Insertion-ordered so `list()` is stable (registration order).
     order: Vec<String>,
     jobs: HashMap<String, Job>,
     /// Minute (unix minutes) each job last fired in, the dedupe guard.

@@ -9,7 +9,7 @@ types, zero I/O), `crates/filter` (the filter parser + SQL compiler),
 against both SQLite and Postgres), `crates/storage` (local disk or any
 S3-compatible bucket via `object_store`), `crates/auth` (Argon2id, HS256
 JWT sessions, OAuth2, OTP/MFA), `crates/jsvm` (an embedded QuickJS
-runtime for `pb_hooks`), `crates/mailer` (Resend/SMTP/log-only), and
+runtime for `cb_hooks`), `crates/mailer` (Resend/SMTP/log-only), and
 `crates/server` (axum HTTP API, CLI, plugin system, the embedded admin
 dashboard). Dependencies flow one way — `server` depends on everything
 else; `jsvm`/`mailer` depend on neither `db` nor `server`, talking back

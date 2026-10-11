@@ -1,6 +1,6 @@
 ---
 title: "Incoming webhooks"
-description: "Verifying a signed inbound webhook (Stripe as the worked example) from a pb_hooks JS file."
+description: "Verifying a signed inbound webhook (Stripe as the worked example) from a cb_hooks JS file."
 ---
 
 Trusting a payload an external service POSTs *at* Cratebase (Stripe,
@@ -8,11 +8,11 @@ GitHub, another Cratebase instance's own outgoing webhook) is the
 opposite direction from `_webhooks` above, and reduces to one primitive:
 `$security.hs256(data, secret)`, the constant-time HMAC-SHA256-as-hex
 computation the embedded JS runtime already exposes to every
-`pb_hooks/*.pb.js` file — no server-side Rust module or dedicated route
+`cb_hooks/*.cb.js` file — no server-side Rust module or dedicated route
 needed, since there is nothing left for the host to implement that
 `$security.hs256` doesn't already cover.
 
-A `pb_hooks` file registers its own inbound-webhook endpoint with the
+A `cb_hooks` file registers its own inbound-webhook endpoint with the
 existing `routerAdd` mechanism. Stripe's `Stripe-Signature` header
 (`t=<unix-seconds>,v1=<hex>[,v1=<hex>...]`, multiple `v1` values while a
 signing secret is being rotated — a match against any one is valid) is

@@ -3,10 +3,9 @@
 An [Expo Router](https://docs.expo.dev/router/introduction/) (TypeScript)
 app scaffolded by
 [`create-cratebase`](https://cratebase.dev/docs/getting-started/starter-kits/),
-wired up to [Cratebase](https://cratebase.dev) — a self-hostable,
-PocketBase-compatible Rust backend. Kept deliberately lean: password + email
-OTP sign-in and a realtime notes list. See "What's not here" below for what
-to add and how.
+wired up to [Cratebase](https://cratebase.dev), a self-hostable Rust backend.
+Kept deliberately lean: password + email-code (OTP) sign-in and a realtime notes
+list. See "What's not here" for what to add and how.
 
 ## 60-second quickstart
 
@@ -19,7 +18,7 @@ bun run dev
 
 1. **`cratebase dev`** — starts a local Cratebase server, provisioning a
    superuser, applying [`schema.json`](./schema.json), seeding
-   [`pb_seed/`](./pb_seed) (a demo user and two notes) on first run, and
+   [`cb_seed/`](./cb_seed) (a demo user and two notes) on first run, and
    writing/watching [`cratebase-types.d.ts`](./cratebase-types.d.ts). If the
    `cratebase` binary isn't installed yet, this prints the one-line install
    command instead of failing silently.
@@ -49,9 +48,9 @@ computer's LAN IP (e.g. `http://192.168.1.23:8090`) instead.
   create-cratebase templates (title/content, both searchable; an optional
   `cover` file; an `owner` relation), scoped with
   `owner = @request.auth.id` rules.
-- **`pb_seed/`** — a demo user and two notes, applied once on an empty
+- **`cb_seed/`** — a demo user and two notes, applied once on an empty
   database.
-- **`pb_hooks/welcome.pb.js`** — emails the built-in `welcome` template to
+- **`cb_hooks/welcome.cb.js`** — emails the built-in `welcome` template to
   every new signup via `$mails.send`.
 
 ## What's not here (and is web-only, or needs extra native setup)

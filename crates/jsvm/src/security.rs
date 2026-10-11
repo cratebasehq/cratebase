@@ -181,7 +181,7 @@ fn aes_key(key: &str) -> Result<Key<Aes256Gcm>, AppError> {
 }
 
 /// AES-256-GCM encrypt `data` with a 32-character key; the result is
-/// base64 of `nonce || ciphertext`, matching PocketBase's `security.Encrypt`.
+/// base64 of `nonce || ciphertext`, for `$security.encrypt`.
 pub fn encrypt(data: &str, key: &str) -> Result<String, AppError> {
     let cipher = Aes256Gcm::new(&aes_key(key)?);
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);

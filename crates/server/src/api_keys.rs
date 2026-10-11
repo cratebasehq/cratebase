@@ -50,8 +50,7 @@
 //!
 //! Left unset (the default, and the only shape a key minted before this
 //! pair existed can have), a key keeps behaving exactly as before —
-//! unscoped root, equivalent to PocketBase's own "service_role" framing
-//! for a Supabase key: powerful, unrestricted by any collection rule,
+//! unscoped root, equivalent to a "service_role" key: powerful, unrestricted by any collection rule,
 //! and never something to hand to untrusted code. [`load_acts_as`] is
 //! the shared lookup both [`resolve`] (every request) and
 //! `crate::routes::api_keys::create` (mint-time validation, so a typo'd
@@ -290,7 +289,7 @@ mod tests {
     /// `routes::schema`'s test harness.
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(crate::config::Config::memory(dir.path().join("pb_data")));
+        let app = App::new(crate::config::Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }

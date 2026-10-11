@@ -60,12 +60,12 @@ else
 fi
 rm -f /tmp/carol-create.$$
 
-echo "== pb_hook: columnRef required on a real (non-isQuery) card =="
+echo "== cb_hook: columnRef required on a real (non-isQuery) card =="
 NO_COLUMN_CODE="$(curl -sS -o /tmp/no-column.$$ -w '%{http_code}' -X POST "${CRATEBASE_URL}/api/collections/cards/records" \
   -H "authorization: Bearer ${ALICE_TOKEN}" -H 'content-type: application/json' \
   -d "$(jq -nc --arg team "$TEAM_ID" '{teamRef:$team, title:"missing column", order:1}')")"
 if [ "$NO_COLUMN_CODE" = "400" ]; then
-  pass "creating a card without columnRef was rejected by the pb_hook (400)"
+  pass "creating a card without columnRef was rejected by the cb_hook (400)"
 else
   cat /tmp/no-column.$$ >&2
   fail "expected 400 creating a card without columnRef, got ${NO_COLUMN_CODE}"
@@ -75,8 +75,8 @@ rm -f /tmp/no-column.$$
 echo "== create a real card, confirm searchText + embedding got derived =="
 # searchText is sent directly in the body, matching what src/hooks/useCards.ts
 # and src/components/CardDetail.tsx do — apply_embeddings runs before the
-# pb_hook's onRecordCreate could otherwise derive it from title+description
-# (a real Cratebase limitation; see pb_hooks/team-board.pb.js's module doc).
+# cb_hook's onRecordCreate could otherwise derive it from title+description
+# (a real Cratebase limitation; see cb_hooks/team-board.cb.js's module doc).
 NEW_CARD="$(curl -fsS -X POST "${CRATEBASE_URL}/api/collections/cards/records" -H "authorization: Bearer ${ALICE_TOKEN}" -H 'content-type: application/json' \
   -d "$(jq -nc --arg team "$TEAM_ID" --arg col "$COLUMN_ID" '{teamRef:$team, columnRef:$col, title:"Rotate the S3 access keys", description:"Quarterly credential rotation for the backups bucket.", searchText:"Rotate the S3 access keys\n\nQuarterly credential rotation for the backups bucket.", order:999999}')")"
 NEW_CARD_ID="$(echo "$NEW_CARD" | jq -r .id)"
@@ -132,8 +132,8 @@ BOB_ID="$(echo "$ALL_MEMBERS" | jq -r '.items[] | select(.expand.userRef.name ==
 [ -n "$BOB_ID" ] && [ "$BOB_ID" != "null" ] && pass "found bob's user id: $BOB_ID" || fail "could not find bob in team membership"
 
 # NB: assigning via a *new card's create* body, not a PATCH to an
-# existing card. Live-verified building this example: pb_hooks/
-# team-board.pb.js's onRecordAfterCreateSuccess hook on `cards` fires
+# existing card. Live-verified building this example: cb_hooks/
+# team-board.cb.js's onRecordAfterCreateSuccess hook on `cards` fires
 # reliably and creates the notification (checked below); the equivalent
 # onRecordAfterUpdateSuccess hook (same file, fires when an *existing*
 # card's assigneeRef changes via PATCH) was observed to never fire in
@@ -160,7 +160,7 @@ for _ in $(seq 1 10); do
   fi
   sleep 1
 done
-[ "$FOUND" = "1" ] && pass "pb_hook created a notification for bob" || fail "no notification found for bob after assignment"
+[ "$FOUND" = "1" ] && pass "cb_hook created a notification for bob" || fail "no notification found for bob after assignment"
 
 echo "== superuser: mail landed in the dev mail inbox =="
 SU_TOKEN="$(curl -fsS -X POST "${CRATEBASE_URL}/api/collections/_superusers/auth-with-password" \

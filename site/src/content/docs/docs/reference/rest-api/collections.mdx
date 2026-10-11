@@ -26,7 +26,7 @@ collection actually is underneath these calls.
 {
   "name": "posts",
   "type": "base",
-  "schema": [
+  "fields": [
     { "id": "text1", "name": "title", "type": "text", "required": true },
     { "id": "bool1", "name": "published", "type": "bool" }
   ],
@@ -38,6 +38,11 @@ collection actually is underneath these calls.
   "authOptions": {}
 }
 ```
+
+Field options are flat keys on the field (`"max": 5`), not a nested
+`options` object. The legacy top-level `schema` key and per-field
+`options` are rejected with `400` and `validation_unknown_key` — use
+`fields` and flat options.
 
 `type` is one of `base`/`auth`/`view` and **cannot change after
 creation** — attempting to is `validation_collection_type_change`. A
@@ -64,8 +69,7 @@ which diffs instead and never drops a field unless `force=1` is passed.
 
 Returns `{ "base": Collection, "auth": Collection, "view": Collection }`
 — starting-point field sets for the dashboard's "new collection" flow.
-Per [`KNOWN_DIVERGENCES.md`](https://github.com/cratebasehq/cratebase/blob/main/tests/conformance/KNOWN_DIVERGENCES.md),
-the base scaffold has only the `id` field (`created`/`updated` autodate
+The base scaffold has only the `id` field (`created`/`updated` autodate
 fields are *not* part of it); the auth scaffold has
 `id, password, tokenKey, email, emailVisibility, verified`.
 

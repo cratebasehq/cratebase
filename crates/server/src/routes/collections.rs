@@ -43,7 +43,7 @@ const CREATE_FAILED: &str = "Failed to create collection.";
 const UPDATE_FAILED: &str = "Failed to update collection.";
 const DELETE_FAILED: &str = "Failed to delete collection.";
 const IMPORT_FAILED: &str = "Failed to import collections.";
-/// PocketBase's message for a body it could not even shape into a
+/// The message for a body that could not even be shaped into a
 /// collection (an unknown field `type`, say).
 const BAD_PAYLOAD: &str = "Failed to load the submitted data due to invalid formatting.";
 
@@ -461,7 +461,7 @@ async fn remove(
 }
 
 /// The name of another collection holding a relation field pointing at
-/// `target`, if any. PocketBase names it in the delete error.
+/// `target`, if any. The delete error names it.
 fn referencing_collection(app: &App, target: &Collection) -> Option<String> {
     app.db()
         .collections
@@ -522,15 +522,14 @@ async fn scaffolds(State(app): State<App>, _su: RequireSuperuser) -> ApiResult<J
     ] {
         let mut scaffold = Collection::scaffold(kind);
         // `Collection::new` seeds `created`/`updated` autodate fields for
-        // convenience; PocketBase's scaffolds do not carry them
+        // convenience; the scaffolds do not carry them
         // (KNOWN_DIVERGENCES §4), so the template is exactly the system
         // fields for the type.
         scaffold
             .fields
             .retain(|f| f.field_type() != FieldType::Autodate);
         if kind == CollectionType::Auth {
-            // The two default auth indexes, with the empty table name
-            // PocketBase emits for a nameless scaffold.
+            // The empty table name of a nameless scaffold.
             scaffold.indexes = default_auth_indexes("", "");
         }
         out.insert(key.to_string(), scaffold.to_json());
@@ -640,7 +639,7 @@ async fn import(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// PocketBase reports every import failure under `data.collections`.
+/// Every import failure is reported under `data.collections`.
 fn import_error(error: ApiError) -> ApiError {
     let mut data = Map::new();
     let detail = error.error.body();
@@ -870,10 +869,54 @@ fn object(body: Value) -> ApiResult<Map<String, Value>> {
 /// other shape error) is a *body-format* error with an empty `data`, not
 /// a per-field one — KNOWN_DIVERGENCES §6.
 pub(crate) fn deserialize(value: Value) -> ApiResult<Collection> {
+    reject_legacy_keys(&value)?;
     serde_json::from_value::<Collection>(value).map_err(|e| {
         tracing::debug!(detail = %e, "rejected collection payload");
         ApiError::bad_request(BAD_PAYLOAD)
     })
+}
+
+/// Older collection formats spelled collection fields `schema` and nested
+/// field settings under `options`. `Collection`/`Field` flatten unknown
+/// keys, so serde would silently accept them and create a collection with
+/// zero fields; reject exactly these two aliases with a hint instead.
+fn reject_legacy_keys(value: &Value) -> ApiResult<()> {
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+    let mut data = Map::new();
+    if obj.contains_key("schema") {
+        data.insert(
+            "schema".into(),
+            json!({
+                "code": "validation_unknown_key",
+                "message": "Unknown key \"schema\": collection fields live under \"fields\".",
+            }),
+        );
+    }
+    if let Some(fields) = obj.get("fields").and_then(Value::as_array) {
+        let mut bad = Map::new();
+        for (i, field) in fields.iter().enumerate() {
+            if field.get("options").is_some() {
+                let name = field.get("name").and_then(Value::as_str).unwrap_or("");
+                bad.insert(
+                    i.to_string(),
+                    json!({"options": {
+                        "code": "validation_unknown_key",
+                        "message": format!("Unknown key \"options\" on field \"{name}\": field options are flat on the field object (e.g. {{\"type\":\"text\",\"max\":100}})."),
+                    }}),
+                );
+            }
+        }
+        if !bad.is_empty() {
+            data.insert("fields".into(), Value::Object(bad));
+        }
+    }
+    if data.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::nested_validation(BAD_PAYLOAD, data))
+    }
 }
 
 /// Everything the server owns on a freshly created collection.
@@ -892,7 +935,7 @@ pub(crate) fn prepare_new(next: &mut Collection) {
     }
 }
 
-/// PocketBase silently collapses duplicate field names, keeping the last
+/// Duplicate field names are silently collapsed, keeping the last
 /// definition (KNOWN_DIVERGENCES §5).
 pub(crate) fn dedupe_fields(collection: &mut Collection) {
     let mut seen: Vec<String> = Vec::with_capacity(collection.fields.len());
@@ -981,7 +1024,7 @@ pub(crate) fn validate(
 
     // MFA needs a second factor to actually add anything: with only one
     // enabled auth method there is nothing to challenge for beyond the
-    // first, so PocketBase rejects enabling it outright rather than
+    // first, so enabling it is rejected outright rather than
     // silently accepting a no-op MFA config.
     if next.is_auth() && next.auth.mfa.enabled {
         let enabled_methods = [
@@ -1071,7 +1114,7 @@ fn validate_rules(app: &App, next: &Collection, message: &str) -> ApiResult<()> 
 /// Index statements have to parse *and* only mention real columns. The
 /// column check is done here rather than left to the database so the
 /// error can name the offending index by position, which is how
-/// PocketBase reports it (KNOWN_DIVERGENCES §7).
+/// it is reported (KNOWN_DIVERGENCES §7).
 fn validate_indexes(next: &Collection, message: &str) -> ApiResult<()> {
     for (position, statement) in next.indexes.iter().enumerate() {
         let Some(def) = schema::parse_index(statement) else {
@@ -1171,9 +1214,9 @@ fn indexes_error(message: &str, position: usize, code: &str, detail: &str) -> Ap
 
 /// Derive a view collection's fields from its `viewQuery`.
 ///
-/// PocketBase parses the SELECT list and clones the origin collection's
-/// field definitions, giving each clone a synthetic `_clone_XXXX` id
-/// (KNOWN_DIVERGENCES §3). This is the same idea, done textually: the
+/// The SELECT list is parsed and the origin collection's field
+/// definitions are cloned, giving each clone a synthetic `_clone_XXXX` id
+/// (KNOWN_DIVERGENCES §3). This is done textually: the
 /// select list gives the column names and aliases, and the first table in
 /// the `FROM` clause supplies the types.
 pub(crate) fn view_fields(app: &App, next: &Collection, message: &str) -> ApiResult<Vec<Field>> {

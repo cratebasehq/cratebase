@@ -13,6 +13,7 @@ pub mod api_keys;
 pub mod auth;
 pub mod backups;
 pub mod batch;
+pub mod branding;
 pub mod collections;
 pub mod common;
 pub mod crons;
@@ -23,6 +24,7 @@ pub mod files;
 pub mod functions;
 pub mod health;
 pub mod llm;
+pub mod llm_usage;
 pub mod logs;
 pub mod mails;
 pub mod metrics;
@@ -83,6 +85,8 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(push::router())
         .merge(mails::router())
         .merge(notifications::router())
+        .merge(branding::router())
+        .merge(llm_usage::router())
         .merge(queue::router())
         .merge(crate::webhook_deliveries::router())
         // MCP lives in its own top-level module (like `realtime`), not
@@ -103,8 +107,8 @@ pub fn api_router(app: &App) -> Router<App> {
     // *outside* the logging and rate-limit layers, so a 404 on an API
     // path would never be logged.
     //
-    // Both fallbacks are the same handler because PocketBase answers a
-    // wrong method on an existing route with 404, not 405.
+    // Both fallbacks are the same handler because a
+    // wrong method on an existing route answers 404, not 405.
     router
         .fallback(crate::http_error::not_found_fallback)
         .method_not_allowed_fallback(crate::http_error::not_found_fallback)

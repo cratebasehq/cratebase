@@ -1,23 +1,21 @@
 // DocMind — Cratebase's AI-flagship worked example (vector search +
-// auto-embedding + LLM chat gateway + the pb_hooks BFF pattern), tied
+// auto-embedding + LLM chat gateway + the cb_hooks BFF pattern), tied
 // together per docs/superpowers/specs/2026-09-04-value-add-strategy.md §8.
 //
-// Imported via the bare specifier "pocketbase", resolved by the import map
-// in index.html to the official PocketBase JS SDK on esm.sh — no npm
-// install or build step needed, same convention as examples/todo and
-// examples/realtime-chat. See README.md for why this example doesn't need
-// @cratebase/extras: the retrieval step (turning a raw question into a
-// query vector) needs privileges an ordinary employee account doesn't
-// have, so it happens server-side in pb_hooks/docmind.pb.js's
-// `POST /docmind/ask` — the client only ever calls that one custom
-// endpoint and the stock `pocketbase` SDK's realtime subscribe, both of
-// which the official SDK already covers with `pb.send`/`pb.realtime`.
-import PocketBase from "pocketbase";
+// Imported via the bare specifier "@cratebase/client", resolved by the
+// import map in index.html to the browser bundle `examples/serve.sh`
+// builds into examples/lib/ — no npm install in the example itself. The
+// retrieval step (turning a raw question into a query vector) needs
+// privileges an ordinary employee account doesn't have, so it happens
+// server-side in cb_hooks/docmind.cb.js's `POST /docmind/ask` — the
+// client only ever calls that one custom endpoint (`cb.send`) plus the
+// realtime subscription for the streamed tokens.
+import { createClient } from "@cratebase/client";
 
 const BASE_URL = "http://localhost:8090";
 
-const cb = new PocketBase(BASE_URL);
-const users = cb.collection("users");
+const cb = createClient(BASE_URL);
+const users = cb.auth;
 const docs = cb.collection("docs");
 const messages = cb.collection("messages");
 
@@ -94,7 +92,7 @@ formLogin.addEventListener("submit", async (e) => {
   e.preventDefault();
   hideBanner();
   try {
-    await users.authWithPassword(document.getElementById("li-email").value, document.getElementById("li-password").value);
+    await users.signIn.password({ identity: document.getElementById("li-email").value, password: document.getElementById("li-password").value });
   } catch (err) {
     showBanner(err && err.message ? err.message : "Sign in failed.");
   }
@@ -107,19 +105,18 @@ formRegister.addEventListener("submit", async (e) => {
   const password = document.getElementById("re-password").value;
   const passwordConfirm = document.getElementById("re-password2").value;
   try {
-    await users.create({ email, password, passwordConfirm });
-    await users.authWithPassword(email, password);
+    await users.signUp({ email, password, passwordConfirm });
   } catch (err) {
     showBanner(err && err.message ? err.message : "Registration failed.");
   }
 });
 
 document.getElementById("btn-logout").addEventListener("click", () => {
-  cb.authStore.clear();
+  cb.auth.signOut();
 });
 
-cb.authStore.onChange(() => {
-  if (cb.authStore.isValid) {
+cb.auth.onChange(() => {
+  if (cb.auth.isValid) {
     enterApp();
   } else {
     viewGuest.style.display = "block";
@@ -134,9 +131,8 @@ cb.authStore.onChange(() => {
 // `llm_chunk`/`llm_done`/`llm_error` are not collection topics — they are
 // the three realtime event names `crates/server/src/routes/llm.rs` sends
 // over the caller's *existing* `GET /api/realtime` connection (see that
-// file's module doc). `pb.realtime.subscribe` accepts any topic string,
-// not just `<collection>/*`, which is what makes this possible with the
-// stock SDK and no `@cratebase/extras` import.
+// file's module doc). `cb.realtime.subscribeTopic` accepts any topic
+// string, not just `<collection>/*`, which is what makes this possible.
 
 let realtimeReady = null;
 let pendingChunks = "";
@@ -144,19 +140,19 @@ let pendingChunks = "";
 function ensureRealtime() {
   if (realtimeReady) return realtimeReady;
   realtimeReady = Promise.all([
-    cb.realtime.subscribe("llm_chunk", (data) => {
+    cb.realtime.subscribeTopic("llm_chunk", (data) => {
       pendingChunks += data.delta;
       renderStreamingAnswer();
     }),
-    cb.realtime.subscribe("llm_done", () => {
+    cb.realtime.subscribeTopic("llm_done", () => {
       /* finalization happens once the POST /docmind/ask promise settles */
     }),
-    cb.realtime.subscribe("llm_error", (data) => {
+    cb.realtime.subscribeTopic("llm_error", (data) => {
       showBanner("LLM gateway error: " + data.message);
     }),
   ]).then(() => {
     setStatus("connected", "realtime connected");
-    return cb.realtime.clientId;
+    return cb.realtime.ensureClientId();
   });
   return realtimeReady;
 }
@@ -183,7 +179,7 @@ function escapeHtml(s) {
 }
 
 async function loadDocs() {
-  const page = await docs.getList(1, 50, { sort: "-created" });
+  const page = await docs.list({ page: 1, perPage: 50, sort: "-created" });
   docListEl.innerHTML = "";
   docsEmptyEl.style.display = page.items.length ? "none" : "block";
   for (const record of page.items) docListEl.appendChild(renderDoc(record));
@@ -233,7 +229,7 @@ function renderHistoryTurn(prompt, response) {
 
 async function loadHistory() {
   try {
-    const page = await messages.getList(1, 20, { sort: "-created" });
+    const page = await messages.list({ page: 1, perPage: 20, sort: "-created" });
     historyEl.innerHTML = "";
     for (const record of page.items.slice().reverse()) renderHistoryTurn(record.prompt, record.response);
   } catch {
@@ -277,7 +273,7 @@ async function enterApp() {
   viewGuest.style.display = "none";
   viewApp.classList.add("active");
   whoamiEl.style.display = "flex";
-  whoamiEmailEl.textContent = cb.authStore.record?.email ?? "";
+  whoamiEmailEl.textContent = cb.auth.record?.email ?? "";
   setStatus("idle", "connecting…");
   try {
     await Promise.all([loadDocs(), loadHistory(), ensureRealtime()]);

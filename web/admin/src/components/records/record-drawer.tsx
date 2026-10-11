@@ -1,18 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, Copy, ShieldUser, Trash2, UserCog } from "lucide-react";
+import { Ban, Check, Copy, CopyPlus, ShieldUser, Trash2, UserCog } from "lucide-react";
 import type { CollectionModel, RecordModel } from "@cratebase/client";
-import { isMultiValue, userFields, type FieldSchema } from "@/lib/field-types";
+import { isMultiValue, managedFields, userFields, type FieldSchema } from "@/lib/field-types";
 import { singularize, validateRecordDraft, type FileDraft } from "@/lib/record-validation";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,13 +18,31 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailEmpty,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+  type DetailMenuItem,
+  type DetailPager,
+  type DetailTabItem,
+} from "@/components/layout/detail-sheet";
+import { StatusBadge } from "@/components/layout/stat-card";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { TimeAgo } from "@/components/settings/time-ago";
 import { RecordFieldInput } from "@/components/records/record-field-input";
+import { Kbd } from "@/components/ui/kbd";
 import { FileField } from "@/components/records/file-field";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useRecordMutations } from "@/hooks/use-records";
-import { cb, describeFailure, superuserAuth } from "@/lib/api";
+import { cb, describeFailure, parseServerDate, superuserAuth } from "@/lib/api";
 import {
   Dialog,
   DialogContent,
@@ -45,8 +55,16 @@ import {
 interface RecordDrawerProps {
   collection: CollectionModel;
   record: RecordModel | null;
+  /** Values to start a new record from ("Duplicate"). Ignored when editing. */
+  template?: RecordModel | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The records currently loaded in the grid, in order. Drives the
+   * "N of M" pager together with `onNavigate`. */
+  siblings?: RecordModel[];
+  onNavigate?: (record: RecordModel) => void;
+  /** Start a new record from this one. Omit to hide the Duplicate action. */
+  onDuplicate?: (record: RecordModel) => void;
 }
 
 type Draft = Record<string, unknown>;
@@ -104,25 +122,19 @@ function buildDraft(record: RecordModel | null, fields: FieldSchema[], identityF
   return draft;
 }
 
-/** A copyable identifier line for the metadata strip. */
-function MetaValue({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
-  const { copy, status } = useCopyToClipboard();
-  return (
-    <div className="flex min-w-0 items-baseline gap-2">
-      <dt className="w-16 shrink-0 text-2xs uppercase tracking-wider text-muted-foreground/70">{label}</dt>
-      <dd className="flex min-w-0 items-center gap-1">
-        <span className={mono ? "truncate font-mono text-xs" : "truncate text-xs"}>{value}</span>
-        <button
-          type="button"
-          aria-label={`Copy ${label}`}
-          onClick={() => void copy(value)}
-          className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/meta:opacity-100"
-        >
-          {status === "copied" ? <Check className="size-3" /> : <Copy className="size-3" />}
-        </button>
-      </dd>
-    </div>
-  );
+/** Bool fields worth a status chip when switched on. */
+const FLAG_FIELDS = /^(published|active|enabled|archived|featured|public|verified)$/i;
+
+type PendingAction = { kind: "nav"; record: RecordModel } | { kind: "duplicate"; record: RecordModel };
+
+function absoluteTime(value: string): string {
+  const d = parseServerDate(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+
+function formatSystemValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
 /**
@@ -135,7 +147,16 @@ function MetaValue({ label, value, mono = true }: { label: string; value: string
  * picked from the first 100 rows, the record's own identifiers are visible
  * and copyable, and closing with unsaved edits asks first.
  */
-export function RecordDrawer({ collection, record, open, onOpenChange }: RecordDrawerProps) {
+export function RecordDrawer({
+  collection,
+  record,
+  template = null,
+  open,
+  onOpenChange,
+  siblings,
+  onNavigate,
+  onDuplicate,
+}: RecordDrawerProps) {
   const isNew = record === null;
   const identityField =
     collection.type === "auth"
@@ -144,9 +165,19 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
 
   const fields = useMemo(() => userFields(collection), [collection]);
   const seed = useMemo(
-    () => buildDraft(record, fields, identityField),
-    [record, fields, identityField],
+    () => buildDraft(record ?? template, fields, identityField),
+    [record, template, fields, identityField],
   );
+  // A form with many fields is easier to scan in labelled sections; one with
+  // only a few plain fields is not improved by headings.
+  const groups = useMemo(() => {
+    const all = [
+      { key: "fields", title: "Fields", items: fields.filter((f) => f.type !== "relation" && f.type !== "file") },
+      { key: "relations", title: "Relations", items: fields.filter((f) => f.type === "relation") },
+      { key: "files", title: "Files", items: fields.filter((f) => f.type === "file") },
+    ];
+    return all.filter((g) => g.items.length > 0);
+  }, [fields]);
 
   const [values, setValues] = useState<Draft>(seed);
   const [seedKey, setSeedKey] = useState(seed);
@@ -165,6 +196,10 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     setTouched({});
     setSubmitted(false);
   }
+
+  const [tab, setTab] = useState("fields");
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const { copy: copyJson } = useCopyToClipboard({ onCopy: () => toast.success("Copied record as JSON") });
 
   const { create, update, remove } = useRecordMutations(collection.name);
   const pending = create.isPending || update.isPending;
@@ -391,10 +426,20 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     return form;
   }
 
+  /** The tab holding a field, so a rejected Save lands on the problem. */
+  function tabOf(name: string): string {
+    const type = fields.find((f) => f.name === name)?.type;
+    return type === "relation" ? "relations" : type === "file" ? "files" : "fields";
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitted(true);
-    if (pending || invalidCount > 0) return;
+    if (pending) return;
+    if (invalidCount > 0) {
+      setTab(tabOf(Object.keys(clientErrors)[0]));
+      return;
+    }
     setServerErrors({});
     try {
       if (isNew) {
@@ -409,6 +454,7 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
       const failure = describeFailure(error);
       if (Object.keys(failure.fields).length > 0) {
         setServerErrors(failure.fields);
+        setTab(tabOf(Object.keys(failure.fields)[0]));
         toast.error("The server rejected some fields", { description: "They're marked below." });
       } else {
         toast.error(failure.title, { description: failure.serverMessage || failure.detail || undefined });
@@ -416,251 +462,419 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
     }
   }
 
+  /** Leaving this record (pager, duplicate) with unsaved edits asks first. */
+  function runAction(action: PendingAction) {
+    if (action.kind === "nav") onNavigate?.(action.record);
+    else onDuplicate?.(action.record);
+  }
+  function guarded(action: PendingAction) {
+    if (dirty && !pending) setPendingAction(action);
+    else runAction(action);
+  }
+
+  // ⌘/Ctrl+Enter saves from anywhere in the sheet — the Save button lives in
+  // the header, outside the form, so a form-level key handler would miss it.
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
+      if ((event.target as HTMLElement | null)?.closest('[role="alertdialog"]')) return;
+      event.preventDefault();
+      formRef.current?.requestSubmit();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  function renderField(field: FieldSchema) {
+    const error = errorFor(field.name);
+    return (
+      <div
+        key={field.id || field.name}
+        className="flex flex-col gap-1.5"
+        onBlur={() => setTouched((t) => ({ ...t, [field.name]: true }))}
+      >
+        <div className="flex items-baseline justify-between gap-2">
+          <Label className="font-mono">
+            {field.name}
+            {field.required ? <span className="text-destructive"> *</span> : null}
+          </Label>
+          <span className="shrink-0 text-2xs text-muted-foreground/70">{field.type}</span>
+        </div>
+
+        {field.type === "file" ? (
+          <FileField
+            field={field}
+            record={record}
+            value={(values[field.name] ?? { keep: [], added: [] }) as FileDraft}
+            onChange={(next) => setValue(field.name, next)}
+            invalid={Boolean(error)}
+          />
+        ) : (
+          <RecordFieldInput
+            field={field}
+            value={values[field.name]}
+            onChange={(value) => setValue(field.name, value)}
+            error={error}
+          />
+        )}
+        <FieldError message={error} />
+      </div>
+    );
+  }
+
+  /* ---- Detail-sheet chrome ------------------------------------------------ */
+
+  const plainFields = groups.find((g) => g.key === "fields")?.items ?? [];
+  const relationFields = groups.find((g) => g.key === "relations")?.items ?? [];
+  const fileFields = groups.find((g) => g.key === "files")?.items ?? [];
+  const fileCount = fileFields.reduce((n, f) => {
+    const d = (values[f.name] ?? { keep: [], added: [] }) as FileDraft;
+    return n + d.keep.length + d.added.length;
+  }, 0);
+
+  const tabs: DetailTabItem[] = [
+    { value: "fields", label: "Fields" },
+    ...(relationFields.length > 0 ? [{ value: "relations", label: "Relations", count: relationFields.length }] : []),
+    ...(fileFields.length > 0 ? [{ value: "files", label: "Files", count: fileCount }] : []),
+    ...(record ? [{ value: "json", label: "JSON" }] : []),
+    ...(isAuth && record ? [{ value: "account", label: "Account" }] : []),
+    ...(record ? [{ value: "meta", label: "Meta" }] : []),
+  ];
+  const activeTab = tabs.some((t) => t.value === tab) ? tab : "fields";
+
+  const presentable = fields.find((f) => f.presentable)?.name;
+  const titleSource = [presentable, identityField, "title", "name", "email"].find(
+    (key) => key && ["string", "number"].includes(typeof record?.[key]) && String(record?.[key]).trim() !== "",
+  );
+  const title = isNew
+    ? template
+      ? `Duplicate ${singularize(collection.name)}`
+      : `New ${singularize(collection.name)}`
+    : titleSource
+      ? String(record[titleSource])
+      : record.id;
+
+  const statusChips = (
+    <>
+      {dirty ? <StatusBadge tone="warning">Unsaved</StatusBadge> : null}
+      {record && isAuth && "verified" in record ? (
+        <StatusBadge tone={record.verified ? "success" : "neutral"}>
+          {record.verified ? "Verified" : "Unverified"}
+        </StatusBadge>
+      ) : null}
+      {banStatus.data ? <StatusBadge tone="danger">Banned</StatusBadge> : null}
+      {record
+        ? fields
+            .filter((f) => f.type === "bool" && FLAG_FIELDS.test(f.name) && record[f.name] === true)
+            .map((f) => (
+              <StatusBadge key={f.name} tone="success">
+                {f.name.charAt(0).toUpperCase() + f.name.slice(1)}
+              </StatusBadge>
+            ))
+        : null}
+    </>
+  );
+
+  const metaLine: React.ReactNode[] = record
+    ? [
+        <span key="c" className="font-mono">{collection.name}</span>,
+        record.created ? <span key="cr">created <TimeAgo value={record.created} /></span> : null,
+        record.updated ? <span key="up">updated <TimeAgo value={record.updated} /></span> : null,
+      ]
+    : [
+        <span key="c" className="font-mono">{collection.name}</span>,
+        template ? "Files and passwords are not copied" : "Not saved yet",
+      ];
+
+  const siblingIndex = record && siblings ? siblings.findIndex((r) => r.id === record.id) : -1;
+  const pager: DetailPager | undefined =
+    siblings && onNavigate && siblingIndex >= 0 && siblings.length > 1
+      ? {
+          index: siblingIndex + 1,
+          total: siblings.length,
+          hasPrev: siblingIndex > 0,
+          hasNext: siblingIndex < siblings.length - 1,
+          onPrev: () => guarded({ kind: "nav", record: siblings[siblingIndex - 1] }),
+          onNext: () => guarded({ kind: "nav", record: siblings[siblingIndex + 1] }),
+        }
+      : undefined;
+
+  const menu: DetailMenuItem[] = record
+    ? [
+        {
+          label: "Copy JSON",
+          icon: <Copy />,
+          onSelect: () => void copyJson(JSON.stringify(record, null, 2)),
+        },
+        ...(isAuth
+          ? [
+              { label: "Impersonate", icon: <UserCog />, onSelect: () => !impersonate.isPending && impersonate.mutate() },
+              banStatus.data
+                ? { label: "Unban", icon: <ShieldUser />, onSelect: () => unban.mutate() }
+                : { label: "Ban…", icon: <Ban />, destructive: true, onSelect: () => setConfirmBan(true) },
+            ]
+          : []),
+        { label: "Delete…", icon: <Trash2 />, destructive: true, onSelect: () => setConfirmDelete(true) },
+      ]
+    : [];
+
+  // The managed columns beyond id/created/updated (auth flags and the like),
+  // minus anything secret. Reachable from the Meta tab.
+  const systemRows: [string, string][] = record
+    ? managedFields(collection)
+        .filter((f) => !["id", "created", "updated", "password", "tokenKey"].includes(f.name))
+        .map((f) => [f.name, formatSystemValue(record[f.name])] as [string, string])
+    : [];
+
   return (
     <>
-      <Sheet open={open} onOpenChange={requestClose}>
-        <SheetContent
-          side="right"
-          className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[560px] data-[side=right]:lg:max-w-[640px]"
-        >
-          {/* `noValidate` on purpose: an `<input type="url">` with a bad
-              value makes the browser cancel the submit and show its own
-              tooltip, so React's handler never runs and none of the field
-              errors below ever appear. Validation is this form's job. */}
-          <form onSubmit={handleSubmit} noValidate className="flex h-full min-h-0 flex-col">
-            <SheetHeader className="gap-1">
-              <SheetTitle>{isNew ? `New ${singularize(collection.name)}` : "Edit record"}</SheetTitle>
-              <SheetDescription>
-                {isNew ? `Add a row to ${collection.name}.` : `Editing a row in ${collection.name}.`}
-              </SheetDescription>
-            </SheetHeader>
-
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-              {/* What the server knows about this row, which the old drawer
-                  never showed — the id is the thing you paste into a filter. */}
-              {record ? (
-                <dl className="group/meta flex flex-col gap-1 rounded-lg border border-border bg-surface-sunken/60 px-3 py-2">
-                  <MetaValue label="id" value={record.id} />
-                  {record.created ? (
-                    <MetaValue label="created" value={new Date(record.created).toLocaleString()} />
-                  ) : null}
-                  {record.updated ? (
-                    <MetaValue label="updated" value={new Date(record.updated).toLocaleString()} />
-                  ) : null}
-                </dl>
-              ) : null}
-
-              {identityField ? (
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="record-identity">{identityField}</Label>
-                  <Input
-                    id="record-identity"
-                    type={identityField === "email" ? "email" : "text"}
-                    value={(values[identityField] as string) ?? ""}
-                    onChange={(e) => setValue(identityField, e.target.value)}
-                    onBlur={() => setTouched((t) => ({ ...t, [identityField]: true }))}
-                    aria-invalid={errorFor(identityField) ? true : undefined}
-                    className="h-control-md"
-                  />
-                  <FieldError message={errorFor(identityField)} />
-                </div>
-              ) : null}
-
-              {identityField ? (
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="record-password">{isNew ? "Password" : "New password"}</Label>
-                  <Input
-                    id="record-password"
-                    type="password"
-                    value={(values.password as string) ?? ""}
-                    onChange={(e) => setValue("password", e.target.value)}
-                    onBlur={() => setTouched((t) => ({ ...t, password: true }))}
-                    placeholder={isNew ? "At least 8 characters" : "Leave blank to keep the current one"}
-                    aria-invalid={errorFor("password") ? true : undefined}
-                    className="h-control-md"
-                  />
-                  <FieldError message={errorFor("password")} />
-                </div>
-              ) : null}
-
-              {(identityField && fields.length > 0) ? <Separator /> : null}
-
-              {fields.map((field) => {
-                const error = errorFor(field.name);
-                return (
-                  <div
-                    key={field.id || field.name}
-                    className="flex flex-col gap-1.5"
-                    onBlur={() => setTouched((t) => ({ ...t, [field.name]: true }))}
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <Label className="font-mono">
-                        {field.name}
-                        {field.required ? <span className="text-destructive"> *</span> : null}
-                      </Label>
-                      <span className="shrink-0 text-2xs text-muted-foreground/70">{field.type}</span>
-                    </div>
-
-                    {field.type === "file" ? (
-                      <FileField
-                        field={field}
-                        record={record}
-                        value={(values[field.name] ?? { keep: [], added: [] }) as FileDraft}
-                        onChange={(next) => setValue(field.name, next)}
-                        invalid={Boolean(error)}
-                      />
-                    ) : (
-                      <RecordFieldInput
-                        field={field}
-                        value={values[field.name]}
-                        onChange={(value) => setValue(field.name, value)}
-                        error={error}
-                      />
-                    )}
-                    <FieldError message={error} />
-                  </div>
-                );
-              })}
-
-              {isAuth && record ? (
-                <>
-                  <Separator />
-                  <div className="flex flex-col gap-3">
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-xs font-medium text-foreground/80">Two-factor authentication</span>
-                      <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2">
-                        <span className="text-xs text-muted-foreground">
-                          {totpStatus.isLoading
-                            ? "Checking…"
-                            : totpStatus.data?.confirmed
-                              ? "TOTP is enabled for this account."
-                              : "TOTP is not enabled."}
-                        </span>
-                        {totpStatus.data?.confirmed ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-control-xs gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() => resetTotp.mutate()}
-                            disabled={resetTotp.isPending}
-                          >
-                            {resetTotp.isPending ? <Spinner className="size-3.5" /> : null}
-                            Reset TOTP
-                          </Button>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-xs font-medium text-foreground/80">Linked accounts</span>
-                      {linkedAccounts.isLoading ? (
-                        <span className="text-xs text-muted-foreground">Checking…</span>
-                      ) : linkedAccounts.data && linkedAccounts.data.length > 0 ? (
-                        <ul className="flex flex-col gap-1.5">
-                          {linkedAccounts.data.map((row) => (
-                            <li
-                              key={row.id}
-                              className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs"
-                            >
-                              <span className="font-mono">{row.provider}</span>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="h-control-xs gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                                onClick={() => unlinkAccount.mutate(row.provider)}
-                                disabled={unlinkAccount.isPending}
-                              >
-                                Unlink
-                              </Button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">No linked OAuth2 providers.</span>
-                      )}
-                    </div>
-                  </div>
-                </>
-              ) : null}
-            </div>
-
-            <SheetFooter className="flex-row items-center gap-2 border-t border-border">
-              {record ? (
+      <DetailSheet open={open} onOpenChange={requestClose}>
+        <DetailSheetHeader
+          id={record?.id}
+          pager={pager}
+          menu={menu}
+          title={title}
+          description={isNew ? `Draft record in ${collection.name}` : `Editing ${record.id} in ${collection.name}`}
+          status={statusChips}
+          meta={metaLine}
+          actions={
+            <>
+              <Button type="submit" form="record-form" size="sm" disabled={pending || blocked}>
+                {pending ? <Spinner /> : null}
+                {pending ? "Saving…" : isNew ? "Create record" : "Save changes"}
+              </Button>
+              {record && onDuplicate ? (
                 <Button
                   type="button"
-                  variant="ghost"
+                  variant="outline"
                   size="sm"
-                  className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                  onClick={() => setConfirmDelete(true)}
                   disabled={pending}
+                  onClick={() => guarded({ kind: "duplicate", record })}
                 >
-                  <Trash2 className="size-3.5" />
-                  Delete
+                  <CopyPlus />
+                  Duplicate
                 </Button>
               ) : null}
-
-              {record && isAuth ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={() => impersonate.mutate()}
-                  disabled={pending || impersonate.isPending}
-                >
-                  {impersonate.isPending ? <Spinner className="size-3.5" /> : <UserCog className="size-3.5" />}
-                  Impersonate
-                </Button>
-              ) : null}
-
-              {record && isAuth ? (
-                banStatus.data ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={() => unban.mutate()}
-                    disabled={pending || unban.isPending}
-                  >
-                    {unban.isPending ? <Spinner className="size-3.5" /> : <ShieldUser className="size-3.5" />}
-                    Unban
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    onClick={() => setConfirmBan(true)}
-                    disabled={pending || ban.isPending}
-                  >
-                    {ban.isPending ? <Spinner className="size-3.5" /> : <Ban className="size-3.5" />}
-                    Ban
-                  </Button>
-                )
-              ) : null}
-
               {blocked ? (
                 <span className="min-w-0 truncate text-xs text-destructive">
                   {invalidCount} {invalidCount === 1 ? "field needs" : "fields need"} attention
                 </span>
-              ) : null}
+              ) : (
+                <span className="ml-auto hidden items-center gap-1 text-2xs text-muted-foreground md:inline-flex">
+                  <Kbd>⌘</Kbd>
+                  <Kbd>↵</Kbd>
+                  to save
+                </span>
+              )}
+            </>
+          }
+        />
 
-              <div className="flex-1" />
-              <Button type="button" variant="ghost" size="sm" onClick={() => requestClose(false)} disabled={pending}>
-                Cancel
-              </Button>
-              <Button type="submit" size="sm" disabled={pending || blocked}>
-                {pending ? <Spinner /> : null}
-                {pending ? "Saving…" : isNew ? "Create record" : "Save changes"}
-              </Button>
-            </SheetFooter>
-          </form>
-        </SheetContent>
-      </Sheet>
+        {/* `noValidate` on purpose: an `<input type="url">` with a bad
+            value makes the browser cancel the submit and show its own
+            tooltip, so React's handler never runs and none of the field
+            errors below ever appear. Validation is this form's job. The
+            header's Save button targets this form by id. */}
+        <form
+          id="record-form"
+          ref={formRef}
+          onSubmit={handleSubmit}
+          noValidate
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <DetailTabs tabs={tabs} value={activeTab} onValueChange={setTab}>
+            <DetailTabPanel value="fields">
+              <DetailBody className="gap-4">
+                {banStatus.data ? (
+                  <DetailCallout
+                    tone="danger"
+                    icon={<Ban />}
+                    title="Banned"
+                    action={
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="xs"
+                        onClick={() => unban.mutate()}
+                        disabled={pending || unban.isPending}
+                      >
+                        {unban.isPending ? <Spinner className="size-3.5" /> : null}
+                        Unban
+                      </Button>
+                    }
+                  >
+                    Every live session was revoked and sign-in is blocked until the ban is lifted.
+                  </DetailCallout>
+                ) : null}
+
+                {identityField ? (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="record-identity">{identityField}</Label>
+                    <Input
+                      id="record-identity"
+                      type={identityField === "email" ? "email" : "text"}
+                      value={(values[identityField] as string) ?? ""}
+                      onChange={(e) => setValue(identityField, e.target.value)}
+                      onBlur={() => setTouched((t) => ({ ...t, [identityField]: true }))}
+                      aria-invalid={errorFor(identityField) ? true : undefined}
+                      className="h-control-md"
+                    />
+                    <FieldError message={errorFor(identityField)} />
+                  </div>
+                ) : null}
+
+                {identityField ? (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="record-password">{isNew ? "Password" : "New password"}</Label>
+                    <Input
+                      id="record-password"
+                      type="password"
+                      value={(values.password as string) ?? ""}
+                      onChange={(e) => setValue("password", e.target.value)}
+                      onBlur={() => setTouched((t) => ({ ...t, password: true }))}
+                      placeholder={isNew ? "At least 8 characters" : "Leave blank to keep the current one"}
+                      aria-invalid={errorFor("password") ? true : undefined}
+                      className="h-control-md"
+                    />
+                    <FieldError message={errorFor("password")} />
+                  </div>
+                ) : null}
+
+                {plainFields.map(renderField)}
+                {!identityField && plainFields.length === 0 ? (
+                  <DetailEmpty
+                    title="No editable fields"
+                    description="This collection only has relation or file fields, or none yet."
+                  />
+                ) : null}
+              </DetailBody>
+            </DetailTabPanel>
+
+            {relationFields.length > 0 ? (
+              <DetailTabPanel value="relations">
+                <DetailBody className="gap-4">{relationFields.map(renderField)}</DetailBody>
+              </DetailTabPanel>
+            ) : null}
+
+            {fileFields.length > 0 ? (
+              <DetailTabPanel value="files">
+                <DetailBody className="gap-4">{fileFields.map(renderField)}</DetailBody>
+              </DetailTabPanel>
+            ) : null}
+
+            {record ? (
+              <DetailTabPanel value="json">
+                <DetailBody>
+                  <CodeBlock
+                    title={dirty ? "Saved record (unsaved edits not included)" : "Saved record"}
+                    json={JSON.stringify(record, null, 2)}
+                    copyLabel="Copy JSON"
+                  />
+                </DetailBody>
+              </DetailTabPanel>
+            ) : null}
+
+            {isAuth && record ? (
+              <DetailTabPanel value="account">
+                <DetailBody>
+                  <DetailSection title="Two-factor authentication">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm text-muted-foreground">
+                        {totpStatus.isLoading
+                          ? "Checking…"
+                          : totpStatus.data?.confirmed
+                            ? "TOTP is enabled for this account."
+                            : "TOTP is not enabled."}
+                      </span>
+                      {totpStatus.data?.confirmed ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => resetTotp.mutate()}
+                          disabled={resetTotp.isPending}
+                        >
+                          {resetTotp.isPending ? <Spinner className="size-3.5" /> : null}
+                          Reset TOTP
+                        </Button>
+                      ) : null}
+                    </div>
+                  </DetailSection>
+                  <DetailSection title="Linked accounts">
+                    {linkedAccounts.isLoading ? (
+                      <span className="text-sm text-muted-foreground">Checking…</span>
+                    ) : linkedAccounts.data && linkedAccounts.data.length > 0 ? (
+                      <ul className="m-0 flex list-none flex-col p-0">
+                        {linkedAccounts.data.map((row) => (
+                          <li key={row.id} className="flex min-h-8 items-center justify-between gap-2 text-sm">
+                            <span className="font-mono">{row.provider}</span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="gap-1.5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() => unlinkAccount.mutate(row.provider)}
+                              disabled={unlinkAccount.isPending}
+                            >
+                              Unlink
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">No linked OAuth2 providers.</span>
+                    )}
+                  </DetailSection>
+                </DetailBody>
+              </DetailTabPanel>
+            ) : null}
+
+            {record ? (
+              <DetailTabPanel value="meta">
+                <DetailBody>
+                  <DetailSection title="Record">
+                    <DetailList>
+                      <DetailRow label="id">
+                        <span className="font-mono break-all">{record.id}</span>
+                      </DetailRow>
+                      <DetailRow label="collectionName">
+                        <span className="font-mono">{record.collectionName ?? collection.name}</span>
+                      </DetailRow>
+                      <DetailRow label="collectionId">
+                        <span className="font-mono break-all">{record.collectionId ?? collection.id}</span>
+                      </DetailRow>
+                    </DetailList>
+                  </DetailSection>
+                  <DetailSection title="Timing">
+                    <DetailList>
+                      <DetailRow label="created" hint={record.created ? absoluteTime(record.created) : undefined}>
+                        <TimeAgo value={record.created} />
+                      </DetailRow>
+                      <DetailRow label="updated" hint={record.updated ? absoluteTime(record.updated) : undefined}>
+                        <TimeAgo value={record.updated} />
+                      </DetailRow>
+                    </DetailList>
+                  </DetailSection>
+                  {systemRows.length > 0 ? (
+                    <DetailSection title="System fields">
+                      <DetailList>
+                        {systemRows.map(([key, value]) => (
+                          <DetailRow key={key} label={key}>
+                            <span className="font-mono break-all">{value}</span>
+                          </DetailRow>
+                        ))}
+                      </DetailList>
+                    </DetailSection>
+                  ) : null}
+                </DetailBody>
+              </DetailTabPanel>
+            ) : null}
+          </DetailTabs>
+        </form>
+      </DetailSheet>
 
       <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
         <AlertDialogContent>
@@ -679,6 +893,32 @@ export function RecordDrawer({ collection, record, open, onOpenChange }: RecordD
               onClick={() => {
                 setConfirmClose(false);
                 onOpenChange(false);
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={pendingAction !== null} onOpenChange={(next) => !next && setPendingAction(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingAction?.kind === "duplicate"
+                ? "Duplicating starts from the saved record, so your edits to this one are lost."
+                : "Moving to another record loses the edits you haven't saved."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const action = pendingAction;
+                setPendingAction(null);
+                if (action) runAction(action);
               }}
             >
               Discard

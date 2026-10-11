@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { cb } from "@/lib/cratebase";
+import { Field } from "@/components/Field";
 
 /**
  * Shown when any first factor (password, OTP, or magic link) comes back
@@ -30,18 +31,21 @@ export function TotpChallenge({ mfaId, onSuccess }: { mfaId: string; onSuccess: 
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-      <p className="text-sm text-black/60 dark:text-white/60">
-        Enter the 6-digit code from your authenticator app, or one of your backup codes.
-      </p>
-      <input
-        className="input"
+      <p className="muted text-sm">Enter the 6-digit code from your authenticator app, or one of your backup codes.</p>
+      <Field
+        label="Verification code"
         inputMode="numeric"
+        autoComplete="one-time-code"
         autoFocus
         placeholder="123456"
         value={code}
         onChange={(e) => setCode(e.target.value)}
       />
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && (
+        <p role="alert" className="error-text">
+          {error}
+        </p>
+      )}
       <button type="submit" className="btn-primary" disabled={pending || code.length === 0}>
         {pending ? "Verifying…" : "Verify"}
       </button>

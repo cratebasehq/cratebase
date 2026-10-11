@@ -1,7 +1,7 @@
 //! `/api/logs` — superuser only.
 //!
 //! The rows come from `_logs` in the auxiliary database. Filters use the
-//! ordinary PocketBase filter grammar, compiled against a **synthetic
+//! ordinary filter grammar, compiled against a **synthetic
 //! collection** describing the log table (`level` number, `message` text,
 //! `data` json, `created` autodate). That is what makes
 //! `data.method = "GET"` and `level >= 8` work with no special-casing:
@@ -68,7 +68,7 @@ pub(crate) async fn list(
         &*app.db().logs,
         logs::ListParams {
             page: query.page.unwrap_or(1).max(1),
-            // PocketBase caps `perPage` at 1000 (see KNOWN_DIVERGENCES §18).
+            // `perPage` is capped at 1000 (see KNOWN_DIVERGENCES §18).
             per_page: query.per_page.unwrap_or(30).clamp(1, 1000),
             filter: compile_filter(query.filter.as_deref(), 0)?,
             sort: query.sort,
@@ -117,7 +117,7 @@ async fn stats(
     Ok(Json(logs::stats(&*app.db().logs, Some(filter)).await?))
 }
 
-/// Compile a PocketBase filter expression into the `(WHERE, params)` pair
+/// Compile a filter expression into the `(WHERE, params)` pair
 /// `cratebase_db::logs` expects.
 fn compile_filter(
     filter: Option<&str>,
@@ -206,8 +206,8 @@ impl Resolver for LogResolver {
     }
 
     fn request_value(&self, _path: &RequestPath) -> Value {
-        // `@request.*` is meaningless here; PocketBase treats an unknown
-        // macro as an empty value rather than an error.
+        // `@request.*` is meaningless here; an unknown
+        // macro is treated as an empty value rather than an error.
         Value::Null
     }
 

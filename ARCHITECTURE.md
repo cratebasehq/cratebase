@@ -19,7 +19,7 @@ crates/
   auth     — Argon2id password hashing, HS256 JWT session/action tokens,
              OTP/TOTP hashing, 12 built-in OAuth2 presets + generic OIDC
              (JWKS verification, issuer discovery).
-  jsvm     — an embedded QuickJS runtime (PocketBase-compatible `pb_hooks/`
+  jsvm     — an embedded QuickJS runtime (`cb_hooks/`
              JS hooks and `routerAdd`/`cronAdd`), decoupled from `server`'s
              HTTP/DB types behind a `HostApi` trait it calls back through.
   mailer   — pluggable mail backend: Resend HTTP API, plain SMTP, or a
@@ -106,8 +106,7 @@ and `?=`/`?!=`/... "any of" operators for array fields.
 
 Superusers are not a separate concept: `_superusers` is an ordinary
 built-in `type: "auth"` collection, exactly like a user-defined one, and
-goes through the same code path (PocketBase dropped its dedicated admin
-table the same way as of v0.23). A `Collection` with `type: "auth"` gets
+goes through the same code path. A `Collection` with `type: "auth"` gets
 five extra physical columns alongside its user-defined schema — `password`
 (the Argon2id hash), `tokenKey`, `email`, `emailVisibility`, `verified` —
 and registration is just `POST .../records` with `password`/
@@ -127,7 +126,7 @@ same `tokenKey` rotation that ends a session also burns any outstanding
 one-shot token.
 
 Beyond password login, `crates/server/src/routes/auth.rs` implements the
-rest of PocketBase's auth surface on auth collections: email verification
+rest of the auth surface on auth collections: email verification
 and password reset (`request-`/`confirm-verification`,
 `request-`/`confirm-password-reset`), email-change confirmation
 (`request-`/`confirm-email-change`), OTP passwordless login (`request-otp`,
@@ -218,7 +217,7 @@ described above. **Postgres extension management**
 SQLite) runs `CREATE EXTENSION IF NOT EXISTS`/`DROP EXTENSION` and audits
 every install/drop; `$app.db().exec(sql, params?)` is a write-capable
 escape hatch alongside the existing read-only `$app.rawQuery`, letting a
-`pb_migrations/*.js` file version something like `CREATE EXTENSION postgis`
+`cb_migrations/*.js` file version something like `CREATE EXTENSION postgis`
 the same way it versions schema changes. **Custom SQL RPC**
 (`crates/server/src/rpc.rs`) is the `_rpc` system collection — `sql` with
 `:name`-style named placeholders bound as real driver parameters (never
@@ -271,9 +270,9 @@ separate wizard with its own state.
 
 ## Extending with JavaScript (`crates/jsvm`)
 
-A `pb_hooks/*.pb.js` file next to the data directory is evaluated at
+A `cb_hooks/*.cb.js` file next to the data directory is evaluated at
 startup by an embedded QuickJS runtime (`crates/jsvm`), giving
-PocketBase's own extension surface: `onRecordCreate`/`onRecordUpdate`-style
+Cratebase's extension surface: `onRecordCreate`/`onRecordUpdate`-style
 lifecycle hooks bound through native `Hook<E>` registration
 (`crates/server/src/hooks.rs::bind_js_hook`), and `routerAdd` for mounting
 custom root-level HTTP routes, turned into real axum routes by
@@ -283,6 +282,5 @@ has no dependency on `db`/`server`; the glue lives in
 twice — once over the plain `App` for routes/crons/most hooks, and once
 over an open `TxApp` for hooks that fire inside a record write's own
 transaction, so a hook's own `$app.save`/`$app.delete` commits or rolls
-back with the write that triggered it. No `pb_hooks/` directory, or an
-empty one, is a complete no-op: nothing is spawned, matching PocketBase's
-own behavior.
+back with the write that triggered it. No `cb_hooks/` directory, or an
+empty one, is a complete no-op: nothing is spawned.

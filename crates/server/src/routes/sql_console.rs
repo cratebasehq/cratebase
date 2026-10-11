@@ -40,7 +40,7 @@
 //! # Why the real driver error, not a redacted one
 //!
 //! [`crate::http_error::ApiError`]'s usual `From<DbError>` impl
-//! deliberately hides driver messages behind PocketBase's generic
+//! deliberately hides driver messages behind generic
 //! wording (see `crates/db/src/error.rs`) — reasonable for a record
 //! write where the message could leak schema/column details to a
 //! non-superuser caller. Here the caller is already a superuser running

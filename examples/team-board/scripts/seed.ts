@@ -59,7 +59,7 @@ async function main() {
       }
       // `cards.embedding` only auto-computes from `searchText` if
       // `searchText` is present in *this* request's body — Cratebase
-      // computes it before pb_hooks/team-board.pb.js's onRecordCreate
+      // computes it before cb_hooks/team-board.cb.js's onRecordCreate
       // hook would otherwise derive it (see src/hooks/useCards.ts's
       // createCard for the full explanation) — so seeded cards need it
       // set directly here too, or they'd be unsearchable.
@@ -77,7 +77,7 @@ async function main() {
         // live-verified inconsistent about exactly when, seemingly tied
         // to whether that setting was already on at server *boot* rather
         // than reacting to scripts/setup.sh's runtime `PATCH
-        // /api/settings` (see pb_hooks/team-board.pb.js's own backstop
+        // /api/settings` (see cb_hooks/team-board.cb.js's own backstop
         // hook for this). Either way, a unique-constraint conflict here
         // means the membership this record describes already exists —
         // not a real failure — so it's logged and skipped rather than

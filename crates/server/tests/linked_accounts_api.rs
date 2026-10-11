@@ -1,7 +1,7 @@
 //! `GET/DELETE .../records/{id}/external-auths[/{provider}]`: listing and
 //! unlinking a record's linked OAuth2 providers, including the
 //! "don't strand the account" refusal `unlinkExternalAuth` layers on top
-//! of PocketBase's own version of this endpoint.
+//! of the plain unlink.
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
@@ -24,7 +24,7 @@ struct Harness {
 impl Harness {
     async fn new() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         let id = app
             .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)

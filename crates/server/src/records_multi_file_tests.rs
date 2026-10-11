@@ -1,5 +1,5 @@
 //! HTTP-level tests for `field+`/`field-` on a multi-file (`maxSelect >
-//! 1`) field — PocketBase's "append/remove without replacing the whole
+//! 1`) field — the "append/remove without replacing the whole
 //! value" syntax (`ROADMAP.md`'s "Later" section).
 //!
 //! The feature is already wired end to end through the existing pieces:
@@ -15,11 +15,9 @@
 //! work in this batch.
 //!
 //! The unknown-filename-on-remove case is deliberately a silent no-op,
-//! not a 400: probed directly against a real PocketBase v0.40.2 instance
-//! (`POST` a 3-file record, then `PATCH {"attachments-":
-//! "not_a_real_file.txt"}`), which answers `200` with the list
-//! unchanged. `field-` is a plain set-difference, and PocketBase does not
-//! treat "nothing to remove" as an error.
+//! not a 400: a `PATCH {"attachments-": "not_a_real_file.txt"}` on a 3-file
+//! record answers `200` with the list unchanged. `field-` is a plain
+//! set-difference, and it does not treat "nothing to remove" as an error.
 
 use std::sync::Arc;
 
@@ -38,7 +36,7 @@ use crate::routes::common;
 
 async fn test_app() -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let app = App::new(Config::memory(dir.path().join("pb_data")));
+    let app = App::new(Config::memory(dir.path().join("cb_data")));
     app.bootstrap().await.expect("bootstrap");
     (app, dir)
 }

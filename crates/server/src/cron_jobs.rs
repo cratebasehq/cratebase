@@ -49,7 +49,7 @@ use crate::hooks::{Event, Handler};
 const COLLECTION: &str = "_cron_jobs";
 
 /// Job ids for custom jobs are namespaced so they can never collide with
-/// the four built-in system job ids (`__pbDBOptimize__` and friends).
+/// the four built-in system job ids (`__cbDBOptimize__` and friends).
 fn job_id(record_id: &str) -> String {
     format!("custom:{record_id}")
 }

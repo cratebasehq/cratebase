@@ -2,9 +2,9 @@
 //!
 //! # `protected` is not "always needs a token"
 //!
-//! This is the single most surprising thing in the file API, measured
-//! against PocketBase v0.40.2 (KNOWN_DIVERGENCES §29): marking a file
-//! field `protected` does **not** make it private. What it does is switch
+//! This is the single most surprising thing in the file API, measured:
+//! marking a file field
+//! `protected` does **not** make it private. What it does is switch
 //! on a `viewRule` check for the *token owner* — and an empty `viewRule`
 //! is public, so a protected file in a public collection is served to
 //! anyone, with or without a token. Only a restricted `viewRule` actually
@@ -67,7 +67,7 @@ use crate::extract::{Auth, RequestInfo};
 use crate::http_error::{ApiError, ApiJson, ApiQuery, ApiResult};
 use crate::routes::common;
 
-/// PocketBase's `@request.context` value while a protected file's
+/// The `@request.context` value while a protected file's
 /// `viewRule` is evaluated.
 const PROTECTED_FILE_CONTEXT: &str = "protectedFile";
 
@@ -197,7 +197,7 @@ async fn download(
 
     // A thumb request that cannot be honoured (an unparsable spec, a
     // non-image file, a decode failure) falls back to the original with a
-    // 200 — that is what PocketBase does.
+    // 200 — by design.
     let mut served_key = key.clone();
     let mut inline_bytes: Option<Bytes> = None;
     if let Some(spec) = query
@@ -280,7 +280,7 @@ async fn download(
     if let Ok(value) = HeaderValue::from_str(&disposition) {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
-    // PocketBase (`tools/filesystem.System.Serve`) sets this exact policy
+    // This exact policy is set
     // on every file response, unconditionally — a lone
     // `Content-Disposition: inline` is not enough on its own, since a
     // browser that ignores it (or a future field this fix missed) must
@@ -330,8 +330,8 @@ async fn may_view(
 ) -> ApiResult<bool> {
     let auth = match query.token.as_deref() {
         Some(token) => file_token_context(app, token).await,
-        // A regular `Authorization` header works too; PocketBase accepts
-        // either, and the query token is only needed because a browser
+        // A regular `Authorization` header works too; either is accepted,
+        // and the query token is only needed because a browser
         // download cannot set a header.
         None => info.auth.as_ref().map(Auth::to_auth_context),
     };
@@ -365,7 +365,7 @@ fn mime_for(filename: &str) -> String {
 
 /// A type a browser can execute or render as markup, rather than just
 /// display or download — the stored-XSS surface this module guards
-/// against. None of these appear in PocketBase's own
+/// against. None of these appear in the
 /// `inlineServeContentTypes` allow-list either (images, video, audio and
 /// PDF only), so they are forced to `attachment` there too, regardless
 /// of `?download=` — just reached by an allow-list rather than this
@@ -789,7 +789,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thumb_specs_cover_every_pocketbase_form() {
+    fn thumb_specs_cover_every_supported_form() {
         assert_eq!(
             ThumbSpec::parse("100x100"),
             Some(ThumbSpec {

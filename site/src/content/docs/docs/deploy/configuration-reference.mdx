@@ -32,15 +32,15 @@ group a variable is in:
 | `PORT` | `8090` | Bind port (`--http`). |
 | `CORS_ALLOW_ORIGINS` | `*` | Comma-separated list of allowed origins, or `*` for any. |
 | `LOG_REQUESTS` | `true` | Persist every `/api/*` request to the dashboard's Logs page. On SQLite the log lives in a separate `<db>.logs.db` file so it never contends with user traffic. |
-| `CB_HOOKS_DIR` | `<data_dir>/../pb_hooks` | Directory scanned for `*.pb.js` JS hooks. |
-| `CB_MIGRATIONS_DIR` | `<data_dir>/../pb_migrations` | Directory holding `*.js` migrations written by automigrate. |
+| `CB_HOOKS_DIR` | `<data_dir>/../cb_hooks` | Directory scanned for `*.cb.js` JS hooks. |
+| `CB_MIGRATIONS_DIR` | `<data_dir>/../cb_migrations` | Directory holding `*.js` migrations written by automigrate. |
 
 ## Database
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite:<data_dir>/data.db` | Main database. `postgres://...` switches backends with no code change. |
-| `CRATEBASE_DATA_DIR` | `./pb_data` | Data directory (`--dir`). |
+| `CRATEBASE_DATA_DIR` | `./cb_data` | Data directory (`--dir`). |
 | `DATABASE_MAX_CONNECTIONS` | one per CPU core, clamped to `4..16` | SQLite reader pool size. No effect on Postgres. |
 | `DB_POOL_SIZE` | `10` | Postgres connection pool size. No effect on SQLite, which uses `DATABASE_MAX_CONNECTIONS` instead. |
 

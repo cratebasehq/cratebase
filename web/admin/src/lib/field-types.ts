@@ -1,6 +1,6 @@
 import type { CollectionField, CollectionModel } from "@cratebase/client";
 
-/** PocketBase's own `CollectionField` types every field as
+/** The wire `CollectionField` types every field as
  * `{ [key: string]: any; id, name, type: string, system, hidden, presentable }`
  * — it doesn't export a closed `FieldType` union, so the dashboard keeps its
  * own (it also drives the "add field" type picker below, which the wire
@@ -77,7 +77,7 @@ export function isMultiValue(field: { type: FieldType; maxSelect?: unknown }): b
 
 /** `id` and (for auth collections) `password`/`tokenKey`/`email`/etc. come
  * back from the API marked `system: true`. `created`/`updated` are *not*
- * flagged system (PocketBase doesn't mark them either) but are still part
+ * flagged system but are still part
  * of every collection's fixed scaffold rather than something someone typed
  * into this editor, so they're managed the same way here. */
 function isManagedField(field: CollectionField): boolean {

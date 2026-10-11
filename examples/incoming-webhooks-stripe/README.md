@@ -15,7 +15,7 @@ reference design most other HMAC-webhook providers copy.
 
 ## The reusable primitive
 
-The embedded JS runtime (`pb_hooks/*.pb.js`, backed by `crates/jsvm`)
+The embedded JS runtime (`cb_hooks/*.cb.js`, backed by `crates/jsvm`)
 already exposes `$security.hs256(data, secret)`: given a shared secret and
 the exact bytes a sender claims to have signed, it computes
 `hex(HMAC-SHA256(secret, data))`. This is *the* primitive every HMAC-based
@@ -24,7 +24,7 @@ inbound webhook scheme reduces to — Stripe, GitHub's
 `X-Cratebase-Signature` are all "HMAC-SHA256 over some canonical byte
 string, compare hex digests," differing only in what that byte string is
 and which header it travels in. No native Rust binding is needed for this:
-a `pb_hooks` JS file gets there with the existing `$security.hs256` alone.
+a `cb_hooks` JS file gets there with the existing `$security.hs256` alone.
 
 A Rust `crate::plugin::Plugin` that wants to verify some *other*
 provider's webhook from native code can reach for the same primitive via
@@ -53,10 +53,10 @@ alone only proves "the secret holder produced this digest at some point,"
 not *when* — without it, a captured request stays replayable forever even
 though its signature is technically valid.
 
-## The worked endpoint, as a `pb_hooks` JS file
+## The worked endpoint, as a `cb_hooks` JS file
 
 No Rust changes needed as of the `rawBody`/`header.get()` fixes landed
-alongside this example: any `pb_hooks/*.pb.js` file gets a signed-inbound-
+alongside this example: any `cb_hooks/*.cb.js` file gets a signed-inbound-
 webhook endpoint with `routerAdd`, `$security.hs256`, and
 `e.request.rawBody`.
 
@@ -90,7 +90,7 @@ record, and shouldn't have to. The signature check *is* the authentication.
 
 ### Try it locally
 
-Drop the hook above into `pb_hooks/stripe.pb.js` next to your data
+Drop the hook above into `cb_hooks/stripe.cb.js` next to your data
 directory, then:
 
 ```bash
@@ -116,8 +116,7 @@ curl -i http://localhost:8090/webhooks/stripe \
 # 400 Bad Request — signature does not match
 ```
 
-(`pb_hooks` `routerAdd` routes mount at the root, not under `/api` — same
-as PocketBase.)
+(`cb_hooks` `routerAdd` routes mount at the root, not under `/api`.)
 
 ## What's deliberately out of scope
 

@@ -1,9 +1,9 @@
-//! `settings.rateLimits`: PocketBase's configurable rate limiter.
+//! `settings.rateLimits`: the configurable rate limiter.
 //!
 //! # Rule matching
 //!
 //! A rule's `label` is one of three things, and they are tried in this
-//! order — most specific first, exactly as PocketBase does it:
+//! order — most specific first:
 //!
 //! 1. **an exact path** (`/api/batch`) — wins outright;
 //! 2. **a path prefix** (`/api/`) — the *longest* matching prefix wins,
@@ -83,8 +83,8 @@ impl Slots {
             // "everybody": a typo must not silently widen a limit.
             _ => return,
         };
-        // First rule with a given (label, audience) wins, matching
-        // PocketBase's first-match iteration.
+        // First rule with a given (label, audience) wins
+        // (first-match iteration).
         if slot.is_none() {
             *slot = Some(rule.clone());
         }
@@ -130,7 +130,7 @@ impl Compiled {
             let bucket = if !rule.label.starts_with('/') {
                 &mut tags
             } else if rule.label.ends_with('/') {
-                // PocketBase treats a trailing slash as "this subtree".
+                // A trailing slash means "this subtree".
                 &mut prefixes
             } else {
                 &mut exact
@@ -138,7 +138,7 @@ impl Compiled {
             bucket.entry(rule.label.clone()).or_default().insert(rule);
             // A non-trailing-slash path is also usable as a prefix
             // (`/api/collections` covering `/api/collections/posts`),
-            // which is how PocketBase's `strings.HasPrefix` check behaves.
+            // which is a plain prefix check.
             if rule.label.starts_with('/') && !rule.label.ends_with('/') {
                 prefixes.entry(rule.label.clone()).or_default().insert(rule);
             }
@@ -307,8 +307,7 @@ impl std::fmt::Debug for RateLimiter {
 /// The tags a request carries, derived from the URL shape so the limiter
 /// works independently of which routes are registered.
 ///
-/// PocketBase attaches these at route-registration time; deriving them
-/// from the path gives the same labels (`*:auth`, `posts:list`, ...)
+/// Deriving them from the path gives labels (`*:auth`, `posts:list`, ...)
 /// without the routes having to exist yet. A service may add extra tags through
 /// [`RouteTags`] for anything not visible in the URL.
 pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<String> {
@@ -422,7 +421,7 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
             push("auth");
             // `backup-codes/regenerate` is two segments; every other
             // sub-action is one. Joining whatever's left with `-` before
-            // `lower_camel` turns either shape into one PocketBase-style
+            // `lower_camel` turns either shape into one camelCase
             // tag: "confirm" -> "totpConfirm", "backup-codes/regenerate"
             // -> "totpBackupCodesRegenerate".
             let rest: Vec<&str> = segments.collect();
@@ -463,7 +462,7 @@ pub fn tags_for(app: &App, method: &axum::http::Method, path: &str) -> Vec<Strin
     tags
 }
 
-/// `auth-with-password` → `authWithPassword`, PocketBase's tag spelling.
+/// `auth-with-password` → `authWithPassword`, the tag spelling.
 fn lower_camel(kebab: &str) -> String {
     let mut out = String::with_capacity(kebab.len());
     let mut upper_next = false;
@@ -596,7 +595,7 @@ mod tests {
     /// `routes::schema`'s test module).
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }

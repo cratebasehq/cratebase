@@ -1,4 +1,4 @@
-//! PocketBase-formatted timestamps: `2026-09-03 12:44:06.146Z` (space
+//! timestamps: `2026-09-03 12:44:06.146Z` (space
 //! separator, millisecond precision, literal `Z`). Parsing is lenient so
 //! clients may send RFC3339 or date-only values.
 
@@ -26,7 +26,7 @@ impl DateTime {
         self.0
     }
 
-    /// Parse any of: PocketBase format, RFC3339 (`T`, offsets, `Z`),
+    /// Parse any of: the canonical format, RFC3339 (`T`, offsets, `Z`),
     /// `YYYY-MM-DD HH:MM:SS[.fff]`, `YYYY-MM-DD`. Empty string is `None`.
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_like_pocketbase() {
+    fn formats_like_cratebase() {
         let dt = DateTime::parse("2026-09-03T12:44:06.146Z").unwrap();
         assert_eq!(dt.to_string(), "2026-09-03 12:44:06.146Z");
         assert_eq!(DateTime::parse(&dt.to_string()).unwrap(), dt);

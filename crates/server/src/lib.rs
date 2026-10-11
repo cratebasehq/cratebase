@@ -6,7 +6,7 @@
 //!
 //! * [`app`] — the `App`/`TxApp` handles and the boot/serve/terminate
 //!   lifecycle.
-//! * [`hooks`] + [`events`] — PocketBase's middleware-style hook chains.
+//! * [`hooks`] + [`events`] — middleware-style hook chains.
 //! * [`config`] — boot-time settings from the environment; everything
 //!   else lives in [`cratebase_core::Settings`].
 //! * [`middleware`] — client-IP resolution, request logging, rate limits,
@@ -40,6 +40,7 @@ pub mod events;
 pub mod extract;
 pub mod geo;
 pub mod hooks;
+pub mod host;
 pub mod http_error;
 pub mod js_migrations;
 pub mod jsvm_host;
@@ -51,7 +52,6 @@ pub mod middleware;
 pub mod notify;
 pub mod plugin;
 pub mod plugin_wasm;
-pub mod pocketbase_migrate;
 pub mod presign;
 pub mod push;
 pub mod queue;
@@ -95,7 +95,7 @@ pub const MAX_BODY_BYTES: usize = 100 * 1024 * 1024;
 // `App: FromRef<S>` work with `State<App>` out of the box.
 
 /// Assemble the complete router: `/api` (with logging and rate limiting),
-/// the embedded dashboard, and PocketBase's error envelope on every
+/// the embedded dashboard, and the standard error envelope on every
 /// fallback.
 pub fn router(app: App) -> Router {
     let cfg = app.config();
@@ -133,8 +133,8 @@ pub fn router(app: App) -> Router {
         // than only what reached a handler.
         .layer(axum::middleware::from_fn(routes::metrics::record_metrics));
 
-    // `pb_hooks` `routerAdd` routes (mounted at the root, unprefixed,
-    // exactly as registered, same as PocketBase) get the identical four
+    // `cb_hooks` `routerAdd` routes (mounted at the root, unprefixed,
+    // exactly as registered) get the identical four
     // layers as the `/api` nest above — a hook route (e.g. a public
     // webhook receiver, or a downstream project's own custom
     // subscribe/unsubscribe endpoint) is otherwise a fully anonymous,
@@ -185,8 +185,8 @@ pub fn router(app: App) -> Router {
         // still answers exactly like `http_error::not_found_fallback`
         // when no JS route matches either.
         .fallback_service(js_fallback)
-        // PocketBase answers a wrong method on a real path with 404, not
-        // 405 (verified against v0.40.2), so both fallbacks are the same.
+        // A wrong method on a real path answers 404, not 405, so both
+        // fallbacks are the same.
         .method_not_allowed_fallback(http_error::not_found_fallback)
         .layer(TraceLayer::new_for_http())
         .layer(middleware::cors::layer(

@@ -1,8 +1,8 @@
 // Reimplements `cratebase_core::ids::collection_id` (`crates/core/src/ids.rs`)
 // so this example can compute a collection's id *before* it exists —
 // Cratebase derives every collection's id deterministically from its type
-// and name (`pbc_<crc32(type + name)>`, standard IEEE CRC-32, matching
-// PocketBase's own convention), rather than a random id. That means a
+// and name (`pbc_<crc32(type + name)>`, standard IEEE CRC-32), rather
+// than a random id. That means a
 // `relation` field's required `collectionId` (see
 // `crates/core/src/field.rs`'s `FieldKind::Relation`) can be computed
 // entirely offline, with no server round-trip and no dependency-ordered

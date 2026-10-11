@@ -15,15 +15,15 @@
 //! `useLeftmostIP` picks which end of the chain to trust: the leftmost
 //! entry is the original client as reported by the first proxy (right for
 //! a chain you fully control), the rightmost is the address the *last*
-//! proxy saw (right when only the nearest proxy is trustworthy, and
-//! PocketBase's default).
+//! proxy saw (right when only the nearest proxy is trustworthy, and the
+//! default).
 
 use std::net::SocketAddr;
 
 use axum::http::HeaderMap;
 use cratebase_core::settings::TrustedProxy;
 
-/// Proxy headers PocketBase warns about in `GET /api/health`
+/// Proxy headers `GET /api/health` warns about
 /// (`possibleProxyHeader`) when they are present but untrusted.
 pub const KNOWN_PROXY_HEADERS: &[&str] = &[
     "CF-Connecting-IP",
@@ -85,7 +85,7 @@ pub fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, proxy: &TrustedP
 }
 
 /// The first well-known proxy header present on the request that is *not*
-/// trusted — PocketBase surfaces it in `/api/health` so an operator
+/// trusted — `/api/health` surfaces it so an operator
 /// notices they are behind a proxy they have not configured.
 pub fn possible_proxy_header(headers: &HeaderMap, proxy: &TrustedProxy) -> String {
     KNOWN_PROXY_HEADERS

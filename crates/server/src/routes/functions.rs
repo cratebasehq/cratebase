@@ -1,6 +1,6 @@
 //! `GET /api/functions` — superuser only.
 //!
-//! Read-only view over `pb_hooks/`: which `*.pb.js` files exist and which
+//! Read-only view over `cb_hooks/`: which `*.cb.js` files exist and which
 //! HTTP routes they registered via `routerAdd` (see `crate::jsvm_host`).
 //! There is deliberately no write path here — hooks are edited as files on
 //! disk, not through the dashboard (see `ARCHITECTURE.md`'s "Extending
@@ -69,7 +69,7 @@ async fn list(
     })
 }
 
-/// Lists `*.pb.js` files directly inside `dir`. Mirrors
+/// Lists `*.cb.js` files directly inside `dir`. Mirrors
 /// `jsvm_host::has_hook_files`'s filter, but collects the matches instead
 /// of just checking whether any exist. A missing or unreadable directory
 /// is not an error — same no-op philosophy as the rest of the jsvm
@@ -83,7 +83,7 @@ fn hook_files(dir: &str) -> Vec<HookFile> {
         .flatten()
         .filter(|entry| {
             entry.file_type().is_ok_and(|t| t.is_file())
-                && entry.file_name().to_string_lossy().ends_with(".pb.js")
+                && entry.file_name().to_string_lossy().ends_with(".cb.js")
         })
         .map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -112,7 +112,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }
@@ -130,7 +130,7 @@ mod tests {
     #[tokio::test]
     async fn missing_hooks_dir_returns_empty_lists() {
         let (app, _dir) = test_app().await;
-        // `Config::memory` points `hooks_dir` at a sibling `pb_hooks` that
+        // `Config::memory` points `hooks_dir` at a sibling `cb_hooks` that
         // was never created for this temp dir.
         let hooks_dir = app.config().hooks_dir.clone();
         assert!(!std::path::Path::new(&hooks_dir).exists());

@@ -101,7 +101,7 @@ const MEMBERS_COLLECTION: &str = "_team_members";
 /// `_teams` create, and falls straight through to `e.next()` — a no-op —
 /// while teams is disabled.
 ///
-/// Bound at a negative priority (lower runs first, PocketBase's default
+/// Bound at a negative priority (lower runs first, the default
 /// is 0) rather than the default: `crate::webhooks::bind_hooks` binds
 /// its own `on_record_after_create_success` handler *untagged* — it has
 /// to watch every collection's writes — and that handler returns `Ok(())`

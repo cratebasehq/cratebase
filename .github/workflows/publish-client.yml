@@ -1,13 +1,12 @@
 name: Publish @cratebase/client
 
-# @cratebase/client versions independently from the server binary and from
-# @cratebase/extras: it's the first-party typed SDK, not a build artifact of
-# the Rust workspace. Tying it to the server's `v*` release tags would force
+# @cratebase/client versions independently from the server binary: it's the
+# first-party typed SDK, not a build artifact of the Rust workspace. Tying it to the server's `v*` release tags would force
 # a new npm publish (and a version bump) every time the server ships a
 # release that touches nothing under sdk/js/client, and would block a
 # hotfix to this package behind an unrelated server release. `client-v*`
 # keeps this release train independent while still using the same
-# "push a tag" mechanism as the server's own release.yml and extras'.
+# "push a tag" mechanism as the server's own release.yml.
 on:
   push:
     tags: ["client-v*"]

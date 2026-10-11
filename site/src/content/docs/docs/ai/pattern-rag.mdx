@@ -5,7 +5,7 @@ description: "The docmind example: upload, chunk, auto-embed, retrieve, and stre
 
 The [`examples/docmind`](https://github.com/cratebasehq/cratebase/tree/main/examples/docmind)
 walkthrough is a small internal knowledge-base copilot built entirely on
-collections plus one `pb_hooks` file: uploading a document triggers a
+collections plus one `cb_hooks` file: uploading a document triggers a
 hook that chunks the text and writes rows to a `chunks` collection whose
 `vector` field auto-embeds; asking a question does an application-side
 `nearestTo` search over `chunks`, calls the LLM chat gateway with the

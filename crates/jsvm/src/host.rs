@@ -68,7 +68,7 @@ impl std::fmt::Display for QueueHandlerId {
 macro_rules! hook_kinds {
     ($( $variant:ident => $js:literal ),* $(,)?) => {
         /// Every hook the server exposes (spec section 7.1), named after
-        /// PocketBase's `on*` registration functions.
+        /// Cratebase's `on*` registration functions.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
         pub enum HookKind {
             $( $variant, )*
@@ -195,7 +195,7 @@ pub struct HttpRequest {
     pub headers: HashMap<String, String>,
     #[serde(default)]
     pub body: Option<Vec<u8>>,
-    /// `0` means the host's default: 120s, matching PocketBase's own
+    /// `0` means the host's default: 120s, matching Cratebase's own
     /// `$http.send` default (see `jsvm_host::http_send_timeout`).
     #[serde(default)]
     pub timeout_secs: u64,
@@ -241,7 +241,7 @@ pub trait HostApi: Send + Sync + 'static {
 
     async fn find_record_by_id(&self, collection: &str, id: &str) -> Result<Record, AppError>;
 
-    /// `filter` uses the PocketBase filter language with `{:name}`
+    /// `filter` uses the Cratebase filter language with `{:name}`
     /// placeholders bound from `params`. `limit <= 0` means no limit.
     async fn find_records_by_filter(
         &self,
@@ -256,7 +256,7 @@ pub trait HostApi: Send + Sync + 'static {
     /// A read-only escape hatch for hook authors who need SQL a filter
     /// string cannot express (`GROUP BY`, window functions, joins): run
     /// `sql` (must be a `SELECT`/`WITH` statement) and hand back plain
-    /// rows with no `Record` hydration, matching PocketBase's `$app.db()`
+    /// rows with no `Record` hydration, matching Cratebase's `$app.db()`
     /// use case at a fraction of its API surface. `{:name}` placeholders
     /// in `sql` are bound to real, driver-level parameters from `params`
     /// (never string-substituted), so this carries no more injection risk
@@ -282,7 +282,7 @@ pub trait HostApi: Send + Sync + 'static {
     /// a way to reach SQL those two can't express (extensions, bespoke
     /// indexes, ...) — which is exactly the point of being able to
     /// version something like `CREATE EXTENSION postgis` from a
-    /// `pb_migrations/*.js` file. `{:name}` placeholders in `sql` bind to
+    /// `cb_migrations/*.js` file. `{:name}` placeholders in `sql` bind to
     /// real driver-level parameters from `params`, same as `raw_query`.
     async fn db_exec(&self, sql: &str, params: Map<String, Value>) -> Result<u64, AppError>;
 
@@ -365,7 +365,7 @@ pub trait HostApi: Send + Sync + 'static {
 
     async fn http_send(&self, req: HttpRequest) -> Result<HttpResponse, AppError>;
 
-    /// `level` follows PocketBase's slog levels: -4 debug, 0 info,
+    /// `level` follows the structured-log levels: -4 debug, 0 info,
     /// 4 warn, 8 error.
     fn log(&self, level: i32, message: &str, data: Value);
 
@@ -373,7 +373,7 @@ pub trait HostApi: Send + Sync + 'static {
     fn store_set(&self, key: &str, value: Value);
 
     /// Called once per `routerAdd` with the HTTP method (upper-case) and
-    /// the PocketBase-style path pattern (`/hello/{name}`, `/files/{path...}`).
+    /// the path pattern (`/hello/{name}`, `/files/{path...}`).
     /// The server wires the axum route to [`crate::Runtime::call_route`]
     /// with `handler`.
     fn register_route(&self, method: &str, path: &str, handler: RouteHandlerId);
@@ -453,5 +453,12 @@ pub trait HostApi: Send + Sync + 'static {
     /// with an auth subsystem override this.
     fn hash_password(&self, password: &str) -> Value {
         serde_json::json!({ "__plainPassword": password })
+    }
+
+    /// An environment variable as this app sees it (`$os.getenv`).
+    /// Default: the process environment; a multi-project host overrides
+    /// this so each project reads its own variables.
+    fn getenv(&self, key: &str) -> Option<String> {
+        std::env::var(key).ok()
     }
 }

@@ -35,8 +35,8 @@ install/drop is written to `_audit_log`.
 
 ## From a migration
 
-`$app.db().exec(sql, params?)` is a write-capable escape hatch available in `pb_migrations/*.js`
-(and in `pb_hooks`) for exactly this kind of thing — SQL a record write or a filter can't express:
+`$app.db().exec(sql, params?)` is a write-capable escape hatch available in `cb_migrations/*.js`
+(and in `cb_hooks`) for exactly this kind of thing — SQL a record write or a filter can't express:
 
 ```js
 migrate(

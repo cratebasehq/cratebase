@@ -5,7 +5,7 @@
 //! dashboard/tooling affordance, never something a frontend calls
 //! directly.
 //!
-//! `send` is the one PocketBase-shaped endpoint this platform lets a
+//! `send` is the one endpoint this platform lets a
 //! non-superuser caller (an authenticated app user, or even an anonymous
 //! one) reach directly, so a frontend can send transactional mail
 //! (invites, receipts, notifications) with no backend of its own. That

@@ -1,8 +1,8 @@
 //! `GET /api/health`.
 //!
 //! The one endpoint that still spells the envelope key `code` rather than
-//! `status` — a PocketBase inconsistency the SDK depends on, so it is
-//! reproduced deliberately (spec §2, and `tests/conformance/health.test.ts`).
+//! `status` — an inconsistency the SDK depends on, so it is
+//! kept deliberately (spec §2, and `tests/conformance/health.test.ts`).
 //!
 //! `data` is empty for anyone but a superuser; a superuser additionally
 //! gets `canBackup`, the resolved `realIP` and `possibleProxyHeader` (the
@@ -115,7 +115,7 @@ mod tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        // Same PocketBase-shaped envelope (`code`, not `status`) as the
+        // Same envelope (`code`, not `status`) as the
         // healthy response, so clients don't need a special case.
         let mut keys: Vec<&str> = json
             .as_object()

@@ -26,9 +26,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use cratebase_core::settings::Llm;
+use cratebase_core::{AppError, Record};
 
 use crate::app::App;
-use crate::extract::Auth;
 
 /// One `{role, content}` turn, the wire shape `POST /api/llm/chat`
 /// accepts and the shape every provider is called with.
@@ -243,7 +243,7 @@ impl LlmProvider for OpenAiCompatProvider {
     }
 }
 
-/// Builds the configured provider, PocketBase/mailer style:
+/// Builds the configured provider, mailer style:
 /// `settings.enabled` picks [`OpenAiCompatProvider`] (or, for a
 /// `provider` this build doesn't recognize, still the safe zero-config
 /// fallback) over [`EchoProvider`] — exactly the role `smtp.enabled`
@@ -273,50 +273,126 @@ pub fn count_tokens(text: &str) -> i64 {
     text.split_whitespace().count() as i64
 }
 
-/// Best-effort insert into `_llm_usage` after a chat completes. Never
-/// fails the caller: a missing collection (a database migrated by an
-/// older binary) or a write error is logged and dropped, exactly like
-/// `crate::webhooks::deliver` swallows a delivery failure rather than
-/// failing the record write that triggered it.
-pub async fn log_usage(
-    app: &App,
-    auth: Option<&Auth>,
-    model: &str,
-    prompt_tokens: i64,
-    completion_tokens: i64,
-) {
-    let Some(collection) = app.db().collections.get_by_name("_llm_usage") else {
-        tracing::warn!("_llm_usage collection missing; dropping usage record");
-        return;
-    };
+/// One `_llm_usage` ledger row. `model` and the two token counts are
+/// required by the collection; everything else is optional.
+#[derive(Debug, Clone, Default)]
+pub struct UsageEntry {
+    pub caller_id: Option<String>,
+    pub model: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub tokens_cached: Option<i64>,
+    pub tokens_reasoning: Option<i64>,
+    pub latency_ms: Option<i64>,
+    pub ttft_ms: Option<i64>,
+    pub finish_reason: Option<String>,
+    pub ok: Option<bool>,
+    pub error: Option<String>,
+    pub surface: Option<String>,
+    pub purpose: Option<String>,
+    pub actor: Option<String>,
+    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub call_id: Option<String>,
+    pub source: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Cost in USD from the configured per-1M-token price table. `None` when
+/// `model` has no exact entry. Cached tokens are a subset of `prompt` and
+/// bill at `cachedInput` (falling back to `input`); a `cached` larger than
+/// `prompt` clamps the non-cached part to zero.
+pub fn cost_usd(llm: &Llm, model: &str, prompt: i64, completion: i64, cached: i64) -> Option<f64> {
+    let p = llm.prices.get(model)?;
+    let cached_price = p.cached_input.unwrap_or(p.input);
+    let total = ((prompt - cached).max(0) as f64 * p.input
+        + cached as f64 * cached_price
+        + completion as f64 * p.output)
+        / 1_000_000.0;
+    Some((total * 1e8).round() / 1e8)
+}
+
+/// Strict insert into `_llm_usage`, filling `costUsd`/`priceVersion` from
+/// the settings price table. Returns the created record.
+pub async fn record_usage(app: &App, entry: UsageEntry) -> Result<Record, AppError> {
+    let collection = app
+        .db()
+        .collections
+        .get_by_name("_llm_usage")
+        .ok_or_else(|| AppError::internal("_llm_usage collection missing"))?;
+
+    let llm = app.settings().llm.clone();
+    let cost = cost_usd(
+        &llm,
+        &entry.model,
+        entry.prompt_tokens,
+        entry.completion_tokens,
+        entry.tokens_cached.unwrap_or(0),
+    );
 
     let mut input = Map::new();
-    if let Some(auth) = auth {
-        input.insert("callerId".into(), Value::String(auth.id.clone()));
+    let mut put = |key: &str, value: Option<Value>| {
+        if let Some(v) = value {
+            input.insert(key.into(), v);
+        }
+    };
+    let s = |v: &Option<String>| v.clone().map(Value::String);
+    let n = |v: Option<i64>| v.map(Value::from);
+    put("callerId", s(&entry.caller_id));
+    put("model", Some(Value::String(entry.model.clone())));
+    put("promptTokens", Some(Value::from(entry.prompt_tokens)));
+    put(
+        "completionTokens",
+        Some(Value::from(entry.completion_tokens)),
+    );
+    put("tokensCached", n(entry.tokens_cached));
+    put("tokensReasoning", n(entry.tokens_reasoning));
+    put("latencyMs", n(entry.latency_ms));
+    put("ttftMs", n(entry.ttft_ms));
+    put("finishReason", s(&entry.finish_reason));
+    put("ok", entry.ok.map(Value::Bool));
+    put("error", s(&entry.error));
+    put("surface", s(&entry.surface));
+    put("purpose", s(&entry.purpose));
+    put("actor", s(&entry.actor));
+    put("sessionId", s(&entry.session_id));
+    put("runId", s(&entry.run_id));
+    put("callId", s(&entry.call_id));
+    put("source", s(&entry.source));
+    put("note", s(&entry.note));
+    if let Some(c) = cost {
+        put("costUsd", Some(Value::from(c)));
+        put(
+            "priceVersion",
+            Some(Value::String(llm.price_version.clone())),
+        );
     }
-    input.insert("model".into(), Value::String(model.to_string()));
-    input.insert("promptTokens".into(), Value::from(prompt_tokens));
-    input.insert("completionTokens".into(), Value::from(completion_tokens));
 
     let mut record = cratebase_db::records::from_body(collection.clone(), &input);
     if record.id().is_empty() {
         record.set_id(cratebase_core::record_id());
     }
 
-    let result = app
-        .run_scoped(true, move |tx| {
-            crate::routes::records::write_record(
-                tx,
-                collection,
-                record,
-                None,
-                crate::routes::records::Write::Create,
-                Vec::new(),
-                input,
-            )
-        })
-        .await;
-    if let Err(e) = result {
+    app.run_scoped(true, move |tx| {
+        crate::routes::records::write_record(
+            tx,
+            collection,
+            record,
+            None,
+            crate::routes::records::Write::Create,
+            Vec::new(),
+            input,
+        )
+    })
+    .await
+}
+
+/// Best-effort [`record_usage`]. Never fails the caller: a missing
+/// collection (a database migrated by an older binary) or a write error is
+/// logged and dropped, exactly like `crate::webhooks::deliver` swallows a
+/// delivery failure rather than failing the record write that triggered it.
+pub async fn log_usage(app: &App, entry: UsageEntry) {
+    if let Err(e) = record_usage(app, entry).await {
         tracing::warn!(error = %e, "failed to record llm usage");
     }
 }
@@ -389,6 +465,43 @@ mod tests {
         assert_eq!(count_tokens(""), 0);
         assert_eq!(count_tokens("one two three"), 3);
         assert_eq!(count_tokens("  extra   spaces  "), 2);
+    }
+
+    fn priced(cached_input: Option<f64>) -> Llm {
+        let mut llm = Llm::default();
+        llm.prices.insert(
+            "m1".into(),
+            cratebase_core::settings::ModelPrice {
+                input: 1.0,
+                output: 2.0,
+                cached_input,
+            },
+        );
+        llm
+    }
+
+    #[test]
+    fn cost_usd_uses_cached_price_when_present() {
+        let c = cost_usd(&priced(Some(0.1)), "m1", 1000, 500, 200).unwrap();
+        assert_eq!(c, 0.00182);
+    }
+
+    #[test]
+    fn cost_usd_falls_back_to_input_price_for_cached() {
+        let c = cost_usd(&priced(None), "m1", 1000, 500, 200).unwrap();
+        assert_eq!(c, 0.002);
+    }
+
+    #[test]
+    fn cost_usd_is_none_for_unpriced_model() {
+        assert_eq!(cost_usd(&priced(None), "other", 10, 10, 0), None);
+    }
+
+    #[test]
+    fn cost_usd_clamps_non_cached_to_zero() {
+        // cached > prompt: no non-cached tokens, cached billed in full.
+        let c = cost_usd(&priced(Some(0.5)), "m1", 100, 0, 300).unwrap();
+        assert_eq!(c, 0.00015);
     }
 
     #[test]

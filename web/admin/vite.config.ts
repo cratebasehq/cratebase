@@ -5,7 +5,7 @@ import { defineConfig } from "vite";
 
 // https://vite.dev/config/
 export default defineConfig({
-  // The server mounts the dashboard at `/_/` (PocketBase's path), so the
+  // The server mounts the dashboard at `/_/` so the
   // bundle's asset URLs have to be absolute under that prefix. The Vite
   // default of `/` emits `/assets/...`, which the server does not route —
   // the page then loads, renders nothing, and looks like a blank screen.

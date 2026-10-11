@@ -3,11 +3,18 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, ChevronDown, ListChecks, X } from "lucide-react";
 import type { CollectionModel } from "@cratebase/client";
-import { cb } from "@/lib/api";
+import { toast } from "sonner";
+import { cb, describeFailure } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useSettings } from "@/hooks/use-settings";
+import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { LogoUploader } from "@/components/settings/logo-uploader";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+
+const HEX_COLOR = /^#[0-9a-fA-F]{3,8}$/;
 
 const DISMISSED_KEY = "cratebase.onboarding.dismissed";
 const MANUAL_DONE_KEY = "cratebase.onboarding.manualDone";
@@ -61,6 +68,83 @@ interface ChecklistItem {
   to: string;
   search?: Record<string, string>;
   params?: Record<string, string>;
+  /** Expands an inline editor under the row instead of navigating. */
+  inline?: boolean;
+}
+
+/** Inline editor for the "Add a logo or brand color" step: upload a logo and
+ * set the brand colour without leaving the dashboard. */
+function BrandingPanel({ settings }: { settings: ServerSettings }) {
+  const save = useSettingsMutation();
+  const saved = settings.meta.brandColor;
+  const [color, setColor] = useState(saved);
+  const trimmed = color.trim();
+  const valid = trimmed === "" || HEX_COLOR.test(trimmed);
+  const changed = trimmed !== saved.trim();
+
+  function submit() {
+    if (!valid || !changed) return;
+    save.mutate(
+      { meta: { brandColor: trimmed } },
+      {
+        onSuccess: () => toast.success(trimmed ? "Brand color saved" : "Brand color cleared"),
+        onError: (error) => {
+          const failure = describeFailure(error);
+          toast.error(failure.title, { description: failure.serverMessage || failure.detail });
+        },
+      },
+    );
+  }
+
+  return (
+    <div
+      id="onboarding-branding-panel"
+      className="mt-1.5 flex flex-col gap-3 rounded-md border border-border bg-background p-3"
+    >
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="onboarding-logo">Logo</Label>
+        <LogoUploader id="onboarding-logo" value={settings.meta.logoUrl} onChange={() => {}} allowUrl={false} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="onboarding-brand-color">Brand color</Label>
+        <form
+          className="flex items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <Input
+            id="onboarding-brand-color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            placeholder="#1055c9"
+            aria-invalid={!valid}
+            className="max-w-40 font-mono"
+          />
+          {valid && trimmed ? (
+            <span
+              aria-hidden
+              className="size-control-md shrink-0 rounded-md border border-border shadow-xs"
+              style={{ backgroundColor: trimmed }}
+            />
+          ) : null}
+          <Button type="submit" size="sm" variant="outline" disabled={!valid || !changed || save.isPending}>
+            {save.isPending ? <Spinner /> : null}
+            Save color
+          </Button>
+        </form>
+        {!valid ? <p className="text-xs text-destructive">Must be a hex color, e.g. #1055c9</p> : null}
+      </div>
+      <Link
+        to="/settings/application"
+        search={{ tab: "branding" } as never}
+        className="text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+      >
+        More branding options
+      </Link>
+    </div>
+  );
 }
 
 /** A collection's own sign-in methods — any one of these being on counts
@@ -86,6 +170,7 @@ export function OnboardingChecklist({ collections }: { collections: CollectionMo
   const [dismissed, setDismissed] = useState(() => readDismissed());
   const [manualDone, setManualDone] = useState(() => readManualDone());
   const [open, setOpen] = useState(true);
+  const [brandingOpen, setBrandingOpen] = useState(false);
 
   const { data: settings } = useSettings();
 
@@ -126,6 +211,7 @@ export function OnboardingChecklist({ collections }: { collections: CollectionMo
       done: Boolean(settings.meta.logoUrl.trim() || settings.meta.brandColor.trim()),
       to: "/settings/application",
       search: { tab: "branding" },
+      inline: true,
     },
     {
       id: "mail-delivery",
@@ -235,23 +321,47 @@ export function OnboardingChecklist({ collections }: { collections: CollectionMo
                 <Check className="size-2.5" />
               </span>
             );
+            const rowContent = (
+              <>
+                {check}
+                <span className={cn("min-w-0 flex-1 truncate", item.done && "text-muted-foreground line-through")}>
+                  {item.label}
+                </span>
+                {item.optional ? <span className="shrink-0 text-2xs text-muted-foreground">optional</span> : null}
+              </>
+            );
+            const rowClass = "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent";
+            if (item.inline) {
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-expanded={brandingOpen}
+                  aria-controls="onboarding-branding-panel"
+                  onClick={() => setBrandingOpen((o) => !o)}
+                  className={cn(rowClass, "w-full text-left")}
+                >
+                  {rowContent}
+                  <ChevronDown
+                    className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", brandingOpen && "rotate-180")}
+                  />
+                </button>
+              );
+            }
             return (
               <Link
                 key={item.id}
                 to={item.to}
                 search={item.search as never}
                 params={item.params as never}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+                className={rowClass}
               >
-                {check}
-                <span className={cn("min-w-0 flex-1 truncate", item.done && "text-muted-foreground line-through")}>
-                  {item.label}
-                </span>
-                {item.optional ? <span className="shrink-0 text-2xs text-muted-foreground">optional</span> : null}
+                {rowContent}
               </Link>
             );
           })}
         </div>
+        {brandingOpen ? <BrandingPanel settings={settings} /> : null}
       </CollapsibleContent>
     </Collapsible>
   );

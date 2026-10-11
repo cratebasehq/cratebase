@@ -4,23 +4,22 @@
   "workspaces": [
     "web/admin",
     "web/email",
-    "tests/conformance",
     "sdk/js/client",
     "sdk/js/react",
-    "sdk/js/extras",
+    "sdk/js/start",
+    "sdk/js/schema",
     "packages/create-cratebase"
   ],
   "scripts": {
     "admin:dev": "bun run --cwd web/admin dev",
     "admin:build": "RAYON_NUM_THREADS=1 bun run --cwd web/admin build",
     "email:build": "bun run --cwd web/email build",
-    "conformance": "bun run --cwd tests/conformance test",
     "examples:serve": "bash examples/serve.sh",
     "examples:todo:setup": "bash examples/todo/setup.sh",
     "examples:chat:setup": "bash examples/realtime-chat/setup.sh",
     "examples:cursors:setup": "bash examples/realtime-cursors/setup.sh",
     "examples:kanban:setup": "bash examples/kanban/setup.sh",
-    "sdk:check": "bun run --cwd sdk/js/client typecheck && bun run --cwd sdk/js/client build && bun run --cwd sdk/js/react typecheck && bun run --cwd sdk/js/react test && bun run --cwd sdk/js/extras typecheck",
+    "sdk:check": "bun run --cwd sdk/js/client typecheck && bun run --cwd sdk/js/client build && bun run --cwd sdk/js/client test && bun run --cwd sdk/js/react typecheck && bun run --cwd sdk/js/react test && bun run --cwd sdk/js/start typecheck && bun run --cwd sdk/js/start test && bun run --cwd sdk/js/schema typecheck && bun run --cwd sdk/js/schema test",
     "create-cratebase:check": "bun run --cwd packages/create-cratebase typecheck && bun run --cwd packages/create-cratebase test && bun run --cwd packages/create-cratebase build"
   }
 }

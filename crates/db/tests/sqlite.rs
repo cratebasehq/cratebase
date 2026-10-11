@@ -27,7 +27,7 @@ fn posts() -> Collection {
 async fn full_suite(db: Db) {
     db.bootstrap().await.unwrap();
 
-    // System collections are seeded with PocketBase's ids.
+    // System collections are seeded with Cratebase's ids.
     assert_eq!(
         db.collections.get("_superusers").unwrap().id,
         "pbc_3142635823"

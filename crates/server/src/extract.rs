@@ -128,7 +128,7 @@ fn bearer_token(parts: &Parts) -> Option<&str> {
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
         .ok()?;
-    // PocketBase accepts both `Bearer <token>` and a bare token.
+    // Both `Bearer <token>` and a bare token are accepted.
     Some(raw.strip_prefix("Bearer ").unwrap_or(raw).trim()).filter(|t| !t.is_empty())
 }
 
@@ -258,7 +258,7 @@ where
 }
 
 /// Rejects anything but an authenticated `_superusers` record. Also
-/// enforces `settings.superuserIPs`, PocketBase's allowlist for
+/// enforces `settings.superuserIPs`, the allowlist for
 /// superuser traffic.
 pub struct RequireSuperuser(pub Auth);
 
@@ -271,8 +271,8 @@ where
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app = App::from_ref(state);
-        // PocketBase distinguishes "no token" (401, the generic message
-        // the SDK asserts on) from "a token, but not a superuser's" (403).
+        // "No token" (401, the generic message
+        // the SDK asserts on) is distinguished from "a token, but not a superuser's" (403).
         let auth = match resolve_and_cache(parts, &app).await {
             Some(auth) if auth.is_superuser => auth,
             Some(_) => {
@@ -288,7 +288,7 @@ where
     }
 }
 
-/// PocketBase's `settings.superuserIPs` allowlist for superuser traffic:
+/// The `settings.superuserIPs` allowlist for superuser traffic:
 /// when non-empty, a superuser request from any other client IP is
 /// rejected outright. Shared by [`RequireSuperuser`] and any other
 /// superuser-gated path (e.g. `impersonate`) that can't use that
@@ -374,10 +374,10 @@ where
 /// Superuser gate for `impersonate` specifically. Behaves like
 /// [`RequireSuperuser`] (same auth resolution, same `settings.superuserIPs`
 /// enforcement via [`check_superuser_ip_allowlist`]) but rejects an
-/// authenticated non-superuser caller with PocketBase's own wording for
+/// authenticated non-superuser caller with its own wording for
 /// this endpoint — "The authorized record is not allowed to perform this
 /// action." — rather than [`RequireSuperuser`]'s generic message, which
-/// PocketBase does not use here (verified against the conformance suite).
+/// this endpoint does not use.
 pub struct ImpersonateAuth(pub Auth);
 
 impl<S> FromRequestParts<S> for ImpersonateAuth
@@ -413,8 +413,8 @@ pub struct RequestInfo {
     pub method: String,
     pub path: String,
     pub query: Map<String, Value>,
-    /// Header names lowercased with `-` replaced by `_`, PocketBase's
-    /// convention (`@request.headers.x_token`).
+    /// Header names lowercased with `-` replaced by `_`
+    /// (`@request.headers.x_token`).
     pub headers: Map<String, Value>,
     /// Parsed request body; filled by the routes that read one.
     pub body: Map<String, Value>,
@@ -428,7 +428,7 @@ pub struct RequestInfo {
     pub postgis_available: bool,
 }
 
-/// PocketBase's default request context.
+/// The default request context.
 pub const CONTEXT_DEFAULT: &str = "default";
 
 impl RequestInfo {
@@ -494,8 +494,7 @@ where
     }
 }
 
-/// Query string → a flat map. Repeated keys keep the last value, as
-/// PocketBase's `echo` binding does.
+/// Query string → a flat map. Repeated keys keep the last value.
 fn query_map(raw: &str) -> Map<String, Value> {
     let mut out = Map::new();
     for pair in raw.split('&').filter(|p| !p.is_empty()) {
@@ -595,7 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn header_names_use_pocketbase_spelling() {
+    fn header_names_are_lowercased_with_underscores() {
         let mut h = HeaderMap::new();
         h.insert("X-Token", HeaderValue::from_static("abc"));
         h.append("X-Token", HeaderValue::from_static("def"));

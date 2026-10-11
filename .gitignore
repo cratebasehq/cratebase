@@ -8,12 +8,12 @@
 /data
 # The default data directory: running `cratebase serve` from the repo root
 # creates it, and `.secret` inside it is a real credential.
-/pb_data
+/cb_data
 node_modules/
 .DS_Store
 *.log
 
-# The built dashboard IS committed, the way PocketBase commits `ui/dist`.
+# The built dashboard IS committed.
 # That is what makes `cargo build` alone produce a working binary from a
 # fresh clone: no bun, no node, no separate frontend step for anyone who
 # only wants to run the server. CI rebuilds it and fails if what is
@@ -27,23 +27,19 @@ web/email/node_modules
 # something to commit — unlike web/admin/dist (see above).
 sdk/js/dist/
 
-# @cratebase/extras' dist/ is a real npm build artifact (unlike
-# web/admin's committed dashboard bundle) — CI builds it fresh from
-# source before every publish, so it never needs to be committed.
-sdk/js/extras/dist
-
 # @cratebase/schema-codegen's dist/ is likewise a build artifact, not
 # something to commit — CI builds it fresh from source before every
 # publish.
 tools/schema-codegen/dist
 
-# @cratebase/client's dist/ — same reasoning as extras/schema-codegen
+# @cratebase/client's dist/ — same reasoning as schema-codegen
 # above: a real npm build artifact, rebuilt fresh by CI before publish.
 sdk/js/client/dist
 
-# @cratebase/react's dist/ — same reasoning as client/extras/schema-codegen
+# @cratebase/react's dist/ — same reasoning as client/schema-codegen
 # above: a real npm build artifact, rebuilt fresh by CI before publish.
 sdk/js/react/dist
+sdk/js/schema/dist
 
 # create-cratebase's dist/ — same reasoning as the sdk packages above.
 packages/create-cratebase/dist

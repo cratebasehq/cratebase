@@ -1,49 +1,70 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { KeyRound, Plus, ShieldUser, Trash2 } from "lucide-react";
+import { Check, Circle, Copy, KeyRound, Plus, ShieldUser, Trash2 } from "lucide-react";
 import type { RecordModel } from "@cratebase/client";
-import { cb, currentSuperuser, describeFailure } from "@/lib/api";
+import { cb, currentSuperuser, describeFailure, parseServerDate } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
+import { StatusBadge } from "@/components/layout/stat-card";
 import { Button } from "@/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SettingsPage } from "@/components/settings/settings-form";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+  DetailBody,
+  DetailCallout,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { TimeAgo } from "@/components/settings/time-ago";
+import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
 
 const COLLECTION = "_superusers";
 const MIN_PASSWORD = 8;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /** `_superusers.role` values (`cratebase_core::SUPERUSER_ROLE_OWNER`/
  * `SUPERUSER_ROLE_ADMIN` on the server). Owners can manage every other
  * superuser account; admins have full dashboard/API access otherwise. */
 const OWNER = "owner";
 const ADMIN = "admin";
 
+const HEAD = "h-control-md text-xs font-medium text-muted-foreground";
+const CELL = "py-1.5";
+
+/** Toast description for a failed create/update: field-level server errors
+ * first, otherwise the server's sentence. */
+function failureDescription(error: unknown): { title: string; description: string } {
+  const failure = describeFailure(error);
+  const fields = Object.entries(failure.fields).map(([k, v]) => `${k}: ${v}`);
+  return {
+    title: failure.title,
+    description: fields.length > 0 ? fields.join("; ") : failure.serverMessage || failure.detail,
+  };
+}
+
 /**
- * Superusers are ordinary auth records in `_superusers` (PocketBase v0.23+
- * dropped `/api/admins`), so this is a small CRUD over that collection —
+ * Superusers are ordinary auth records in `_superusers` (there is no
+ * separate admins API), so this is a small CRUD over that collection —
  * but it is the one collection you cannot safely browse in the generic
  * records grid, because locking yourself out of it has no undo from the UI.
  */
@@ -53,6 +74,7 @@ export function SuperusersPage() {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<RecordModel | null>(null);
   const [resetting, setResetting] = useState<RecordModel | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const superusers = useQuery({
     queryKey: ["superusers"],
@@ -64,26 +86,28 @@ export function SuperusersPage() {
   }
 
   const remove = useMutation({
-    mutationFn: (id: string) => cb.collection(COLLECTION).delete(id),
-    onSuccess: async () => {
+    mutationFn: (record: RecordModel) => cb.collection(COLLECTION).delete(record.id),
+    onSuccess: async (_result, record) => {
+      setDeleting(null);
       await invalidate();
-      toast.success("Superuser removed");
+      toast.success(`Removed ${String(record.email ?? record.id)}`);
     },
     onError: (error) => {
       const failure = describeFailure(error);
-      toast.error(failure.title, { description: failure.serverMessage || failure.detail });
+      toast.error("Couldn't remove the superuser", { description: failure.serverMessage || failure.detail });
     },
   });
 
   const changeRole = useMutation({
-    mutationFn: ({ id, role }: { id: string; role: string }) => cb.collection(COLLECTION).update(id, { role }),
-    onSuccess: async () => {
+    mutationFn: ({ id, role }: { id: string; role: string; email: string }) =>
+      cb.collection(COLLECTION).update(id, { role }),
+    onSuccess: async (_result, vars) => {
       await invalidate();
-      toast.success("Role updated");
+      toast.success(`${vars.email} is now ${vars.role === OWNER ? "an owner" : "an admin"}`);
     },
     onError: (error) => {
       const failure = describeFailure(error);
-      toast.error(failure.title, { description: failure.serverMessage || failure.detail });
+      toast.error("Couldn't change the role", { description: failure.serverMessage || failure.detail });
     },
   });
 
@@ -98,6 +122,24 @@ export function SuperusersPage() {
   const myRole = rows.find((r) => r.id === me?.id)?.role;
   const isOwner = myRole === OWNER;
   const ownerCount = rows.filter((r) => r.role === OWNER).length;
+  const selectedIndex = rows.findIndex((r) => r.id === selectedId);
+  const selected = selectedIndex >= 0 ? rows[selectedIndex] : null;
+
+  function describeRow(row: RecordModel): SuperuserInfo {
+    const isMe = row.id === me?.id;
+    const email = String(row.email ?? row.id);
+    const role = typeof row.role === "string" && row.role ? row.role : ADMIN;
+    // The lockout the server refuses to let happen: the last owner can't be
+    // re-roled or removed, by anyone (in practice always the viewer's own row
+    // — nobody else could be the sole owner while also being able to act here).
+    const isSoleOwner = role === OWNER && ownerCount <= 1;
+    const removeBlocked = isMe
+      ? "You can't remove the account you're signed in with"
+      : isSoleOwner
+        ? "The last remaining owner can't be removed"
+        : undefined;
+    return { isMe, email, role, isSoleOwner, removeBlocked };
+  }
 
   const item = settingsItemFor("/settings/superusers")!;
   return (
@@ -107,115 +149,141 @@ export function SuperusersPage() {
       width="wide"
       action={
         isOwner ? (
-          <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
-            <Plus className="size-3.5" />
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus />
             New superuser
           </Button>
         ) : undefined
       }
     >
-
       {superusers.isPending ? (
-        <div className="flex flex-col gap-1">
-          {Array.from({ length: 2 }).map((_, i) => (
-            <Skeleton key={i} className="h-control-lg w-full" />
-          ))}
-        </div>
+        <ListSkeleton rows={3} />
       ) : superusers.isError ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon" className="text-destructive">
-              <ShieldUser />
-            </EmptyMedia>
-            <EmptyTitle>Couldn't load superusers</EmptyTitle>
-            <EmptyDescription>{describeFailure(superusers.error).detail}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <ErrorState
+          compact
+          title="Couldn't load superusers"
+          error={describeFailure(superusers.error).detail}
+          onRetry={() => void superusers.refetch()}
+        />
+      ) : rows.length === 0 ? (
+        <EmptyState
+          compact
+          icon={<ShieldUser />}
+          title="No superusers"
+          description="Create one from the command line with cratebase superuser create."
+        />
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
-          {rows.map((row) => {
-            const isMe = row.id === me?.id;
-            const role = typeof row.role === "string" && row.role ? row.role : ADMIN;
-            // The lockout the server refuses to let happen: the last
-            // owner can't be re-roled or removed, by anyone (in
-            // practice always the viewer's own row — nobody else could
-            // be the sole owner while also being able to act here).
-            const isSoleOwner = role === OWNER && ownerCount <= 1;
-            return (
-              <div
-                key={row.id}
-                className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 last:border-b-0"
-              >
-                <ShieldUser className="size-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-sm">{String(row.email ?? row.id)}</span>
-                {isMe ? (
-                  <Badge variant="outline" className="shrink-0 font-normal">
-                    you
-                  </Badge>
-                ) : null}
-                {isOwner ? (
-                  <Select
-                    value={role}
-                    disabled={isSoleOwner || changeRole.isPending}
-                    onValueChange={(next) => changeRole.mutate({ id: row.id, role: next })}
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className={cn(HEAD, "pl-3")}>Email</TableHead>
+                <TableHead className={HEAD}>Role</TableHead>
+                <TableHead className={HEAD}>Created</TableHead>
+                <TableHead className={cn(HEAD, "pr-3 text-right")}>
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => {
+                const { isMe, email, role, isSoleOwner, removeBlocked } = describeRow(row);
+                return (
+                  <TableRow
+                    key={row.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${email}, open details`}
+                    data-state={row.id === selectedId ? "selected" : undefined}
+                    onClick={() => setSelectedId(row.id)}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        setSelectedId(row.id);
+                      }
+                    }}
+                    className="cursor-pointer"
                   >
-                    <SelectTrigger
-                      size="sm"
-                      className="h-control-sm w-28 shrink-0"
-                      title={isSoleOwner ? "The last remaining owner can't be re-roled" : undefined}
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={OWNER}>Owner</SelectItem>
-                      <SelectItem value={ADMIN}>Admin</SelectItem>
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Badge variant="outline" className="shrink-0 font-normal capitalize">
-                    {role}
-                  </Badge>
-                )}
-                <span className="shrink-0 font-mono text-2xs text-muted-foreground">
-                  {row.created ? new Date(row.created).toLocaleDateString() : ""}
-                </span>
-                {isOwner || isMe ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-control-sm shrink-0 gap-1.5"
-                    onClick={() => setResetting(row)}
-                  >
-                    <KeyRound className="size-3.5" />
-                    Password
-                  </Button>
-                ) : null}
-                {isOwner ? (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label={`Remove ${String(row.email ?? row.id)}`}
-                    className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    disabled={isSoleOwner}
-                    title={isSoleOwner ? "The last remaining owner can't be removed" : undefined}
-                    onClick={() => setDeleting(row)}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                ) : null}
-              </div>
-            );
-          })}
+                    <TableCell className={cn(CELL, "pl-3")}>
+                      <span className="flex items-center gap-2">
+                        <ShieldUser aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 truncate font-mono text-xs">{email}</span>
+                        {isMe ? <StatusBadge tone="brand">You</StatusBadge> : null}
+                      </span>
+                    </TableCell>
+                    <TableCell className={CELL} onClick={(e) => e.stopPropagation()}>
+                      {isOwner ? (
+                        <Select
+                          value={role}
+                          disabled={isSoleOwner || changeRole.isPending}
+                          onValueChange={(next) => changeRole.mutate({ id: row.id, role: next, email })}
+                        >
+                          <SelectTrigger
+                            size="sm"
+                            aria-label={`Role for ${email}`}
+                            className="h-control-sm w-28"
+                            title={isSoleOwner ? "The last remaining owner can't be re-roled" : undefined}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value={OWNER}>Owner</SelectItem>
+                            <SelectItem value={ADMIN}>Admin</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <StatusBadge tone={role === OWNER ? "info" : "neutral"} className="capitalize">
+                          {role}
+                        </StatusBadge>
+                      )}
+                    </TableCell>
+                    <TableCell className={cn(CELL, "text-xs text-muted-foreground")}>
+                      <TimeAgo value={typeof row.created === "string" ? row.created : null} />
+                    </TableCell>
+                    <TableCell className={cn(CELL, "pr-3")} onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1">
+                        {isOwner || isMe ? (
+                          <Button variant="ghost" size="sm" onClick={() => setResetting(row)}>
+                            <KeyRound />
+                            Password
+                            <span className="sr-only"> for {email}</span>
+                          </Button>
+                        ) : null}
+                        {isOwner ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label={`Remove ${email}`}
+                            className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            disabled={removeBlocked !== undefined}
+                            title={removeBlocked ?? "Remove superuser"}
+                            onClick={() => setDeleting(row)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        ) : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
         </div>
       )}
 
-      <p className="text-2xs leading-snug text-muted-foreground">
-        A superuser can also be created from the command line with{" "}
-        <code className="font-mono">cratebase superuser create &lt;email&gt; &lt;password&gt;</code> — the way back in
-        if you lock yourself out. Command-line superusers are always created as owners.
-      </p>
+      <div className="flex flex-col gap-1 text-xs text-pretty text-muted-foreground">
+        {!isOwner && !superusers.isPending && !superusers.isError ? (
+          <p>Only owners can add or remove superusers and change roles. You can still change your own password.</p>
+        ) : null}
+        <p>
+          A superuser can also be created from the command line with{" "}
+          <code className="font-mono">cratebase superuser create &lt;email&gt; &lt;password&gt;</code> — the way back
+          in if you lock yourself out. Command-line superusers are always created as owners.
+        </p>
+      </div>
 
-      <SuperuserSheet
+      <CreateSuperuserDialog
         open={creating}
         onOpenChange={setCreating}
         onCreated={() => {
@@ -224,41 +292,303 @@ export function SuperusersPage() {
         }}
       />
 
-      <PasswordSheet record={resetting} onOpenChange={(open) => !open && setResetting(null)} />
+      <PasswordDialog record={resetting} onOpenChange={(open) => !open && setResetting(null)} />
 
-      <AlertDialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove this superuser?</AlertDialogTitle>
-            <AlertDialogDescription>
-              <span className="font-mono">{String(deleting?.email ?? "")}</span> loses access to this dashboard and
-              the whole API immediately.
-              {deleting?.id === me?.id ? " This is the account you are signed in with — you will be logged out." : ""}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                const target = deleting;
-                setDeleting(null);
-                if (target) remove.mutate(target.id);
-              }}
-            >
-              Remove superuser
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <DetailSheet open={selected !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
+        {selected ? (
+          <SuperuserDetail
+            row={selected}
+            info={describeRow(selected)}
+            isOwner={isOwner}
+            index={selectedIndex}
+            total={rows.length}
+            onStep={(delta) => {
+              const next = rows[selectedIndex + delta];
+              if (next) setSelectedId(next.id);
+            }}
+            rolePending={changeRole.isPending}
+            onRole={(next) => {
+              const { email } = describeRow(selected);
+              changeRole.mutate({ id: selected.id, role: next, email });
+            }}
+            onPassword={() => setResetting(selected)}
+            onRemove={() => setDeleting(selected)}
+          />
+        ) : null}
+      </DetailSheet>
+
+      <TypedConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(open) => !open && !remove.isPending && setDeleting(null)}
+        title="Remove this superuser?"
+        description={
+          <>
+            <span className="font-mono">{String(deleting?.email ?? "")}</span> loses access to this dashboard and the
+            whole API immediately. Their audit-log entries stay, attributed to a removed superuser.
+          </>
+        }
+        confirmValue={String(deleting?.email ?? "")}
+        confirmLabel="Remove superuser"
+        pendingLabel="Removing…"
+        pending={remove.isPending}
+        onConfirm={() => deleting && remove.mutate(deleting)}
+      />
     </SettingsPage>
   );
 }
 
-/** Create a superuser. Deliberately its own sheet rather than the generic
+interface SuperuserInfo {
+  isMe: boolean;
+  email: string;
+  role: string;
+  isSoleOwner: boolean;
+  removeBlocked: string | undefined;
+}
+
+function SuperuserDetail({
+  row,
+  info,
+  isOwner,
+  index,
+  total,
+  onStep,
+  rolePending,
+  onRole,
+  onPassword,
+  onRemove,
+}: {
+  row: RecordModel;
+  info: SuperuserInfo;
+  isOwner: boolean;
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  rolePending: boolean;
+  onRole: (role: string) => void;
+  onPassword: () => void;
+  onRemove: () => void;
+}) {
+  const [tab, setTab] = useState("overview");
+  const json = useMemo(() => JSON.stringify(row, null, 2), [row]);
+  const { copy } = useCopyToClipboard();
+  const { isMe, email, role, isSoleOwner, removeBlocked } = info;
+  const created = typeof row.created === "string" ? row.created : null;
+  const updated = typeof row.updated === "string" ? row.updated : null;
+  const canPassword = isOwner || isMe;
+  const tabs = [
+    { value: "overview", label: "Overview" },
+    ...(isOwner ? [{ value: "settings", label: "Settings" }] : []),
+    { value: "raw", label: "Raw JSON" },
+  ];
+  return (
+    <>
+      <DetailSheetHeader
+        id={row.id}
+        pager={{
+          index: index + 1,
+          total,
+          hasPrev: index > 0,
+          hasNext: index < total - 1,
+          onPrev: () => onStep(-1),
+          onNext: () => onStep(1),
+        }}
+        menu={[
+          { label: "Copy email", onSelect: () => void copy(email), icon: <Copy /> },
+          { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+          ...(canPassword ? [{ label: "Change password", onSelect: onPassword, icon: <KeyRound /> }] : []),
+          ...(isOwner && removeBlocked === undefined
+            ? [{ label: "Remove superuser", onSelect: onRemove, destructive: true, icon: <Trash2 /> }]
+            : []),
+        ]}
+        title={<span className="font-mono text-base break-all">{email}</span>}
+        description={`Superuser ${email}`}
+        status={
+          <>
+            <StatusBadge tone={role === OWNER ? "info" : "neutral"} className="capitalize">
+              {role}
+            </StatusBadge>
+            {isMe ? <StatusBadge tone="brand">You</StatusBadge> : null}
+          </>
+        }
+        meta={[
+          row.verified === true ? "Verified" : row.verified === false ? "Not verified" : null,
+          <>
+            Created <TimeAgo value={created} />
+          </>,
+        ].filter((m) => m !== null)}
+        actions={
+          canPassword ? (
+            <Button size="sm" variant="outline" onClick={onPassword}>
+              <KeyRound />
+              Change password
+            </Button>
+          ) : undefined
+        }
+      />
+      <DetailTabs value={tab} onValueChange={setTab} tabs={tabs}>
+        <DetailTabPanel value="overview">
+          <DetailBody>
+            {removeBlocked ? (
+              <DetailCallout tone="info" title="Can't be removed">
+                {removeBlocked}.
+              </DetailCallout>
+            ) : null}
+            <DetailSection title="Account">
+              <DetailList>
+                <DetailRow label="Email">
+                  <span className="font-mono text-xs break-all">{email}</span>
+                </DetailRow>
+                <DetailRow
+                  label="Role"
+                  hint={role === OWNER ? "manages every superuser" : "full dashboard and API access"}
+                >
+                  <span className="capitalize">{role}</span>
+                </DetailRow>
+                {typeof row.verified === "boolean" ? (
+                  <DetailRow label="Verified">{row.verified ? "Yes" : "No"}</DetailRow>
+                ) : null}
+                <DetailRow label="ID">
+                  <span className="font-mono text-xs break-all">{row.id}</span>
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+            <DetailSection title="Timing">
+              <DetailList>
+                <DetailRow label="Created" hint={created ? parseServerDate(created).toLocaleString() : undefined}>
+                  <TimeAgo value={created} />
+                </DetailRow>
+                <DetailRow label="Updated" hint={updated ? parseServerDate(updated).toLocaleString() : undefined}>
+                  <TimeAgo value={updated} />
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+          </DetailBody>
+        </DetailTabPanel>
+        {isOwner ? (
+          <DetailTabPanel value="settings">
+            <DetailBody>
+              <DetailSection title="Permissions">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="su-detail-role">Role</Label>
+                  <Select value={role} disabled={isSoleOwner || rolePending} onValueChange={onRole}>
+                    <SelectTrigger id="su-detail-role" size="sm" className="h-control-sm w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={OWNER}>Owner</SelectItem>
+                      <SelectItem value={ADMIN}>Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {isSoleOwner
+                      ? "The last remaining owner can't be re-roled."
+                      : "Owners can add and remove superusers and change roles. Admins have full dashboard and API access otherwise."}
+                  </p>
+                </div>
+              </DetailSection>
+            </DetailBody>
+          </DetailTabPanel>
+        ) : null}
+        <DetailTabPanel value="raw">
+          <DetailBody>
+            <CodeBlock title="Raw record" json={json} copyLabel="Copy JSON" />
+          </DetailBody>
+        </DetailTabPanel>
+      </DetailTabs>
+    </>
+  );
+}
+
+/** One live rule line under a password field: neutral until the user has
+ * typed, then green when met and red when not. Never colour-only — the icon
+ * and the sentence carry the state too. */
+function Rule({ ok, active, children }: { ok: boolean; active: boolean; children: React.ReactNode }) {
+  return (
+    <li
+      className={cn(
+        "flex items-center gap-1.5 text-xs",
+        !active ? "text-muted-foreground" : ok ? "text-success" : "text-destructive",
+      )}
+    >
+      {ok ? <Check aria-hidden className="size-3" /> : <Circle aria-hidden className="size-3" />}
+      {children}
+      <span className="sr-only">{!active ? "" : ok ? " — met" : " — not met"}</span>
+    </li>
+  );
+}
+
+/** Password + confirmation with inline validation. Shared by the create and
+ * change-password dialogs so the two can never disagree about the rules. */
+function PasswordFields({
+  idPrefix,
+  password,
+  confirm,
+  onPassword,
+  onConfirm,
+  passwordLabel,
+}: {
+  idPrefix: string;
+  password: string;
+  confirm: string;
+  onPassword: (value: string) => void;
+  onConfirm: (value: string) => void;
+  passwordLabel: string;
+}) {
+  const longEnough = password.length >= MIN_PASSWORD;
+  const matches = password.length > 0 && password === confirm;
+  const lengthBad = password.length > 0 && !longEnough;
+  const mismatch = confirm.length > 0 && password !== confirm;
+  return (
+    <>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={`${idPrefix}-password`}>{passwordLabel}</Label>
+        <Input
+          id={`${idPrefix}-password`}
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => onPassword(e.target.value)}
+          aria-invalid={lengthBad ? true : undefined}
+          aria-describedby={`${idPrefix}-rules`}
+          className="h-control-md"
+        />
+        <ul id={`${idPrefix}-rules`} className="flex flex-col gap-0.5">
+          <Rule ok={longEnough} active={password.length > 0}>
+            At least {MIN_PASSWORD} characters
+          </Rule>
+        </ul>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={`${idPrefix}-confirm`}>Confirm password</Label>
+        <Input
+          id={`${idPrefix}-confirm`}
+          type="password"
+          autoComplete="new-password"
+          value={confirm}
+          onChange={(e) => onConfirm(e.target.value)}
+          aria-invalid={mismatch ? true : undefined}
+          aria-describedby={`${idPrefix}-match`}
+          className="h-control-md"
+        />
+        <p id={`${idPrefix}-match`} role={mismatch ? "alert" : undefined} className="min-h-4 text-xs">
+          {mismatch ? (
+            <span className="text-destructive">Passwords don't match</span>
+          ) : matches ? (
+            <span className="inline-flex items-center gap-1.5 text-success">
+              <Check aria-hidden className="size-3" />
+              Passwords match
+            </span>
+          ) : null}
+        </p>
+      </div>
+    </>
+  );
+}
+
+/** Create a superuser. Deliberately its own dialog rather than the generic
  * record drawer: `_superusers` has system fields the record editor would
  * happily show, and none of them should be touched by hand. */
-function SuperuserSheet({
+function CreateSuperuserDialog({
   open,
   onOpenChange,
   onCreated,
@@ -269,6 +599,7 @@ function SuperuserSheet({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [role, setRole] = useState(ADMIN);
   const [seedOpen, setSeedOpen] = useState(open);
 
@@ -277,110 +608,110 @@ function SuperuserSheet({
     if (open) {
       setEmail("");
       setPassword("");
+      setConfirm("");
       setRole(ADMIN);
     }
   }
 
   const create = useMutation({
     mutationFn: () =>
-      cb.collection(COLLECTION).create({ email, password, passwordConfirm: password, role }),
+      cb.collection(COLLECTION).create({ email: email.trim(), password, passwordConfirm: confirm, role }),
     onSuccess: () => {
-      toast.success("Superuser created");
+      toast.success(`Created ${email.trim()}`);
       onCreated();
     },
     onError: (error) => {
-      const failure = describeFailure(error);
-      const fields = Object.entries(failure.fields).map(([k, v]) => `${k}: ${v}`);
-      toast.error(failure.title, {
-        description: fields.length > 0 ? fields.join("; ") : failure.serverMessage || failure.detail,
-      });
+      const { title, description } = failureDescription(error);
+      toast.error(title, { description });
     },
   });
 
-  const emailError = email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? "Not a valid email address" : null;
-  const passwordError = password && password.length < MIN_PASSWORD ? `At least ${MIN_PASSWORD} characters` : null;
-  const ready = Boolean(email.trim()) && password.length >= MIN_PASSWORD && !emailError;
+  const emailError = email.trim() && !EMAIL_RE.test(email.trim()) ? "Enter a valid email address" : null;
+  const ready = Boolean(email.trim()) && !emailError && password.length >= MIN_PASSWORD && password === confirm;
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[440px]">
+    <Dialog open={open} onOpenChange={(next) => (!create.isPending || next) && onOpenChange(next)}>
+      <DialogContent className="sm:max-w-md">
         <form
           noValidate
+          className="grid gap-4"
           onSubmit={(e) => {
             e.preventDefault();
             if (ready && !create.isPending) create.mutate();
           }}
-          className="flex h-full min-h-0 flex-col"
         >
-          <SheetHeader>
-            <SheetTitle>New superuser</SheetTitle>
-            <SheetDescription>
-              They will be able to read and write everything, including these settings.
-            </SheetDescription>
-          </SheetHeader>
+          <DialogHeader>
+            <DialogTitle>New superuser</DialogTitle>
+            <DialogDescription>
+              They'll be able to read and write everything, including these settings. Share the password over a
+              secure channel — they can change it after signing in.
+            </DialogDescription>
+          </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="su-email">Email</Label>
-              <Input
-                id="su-email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                aria-invalid={emailError ? true : undefined}
-                className="h-control-md"
-              />
-              {emailError ? <p className="text-xs text-destructive">{emailError}</p> : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="su-password">Password</Label>
-              <Input
-                id="su-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={`At least ${MIN_PASSWORD} characters`}
-                aria-invalid={passwordError ? true : undefined}
-                className="h-control-md"
-              />
-              {passwordError ? <p className="text-xs text-destructive">{passwordError}</p> : null}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="su-role">Role</Label>
-              <Select value={role} onValueChange={setRole}>
-                <SelectTrigger id="su-role" className="h-control-md">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ADMIN}>Admin</SelectItem>
-                  <SelectItem value={OWNER}>Owner</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-2xs text-muted-foreground">
-                {role === OWNER
-                  ? "Owners have full access and can manage other superusers, including their roles."
-                  : "Admins have full access except managing other superusers' roles or accounts."}
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="su-email">Email</Label>
+            <Input
+              id="su-email"
+              type="email"
+              autoComplete="off"
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={emailError ? true : undefined}
+              aria-describedby={emailError ? "su-email-error" : undefined}
+              className="h-control-md"
+            />
+            {emailError ? (
+              <p id="su-email-error" role="alert" className="text-xs text-destructive">
+                {emailError}
               </p>
-            </div>
+            ) : null}
           </div>
 
-          <SheetFooter className="flex-row justify-end border-t border-border">
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+          <PasswordFields
+            idPrefix="su"
+            password={password}
+            confirm={confirm}
+            onPassword={setPassword}
+            onConfirm={setConfirm}
+            passwordLabel="Password"
+          />
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="su-role">Role</Label>
+            <Select value={role} onValueChange={setRole}>
+              <SelectTrigger id="su-role" className="h-control-md w-full" aria-describedby="su-role-help">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ADMIN}>Admin</SelectItem>
+                <SelectItem value={OWNER}>Owner</SelectItem>
+              </SelectContent>
+            </Select>
+            <p id="su-role-help" className="text-xs text-pretty text-muted-foreground">
+              {role === OWNER
+                ? "Owners have full access and can manage other superusers, including their roles."
+                : "Admins have full access except managing other superusers' roles or accounts."}
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={create.isPending}>
               Cancel
             </Button>
-            <Button type="submit" size="sm" disabled={!ready || create.isPending}>
-              {create.isPending ? <Spinner /> : null}
+            <Button type="submit" disabled={!ready || create.isPending}>
+              {create.isPending ? <Spinner className="size-3.5" /> : null}
               {create.isPending ? "Creating…" : "Create superuser"}
             </Button>
-          </SheetFooter>
+          </DialogFooter>
         </form>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 /** Set a new password on an existing superuser. */
-function PasswordSheet({
+function PasswordDialog({
   record,
   onOpenChange,
 }: {
@@ -388,16 +719,17 @@ function PasswordSheet({
   onOpenChange: (open: boolean) => void;
 }) {
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [seedId, setSeedId] = useState<string | null>(null);
 
   if (seedId !== (record?.id ?? null)) {
     setSeedId(record?.id ?? null);
     setPassword("");
+    setConfirm("");
   }
 
   const update = useMutation({
-    mutationFn: () =>
-      cb.collection(COLLECTION).update(record!.id, { password, passwordConfirm: password }),
+    mutationFn: () => cb.collection(COLLECTION).update(record!.id, { password, passwordConfirm: confirm }),
     onSuccess: () => {
       toast.success("Password changed", {
         description: "Existing sessions for that account stay valid until they expire.",
@@ -405,61 +737,52 @@ function PasswordSheet({
       onOpenChange(false);
     },
     onError: (error) => {
-      const failure = describeFailure(error);
-      const fields = Object.entries(failure.fields).map(([k, v]) => `${k}: ${v}`);
-      toast.error(failure.title, {
-        description: fields.length > 0 ? fields.join("; ") : failure.serverMessage || failure.detail,
-      });
+      const { title, description } = failureDescription(error);
+      toast.error(title, { description });
     },
   });
 
-  const tooShort = password.length > 0 && password.length < MIN_PASSWORD;
+  const ready = password.length >= MIN_PASSWORD && password === confirm;
 
   return (
-    <Sheet open={record !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[440px]">
+    <Dialog open={record !== null} onOpenChange={(next) => (!update.isPending || next) && onOpenChange(next)}>
+      <DialogContent className="sm:max-w-md">
         <form
           noValidate
+          className="grid gap-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (password.length >= MIN_PASSWORD && !update.isPending) update.mutate();
+            if (ready && !update.isPending) update.mutate();
           }}
-          className="flex h-full min-h-0 flex-col"
         >
-          <SheetHeader>
-            <SheetTitle>Change password</SheetTitle>
-            <SheetDescription>
-              For <span className="font-mono">{String(record?.email ?? "")}</span>.
-            </SheetDescription>
-          </SheetHeader>
+          <DialogHeader>
+            <DialogTitle>Change password</DialogTitle>
+            <DialogDescription>
+              For <span className="font-mono">{String(record?.email ?? "")}</span>. Existing sessions stay signed in
+              until they expire — revoke them under Sessions to sign the account out everywhere.
+            </DialogDescription>
+          </DialogHeader>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="su-newpass">New password</Label>
-              <Input
-                id="su-newpass"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={`At least ${MIN_PASSWORD} characters`}
-                aria-invalid={tooShort ? true : undefined}
-                className="h-control-md"
-              />
-              {tooShort ? <p className="text-xs text-destructive">At least {MIN_PASSWORD} characters</p> : null}
-            </div>
-          </div>
+          <PasswordFields
+            idPrefix="su-new"
+            password={password}
+            confirm={confirm}
+            onPassword={setPassword}
+            onConfirm={setConfirm}
+            passwordLabel="New password"
+          />
 
-          <SheetFooter className="flex-row justify-end border-t border-border">
-            <Button type="button" variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={update.isPending}>
               Cancel
             </Button>
-            <Button type="submit" size="sm" disabled={password.length < MIN_PASSWORD || update.isPending}>
-              {update.isPending ? <Spinner /> : null}
+            <Button type="submit" disabled={!ready || update.isPending}>
+              {update.isPending ? <Spinner className="size-3.5" /> : null}
               {update.isPending ? "Saving…" : "Change password"}
             </Button>
-          </SheetFooter>
+          </DialogFooter>
         </form>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   );
 }

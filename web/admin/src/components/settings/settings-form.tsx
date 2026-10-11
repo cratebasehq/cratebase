@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
-import { AlertCircle, Undo2 } from "lucide-react";
+import { createContext, useContext, type ReactNode } from "react";
+import { AlertCircle, Undo2, type LucideIcon } from "lucide-react";
+import { PageHeader, PageShell } from "@/components/layout/page";
 import { cn } from "@/lib/utils";
 import type { SettingsGroup } from "@/lib/settings-nav";
 import { Button } from "@/components/ui/button";
@@ -8,12 +9,20 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+/** True while a settings page renders inside a `SettingsTabsPage`, which owns
+ * the scroll container and the page title — the tab then only adds its own
+ * sub-heading and actions. */
+const InTabsContext = createContext(false);
+
 /**
  * The one page anatomy every settings screen shares: a title and
  * description derived from the settings registry (`lib/settings-nav.ts`),
  * an optional right-aligned action, and a body. `width="form"` is the
  * `max-w-3xl` column a form of `SettingsSection`s wants; `width="wide"`
  * drops the max-width for a table or console that wants the full column.
+ *
+ * Rendered as a tab of a group page it shows a compact sub-heading; rendered
+ * on its own it is a full `PageShell` + `PageHeader`.
  */
 export function SettingsPage({
   title,
@@ -28,16 +37,23 @@ export function SettingsPage({
   width: "form" | "wide";
   children: ReactNode;
 }) {
+  const inTabs = useContext(InTabsContext);
+  if (!inTabs) {
+    return (
+      <PageShell width={width === "form" ? "narrow" : "full"}>
+        <PageHeader title={title} description={description} actions={action} />
+        {children}
+      </PageShell>
+    );
+  }
   return (
-    <div className={cn("mx-auto flex w-full flex-col gap-4 p-page", width === "form" && "max-w-3xl")}>
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <div className={cn("flex w-full flex-col gap-4", width === "form" && "max-w-3xl")}>
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
         <div className="flex min-w-0 flex-col">
-          <h1 className="text-base font-medium tracking-tight">{title}</h1>
-          {description ? (
-            <p className="mt-0.5 max-w-measure text-sm text-muted-foreground">{description}</p>
-          ) : null}
+          <h2 className="text-base font-medium tracking-tight">{title}</h2>
+          {description ? <p className="max-w-measure text-sm text-pretty text-muted-foreground">{description}</p> : null}
         </div>
-        {action}
+        {action ? <div className="flex shrink-0 flex-wrap items-center gap-2">{action}</div> : null}
       </div>
       {children}
     </div>
@@ -57,7 +73,7 @@ export function SettingsSection({
   action?: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4">
+    <section className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-xs">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col">
           <h2 className="text-sm font-medium">{title}</h2>
@@ -98,7 +114,7 @@ export function SettingRow({
             {error}
           </p>
         ) : help ? (
-          <p className="text-2xs leading-snug text-muted-foreground">{help}</p>
+          <p className="text-xs leading-snug text-pretty text-muted-foreground">{help}</p>
         ) : null}
       </div>
     </div>
@@ -233,7 +249,7 @@ export function SettingsTabsPage({
   tab,
   onTabChange,
 }: {
-  group: Pick<SettingsGroup, "label" | "description">;
+  group: Pick<SettingsGroup, "label" | "description"> & { icon?: LucideIcon };
   /** The tabs to render, in order — already filtered to whichever are
    * currently visible (a toggle-gated tab like LLM/dev-inbox is left out
    * entirely by the caller rather than shown disabled). */
@@ -242,31 +258,29 @@ export function SettingsTabsPage({
   onTabChange: (value: string) => void;
 }) {
   const active = tabs.some((t) => t.value === tab) ? tab : (tabs[0]?.value ?? tab);
+  const Icon = group.icon;
   return (
-    // No page padding here: every tab's own content is one of the
-    // existing settings page components, each already wrapping itself in
-    // `SettingsPage` (which owns `p-page`) — adding it again here would
-    // double the whitespace around whichever tab is showing.
-    <div className="flex h-full flex-col">
-      <div className="flex flex-col gap-0.5 px-page pt-page">
-        <h1 className="text-base font-medium tracking-tight">{group.label}</h1>
-        <p className="max-w-measure text-sm text-muted-foreground">{group.description}</p>
-      </div>
-      <Tabs value={active} onValueChange={onTabChange} className="min-h-0 flex-1">
-        <TabsList className="mx-page mt-3">
+    <InTabsContext.Provider value>
+      <PageShell width="wide">
+        <PageHeader title={group.label} description={group.description} icon={Icon ? <Icon /> : undefined} />
+        <Tabs value={active} onValueChange={onTabChange} className="min-h-0 gap-section">
+          <div className="sticky -top-3 z-sticky -mx-3 -mt-2 shrink-0 overflow-x-auto bg-background/90 px-3 py-2 backdrop-blur-sm sm:-top-page sm:-mx-page sm:px-page">
+            <TabsList>
+              {tabs.map((t) => (
+                <TabsTrigger key={t.value} value={t.value} className="px-3">
+                  {t.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
           {tabs.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-            </TabsTrigger>
+            <TabsContent key={t.value} value={t.value} className="mt-0">
+              {t.content}
+            </TabsContent>
           ))}
-        </TabsList>
-        {tabs.map((t) => (
-          <TabsContent key={t.value} value={t.value} className="mt-0">
-            {t.content}
-          </TabsContent>
-        ))}
-      </Tabs>
-    </div>
+        </Tabs>
+      </PageShell>
+    </InTabsContext.Provider>
   );
 }
 
@@ -286,8 +300,8 @@ export function SettingsSaveBar({
 }) {
   if (!dirty) return null;
   return (
-    <div className="sticky bottom-0 -mx-page -mb-page flex flex-wrap items-center gap-3 border-t border-border bg-background/95 px-page py-2.5 backdrop-blur-sm">
-      <span className="text-sm text-muted-foreground">Unsaved changes</span>
+    <div className="animate-rise sticky bottom-0 z-sticky -mx-3 -mb-3 mt-2 flex flex-wrap items-center gap-3 border-t border-border bg-background/95 px-3 py-2.5 backdrop-blur-sm sm:-mx-page sm:-mb-page sm:px-page">
+      <span role="status" className="text-sm text-muted-foreground">Unsaved changes</span>
       {errors.length > 0 ? (
         <span className="flex min-w-0 items-center gap-1.5 text-sm text-destructive">
           <AlertCircle className="size-3.5 shrink-0" />

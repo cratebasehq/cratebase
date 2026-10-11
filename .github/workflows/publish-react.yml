@@ -1,14 +1,14 @@
 name: Publish @cratebase/react
 
 # @cratebase/react versions independently from the server binary and from
-# @cratebase/client/@cratebase/extras: it's an optional React hooks
+# @cratebase/client: it's an optional React hooks
 # package, not a build artifact of the Rust workspace. Tying it to the
 # server's `v*` release tags would force a new npm publish (and a version
 # bump) every time the server ships a release that touches nothing under
 # sdk/js/react, and would block a hotfix to this package behind an
 # unrelated server release. `react-v*` keeps this release train
 # independent while still using the same "push a tag" mechanism as the
-# server's own release.yml and client's/extras'.
+# server's own release.yml and client's.
 on:
   push:
     tags: ["react-v*"]

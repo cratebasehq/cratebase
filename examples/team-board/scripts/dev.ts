@@ -17,7 +17,7 @@ const HOST = process.env.CRATEBASE_HOST ?? "127.0.0.1";
 const PORT = process.env.CRATEBASE_PORT ?? "8090";
 const CRATEBASE_URL = `http://${HOST}:${PORT}`;
 const CB_SETUP_TOKEN = process.env.CB_SETUP_TOKEN ?? "team-board-dev-setup-token";
-const CB_DATA_DIR = process.env.CB_DATA_DIR ?? "./pb_data";
+const CB_DATA_DIR = process.env.CB_DATA_DIR ?? "./cb_data";
 const BUILT_BIN = path.join(REPO_ROOT, "target", "debug", "cratebase");
 const CRATEBASE_BIN = process.env.CRATEBASE_BIN ?? (existsSync(BUILT_BIN) ? BUILT_BIN : "cratebase");
 

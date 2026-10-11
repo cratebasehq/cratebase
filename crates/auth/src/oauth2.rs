@@ -41,8 +41,7 @@ pub enum KnownProvider {
 }
 
 impl KnownProvider {
-    /// Matches a collection's `OAuth2Provider.name` — PocketBase's own
-    /// preset names, lowercase.
+    /// Matches a collection's `OAuth2Provider.name` — the preset names, lowercase.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "google" => Some(Self::Google),
@@ -63,7 +62,7 @@ impl KnownProvider {
 
     /// The Entra ID tenant segment for [`Self::Microsoft`]'s URLs —
     /// `extra.tenant`, defaulting to `"common"` (personal + work/school
-    /// accounts), matching PocketBase's own Microsoft preset default.
+    /// accounts), the Microsoft preset default.
     fn microsoft_tenant(extra: &Map<String, Value>) -> String {
         extra
             .get("tenant")
@@ -178,9 +177,8 @@ impl KnownProvider {
     }
 
     /// Requested when a provider is enabled without an explicit `scope`
-    /// override, matching PocketBase's own built-in provider defaults
-    /// (or, where PocketBase has no preset, that provider's own
-    /// minimum-viable "profile + email" scope).
+    /// override: each built-in provider's minimum-viable "profile + email"
+    /// scope.
     pub fn default_scope(self) -> &'static str {
         match self {
             Self::Google => {
@@ -800,7 +798,7 @@ pub fn parse_spotify_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
 }
 
 /// The flat shape a hand-configured (non-[`KnownProvider`]) OAuth2/OpenID
-/// userinfo endpoint is expected to answer with — PocketBase's own
+/// userinfo endpoint is expected to answer with — the
 /// fallback field names for a custom provider.
 pub fn parse_generic_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
     let raw: Value = serde_json::from_slice(body)
@@ -813,7 +811,7 @@ pub fn parse_generic_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
     };
     // CRITICAL 4: same reasoning as `parse_google_userinfo` — a
     // hand-configured provider's `email` is only trusted when its own
-    // `email_verified` claim (any of Go `cast.ToBool`'s truthy shapes:
+    // `email_verified` claim (any truthy shape:
     // `true`, a non-zero number, or `"true"`/`"1"`) is actually present
     // and true, so an attacker with an unverified address on that
     // provider cannot sign into and verify an existing record sharing
@@ -832,8 +830,8 @@ pub fn parse_generic_userinfo(body: &[u8]) -> AuthResult<OAuth2User> {
     })
 }
 
-/// Go's `cast.ToBool`, which is what a truthy claim means throughout
-/// PocketBase-compatible rule/field handling (see
+/// What a truthy claim means throughout
+/// rule/field handling (see
 /// `cratebase_server::routes::records`'s own `truthy` for the record
 /// field version of the same rule).
 fn is_truthy(value: &Value) -> bool {

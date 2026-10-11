@@ -28,7 +28,7 @@ struct Harness {
 impl Harness {
     async fn new() -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         let id = app
             .create_superuser(SUPERUSER_EMAIL, SUPERUSER_PASSWORD)
@@ -273,7 +273,7 @@ async fn an_svg_upload_is_forced_to_download_with_a_sandbox_csp() {
     let collection_id = file_collection(&harness, &["image/svg+xml"]).await;
 
     // No `<?xml ...?>` prolog — a bare `<svg>` root has no reliable magic
-    // bytes to sniff, same as PocketBase's own content sniffer, so this
+    // bytes to sniff, so this
     // still relies on the declared/extension fallback to be accepted.
     let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#;
     let (status, created) =

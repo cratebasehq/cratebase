@@ -5,8 +5,8 @@
 //!
 //! QuickJS contexts are single-threaded, so the runtime spawns `workers`
 //! OS threads (default `max(2, cores / 2)`), each of which creates its own
-//! [`rquickjs::Runtime`] + [`rquickjs::Context`], installs the PocketBase
-//! globals and evaluates every `*.pb.js` under `hooks_dir`. Because each
+//! [`rquickjs::Runtime`] + [`rquickjs::Context`], installs the Cratebase
+//! globals and evaluates every `*.cb.js` under `hooks_dir`. Because each
 //! worker evaluates the same files in the same order, every worker ends
 //! up with the same handler table keyed by deterministic ids
 //! (`<file>:<hook>:<tags>:<ordinal>`), so a call for any handler id can
@@ -25,7 +25,7 @@
 //!
 //! # `e.next()` semantics
 //!
-//! PocketBase's hook chain lets a JavaScript handler run code *after* the
+//! Cratebase's hook chain lets a JavaScript handler run code *after* the
 //! remainder of the chain by calling `e.next()` in the middle of the
 //! handler. This runtime approximates that: `e.next()` only records that
 //! it was called. The handler runs to completion, the runtime returns a
@@ -43,7 +43,7 @@
 //! - Errors thrown by the rest of the chain do not propagate back into the
 //!   handler's `try/catch` around `e.next()`.
 //! - A handler that never calls `e.next()` still stops the chain, exactly
-//!   as in PocketBase.
+//!   as in Cratebase.
 //!
 //! The design leaves room for the faithful version: `e.next()` would
 //! become a native function that hands a `oneshot` to the Rust chain,
@@ -71,9 +71,9 @@ use crate::worker::{self, Control, Job, MigrationDirection};
 /// Runtime configuration.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
-    /// Directory containing `*.pb.js` hook files (PocketBase's `pb_hooks`).
+    /// Directory containing `*.cb.js` hook files (Cratebase's `cb_hooks`).
     pub hooks_dir: PathBuf,
-    /// Directory containing `*.js` migration files (`pb_migrations`).
+    /// Directory containing `*.js` migration files (`cb_migrations`).
     pub migrations_dir: PathBuf,
     /// Where to write `types.d.ts` at startup, if anywhere.
     pub types_file: Option<PathBuf>,
@@ -97,8 +97,8 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         RuntimeConfig {
-            hooks_dir: PathBuf::from("pb_hooks"),
-            migrations_dir: PathBuf::from("pb_migrations"),
+            hooks_dir: PathBuf::from("cb_hooks"),
+            migrations_dir: PathBuf::from("cb_migrations"),
             types_file: None,
             workers: 0,
             hooks_watch: false,
@@ -212,7 +212,7 @@ impl JsEvent {
 #[serde(rename_all = "camelCase")]
 pub struct JsEventOutcome {
     /// `true` when the handler called `e.next()`. When `false` the chain
-    /// must stop (without error), as in PocketBase.
+    /// must stop (without error), as in Cratebase.
     pub next_called: bool,
     /// The record as the handler left it (same shape as the input
     /// snapshot), if the event carried one.
@@ -652,7 +652,7 @@ fn spawn_watcher(inner: Weak<Inner>, runtime: Runtime) {
                 let now = snapshot(&dir);
                 if now != last {
                     last = now;
-                    tracing::info!("pb_hooks changed, reloading");
+                    tracing::info!("cb_hooks changed, reloading");
                     for w in &inner.workers {
                         let (tx, _rx) = oneshot::channel();
                         let _ = w.control.send(Control::Reload(tx));

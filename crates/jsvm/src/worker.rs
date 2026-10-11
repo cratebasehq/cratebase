@@ -348,9 +348,9 @@ impl Worker {
         })
     }
 
-    /// Evaluate every `*.pb.js` in `hooks_dir`, in file-name order.
+    /// Evaluate every `*.cb.js` in `hooks_dir`, in file-name order.
     fn load_hooks(&self) -> Result<(), AppError> {
-        let files = list_files(&self.state.cfg.hooks_dir, |n| n.ends_with(".pb.js"))?;
+        let files = list_files(&self.state.cfg.hooks_dir, |n| n.ends_with(".cb.js"))?;
         let mut first_error = None;
         for file in files {
             let name = file_name(&file);

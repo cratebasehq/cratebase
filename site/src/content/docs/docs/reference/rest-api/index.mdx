@@ -58,7 +58,7 @@ including why a rule-denied record and a nonexistent one are both a
 | [Logs](/docs/reference/rest-api/logs/) | Search, view, stats |
 | [Backups](/docs/reference/rest-api/backups/) | List, create, upload, download, restore |
 | [Crons](/docs/reference/rest-api/crons/) | List, run-now |
-| [Functions](/docs/reference/rest-api/functions/) | Read-only `pb_hooks` inspection |
+| [Functions](/docs/reference/rest-api/functions/) | Read-only `cb_hooks` inspection |
 | [Schema](/docs/reference/rest-api/schema/) | Diff-and-apply schema-as-code |
 | [Typegen](/docs/reference/rest-api/typegen/) | Download generated TypeScript types |
 | [API keys](/docs/reference/rest-api/api-keys/) | Mint an API key |
@@ -102,11 +102,11 @@ additionally gets its own
 `collectionId`, `collectionName`, plus its collection's own schema
 fields.
 
-**`Collection`** — `id`, `name`, `type` (`base`/`auth`/`view`), `schema`
+**`Collection`** — `id`, `name`, `type` (`base`/`auth`/`view`), `fields`
 (array of field definitions), `listRule`/`viewRule`/`createRule`/
 `updateRule`/`deleteRule` (nullable strings — `null` means superuser-only,
 not "no rule"), `authOptions` (auth collections only), `created`,
 `updated`.
 
-**`FieldSchema`** — `id`, `name`, `type`, `required`, `unique`, `options`
-(shape depends on `type`; see [Field types](/docs/reference/field-types/)).
+**`FieldSchema`** — `id`, `name`, `type`, `required`, `unique`, plus the type-specific options as flat
+keys (shape depends on `type`; see [Field types](/docs/reference/field-types/)). There is no nested `options` object.

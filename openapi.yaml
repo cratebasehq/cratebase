@@ -252,7 +252,9 @@ paths:
             Full-text search over the collection's `searchable` fields, ANDed onto `filter`.
             Ranks by relevance (SQLite: bm25; Postgres: ts_rank) unless `sort` is also given, in
             which case `sort` wins. A collection with no searchable fields rejects this with a
-            400. See Database → Full-text search.
+            400. Combined with `nearestTo` it fuses vector and full-text
+            rankings by reciprocal rank fusion (k=60, up to 200 candidates from each).
+            See Database → Full-text search.
       responses:
         "200":
           description: OK
@@ -1250,7 +1252,7 @@ paths:
     get:
       summary: Open an SSE stream of record change events
       description: >
-        The first event (`PB_CONNECT`) carries `{"clientId": "..."}`. Send
+        The first event (`CB_CONNECT`) carries `{"clientId": "..."}`. Send
         that id to `POST /realtime` to declare subscriptions. Subsequent
         `message` events carry `{"action": "create"|"update"|"delete", "record": {...}}`.
       responses:
@@ -1820,6 +1822,93 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
 
+  /llm/usage:
+    post:
+      summary: Record one LLM call in the usage ledger (superuser or API key only)
+      description: >
+        Appends a row to the LLM usage ledger and returns its id plus the
+        cost computed from `settings.llm.prices` (per-model USD per 1M
+        tokens, set through `PATCH /settings`) at the current
+        `priceVersion`. A model with no configured price is recorded with
+        a cost of `0`. Only `model`, `promptTokens` and `completionTokens`
+        are required; the rest are optional attribution and timing fields.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, promptTokens, completionTokens]
+              properties:
+                model: { type: string }
+                promptTokens: { type: integer }
+                completionTokens: { type: integer }
+                tokensCached: { type: integer }
+                tokensReasoning: { type: integer }
+                latencyMs: { type: integer }
+                ttftMs: { type: integer, description: Time to first token in milliseconds }
+                finishReason: { type: string }
+                ok: { type: boolean }
+                error: { type: string }
+                surface: { type: string }
+                purpose: { type: string }
+                actor: { type: string }
+                sessionId: { type: string }
+                runId: { type: string }
+                callId: { type: string }
+                source: { type: string }
+                note: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  costUsd: { type: number }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /llm/usage/summary:
+    get:
+      summary: Aggregate the LLM usage ledger (superuser or API key only)
+      parameters:
+        - name: groupBy
+          in: query
+          schema: { type: string, enum: [model, surface, purpose, actor, day], default: model }
+        - name: from
+          in: query
+          schema: { type: string }
+          description: Inclusive lower bound on the call time
+        - name: to
+          in: query
+          schema: { type: string }
+          description: Upper bound on the call time
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        calls: { type: integer }
+                        promptTokens: { type: integer }
+                        completionTokens: { type: integer }
+                        costUsd: { type: number }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
   /mcp:
     get:
       summary: Model Context Protocol — SSE handshake leg
@@ -1954,7 +2043,7 @@ paths:
         not just a dashboard confirmation dialog. Read responses are
         truncated to 500 rows (`truncated: true` when more existed) and
         every statement is cancelled after 10s. Driver errors are returned
-        verbatim, not PocketBase's generic wrapper message, since the
+        verbatim rather than wrapped in a generic message, since the
         caller is already running arbitrary SQL by choice.
       requestBody:
         required: true
@@ -2077,7 +2166,7 @@ paths:
                 items:
                   type: object
                   properties:
-                    key: { type: string, example: pb_backup_20250115103000.zip }
+                    key: { type: string, example: cb_backup_20250115103000.zip }
                     size: { type: integer }
                     modified: { type: string }
         "401": { $ref: "#/components/responses/Error" }
@@ -2086,8 +2175,8 @@ paths:
       description: >
         A ZIP of a consistent snapshot of the main database, the auxiliary
         database, and the storage tree when files live on local disk. The
-        body is optional; `name` defaults to PocketBase's own
-        `pb_backup_YYYYMMDDHHMMSS.zip` pattern.
+        body is optional; `name` defaults to
+        the `cb_backup_YYYYMMDDHHMMSS.zip` pattern.
       requestBody:
         content:
           application/json:
@@ -2124,7 +2213,7 @@ paths:
 
   /backups/storage-info:
     get:
-      summary: Which store backups are written to (Cratebase extension, not a PocketBase route)
+      summary: Which store backups are written to (Cratebase extension)
       responses:
         "200":
           description: OK
@@ -2192,7 +2281,7 @@ paths:
       summary: Search the request/application log (superuser only)
       description: >
         Backed by `_logs` in the auxiliary database. `filter`/`sort` use
-        the ordinary PocketBase filter grammar against a synthetic
+        Cratebase's filter grammar against a synthetic
         collection (`level` number, `message` text, `data` json, `created`
         autodate) — `data.method = "GET"` works because `data` is a json
         field. Every read flushes the background log writer first.
@@ -2279,7 +2368,7 @@ paths:
                 items:
                   type: object
                   properties:
-                    id: { type: string, example: "__pbAutoBackup__" }
+                    id: { type: string, example: "__cbAutoBackup__" }
                     expression: { type: string, example: "0 0 * * *" }
         "401": { $ref: "#/components/responses/Error" }
 
@@ -2304,7 +2393,7 @@ paths:
         sits `pending` until an operator turns processing on, live, with
         no restart either direction. `queue` is looked up in the handler
         registry (a Rust `QueuePlugin::handle().register_handler` call,
-        or a `pb_hooks/*.pb.js` `onQueueJob` — Rust always wins for a
+        or a `cb_hooks/*.cb.js` `onQueueJob` — Rust always wins for a
         name both register); a queue with no registered handler still
         accepts the job, it just fails (and retries, then gives up) every
         time the worker tries it. `POST /plugins/queue/enqueue` is kept
@@ -2405,7 +2494,7 @@ paths:
 
   /functions:
     get:
-      summary: Read-only view of pb_hooks/*.pb.js files and the HTTP routes they registered (superuser only)
+      summary: Read-only view of cb_hooks/*.cb.js files and the HTTP routes they registered (superuser only)
       description: >
         There is no write path — hooks are edited as files on disk, not
         through the dashboard or this API.
@@ -2423,7 +2512,7 @@ paths:
                     items:
                       type: object
                       properties:
-                        name: { type: string, example: "increment_view_count.pb.js" }
+                        name: { type: string, example: "increment_view_count.cb.js" }
                         sizeBytes: { type: integer }
                         modifiedAt: { type: string, nullable: true }
                   routes:
@@ -2471,6 +2560,67 @@ paths:
               schema: { type: object, additionalProperties: true }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+
+  /settings/logo:
+    post:
+      summary: Upload the brand logo (superuser only)
+      description: >
+        Multipart, field `file`. PNG, JPEG, WebP or GIF up to 1 MiB,
+        identified by magic bytes (the declared content type is ignored);
+        SVG is rejected. The image is stored under the reserved object key
+        `_branding/logo`, and `settings.meta.logoUrl` is set to the absolute
+        public URL `<meta.appURL>/api/branding/logo?v=<content hash>` so
+        system emails can embed it.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Stored; `logoUrl` is the new public URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logoUrl: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Remove the uploaded brand logo (superuser only)
+      description: >
+        Deletes the stored image and clears `settings.meta.logoUrl` only when
+        it points at the uploaded logo; a custom external `logoUrl` is left
+        untouched. Always 204.
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /branding/logo:
+    get:
+      summary: The uploaded brand logo (public)
+      description: >
+        No authentication, so mail clients can fetch it. Served with the
+        sniffed image content type, `X-Content-Type-Options: nosniff`,
+        `Content-Disposition: inline` and an immutable one-year cache (the
+        `?v=` query of `meta.logoUrl` busts it on change).
+      security: []
+      responses:
+        "200":
+          description: The image bytes
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+            image/gif: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/Error" }
 
   /settings/test/s3:
     post:
@@ -2874,14 +3024,21 @@ components:
           description: >-
             Full-text-indexed — only meaningful (and only settable from the dashboard) on
             text/editor/email/url fields. See Database → Full-text search.
-        options: { type: object, additionalProperties: true }
+      additionalProperties: true
+      description: >-
+        Type-specific options (e.g. `maxSelect`, `collectionId`) are flat keys on the field, not
+        nested under an `options` object.
     CollectionInput:
       type: object
-      required: [name, type, schema]
+      description: >-
+        Field definitions go in `fields`, with type-specific options as flat keys on each field.
+        The legacy top-level `schema` key and per-field `options` objects are rejected with a 400
+        `validation_unknown_key`.
+      required: [name, type, fields]
       properties:
         name: { type: string }
         type: { type: string, enum: [base, auth, view] }
-        schema:
+        fields:
           type: array
           items: { $ref: "#/components/schemas/FieldSchema" }
         listRule: { type: string, nullable: true }

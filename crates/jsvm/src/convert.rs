@@ -149,7 +149,7 @@ fn api_error_from_object<'js>(ctx: &Ctx<'js>, obj: &Object<'js>) -> AppError {
     }
 }
 
-/// Interpret `data` as PocketBase's `{field: {code, message}}` map, or as
+/// Interpret `data` as Cratebase's `{field: {code, message}}` map, or as
 /// `{field: "message"}` shorthand.
 fn validation_fields(data: &Value) -> BTreeMap<String, FieldError> {
     let mut out = BTreeMap::new();

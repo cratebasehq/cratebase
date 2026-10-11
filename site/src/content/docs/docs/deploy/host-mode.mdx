@@ -1,0 +1,63 @@
+---
+title: "Host mode"
+description: "Run many isolated Cratebase projects in one process, routed by the request's Host header."
+---
+
+`cratebase host serve` runs several complete, isolated Cratebase apps in a
+single process. Each project has its own database, settings, files, hooks,
+cron/queue/webhook workers and JS runtime; the only thing shared is the
+listener. Requests are routed by the `Host` header.
+
+## Layout
+
+```text
+projects/
+  nyari/
+    project.env          # this project's variables
+    cb_data/             # database and files (created on first boot)
+    cb_hooks/            # JS hooks
+    cb_migrations/
+  diskon/
+    project.env
+```
+
+Create a project and get its first-run setup token:
+
+```sh
+cratebase host new nyari --host nyari.example.com --root ./projects
+```
+
+This writes `projects/nyari/project.env` with `CB_HOSTS`, `CB_APP_URL`, a
+generated `CB_SECRET` and `CB_SETUP_TOKEN`, and prints the setup URL
+(`https://<host>/_/login?token=…`). Then serve every project:
+
+```sh
+cratebase host serve --root ./projects --http 0.0.0.0:8090
+```
+
+## `project.env`
+
+`KEY=value` lines; `#` comments, an `export ` prefix and one pair of
+surrounding quotes are accepted; there is no variable interpolation.
+`CB_HOSTS` is required: a comma-separated list of host names the project
+answers to (a host may belong to only one project). Any other variable from
+the [configuration reference](/docs/deploy/configuration-reference/) may be
+set here, and `$os.getenv()` in the project's hooks reads these values first.
+
+`DATABASE_URL`, `CRATEBASE_DATA_DIR`, `CB_SECRET`, `AUTH_SECRET`,
+`CB_SETUP_TOKEN`, `CB_APP_URL`, `CB_HOOKS_DIR`, `CB_MIGRATIONS_DIR`,
+`CB_SEED_DIR`, `HOST` and `PORT` are read from `project.env` only and never
+fall back to the host process's environment, so a shared `DATABASE_URL`
+cannot point two projects at one database. All other variables fall back to
+the process environment.
+
+## Process-wide settings
+
+`CB_ENCRYPTION`, `EMBEDDINGS_BASE_URL`, `EMBEDDINGS_API_KEY` and
+`DATABASE_MAX_CONNECTIONS` are read from the process environment at use time.
+Setting one in a `project.env` is an error at startup; set it in the host
+process's environment instead. `/metrics` is also process-wide and reports
+the combined counters.
+
+A request whose `Host` is not listed by any project gets
+`404 {"code":404,"message":"Unknown project host.","data":{}}`.

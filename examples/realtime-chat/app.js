@@ -1,16 +1,16 @@
 // Cratebase Realtime Chat example.
 //
-// Imported via the bare specifier "pocketbase", resolved by the import map
-// in index.html to the official PocketBase JS SDK on esm.sh — no npm
-// install or build step needed. Cratebase's API is byte-compatible with
-// PocketBase v0.23+, so the official client works unchanged. See README.md.
-import PocketBase from "pocketbase";
+// Imported via the bare specifier "@cratebase/client", resolved by the
+// import map in index.html to the browser bundle `examples/serve.sh`
+// builds into examples/lib/ — no npm install in the example itself.
+// See README.md.
+import { createClient } from "@cratebase/client";
 
 const BASE_URL = "http://localhost:8090";
 const COLLECTION = "messages";
 const NAME_STORAGE_KEY = "cratebase-chat-display-name";
 
-const cb = new PocketBase(BASE_URL);
+const cb = createClient(BASE_URL);
 
 const statusEl = document.getElementById("status");
 const statusTextEl = document.getElementById("statusText");
@@ -104,7 +104,7 @@ function removeMessage(id) {
 // --- Initial history load ----------------------------------------------------
 
 async function loadHistory() {
-  const list = await cb.collection(COLLECTION).getList(1, 50, { sort: "created" });
+  const list = await cb.collection(COLLECTION).list({ page: 1, perPage: 50, sort: "created" });
   for (const record of list.items) {
     appendMessage(record);
   }

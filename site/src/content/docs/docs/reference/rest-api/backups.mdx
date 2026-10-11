@@ -21,7 +21,7 @@ snapshot mechanism behind these endpoints.
 ### `POST /backups`
 
 Body optional: `{ "name": "custom-name.zip" }` — defaults to
-PocketBase's own `pb_backup_YYYYMMDDHHMMSS.zip` pattern. A ZIP of a
+the `cb_backup_YYYYMMDDHHMMSS.zip` pattern. A ZIP of a
 consistent snapshot of the main database (`data.db` on SQLite,
 `data.pgdump` on Postgres — see
 [Deploy → Backups & restore](/docs/deploy/backups-restore/) for the
@@ -44,7 +44,7 @@ at least once, and `message` only on a failed run.
 ### `GET /backups/{key}` — authenticated by query token, not bearer
 
 ```
-GET /backups/pb_backup_20250115103000.zip?token=<file-token>
+GET /backups/cb_backup_20250115103000.zip?token=<file-token>
 ```
 
 Uses a superuser **file token** (from [`POST /files/token`](/docs/reference/rest-api/files/))
@@ -61,7 +61,6 @@ re-execs the current binary with the same arguments. The process id
 survives (a supervisor sees no crash), but every open connection is
 dropped, and the swap/restore happens **after** this endpoint has
 already answered `204`. Restoring a SQLite archive onto Postgres (or
-vice versa) is rejected with `400` before anything is touched. This is
-the one conformance-suite test that's permanently skipped rather than
-run against a live server — see
-[Compatibility](/docs/migrating/compatibility/).
+vice versa) is rejected with `400` before anything is touched. Because restore
+restarts the server, it is not exercised by the automated test suite
+against a live server.

@@ -1,5 +1,4 @@
-//! `--automigrate` / `CB_AUTOMIGRATE`: mirrors PocketBase's prebuilt-binary
-//! behaviour of writing a `pb_migrations/*.js` file for every collection
+//! `--automigrate` / `CB_AUTOMIGRATE`: writes a `cb_migrations/*.js` file for every collection
 //! change made through the dashboard/API, so a fresh environment can
 //! replay the exact same schema history instead of the operator having to
 //! remember or hand-write it.
@@ -7,12 +6,12 @@
 //! # Default and gating
 //!
 //! `automigrate` itself defaults to `true` (`Config::for_data_dir`), but a
-//! file is only ever written when `pb_migrations/` already exists *or*
+//! file is only ever written when `cb_migrations/` already exists *or*
 //! `--dev` is set (see [`should_write`]). Writing into a directory that
-//! does not exist would conjure a new top-level `pb_migrations/` next to
+//! does not exist would conjure a new top-level `cb_migrations/` next to
 //! every production data dir the moment a superuser edits a collection in
 //! the dashboard — surprising for an operator who never opted into JS
-//! migrations at all. Creating the directory once (`mkdir pb_migrations`,
+//! migrations at all. Creating the directory once (`mkdir cb_migrations`,
 //! or `cratebase migrate create`/`migrate collections`, which both do it
 //! already) or running with `--dev` opts in.
 //!
@@ -38,7 +37,7 @@ use crate::hooks::{Event, Handler};
 /// Register the three collection-lifecycle hooks that write migration
 /// files. Called once from [`App::bootstrap`], unconditionally — the
 /// hooks themselves check [`should_write`] on every fire, so toggling
-/// `CB_AUTOMIGRATE` (or creating `pb_migrations/`) takes effect on the
+/// `CB_AUTOMIGRATE` (or creating `cb_migrations/`) takes effect on the
 /// next change without a restart.
 pub fn bind_hooks(app: &App) {
     app.hooks().on_collection_create_request.bind(Handler::new(
@@ -106,7 +105,7 @@ pub fn bind_hooks(app: &App) {
     ));
 }
 
-/// `true` when a collection change should be written to `pb_migrations/`
+/// `true` when a collection change should be written to `cb_migrations/`
 /// right now — see the module doc for why this is more than just
 /// `config.automigrate`.
 fn should_write(app: &App) -> bool {
@@ -161,7 +160,7 @@ async fn try_write_migration(
         .collect();
     let path = dir.join(format!("{}_{action}_{slug}.js", Utc::now().timestamp()));
     let body = format!(
-        "/// <reference path=\"../pb_data/types.d.ts\" />\n\
+        "/// <reference path=\"../cb_data/types.d.ts\" />\n\
          migrate((app) => {{\n  {up}\n}}, (app) => {{\n  {down}\n}});\n"
     );
     std::fs::write(&path, body).map_err(|e| {

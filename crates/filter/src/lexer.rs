@@ -113,7 +113,7 @@ impl<'a> Lexer<'a> {
             match self.bump() {
                 Some(b'\\') => match self.bump() {
                     // Only the quote characters and the backslash itself
-                    // are escapable, like PocketBase; any other escape is
+                    // are escapable, like Cratebase; any other escape is
                     // kept verbatim.
                     Some(c @ (b'"' | b'\'' | b'\\')) => bytes.push(c),
                     Some(c) => {

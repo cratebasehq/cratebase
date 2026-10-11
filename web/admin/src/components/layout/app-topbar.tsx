@@ -12,12 +12,14 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
  */
 export function AppTopbar({ onOpenSearch }: { onOpenSearch: () => void }) {
   return (
-    <header className="sticky top-0 z-sticky flex h-topbar shrink-0 items-center gap-2 border-b border-border bg-background/80 pr-3 pl-2 backdrop-blur-sm">
+    <header className="sticky top-0 z-sticky flex h-topbar shrink-0 items-center gap-2 border-b border-border bg-background/75 pr-2 pl-2 backdrop-blur-md sm:pr-3">
       <SidebarTrigger className="size-7" />
       <Separator orientation="vertical" className="mr-1 data-[orientation=vertical]:h-4" />
-      <Breadcrumbs />
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <Breadcrumbs />
+      </div>
 
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         {/* Reads as a search field, behaves as the command palette trigger —
             the palette already worked, it just had no visible affordance.
             The label truncates and the shortcut is pinned: the two used to
@@ -29,7 +31,7 @@ export function AppTopbar({ onOpenSearch }: { onOpenSearch: () => void }) {
           className="hidden h-control-sm w-64 justify-start gap-2 px-2 font-normal text-muted-foreground md:flex"
         >
           <Search className="size-3.5 shrink-0" />
-          <span className="min-w-0 truncate">Search…</span>
+          <span className="min-w-0 truncate">Search or jump to…</span>
           <Kbd className="ml-auto shrink-0">⌘K</Kbd>
         </Button>
         <Button

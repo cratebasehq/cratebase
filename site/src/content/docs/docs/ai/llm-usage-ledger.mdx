@@ -1,0 +1,63 @@
+---
+title: "LLM usage ledger"
+description: "Record per-call LLM token usage and cost, then summarize spend by model, surface, purpose, actor, or day."
+---
+
+Cratebase can keep a ledger of your application's LLM calls: tokens,
+latency, and cost in USD computed from prices you configure. The ledger is
+for calls your own code makes (to any provider) and reports to Cratebase;
+all endpoints are **superuser or API key only**.
+
+## 1. Configure prices
+
+Set per-model prices in USD **per 1M tokens** under `settings.llm.prices`,
+(`input`, `output`, and an optional `cachedInput`), plus a `priceVersion` label you bump whenever prices change:
+
+```sh
+curl -X PATCH "$CRATEBASE_URL/api/settings" \
+  -H "Authorization: Bearer $SUPERUSER_TOKEN" -H "Content-Type: application/json" \
+  --data '{ "llm": { "priceVersion": "2026-10", "prices": { "gpt-4o-mini": { "input": 0.15, "output": 0.6, "cachedInput": 0.075 } } } }'
+```
+
+See [Settings object → `llm`](/docs/reference/settings-object/) for the
+other `llm` keys.
+
+## 2. Log usage
+
+`POST /api/llm/usage`:
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `model` | yes | Looked up in `settings.llm.prices`; a model with no entry is recorded unpriced. |
+| `promptTokens`, `completionTokens` | yes | |
+| `tokensCached`, `tokensReasoning` | no | |
+| `latencyMs`, `ttftMs` | no | Total and time-to-first-token latency. |
+| `finishReason`, `ok`, `error` | no | Outcome of the call. |
+| `surface`, `purpose`, `actor` | no | Free-form labels you can group by. |
+| `sessionId`, `runId`, `callId`, `source`, `note` | no | Correlation and annotation. |
+
+Response: `{ "id": "...", "costUsd": 0.000123 }`.
+
+## 3. Summarize
+
+`GET /api/llm/usage/summary?groupBy=model|surface|purpose|actor|day&from=&to=`
+
+```json
+{ "items": [ { "key": "gpt-4o-mini", "calls": 120, "promptTokens": 48210, "completionTokens": 9120, "costUsd": 0.0127 } ] }
+```
+
+`from` and `to` bound the time range.
+
+## From the SDK
+
+```ts
+const { costUsd } = await cb.llm.logUsage({
+  model: "gpt-4o-mini",
+  promptTokens: 812,
+  completionTokens: 120,
+  surface: "chat",
+  purpose: "support-reply",
+});
+
+const { items } = await cb.llm.usageSummary({ groupBy: "model" });
+```

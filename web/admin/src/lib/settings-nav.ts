@@ -314,17 +314,16 @@ export function settingsItemForCollection(name: string): SettingsTabTarget | und
   return SETTINGS_TAB_TARGETS.find((tab) => tab.collection === name);
 }
 
-/** Settings-gated tab visibility: a toggle-gated built-in module's tab
- * (currently the LLM tab and the dev-inbox tab) is hidden from the
- * sidebar, command palette, and its group's own `TabsList` until its flag
- * is on, even though the tab (and its underlying route redirect) still
- * work if visited directly. */
+/** Settings-gated tab visibility: the dev-inbox tab is hidden from the
+ * sidebar, command palette, and its group's own `TabsList` until it is
+ * available, even though the tab (and its underlying route redirect)
+ * still work if visited directly. The LLM tab is always visible: the
+ * usage ledger and price table work without the gateway enabled. */
 export function isSettingsTabVisible(
   legacyPath: string,
-  settings: { llm: { enabled: boolean } } | undefined,
+  _settings: { llm: { enabled: boolean } } | undefined,
   devMailInboxAvailable?: boolean,
 ): boolean {
-  if (legacyPath === "/settings/llm") return Boolean(settings?.llm.enabled);
   if (legacyPath === "/settings/mail-inbox") return devMailInboxAvailable === true;
   return true;
 }

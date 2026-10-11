@@ -36,7 +36,7 @@ than being backported to an older point-in-time release.
 
 This applies to the Cratebase server (`crates/*`), the admin dashboard
 (`web/admin`), the email templates (`web/email`), and the published SDK
-package (`sdk/js/extras`). Vulnerabilities in third-party dependencies
+packages (`sdk/js/*`). Vulnerabilities in third-party dependencies
 should generally be reported upstream first, but let us know here too if
 they're reachable through Cratebase's own code paths — see
 `.github/workflows/ci.yml`'s `dependency-scan` job for how dependency

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowUp, ChevronsUpDown, Rows3, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -8,6 +9,12 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 
+/** Narrowest and widest a column can be dragged to. */
+const MIN_COLUMN_WIDTH = 64;
+const MAX_COLUMN_WIDTH = 720;
+function clampWidth(width: number): number {
+  return Math.round(Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, width)));
+}
 
 /** Widths of the two fixed gutters, in px, for the same reason. */
 const SELECT_WIDTH = 34;
@@ -65,6 +72,12 @@ interface RecordsGridProps<T> {
   density?: Density;
   /** True while a background refetch is in flight over already-shown rows. */
   refreshing?: boolean;
+  /** Called with the new width in px when a column edge is dragged, or with
+   * `null` when the edge is double-clicked (back to the default width).
+   * Omit to make columns fixed. */
+  onResizeColumn?: (id: string, width: number | null) => void;
+  /** Plain-text value of a cell, for ⌘C on the active cell. */
+  getCellText?: (row: T, column: GridColumn<T>) => string;
 }
 
 /** `-created` → `{ key: "created", direction: "desc" }`. */
@@ -103,6 +116,8 @@ export function RecordsGrid<T>({
   emptyAction,
   density = "comfortable",
   refreshing = false,
+  onResizeColumn,
+  getCellText,
 }: RecordsGridProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [active, setActive] = useState<{ row: number; col: number } | null>(null);
@@ -111,20 +126,53 @@ export function RecordsGrid<T>({
   const rowHeight = ROW_HEIGHT[density];
   const current = parseSort(sort);
 
+  // Width while an edge is being dragged. Only committed to the parent (and
+  // storage) on release, so a drag is one write, not sixty.
+  const [live, setLive] = useState<{ id: string; width: number } | null>(null);
+  const widthOf = useCallback(
+    (column: GridColumn<T>) => (live && live.id === column.id ? live.width : column.width),
+    [live],
+  );
+
   const template = useMemo(
     () =>
       [
         `${SELECT_WIDTH}px`,
-        ...columns.map((c) => `${c.width}px`),
+        ...columns.map((c) => `${widthOf(c)}px`),
         rowActions ? `${ACTIONS_WIDTH}px` : null,
       ]
         .filter(Boolean)
         .join(" "),
-    [columns, rowActions],
+    [columns, rowActions, widthOf],
   );
 
   const totalWidth =
-    SELECT_WIDTH + columns.reduce((sum, c) => sum + c.width, 0) + (rowActions ? ACTIONS_WIDTH : 0);
+    SELECT_WIDTH + columns.reduce((sum, c) => sum + widthOf(c), 0) + (rowActions ? ACTIONS_WIDTH : 0);
+
+  function startResize(event: React.PointerEvent<HTMLElement>, column: GridColumn<T>) {
+    if (!onResizeColumn || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const target = event.currentTarget;
+    target.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = column.width;
+    let latest = startWidth;
+    const onMove = (e: PointerEvent) => {
+      latest = clampWidth(startWidth + e.clientX - startX);
+      setLive({ id: column.id, width: latest });
+    };
+    const onUp = () => {
+      target.removeEventListener("pointermove", onMove);
+      target.removeEventListener("pointerup", onUp);
+      target.removeEventListener("pointercancel", onUp);
+      setLive(null);
+      if (latest !== startWidth) onResizeColumn(column.id, latest);
+    };
+    target.addEventListener("pointermove", onMove);
+    target.addEventListener("pointerup", onUp);
+    target.addEventListener("pointercancel", onUp);
+  }
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -202,6 +250,20 @@ export function RecordsGrid<T>({
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (editing) return;
     const cursor = active ?? { row: 0, col: 0 };
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "c" && active && getCellText) {
+      if (window.getSelection()?.toString()) return;
+      const column = columns[active.col];
+      const row = rows[active.row];
+      if (column && row) {
+        event.preventDefault();
+        const text = getCellText(row, column);
+        void navigator.clipboard
+          .writeText(text)
+          .then(() => toast.success("Copied cell value"))
+          .catch(() => toast.error("Couldn't copy to the clipboard"));
+      }
+      return;
+    }
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -309,7 +371,7 @@ export function RecordsGrid<T>({
             style={{ gridTemplateColumns: template }}
             className="sticky top-0 z-sticky grid h-control-sm border-b border-border bg-surface-sunken/95 backdrop-blur-sm"
           >
-            <div role="columnheader" className={cn(headerCellClass, "justify-center px-0")}>
+            <div role="columnheader" className={cn(headerCellClass, "sticky left-0 z-raised justify-center bg-surface-sunken px-0")}>
               <Checkbox
                 aria-label={allOnPageSelected ? "Clear selection" : "Select all rows on this page"}
                 checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
@@ -325,7 +387,7 @@ export function RecordsGrid<T>({
                 }}
               />
             </div>
-            {columns.map((column) => {
+            {columns.map((column, colIndex) => {
               const sorted = column.sortKey && current?.key === column.sortKey ? current.direction : null;
               return (
                 <div
@@ -334,7 +396,12 @@ export function RecordsGrid<T>({
                   aria-sort={
                     column.sortKey ? (sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none") : undefined
                   }
-                  className={headerCellClass}
+                  className={cn(
+                    headerCellClass,
+                    "relative",
+                    colIndex === 0 && "sticky z-raised bg-surface-sunken",
+                  )}
+                  style={colIndex === 0 ? { left: SELECT_WIDTH } : undefined}
                 >
                   {column.sortKey ? (
                     <button
@@ -355,6 +422,24 @@ export function RecordsGrid<T>({
                   ) : (
                     <span className="truncate font-mono">{column.header}</span>
                   )}
+                  {onResizeColumn ? (
+                    <span
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label={`Resize ${column.header} column`}
+                      tabIndex={0}
+                      title="Drag to resize · double-click to reset"
+                      onPointerDown={(event) => startResize(event, column)}
+                      onDoubleClick={() => onResizeColumn(column.id, null)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onResizeColumn(column.id, clampWidth(column.width + (event.key === "ArrowRight" ? 16 : -16)));
+                      }}
+                      className="absolute inset-y-0 right-0 z-raised w-2 cursor-col-resize touch-none select-none after:absolute after:inset-y-1 after:right-0 after:w-0.5 after:rounded-full after:bg-transparent after:transition-colors hover:after:bg-primary focus-visible:after:bg-primary"
+                    />
+                  ) : null}
                 </div>
               );
             })}
@@ -401,9 +486,9 @@ export function RecordsGrid<T>({
                       transform: `translateY(${virtualRow.start}px)`,
                       gridTemplateColumns: template,
                     }}
-                    className="group/row grid border-b border-border transition-colors hover:bg-accent/40 data-[selected]:bg-primary/[0.07]"
+                    className="group/row grid border-b border-border transition-colors hover:bg-muted data-[selected]:bg-brand-soft"
                   >
-                    <div className="flex items-center justify-center border-r border-border">
+                    <div className="sticky left-0 z-raised flex items-center justify-center border-r border-border bg-background group-hover/row:bg-muted group-data-[selected]/row:bg-brand-soft">
                       <Checkbox
                         aria-label={`Select record ${id}`}
                         checked={isSelected}
@@ -427,8 +512,11 @@ export function RecordsGrid<T>({
                           onMouseDown={() => setActive({ row: virtualRow.index, col: colIndex })}
                           className={cn(
                             "flex min-w-0 items-center overflow-hidden border-r border-border px-2 outline-none last:border-r-0",
+                            colIndex === 0 &&
+                              "sticky z-raised bg-background group-hover/row:bg-muted group-data-[selected]/row:bg-brand-soft",
                             isActive && "ring-1 ring-inset ring-ring",
                           )}
+                          style={colIndex === 0 ? { left: SELECT_WIDTH } : undefined}
                         >
                           {column.cell(row, {
                             editing: isEditing,

@@ -2,7 +2,7 @@
 /// compiling a filter expression.
 ///
 /// The variants are deliberately coarse: the HTTP layer maps every one of
-/// them to PocketBase's `400 Invalid filter` response, and the realtime
+/// them to Cratebase's `400 Invalid filter` response, and the realtime
 /// evaluator uses [`FilterError::Unsupported`] as the signal to fall back
 /// to SQL evaluation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

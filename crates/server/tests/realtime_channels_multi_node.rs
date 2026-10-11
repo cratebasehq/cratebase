@@ -32,7 +32,7 @@ fn node_config(url: &str, dir: &std::path::Path) -> Config {
         database_url: url.to_string(),
         log_requests: false,
         secret: "test-secret-0123456789".into(),
-        ..Config::for_data_dir(dir.join("pb_data"))
+        ..Config::for_data_dir(dir.join("cb_data"))
     }
 }
 
@@ -117,8 +117,8 @@ async fn connect_and_subscribe(
     let (event, hello) =
         tokio::time::timeout(Duration::from_secs(5), next_sse_frame(&mut body, &mut buf))
             .await
-            .expect("PB_CONNECT hello timed out");
-    assert_eq!(event.as_deref(), Some("PB_CONNECT"));
+            .expect("CB_CONNECT hello timed out");
+    assert_eq!(event.as_deref(), Some("CB_CONNECT"));
     let client_id = hello["clientId"].as_str().expect("clientId").to_string();
 
     let submit = client

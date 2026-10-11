@@ -78,17 +78,17 @@ well-scoped primitive into a maintenance burden.
 > thin extension package on top of it" stance was reversed — Cratebase
 > now ships a first-party typed SDK, `@cratebase/client`. See
 > `docs/superpowers/specs/2026-09-08-first-class-auth-sdk-plan.md` for
-> the decision record and the reasoning that changed. `@cratebase/extras`
-> still exists for projects that stay on the official `pocketbase` SDK —
-> it just isn't the default recommendation anymore. The reasoning below
+> the decision record and the reasoning that changed. The optional extras
+> package (since removed) existed for projects that stayed on the third-party
+> JS SDK — it just wasn't the default recommendation anymore. The reasoning below
 > is preserved as a record of what was decided at the time.
 
-Parity work (W1–W8) deliberately rides the official `pocketbase` npm SDK
+Parity work (W1–W8) deliberately rides the third-party JS SDK
 unchanged — that's the whole point of the conformance suite, and it's why
 the in-house SDK was deleted (see PR #3). But every interesting value-add
-below either needs a new endpoint the official SDK doesn't know about, or
+below either needs a new endpoint the third-party SDK doesn't know about, or
 a client-side capability (typed vector search, presence, generated types)
-that isn't in PocketBase's surface at all.
+that isn't in the original API surface at all.
 
 **Resolution: don't re-fork the SDK. Layer a thin, optional extension
 package on top of it instead.**
@@ -98,12 +98,12 @@ package on top of it instead.**
   collections + subscribe) needs **no SDK change** — ship it server-side
   only.
 - Anything that needs a new endpoint but no new client ergonomics can go
-  through the official SDK's existing escape hatch: `pb.send(path,
+  through the third-party SDK's existing escape hatch: `pb.send(path,
   options)`. Zero fork risk, just less discoverable/typed.
 - Anything that genuinely needs typed client ergonomics (vector search
   helpers, a nicer presence API, push-subscription registration) ships as
-  a **separate, optional** package — working name `@cratebase/extras` —
-  that takes an existing `PocketBase` client instance and bolts on
+  a **separate, optional** package — working name "extras" —
+  that takes an existing client instance and bolts on
   methods, rather than replacing or wrapping the whole client. A project
   that only wants parity never installs it and pays zero cost; a project
   that wants the extra surface adds one dependency on top of the SDK it
@@ -124,11 +124,11 @@ pattern (per-request client, cookie-hydrated auth store):
 
 ```ts
 // inside a TanStack Start server function / loader
-const pb = new PocketBase(url);
+const pb = new Client(url);
 pb.autoCancellation(false); // see gotcha below
-pb.authStore.loadFromCookie(getCookie("pb_auth") ?? "");
+pb.authStore.loadFromCookie(getCookie("cb_auth") ?? "");
 const posts = await pb.collection("posts").getList(1, 20);
-setCookie("pb_auth", pb.authStore.exportToCookie());
+setCookie("cb_auth", pb.authStore.exportToCookie());
 ```
 
 **Gotcha worth documenting explicitly:** the SDK's default auto-
@@ -136,7 +136,7 @@ cancellation (dedupes in-flight duplicate requests, meant for client-side
 UI) silently cancels concurrent loader calls on the server, where each
 request is independent. `autoCancellation(false)` is required for any
 server context. This is the single most common first-time-SSR footgun
-with PocketBase-family clients and costs nothing to document.
+with clients of this SDK family and costs nothing to document.
 
 **Action for W7:** add an `examples/tanstack-start` (or at minimum a
 README section) showing this exact pattern. This is a documentation gap,
@@ -150,7 +150,7 @@ Prompted by "push notif?" — yes, and it's worth widening to a full
 **Messaging** pillar rather than shipping push in isolation, because the
 three pieces share almost all their infrastructure and the grouping
 itself is a legible product story (this is explicitly how Appwrite frames
-it, and it's a real gap in PocketBase — no first-party push/SMS/webhooks
+it, and it's a real gap in the original — no first-party push/SMS/webhooks
 of any kind).
 
 - **Outgoing webhooks — build this first.** POST a JSON payload to a
@@ -163,9 +163,9 @@ of any kind).
   service" use case), zero third-party account/credential needed to
   demo it. No SDK impact at all — configured server-side (dashboard or a
   `_webhooks` collection), fires regardless of client.
-- **Push notifications — real gap, real effort.** PocketBase has none;
+- **Push notifications — real gap, real effort.** The original has none;
   Appwrite does (unified Messaging API), so this is a differentiator
-  against PocketBase specifically and parity against Appwrite, not a
+  against the original and parity against Appwrite, not a
   clean moat. Needs:
   - A `_push_subscriptions` (or per-user field) collection storing device
     tokens, keyed by platform (web/iOS/Android).
@@ -189,7 +189,7 @@ of any kind).
   - **Honest effort call:** this is the most infrastructure-heavy item in
     this whole doc — three delivery backends, credential management per
     operator, and retry/dead-token cleanup (a push token goes stale
-    silently; PocketBase-style "just works" means detecting and pruning
+    silently; "just works" means detecting and pruning
     dead tokens on delivery failure, not leaving that to the operator).
     Sequence it *after* webhooks land and prove the event-subscription
     plumbing, not as the first Messaging item.
@@ -210,7 +210,7 @@ not a reason to start here).
 Prompted by "ambil feature-feature Appwrite juga" — Appwrite is the
 closer competitor for several of these ideas (it already ships
 Messaging, Functions, Teams), so it's worth scanning its surface
-explicitly rather than only comparing against PocketBase. Not everything
+explicitly rather than only comparing against the original. Not everything
 it does fits our positioning; adopt selectively, and write down *why* the
 rejected ones are rejected so nobody re-proposes them without the
 context.
@@ -267,7 +267,7 @@ re-proposed without this context):**
 ## 5. Dashboard: raw SQL console for search/ops
 
 Prompted by "di dashboard kita harus bisa query raw juga untuk search" —
-yes, and PocketBase's dashboard has no equivalent (Supabase Studio's SQL
+yes, and the original dashboard has no equivalent (Supabase Studio's SQL
 Editor is the closest reference point). The filter language covers
 per-collection rule-shaped queries well but can't express joins/
 aggregates/ad-hoc exploratory search across tables — a raw SQL console
@@ -353,7 +353,7 @@ to the others:**
 **Everything else, ranked by defensibility × cost:**
 
 1. **Postgres multi-node realtime (`LISTEN`/`NOTIFY`).** The structural
-   moat — PocketBase is SQLite-only *by design, permanently*, so this is
+   moat — the original is SQLite-only *by design, permanently*, so this is
    the one item they cannot follow us over. Zero SDK impact (same SSE
    wire format). Also the prerequisite for pgvector above, so it's
    effectively tied with the AI-flagship tier rather than competing with
@@ -370,7 +370,7 @@ to the others:**
    (see §1). Independent of the SDK-strategy question otherwise.
 4. **Teams / memberships (§4).** Real B2B draw, needs W8's
    record-lifecycle hooks as a prerequisite.
-5. **Push notifications (§3).** Real gap vs PocketBase, real effort
+5. **Push notifications (§3).** Real gap vs the original, real effort
    (three delivery backends + credential management + dead-token
    hygiene) — sequence after webhooks prove the plumbing.
 6. **Presence.** Buildable entirely on existing collections + realtime
@@ -389,10 +389,10 @@ to the others:**
 merely deprioritized.
 
 **Risk flagged separately, not part of the "new value" pitch:** W8 (JS
-hooks / `pb_hooks`) is parity, not value-add, but it's the single biggest
-*defection* risk today — it's PocketBase's primary extension point, and
+hooks / `cb_hooks`) is parity, not value-add, but it's the single biggest
+*defection* risk today — it's the original's primary extension point, and
 "you can't do that yet" is currently the strongest reason a real
-PocketBase user would refuse to switch. It's already in the W1–W8 batch;
+user of the original would refuse to switch. It's already in the W1–W8 batch;
 flagging here so it doesn't get bumped by the fancier ideas above it.
 
 **Also confirmed as already covered by W8, not a new item:** the
@@ -412,12 +412,12 @@ plus explicit non-fits so positioning stays sharp rather than "for
 everyone":
 
 1. **Indie dev / small team shipping an MVP fast** — the classic
-   PocketBase audience. We're a strictly better fit than PocketBase for
+   original-API audience. We're a strictly better fit than the original for
    them specifically because of the one fear that audience has about
-   PocketBase: "what happens when I outgrow SQLite." Cheapest to
+   it: "what happens when I outgrow SQLite." Cheapest to
    validate — this is what W1–W8 parity work already targets.
 2. **Teams building an AI/agent product** (chatbot, RAG, internal
-   copilot) — §1a's flagship bet. No competitor (PocketBase) has this
+   copilot) — §1a's flagship bet. No competitor (the original) has this
    story at all; assembling it themselves means gluing together
    Postgres + pgvector + a hand-rolled authz layer + a hand-rolled MCP
    server.
@@ -459,7 +459,7 @@ later as a README/`examples/` walkthrough, not just an internal note.
 copilot over their own docs.
 
 1. Employees upload PDFs/notes through a normal app UI → Cratebase file
-   storage (R2) holds the raw file. A `pb_hooks` JS hook
+   storage (R2) holds the raw file. A `cb_hooks` JS hook
    (`onRecordCreate` on a `docs` collection, §"BFF"/W8) chunks the text
    and calls an embedding provider, writing `{text, vector}` rows to a
    `chunks` collection (§1a's vector field + auto-embedding). One
@@ -492,7 +492,7 @@ copilot over their own docs.
 
 This is the argument for why §1a's items are a *bundle*, not four
 independent checkboxes: none of them alone makes this story work, and
-together they're a story no PocketBase-shaped competitor can currently
+together they're a story no competitor of the original's shape can currently
 tell.
 
 ## 9. Bonus, cheap: self-hosted web analytics (Plausible-style)
@@ -535,13 +535,13 @@ this doc's predecessor scoped:
 
 - Batch API (`POST /api/batch`), full auth surface (verification,
   password reset, email change, OTP, MFA, impersonate, `_authOrigins`
-  origin tracking + new-location alerts), JS hooks (`pb_hooks/` +
+  origin tracking + new-location alerts), JS hooks (`cb_hooks/` +
   `routerAdd`, including a live-verified `routerAdd` BFF-style endpoint —
   see §"BFF" above), and first-run superuser setup (the dashboard now
   shows an inline setup form on an empty database instead of a bare login
   screen pointing at a CLI command).
-- Conformance: **180 pass, 1 skip, 0 fail of 181** (`tests/conformance`
-  against the official `pocketbase` npm SDK v0.28, driven against a real
+- Conformance: **180 pass, 1 skip, 0 fail of 181** (the since-removed conformance suite
+  against the third-party JS SDK v0.28, driven against a real
   built `cratebase serve` binary) — up from the 155/181 baseline this
   doc's predecessor recorded. `cargo test --workspace`, `cargo clippy
   --workspace --all-targets -- -D warnings`, and `cargo fmt --all --

@@ -1,7 +1,7 @@
 # Cratebase full audit — 2026-09-03
 
-Goal stated by the owner: a 1:1 PocketBase port that is measurably faster than
-PocketBase, trivially extendable via plugins, with a stunning admin UI. This
+Goal stated by the owner: a 1:1 port of the original API that is measurably faster than
+the original, trivially extendable via plugins, with a stunning admin UI. This
 document records where the codebase actually stands against that goal.
 
 Codebase size: 13,415 lines of Rust across 7 crates; 14,792 lines in
@@ -9,7 +9,7 @@ Codebase size: 13,415 lines of Rust across 7 crates; 14,792 lines in
 
 ---
 
-## Part 1 — PocketBase parity (target: PocketBase v0.23+ API)
+## Part 1 — API parity (target: the original v0.23+ API)
 
 ### 1. Collections
 
@@ -70,7 +70,7 @@ Also missing: auth alerts / `_authOrigins`, token key rotation, per-collection t
 Thumbs work (`WxH`, `f`, `t`, `b`; missing `l`, `r`), no thumb allowlist (CPU amplification vector), no `?download=1`, no `protected` per-field distinction, no orphan GC.
 
 ### 6. Realtime — PARTIAL
-SSE + `PB_CONNECT` + per-subscriber rule enforcement is genuinely good. **Topic options (`?options={filter,expand,fields,headers,query}`) missing entirely.**
+SSE + `CB_CONNECT` + per-subscriber rule enforcement is genuinely good. **Topic options (`?options={filter,expand,fields,headers,query}`) missing entirely.**
 
 ### 7. Settings — MISSING (entire area)
 No `/api/settings`, no test S3/email. All config is boot-time env. No `rateLimits`, no trusted-proxy config (`X-Forwarded-For` trusted unconditionally at `routes/auth.rs:30-38`, rate limiter spoofable).
@@ -108,9 +108,9 @@ Health shape differs. Crons API missing. **No hooks/event system, no JSVM.** CLI
 
 ## Part 2 — Performance
 
-### Benchmark (benchmarks/, PocketBase v0.40.2, same machine, n=1)
+### Benchmark (benchmarks/, reference server, same machine, n=1)
 
-| Category | Conc | Cratebase req/s | PocketBase req/s | Ratio |
+| Category | Conc | Cratebase req/s | Reference req/s | Ratio |
 |---|---|---|---|---|
 | create | 1 | 3226.8 | 3333.6 | 0.97x |
 | create | 20 | 4530.7 | 6111.7 | 0.74x |
@@ -134,7 +134,7 @@ Search c20 p50/p95/p99 = 14.9/16.4/17.0ms: a flat distribution, the signature of
 | DELETE (admin) | 5 + 1 async | 6 | 2 |
 | GET list (auth-record token) | 7 + 1 async | 8 | 1 |
 
-PocketBase: list ≈ 2, create ≈ 1, delete ≈ 2, collection from in-memory cache.
+Reference server: list ≈ 2, create ≈ 1, delete ≈ 2, collection from in-memory cache.
 
 ### Findings ranked
 1. **Every request writes a `_request_logs` row into the primary DB** (`crates/server/src/request_log.rs:44-56`, `crates/db/src/system.rs:169-198`). Turns read workload into write workload, takes SQLite's writer lock per request, burns a pool connection, and the every-256 prune is a full scan. PB uses a separate `auxiliary.db` with batched writes.
@@ -239,7 +239,7 @@ Logs: filter form has no submit affordance, no chart, no facets, no detail. Back
 ### Data layer
 SDK `fetch` wrapper, `localStorage` token, **no 401 handler** (expired token = toasts forever), no global error handler, no error boundary, no route loaders (client waterfalls), realtime only on the collection route.
 
-### Missing vs PocketBase admin
+### Missing vs the reference admin
 Settings: Application, Mail, Files storage, Backups restore/upload, Export/Import collections, Auth providers, Token options. Superusers page. API preview panel. Logs chart + facets. Records filter/sort UI, column toggles, bulk ops. Auth tools (verify, reset, impersonate). Indexes editor. Duplicate collection. Dashboard home. Responsive layout.
 
 ### Keep / replace

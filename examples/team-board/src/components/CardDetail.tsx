@@ -94,7 +94,7 @@ export function CardDetail({ cardId, onClose }: { cardId: string; onClose: () =>
           title !== card.title &&
           // `searchText` included directly for the same reason
           // src/hooks/useCards.ts's createCard does: apply_embeddings
-          // runs before pb_hooks/team-board.pb.js's onRecordUpdate can
+          // runs before cb_hooks/team-board.cb.js's onRecordUpdate can
           // derive it, so it must already be in this request's body.
           save({ title: title.trim(), searchText: [title.trim(), card.description].filter(Boolean).join("\n\n") })
         }

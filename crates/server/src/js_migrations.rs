@@ -1,4 +1,4 @@
-//! Wires `cratebase_jsvm`'s JS migration runner (`pb_migrations/*.js`) to
+//! Wires `cratebase_jsvm`'s JS migration runner (`cb_migrations/*.js`) to
 //! the server: a [`cratebase_jsvm::MigrationLedger`] backed by the same
 //! `_migrations` table the core (Rust) migration runner uses (see
 //! `cratebase_db::migrations`), and the entry points [`App::serve`] and
@@ -70,9 +70,9 @@ impl MigrationLedger for DbMigrationLedger {
 
 /// Apply every pending JS migration, in file-name order. A no-op — not an
 /// error — when the JS runtime never started (`jsvm_host::maybe_start`
-/// starts it for a non-empty `pb_migrations/` even without any
-/// `pb_hooks/*.pb.js` file; see its doc comment), matching PocketBase's
-/// "an absent `pb_migrations` costs nothing" behaviour.
+/// starts it for a non-empty `cb_migrations/` even without any
+/// `cb_hooks/*.cb.js` file; see its doc comment), so that
+/// an absent `cb_migrations` costs nothing.
 pub async fn run_up(app: &App) -> Result<Vec<String>, AppError> {
     let Some(runtime) = app.jsvm() else {
         return Ok(vec![]);
@@ -96,7 +96,7 @@ pub async fn run_down(app: &App, n: usize) -> Result<Vec<String>, AppError> {
 /// Every `*.js` migration file name currently on disk, known or not to the
 /// ledger — used by `migrate history-sync` to decide which ledger rows are
 /// stale. Independent of whether the JS runtime happens to be running, so
-/// it stays correct even when `pb_migrations/` is momentarily the only
+/// it stays correct even when `cb_migrations/` is momentarily the only
 /// non-empty JS directory (a plain `Runtime` isn't needed just to list
 /// files).
 pub fn known_migration_files(app: &App) -> Result<Vec<String>, AppError> {
@@ -153,7 +153,7 @@ pub fn write_collections_snapshot(app: &App) -> Result<PathBuf, AppError> {
         chrono::Utc::now().timestamp()
     ));
     let body = format!(
-        "/// <reference path=\"../pb_data/types.d.ts\" />\n\
+        "/// <reference path=\"../cb_data/types.d.ts\" />\n\
          migrate((app) => {{\n\
          \x20 const snapshot = {};\n\
          \x20 for (const data of snapshot) {{\n\
@@ -195,7 +195,7 @@ mod tests {
     }
 
     /// A fully-formed `widgets` collection JSON, exactly like the JSON a
-    /// real PocketBase-style migration embeds (id, timestamps and every
+    /// real JS migration embeds (id, timestamps and every
     /// system field already assigned) — `$app.save` on a JS `Collection`
     /// does not run the HTTP route's `prepare_new` normalization
     /// (id/system-field assignment), so a hand-written migration has to
@@ -219,11 +219,11 @@ mod tests {
 
     /// A temp-dir app with `js` written as the single pending migration.
     /// Mirrors `jsvm_host`'s own `test_app_with_hook` helper, but for
-    /// `pb_migrations/` with no `pb_hooks/` file at all — the runtime must
+    /// `cb_migrations/` with no `cb_hooks/` file at all — the runtime must
     /// still start (see `jsvm_host::maybe_start`).
     async fn app_with_migration(js: &str) -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let cfg = Config::memory(dir.path().join("pb_data"));
+        let cfg = Config::memory(dir.path().join("cb_data"));
         std::fs::create_dir_all(&cfg.migrations_dir).expect("create migrations dir");
         std::fs::write(
             std::path::Path::new(&cfg.migrations_dir).join(MIGRATION_FILE),
@@ -240,7 +240,7 @@ mod tests {
         let (app, _dir) = app_with_migration(&create_widgets_migration()).await;
         assert!(
             app.jsvm().is_some(),
-            "the JS runtime must start for a pending migration even with no pb_hooks file"
+            "the JS runtime must start for a pending migration even with no cb_hooks file"
         );
 
         let applied = run_up(&app).await.expect("run_up");

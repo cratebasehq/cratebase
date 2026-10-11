@@ -3,7 +3,7 @@ import { appRoute } from "@/routes/app";
 
 function SettingsLayout() {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto">
       <Outlet />
     </div>
   );

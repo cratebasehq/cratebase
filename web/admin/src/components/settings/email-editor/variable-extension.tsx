@@ -33,6 +33,10 @@ declare module "@tiptap/core" {
  */
 export const variableKeysRef: { current: string[] } = { current: [] };
 
+/** One-line "where does this value come from" per key, shown beside each
+ * key in the chip's picker. Kept live the same way as [`variableKeysRef`]. */
+export const variableDescriptionsRef: { current: Record<string, string> } = { current: {} };
+
 /** The editor-only chip a `variable` node renders as — click it to
  * change which `{{path}}` it holds via the same key list the sidebar's
  * "Insert variable" button offers. Purely cosmetic: what actually gets
@@ -47,19 +51,22 @@ function VariableChip({ node, updateAttributes, selected }: NodeViewProps) {
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <span
+            role="button"
+            tabIndex={0}
+            aria-label={`Variable ${path || "path"} — change`}
             data-variable={path}
             contentEditable={false}
-            className={`mx-0.5 inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 align-baseline font-mono text-xs leading-none ${
+            className={`mx-0.5 inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 align-baseline font-mono text-xs leading-none transition-colors duration-fast ${
               selected
-                ? "border-primary bg-primary/10 text-primary"
-                : "border-dashed border-border bg-muted text-muted-foreground hover:border-foreground/40"
+                ? "border-primary bg-primary/14 text-brand-text"
+                : "border-dashed border-border bg-muted text-muted-foreground hover:border-border-strong"
             }`}
           >
             <Braces className="size-3" />
             {path || "path"}
           </span>
         </PopoverTrigger>
-        <PopoverContent className="w-56 p-0" align="start">
+        <PopoverContent className="w-72 p-0" align="start">
           <Command>
             <CommandInput placeholder="Search variables…" />
             <CommandList>
@@ -74,7 +81,12 @@ function VariableChip({ node, updateAttributes, selected }: NodeViewProps) {
                       setOpen(false);
                     }}
                   >
-                    <code className="font-mono text-xs">{`{{${key}}}`}</code>
+                    <div className="flex flex-col items-start gap-0.5">
+                      <code className="font-mono text-xs">{`{{${key}}}`}</code>
+                      {variableDescriptionsRef.current[key] ? (
+                        <span className="text-xs text-muted-foreground">{variableDescriptionsRef.current[key]}</span>
+                      ) : null}
+                    </div>
                   </CommandItem>
                 ))}
               </CommandGroup>

@@ -1,0 +1,57 @@
+---
+title: "Schema DSL"
+description: "@cratebase/schema — typed field builders that emit the document POST /api/schema/apply accepts."
+---
+
+`@cratebase/schema` lets you write your collections in TypeScript and emit
+the `{ "collections": [...] }` document accepted by `POST /api/schema/apply`,
+`cratebase schema`, and `cratebase dev` (which applies `./schema.json`).
+Record types still come from [`cratebase typegen`](/docs/extending/schema-codegen/).
+
+```sh
+bun add -d @cratebase/schema
+```
+
+```ts title="schema.ts"
+import { defineCollection, defineSchema, idx, relation, select, text, writeSchema } from "@cratebase/schema";
+
+const posts = defineCollection({
+  name: "posts",
+  fields: [
+    text("title", { required: true, searchable: true }),
+    select("status", ["draft", "live"]),
+    relation("author", "users"), // target by name; resolved to its collection id
+  ],
+  indexes: [idx("idx_posts_title", "posts", ["title"], { unique: true })],
+  listRule: "", // "" = public; omitted rules are superuser-only
+});
+
+await writeSchema(defineSchema(posts), new URL("./schema.json", import.meta.url));
+```
+
+Run `bun schema.ts`, then `cratebase dev` applies `schema.json`; or send it
+to a running instance — see [Schema as code](/docs/extending/schema-as-code/).
+
+## Builders
+
+`text`, `editor`, `number`, `bool`, `email`, `url`, `date`, `autodate`,
+`select(name, values)`, `file`, `relation(name, collection)`, `json`,
+`password`, `geoPoint`, and `vector` (with `dimensions` and an optional
+`embedding` block for [auto-embedding](/docs/ai/auto-embedding/)). Every
+builder takes the common options `required`, `hidden`, `presentable`,
+`help`, and `searchable` (text-shaped types), plus type-specific options
+passed flat — there is no nested `options` object.
+
+## Functions
+
+| Function | Purpose |
+| --- | --- |
+| `defineCollection(input)` | One collection: `name`, `type` (`base`, `auth`, `view`), `fields`, `indexes`, and the five API rules. |
+| `defineSchema(...collections)` | Combines collections into the apply document and resolves relation targets by name. |
+| `idx(name, collection, columns, { unique, where })` | Builds a `CREATE [UNIQUE] INDEX` statement for `indexes`. |
+| `collectionId(type, name)` | The deterministic collection id the server derives for a type and name. |
+| `writeSchema(schema, path)` | Writes the document as JSON. |
+
+Relation targets may be any collection in the same `defineSchema(...)` call
+or the built-in `users` / `_superusers`. Do not declare `id`, `created`, or
+`updated` — the server adds them.

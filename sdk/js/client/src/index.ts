@@ -1,8 +1,6 @@
 /** `@cratebase/client` — the first-party typed TypeScript SDK: records,
  * auth (password/OTP/OAuth2/MFA, cookie sessions, impersonation, bans),
- * realtime, files, batch, and admin APIs. Wire-compatible with the
- * official `pocketbase` npm SDK's server surface; `@cratebase/extras`
- * remains available for projects staying on that SDK. */
+ * realtime, files, batch, and admin APIs. */
 
 import type { AuthStore } from "./auth-store.js";
 import { defaultAuthStore, MemoryAuthStore } from "./auth-store.js";
@@ -57,6 +55,13 @@ export type {
 } from "./types.js";
 export type { NearestToOptions, RpcRow } from "./cratebase-only.js";
 export type { ChatMessage, ChatOptions, ChatResult, ToolSchema, EnqueueOptions, EnqueuedJob, PresenceOptions, Presence, Sender } from "./cratebase-only.js";
+export type {
+  LogLlmUsageOptions,
+  LogLlmUsageResult,
+  LlmUsageSummaryOptions,
+  LlmUsageSummaryItem,
+  LlmUsageSummaryResult,
+} from "./cratebase-only.js";
 export type { MailRecipient, MailAddress, SendMailOptions, SendMailResult, PreviewMailOptions, PreviewMailResult } from "./cratebase-only.js";
 export type {
   NotificationRecord,
@@ -77,6 +82,9 @@ export { getMagicLinkTokenFromUrl } from "./cratebase-only.js";
 
 export interface CreateClientOptions {
   authStore?: AuthStore;
+  /** Bearer token for a non-interactive client: an API key `cb_…` or a
+   * minted JWT. Mutually exclusive with `authStore`. */
+  token?: string;
   authCollection?: string;
   credentials?: RequestCredentials;
   cookie?: string;
@@ -147,7 +155,16 @@ export class CratebaseClient<
       "_notifications",
     );
 
-    const rootStore = options.authStore ?? defaultAuthStore();
+    if (options.token !== undefined && options.authStore) {
+      throw new TypeError("createClient: pass either `token` or `authStore`, not both");
+    }
+    let rootStore: AuthStore;
+    if (options.token !== undefined) {
+      rootStore = new MemoryAuthStore();
+      rootStore.save(options.token, null);
+    } else {
+      rootStore = options.authStore ?? defaultAuthStore();
+    }
     this.authNamespaces.set(this.authCollection, this.buildAuth(this.authCollection, rootStore));
     this.auth = this.authNamespaces.get(this.authCollection)!;
   }
@@ -212,6 +229,10 @@ export class CratebaseClient<
   readonly llm = {
     chat: (messages: cratebaseOnly.ChatMessage[], options: cratebaseOnly.ChatOptions = {}) =>
       cratebaseOnly.chat(this, messages, this.realtime, options),
+    /** Record one LLM call in the `_llm_usage` ledger (superuser/API key). */
+    logUsage: (options: cratebaseOnly.LogLlmUsageOptions) => cratebaseOnly.logLlmUsage(this, options),
+    /** Aggregate the `_llm_usage` ledger (superuser/API key). */
+    usageSummary: (options: cratebaseOnly.LlmUsageSummaryOptions = {}) => cratebaseOnly.llmUsageSummary(this, options),
   };
 
   readonly mcp = {

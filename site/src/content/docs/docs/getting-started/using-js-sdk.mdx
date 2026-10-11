@@ -54,14 +54,7 @@ const posts = await cb.collection("posts").list();
 setCookie("cb_session", cb.auth.exportCookie());
 ```
 
-**No auto-cancellation to disable.** PocketBase's SDK auto-cancels a
-same-key in-flight request — a de-duplication behavior meant for
-client-side UI that requires explicitly opting out (`autoCancellation(false)`)
-in every server context, since two independent incoming requests can look
-like the same repeated call. `@cratebase/client` has no such behavior:
-callers pass an `AbortSignal` when they want cancellation, so there is
-nothing to disable here.
-
-Staying on the official `pocketbase` npm package instead? Cratebase's
-API is wire-compatible with it — see
-[PocketBase SDK interop](/docs/sdk/pocketbase-interop/).
+**No auto-cancellation.** `@cratebase/client` never cancels a same-key
+in-flight request behind your back — two independent incoming requests on
+a server can look like the same repeated call. Callers pass an
+`AbortSignal` when they want cancellation.

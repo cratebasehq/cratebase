@@ -1,7 +1,7 @@
 /**
- * PocketBase stores a collection's indexes as raw SQL: an `indexes: string[]`
+ * A collection stores its indexes as raw SQL: an `indexes: string[]`
  * of `CREATE INDEX` statements the server replays against SQLite. That is
- * the only place a UNIQUE constraint can come from in v0.23+ — there is no
+ * the only place a UNIQUE constraint can come from — there is no
  * per-field `unique` flag any more.
  *
  * These helpers read and write that string form so the editor can work
@@ -41,8 +41,8 @@ export function buildIndex(collectionName: string, index: ParsedIndex): string {
   return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX \`${index.name}\` ON \`${collectionName}\` (${cols})${where}`;
 }
 
-/** `idx_posts_slug`, `idx_posts_author_created` — the shape PocketBase's own
- * generated indexes use, so hand-made and generated ones sort together. */
+/** `idx_posts_slug`, `idx_posts_author_created` — the shape generated
+ * indexes use, so hand-made and generated ones sort together. */
 export function suggestIndexName(collectionName: string, columns: string[]): string {
   const suffix = columns.length > 0 ? columns.join("_") : "field";
   return `idx_${collectionName}_${suffix}`.slice(0, 64);

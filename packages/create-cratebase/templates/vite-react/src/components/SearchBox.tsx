@@ -2,7 +2,8 @@ export function SearchBox({ value, onChange }: { value: string; onChange: (value
   return (
     <input
       type="search"
-      className="input max-w-xs"
+      className="input"
+      aria-label="Search notes"
       placeholder="Search notes…"
       value={value}
       onChange={(e) => onChange(e.target.value)}

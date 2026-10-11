@@ -1,4 +1,4 @@
-//! Collections, shaped like PocketBase v0.23+'s collection JSON. Base
+//! Collections, shaped like Cratebase's collection JSON. Base
 //! collections carry only the common attributes; view collections add
 //! `viewQuery`; auth collections add the flat auth option blocks
 //! (`passwordAuth`, `oauth2`, `otp`, `mfa`, `authToken`, templates, ...).
@@ -274,7 +274,7 @@ impl Default for MagicLink {
 }
 
 /// Everything specific to `type: "auth"` collections, flattened onto the
-/// collection JSON. Defaults are PocketBase's (captured from a freshly
+/// collection JSON. Defaults are Cratebase's (captured from a freshly
 /// created `users` collection), applied per field so a partial input
 /// still gets them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -409,7 +409,7 @@ impl Serialize for Collection {
 }
 
 impl Collection {
-    /// A new, unsaved collection with PocketBase's default system fields
+    /// A new, unsaved collection with Cratebase's default system fields
     /// for its type (`id`, plus the auth fields for auth collections).
     /// `created`/`updated` autodate fields are added too, as the scaffold
     /// endpoint does.
@@ -433,7 +433,7 @@ impl Collection {
         c
     }
 
-    /// Insert the system fields PocketBase guarantees for this type,
+    /// Insert the system fields Cratebase guarantees for this type,
     /// keeping any the caller already supplied (by name) but forcing
     /// their system flags. Idempotent.
     pub fn ensure_system_fields(&mut self) {
@@ -472,7 +472,7 @@ impl Collection {
         self.assign_field_ids();
     }
 
-    /// Give every field without an id PocketBase's derived id.
+    /// Give every field without an id Cratebase's derived id.
     pub fn assign_field_ids(&mut self) {
         for f in &mut self.fields {
             if f.id.is_empty() {
@@ -550,7 +550,7 @@ impl Collection {
         })
     }
 
-    /// The SQL table (or view) name. PocketBase names tables after the
+    /// The SQL table (or view) name. Cratebase names tables after the
     /// collection so `viewQuery` SQL is portable.
     pub fn table_name(&self) -> &str {
         &self.name
@@ -599,7 +599,7 @@ impl Collection {
         }
     }
 
-    /// The PocketBase JSON for this collection: common attributes plus
+    /// The Cratebase JSON for this collection: common attributes plus
     /// only the type-specific blocks.
     pub fn to_json(&self) -> Value {
         let mut m = Map::new();
@@ -649,7 +649,7 @@ impl Collection {
         c
     }
 
-    /// The built-in `users` collection PocketBase seeds on first run.
+    /// The built-in `users` collection Cratebase seeds on first run.
     pub fn default_users() -> Self {
         let mut c = Collection::new("users", CollectionType::Auth);
         c.id = crate::USERS_COLLECTION_ID.into();
@@ -731,9 +731,7 @@ impl Collection {
 
     /// The system `_externalAuths`, `_mfas`, `_otps`, `_authOrigins`,
     /// `_cron_jobs`, `_rpc`, `_webhooks`, `_teams`, `_team_members` base
-    /// collections, with PocketBase's rules and indexes (`_cron_jobs`,
-    /// `_rpc`, `_webhooks`, `_teams` and `_team_members` have no
-    /// PocketBase equivalent — see their own comments).
+    /// collections, with their rules and indexes (see each one's own comments).
     pub fn default_system_collections() -> Vec<Self> {
         let text = |name: &str| {
             let mut f = Field::new(
@@ -1288,11 +1286,62 @@ impl Collection {
             },
         );
         completion_tokens.system = true;
-        let pos = llm_usage.fields.len() - 2;
-        llm_usage.fields.splice(
-            pos..pos,
-            [caller_id, model, prompt_tokens, completion_tokens],
+        let mut ledger_text = Vec::new();
+        for name in [
+            "surface",
+            "purpose",
+            "actor",
+            "sessionId",
+            "runId",
+            "callId",
+            "finishReason",
+            "error",
+            "priceVersion",
+            "source",
+            "note",
+        ] {
+            let mut f = text(name);
+            f.required = false;
+            ledger_text.push(f);
+        }
+        let ledger_int = |name: &str| {
+            let mut f = Field::new(
+                name,
+                FieldKind::Number {
+                    min: Some(0.0),
+                    max: None,
+                    only_int: true,
+                },
+            );
+            f.system = true;
+            f.required = false;
+            f
+        };
+        let mut cost_usd = Field::new(
+            "costUsd",
+            FieldKind::Number {
+                min: Some(0.0),
+                max: None,
+                only_int: false,
+            },
         );
+        cost_usd.system = true;
+        cost_usd.required = false;
+        let mut ok = Field::new("ok", FieldKind::Bool {});
+        ok.system = true;
+        ok.required = false;
+        let pos = llm_usage.fields.len() - 2;
+        let mut new_fields = vec![caller_id, model, prompt_tokens, completion_tokens];
+        new_fields.extend(ledger_text);
+        new_fields.extend([
+            ledger_int("tokensCached"),
+            ledger_int("tokensReasoning"),
+            ledger_int("latencyMs"),
+            ledger_int("ttftMs"),
+            cost_usd,
+            ok,
+        ]);
+        llm_usage.fields.splice(pos..pos, new_fields);
         // Superuser-only end to end, same trust tier as `_cron_jobs`/
         // `_webhooks`/`_llm_usage` above: an API key is a first-class
         // identity a superuser mints for a script/agent/MCP client, not
@@ -1927,7 +1976,7 @@ impl Collection {
             "CREATE INDEX `idx_webhookDeliveries_webhookRef` ON `_webhookDeliveries` (webhookRef)".into(),
         ];
 
-        // One row per cron *run* — both PocketBase-style `_cron_jobs` SQL
+        // One row per cron *run* — both `_cron_jobs` SQL
         // jobs and JS `cronAdd` jobs (which have no row of their own
         // anywhere else) — so the dashboard can show a run history next to
         // each, not just the single "last run" columns `_cron_jobs` itself
@@ -2086,7 +2135,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_collection_json_matches_pocketbase_defaults() {
+    fn auth_collection_json_matches_cratebase_defaults() {
         let c = Collection::default_users();
         let v = c.to_json();
         assert_eq!(v["id"], "_pb_users_auth_");

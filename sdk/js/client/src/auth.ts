@@ -381,8 +381,7 @@ export class AuthNamespace {
 
   /** The signed-in record's own linked OAuth2 providers — thin wrappers
    * around the dedicated `GET/DELETE .../records/{id}/external-auths[/
-   * {provider}]` endpoints (owner-or-superuser; PocketBase's own
-   * `listExternalAuths`/`unlinkExternalAuth` shape), unlike
+   * {provider}]` endpoints (owner-or-superuser), unlike
    * {@link externalAuths}'s older generic-`_externalAuths`-collection
    * version, which needed the record id spelled out and had no
    * server-side "don't strand the account" check on unlink. */
@@ -565,8 +564,19 @@ export class AuthNamespace {
   }
 
   /** A `Set-Cookie` value for the current bearer token, for a host
-   * framework managing its own cookie (server-side cookie sessions off). */
-  exportCookie(name = "cb_session"): string {
-    return `${name}=${this.store.token}; Path=/; HttpOnly; SameSite=Lax`;
+   * framework managing its own cookie (server-side cookie sessions off).
+   * `sameSite: "None"` requires `secure: true`. */
+  exportCookie(
+    name = "cb_session",
+    options: { secure?: boolean; maxAge?: number; sameSite?: "Lax" | "Strict" | "None"; path?: string } = {},
+  ): string {
+    const sameSite = options.sameSite ?? "Lax";
+    if (sameSite === "None" && !options.secure) {
+      throw new TypeError("SameSite=None requires secure: true");
+    }
+    let cookie = `${name}=${this.store.token}; Path=${options.path ?? "/"}; HttpOnly; SameSite=${sameSite}`;
+    if (options.secure) cookie += "; Secure";
+    if (options.maxAge !== undefined) cookie += `; Max-Age=${options.maxAge}`;
+    return cookie;
   }
 }

@@ -1,4 +1,4 @@
-import { isPackageManager, isTemplateId, type PackageManager, type TemplateId } from "./templates.js";
+import { PACKAGE_MANAGERS, TEMPLATE_IDS, isPackageManager, isTemplateId, type PackageManager, type TemplateId } from "./templates.js";
 
 export interface CliOptions {
   /** Positional argument: the directory to scaffold into (may be relative or "."). */
@@ -11,6 +11,8 @@ export interface CliOptions {
   install: boolean;
   /** Run `git init` (+ initial commit) in the new project. Default true. */
   git: boolean;
+  /** Empty a non-empty target directory (keeping `.git`) instead of refusing. */
+  force: boolean;
   help: boolean;
   version: boolean;
 }
@@ -29,6 +31,7 @@ export function parseArgs(argv: string[]): CliOptions {
     yes: false,
     install: true,
     git: true,
+    force: false,
     help: false,
     version: false,
   };
@@ -43,7 +46,7 @@ export function parseArgs(argv: string[]): CliOptions {
       const value = argv[++i];
       if (!value || !isTemplateId(value)) {
         throw new ArgParseError(
-          `Invalid --template value: ${value ?? "(missing)"}. Expected one of: nextjs, vite-react, expo.`,
+          `Invalid --template value: ${value ?? "(missing)"}. Expected one of: ${TEMPLATE_IDS.join(", ")}.`,
         );
       }
       options.template = value;
@@ -53,7 +56,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (arg === "--pm") {
       const value = argv[++i];
       if (!value || !isPackageManager(value)) {
-        throw new ArgParseError(`Invalid --pm value: ${value ?? "(missing)"}. Expected one of: bun, npm, pnpm, yarn.`);
+        throw new ArgParseError(`Invalid --pm value: ${value ?? "(missing)"}. Expected one of: ${PACKAGE_MANAGERS.join(", ")}.`);
       }
       options.pm = value;
       continue;
@@ -62,7 +65,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (arg.startsWith("--template=")) {
       const value = arg.slice("--template=".length);
       if (!isTemplateId(value)) {
-        throw new ArgParseError(`Invalid --template value: ${value}. Expected one of: nextjs, vite-react, expo.`);
+        throw new ArgParseError(`Invalid --template value: ${value}. Expected one of: ${TEMPLATE_IDS.join(", ")}.`);
       }
       options.template = value;
       continue;
@@ -71,7 +74,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (arg.startsWith("--pm=")) {
       const value = arg.slice("--pm=".length);
       if (!isPackageManager(value)) {
-        throw new ArgParseError(`Invalid --pm value: ${value}. Expected one of: bun, npm, pnpm, yarn.`);
+        throw new ArgParseError(`Invalid --pm value: ${value}. Expected one of: ${PACKAGE_MANAGERS.join(", ")}.`);
       }
       options.pm = value;
       continue;
@@ -95,6 +98,10 @@ export function parseArgs(argv: string[]): CliOptions {
     }
     if (arg === "--no-git") {
       options.git = false;
+      continue;
+    }
+    if (arg === "--force") {
+      options.force = true;
       continue;
     }
     if (arg === "--help" || arg === "-h") {
@@ -129,13 +136,14 @@ Usage:
   npm create cratebase@latest <project-directory> [options]
 
 Options:
-  -t, --template <name>   Template to use: nextjs, vite-react, expo
-      --pm <name>         Package manager: bun, npm, pnpm, yarn
+  -t, --template <name>   Template: ${TEMPLATE_IDS.join(", ")}
+      --pm <name>         Package manager: ${PACKAGE_MANAGERS.join(", ")} (default: the one you ran this with)
   -y, --yes               Skip prompts, accept defaults for anything unset
+      --force             Empty the target directory if it isn't empty (keeps .git)
       --no-install        Skip installing dependencies
       --no-git            Skip \`git init\`
-  -h, --help               Print this help
-  -v, --version            Print the CLI version
+  -h, --help              Print this help
+  -v, --version           Print the CLI version
 
 Examples:
   bun create cratebase my-app

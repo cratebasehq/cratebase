@@ -24,7 +24,7 @@ export const cb = createClient(import.meta.env.VITE_API_URL ?? "/", { authCollec
 export const superuserAuth = cb.auth;
 
 /** The superuser record returned by `auth-with-password`. Superusers are
- * ordinary auth records in the `_superusers` collection (PocketBase v0.23+),
+ * ordinary auth records in the `_superusers` collection,
  * so this is a record shape, not a bespoke "admin" model. */
 export interface SuperuserRecord {
   id: string;
@@ -70,7 +70,7 @@ export function avatarUrl(seed: string, size = 64): string {
 }
 
 /**
- * Superuser login. PocketBase v0.23+ dropped `/api/admins/*` in favour of
+ * Superuser login. Superusers authenticate against
  * the `_superusers` auth collection, and the field is `identity` (an email
  * *or* username) rather than `email`.
  */
@@ -276,7 +276,7 @@ export function isSessionExpired(error: unknown): boolean {
   return error instanceof CratebaseError && error.status === 401;
 }
 
-/** The server writes PocketBase's datetime form (a space, not a `T`,
+/** The server writes its datetime form (a space, not a `T`,
  * e.g. `2026-01-31 12:00:00.000Z`), which `new Date()` does not parse in
  * every browser — Safari returns Invalid Date for it. Every call site that
  * parses a server-supplied timestamp (`created`, `updated`, `modified`,

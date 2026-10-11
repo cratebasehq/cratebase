@@ -1,7 +1,7 @@
 //! `/api/collections/{collection}/sessions*`, `auth-signout`,
 //! `stop-impersonating`, and `ban`/`unban`: everything a caller does
 //! with an already-live session that isn't logging in. All of it is
-//! additive — PocketBase has none of these endpoints.
+//! additive.
 //!
 //! # Bans
 //!

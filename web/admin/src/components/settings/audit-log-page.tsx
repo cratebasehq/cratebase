@@ -1,17 +1,34 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { History, ShieldAlert } from "lucide-react";
+import { Copy, History } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { settingsLogsRoute } from "@/routes/settings-logs";
 import { settingsItemFor } from "@/lib/settings-nav";
-import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { cn } from "@/lib/utils";
+import { DataTableToolbar } from "@/components/layout/data-table-toolbar";
+import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
+import { StatusBadge, type Tone } from "@/components/layout/stat-card";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Pagination } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import {
+  DetailBody,
+  DetailEmpty,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 import { SettingsPage } from "@/components/settings/settings-form";
+import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
+import { TimeAgo } from "@/components/settings/time-ago";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** Every action `crates/server/src/audit.rs` writes. Kept in sync with that
@@ -27,6 +44,10 @@ const ACTIONS = [
   "superuser.delete",
   "settings.update",
 ] as const;
+
+const PER_PAGE = 30;
+const HEAD = "h-control-md text-xs font-medium text-muted-foreground";
+const CELL = "py-1.5";
 
 /** A `_audit_log` record, expanded with the acting superuser's email so
  * the table never has to show a bare relation id. */
@@ -52,10 +73,11 @@ type AuditLogResult = {
 
 /** Deletions are the one category of audit row an operator scans for
  * first; everything else is routine change history. */
-function actionVariant(action: string): "default" | "secondary" | "destructive" {
-  if (action.endsWith(".delete")) return "destructive";
-  if (action.endsWith(".update") || action.endsWith(".role_change")) return "secondary";
-  return "default";
+function actionTone(action: string): Tone {
+  if (action.endsWith(".delete")) return "danger";
+  if (action.endsWith(".update") || action.endsWith(".role_change")) return "warning";
+  if (action.endsWith(".create")) return "success";
+  return "neutral";
 }
 
 /** `_audit_log.actor` is blanked to an empty string server-side when the
@@ -81,197 +103,325 @@ export function AuditLogPage() {
   const action = urlSearch.action ?? "";
   const from = urlSearch.from ?? "";
   const to = urlSearch.to ?? "";
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [live, setLive] = useState(true);
 
   const filterParts: string[] = [];
   if (action) filterParts.push(`action = "${action}"`);
   if (from) filterParts.push(`created >= "${from} 00:00:00"`);
   if (to) filterParts.push(`created <= "${to} 23:59:59"`);
   const filter = filterParts.join(" && ");
+  const hasFilters = filter !== "";
 
-  const { data, isLoading, error } = useQuery({
+  // New entries land on page 1; polling a deeper page or while the detail
+  // sheet is open would shuffle rows under the reader, so it pauses there.
+  const refetchInterval = live && page === 1 && selectedId === null ? LIVE_INTERVAL_MS : false;
+
+  const { data, isPending, error, refetch, isFetching } = useQuery({
     queryKey: ["audit-log", page, action, from, to],
     queryFn: () =>
       cb.collection("_audit_log").list({
         page,
-        perPage: 30,
+        perPage: PER_PAGE,
         filter: filter || undefined,
         sort: "-created",
         expand: "actor",
       }) as unknown as Promise<AuditLogResult>,
     placeholderData: (previous) => previous,
+    refetchInterval,
   });
 
-  function updateSearch(patch: Partial<AuditLogSearchPatch>) {
+  function updateSearch(patch: AuditLogSearchPatch) {
     void navigate({
       search: (prev) => ({ ...prev, page: undefined, ...patch }),
       replace: true,
     });
   }
 
+  const items = data?.items ?? [];
+  const selectedIndex = selectedId ? items.findIndex((e) => e.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? items[selectedIndex] : null;
+  const firstRow = data ? (data.page - 1) * data.perPage + 1 : 0;
+
   const item = settingsItemFor("/settings/audit")!;
   return (
     <SettingsPage title={item.label} description={item.description} width="wide">
+      <DataTableToolbar
+        filters={
+          <>
+            <Select
+              value={action || "all"}
+              onValueChange={(next) => updateSearch({ action: next === "all" ? undefined : next })}
+            >
+              <SelectTrigger id="audit-action-filter" aria-label="Action" className="h-control-sm w-52 font-mono text-xs">
+                <SelectValue placeholder="All actions" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All actions</SelectItem>
+                {ACTIONS.map((a) => (
+                  <SelectItem key={a} value={a} className="font-mono text-xs">
+                    {a}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="audit-from" className="text-xs text-muted-foreground">
+                From
+              </Label>
+              <Input
+                id="audit-from"
+                type="date"
+                value={from}
+                max={to || undefined}
+                onChange={(e) => updateSearch({ from: e.target.value || undefined })}
+                className="h-control-sm w-36 font-mono text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Label htmlFor="audit-to" className="text-xs text-muted-foreground">
+                To
+              </Label>
+              <Input
+                id="audit-to"
+                type="date"
+                value={to}
+                min={from || undefined}
+                onChange={(e) => updateSearch({ to: e.target.value || undefined })}
+                className="h-control-sm w-36 font-mono text-xs"
+              />
+            </div>
+            {hasFilters ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => updateSearch({ action: undefined, from: undefined, to: undefined })}
+              >
+                Clear filters
+              </Button>
+            ) : null}
+          </>
+        }
+        actions={
+          <LiveToggle live={live} onLiveChange={setLive} fetching={isFetching} onRefresh={() => void refetch()} />
+        }
+      />
 
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="flex flex-col gap-1">
-          <label htmlFor="audit-action-filter" className="text-xs text-muted-foreground">
-            Action
-          </label>
-          <Select
-            value={action || "all"}
-            onValueChange={(next) => updateSearch({ action: next === "all" ? undefined : next })}
-          >
-            <SelectTrigger id="audit-action-filter" className="w-52">
-              <SelectValue placeholder="All actions" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All actions</SelectItem>
-              {ACTIONS.map((a) => (
-                <SelectItem key={a} value={a}>
-                  {a}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="audit-from" className="text-xs text-muted-foreground">
-            From
-          </label>
-          <Input
-            id="audit-from"
-            type="date"
-            value={from}
-            onChange={(e) => updateSearch({ from: e.target.value || undefined })}
-            className="w-40"
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="audit-to" className="text-xs text-muted-foreground">
-            To
-          </label>
-          <Input
-            id="audit-to"
-            type="date"
-            value={to}
-            onChange={(e) => updateSearch({ to: e.target.value || undefined })}
-            className="w-40"
-          />
-        </div>
-      </div>
-
-      {error ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <ShieldAlert />
-            </EmptyMedia>
-            <EmptyTitle>Couldn't load the audit log</EmptyTitle>
-            <EmptyDescription>{describeFailure(error).detail}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+      {error && !data ? (
+        <ErrorState compact title="Couldn't load the audit log" error={describeFailure(error).detail} onRetry={() => void refetch()} />
+      ) : isPending ? (
+        <ListSkeleton rows={8} />
+      ) : items.length === 0 ? (
+        <EmptyState
+          compact
+          icon={<History />}
+          title={hasFilters ? "No entries match these filters" : "No audited actions yet"}
+          description={
+            hasFilters
+              ? "Widen the date range or pick a different action."
+              : "Schema changes, settings edits, superuser account changes and superuser-bypassed record deletions will show up here as they happen."
+          }
+          action={
+            hasFilters ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => updateSearch({ action: undefined, from: undefined, to: undefined })}
+              >
+                Clear filters
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[200px]">Actor</TableHead>
-              <TableHead className="w-[170px]">Action</TableHead>
-              <TableHead>Target</TableHead>
-              <TableHead className="w-[180px]">Time</TableHead>
-              <TableHead className="w-[80px]" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(data?.items ?? []).map((entry) => {
-              const hasMeta = entry.meta && Object.keys(entry.meta).length > 0;
-              const isOpen = expanded[entry.id] ?? false;
-              return (
-                <Collapsible key={entry.id} asChild open={isOpen} onOpenChange={(open) => setExpanded((prev) => ({ ...prev, [entry.id]: open }))}>
-                  <>
-                    <TableRow>
-                      <TableCell className="text-xs">{actorLabel(entry)}</TableCell>
-                      <TableCell>
-                        <Badge variant={actionVariant(entry.action)} className="font-mono text-[11px]">
-                          {entry.action}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">{entry.target}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {parseServerDate(entry.created).toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {hasMeta ? (
-                          <CollapsibleTrigger asChild>
-                            <button
-                              type="button"
-                              className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                            >
-                              {isOpen ? "Hide" : "Details"}
-                            </button>
-                          </CollapsibleTrigger>
-                        ) : null}
-                      </TableCell>
-                    </TableRow>
-                    {hasMeta ? (
-                      <TableRow>
-                        <TableCell colSpan={5} className="p-0">
-                          <CollapsibleContent>
-                            <pre className="overflow-x-auto bg-muted/40 p-3 text-[11px] leading-relaxed">
-                              {JSON.stringify(entry.meta, null, 2)}
-                            </pre>
-                          </CollapsibleContent>
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </>
-                </Collapsible>
-              );
-            })}
-            {isLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
-                <TableRow key={i}>
-                  <TableCell colSpan={5}>
-                    <Skeleton className="h-row w-full" />
-                  </TableCell>
-                </TableRow>
-              ))
-            ) : null}
-            {!isLoading && !error && (data?.items.length ?? 0) === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8">
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon">
-                        <History />
-                      </EmptyMedia>
-                      <EmptyTitle>No audited actions yet</EmptyTitle>
-                      <EmptyDescription>
-                        Schema changes, settings edits, superuser account changes and superuser-bypassed record
-                        deletions will show up here as they happen.
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                </TableCell>
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className={cn(HEAD, "pl-3")}>Time</TableHead>
+                <TableHead className={HEAD}>Actor</TableHead>
+                <TableHead className={HEAD}>Action</TableHead>
+                <TableHead className={HEAD}>Target</TableHead>
+                <TableHead className={cn(HEAD, "w-20 pr-3")}>
+                  <span className="sr-only">Details</span>
+                </TableHead>
               </TableRow>
-            ) : null}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {items.map((entry) => {
+                const hasMeta = Object.keys(entry.meta ?? {}).length > 0;
+                return (
+                  <TableRow key={entry.id}>
+                    <TableCell className={cn(CELL, "pl-3 text-xs")}>
+                      <span className="flex items-baseline gap-2">
+                        <span className="font-mono font-tabular">{parseServerDate(entry.created).toLocaleString()}</span>
+                        <TimeAgo value={entry.created} className="text-2xs text-muted-foreground" />
+                      </span>
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        CELL,
+                        "max-w-56 truncate text-xs",
+                        !entry.expand?.actor?.email && "text-muted-foreground italic",
+                      )}
+                    >
+                      {actorLabel(entry)}
+                    </TableCell>
+                    <TableCell className={CELL}>
+                      <StatusBadge tone={actionTone(entry.action)} className="font-mono">
+                        {entry.action}
+                      </StatusBadge>
+                    </TableCell>
+                    <TableCell className={cn(CELL, "max-w-64 truncate font-mono text-xs")} title={entry.target}>
+                      {entry.target || <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell className={cn(CELL, "pr-3 text-right")}>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        aria-label={`Details for ${entry.action} on ${entry.target || "—"}`}
+                        onClick={() => setSelectedId(entry.id)}
+                      >
+                        {hasMeta ? "Details" : "View"}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
       )}
 
-      {data && data.totalPages > 1 ? (
-        <div className="flex justify-center py-2">
-          <Pagination
-            count={data.totalPages}
-            page={page}
-            onPageChange={(next) =>
-              void navigate({ search: (prev) => ({ ...prev, page: next > 1 ? next : undefined }), replace: true })
-            }
-            label="Audit log pages"
-          />
+      {data && data.totalItems > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="font-tabular text-xs text-muted-foreground">
+            {firstRow}–{firstRow + items.length - 1} of {data.totalItems}
+          </p>
+          {data.totalPages > 1 ? (
+            <Pagination
+              count={data.totalPages}
+              page={page}
+              onPageChange={(next) =>
+                void navigate({ search: (prev) => ({ ...prev, page: next > 1 ? next : undefined }), replace: true })
+              }
+              label="Audit log pages"
+            />
+          ) : null}
         </div>
       ) : null}
+
+      <EntrySheet
+        entry={selected}
+        index={selectedIndex}
+        total={items.length}
+        onClose={() => setSelectedId(null)}
+        onStep={(delta) => {
+          const next = items[selectedIndex + delta];
+          if (next) setSelectedId(next.id);
+        }}
+      />
     </SettingsPage>
+  );
+}
+
+/** Everything about one audit row, with the raw `meta` JSON copyable. */
+function EntrySheet({
+  entry,
+  index,
+  total,
+  onClose,
+  onStep,
+}: {
+  entry: AuditLogEntry | null;
+  index: number;
+  total: number;
+  onClose: () => void;
+  onStep: (delta: -1 | 1) => void;
+}) {
+  const { copy } = useCopyToClipboard();
+  const [tab, setTab] = useState("overview");
+  const meta = entry ? JSON.stringify(entry.meta ?? {}, null, 2) : "";
+  const raw = entry ? JSON.stringify(entry, null, 2) : "";
+  const metaCount = entry ? Object.keys(entry.meta ?? {}).length : 0;
+
+  return (
+    <DetailSheet open={entry !== null} onOpenChange={(open) => !open && onClose()}>
+      {entry ? (
+        <>
+          <DetailSheetHeader
+            id={entry.id}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[{ label: "Copy JSON", onSelect: () => void copy(raw), icon: <Copy /> }]}
+            title={<span className="font-mono text-base">{entry.action}</span>}
+            description={`Audit entry ${entry.action}`}
+            status={
+              <StatusBadge tone={actionTone(entry.action)}>{entry.action.split(".").pop() ?? entry.action}</StatusBadge>
+            }
+            meta={[actorLabel(entry), <TimeAgo key="a" value={entry.created} />]}
+            actions={
+              <Button size="sm" variant="outline" onClick={() => void copy(raw)}>
+                <Copy />
+                Copy JSON
+              </Button>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={setTab}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "raw", label: "Raw JSON" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                <DetailSection title="Entry">
+                  <DetailList>
+                    <DetailRow label="Actor">
+                      <span className={cn(!entry.expand?.actor?.email && "text-muted-foreground italic")}>
+                        {actorLabel(entry)}
+                      </span>
+                    </DetailRow>
+                    <DetailRow label="Action">
+                      <span className="font-mono text-xs">{entry.action}</span>
+                    </DetailRow>
+                    <DetailRow label="Target">
+                      <span className="font-mono text-xs break-all">{entry.target || "—"}</span>
+                    </DetailRow>
+                    <DetailRow label="When" hint={parseServerDate(entry.created).toLocaleString()}>
+                      <TimeAgo value={entry.created} />
+                    </DetailRow>
+                    <DetailRow label="Entry id">
+                      <span className="font-mono text-xs break-all">{entry.id}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title="Details">
+                  {metaCount > 0 ? (
+                    <CodeBlock json={meta} copyLabel="Copy JSON" />
+                  ) : (
+                    <DetailEmpty title="No extra details" description="This action recorded no extra details." />
+                  )}
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="raw">
+              <DetailBody>
+                <CodeBlock title="Raw entry" json={raw} copyLabel="Copy JSON" />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
   );
 }
 

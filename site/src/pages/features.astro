@@ -93,10 +93,10 @@ const groups: Group[] = [
   {
     id: "automation",
     title: "Automation & extending",
-    intro: "Drop a *.pb.js file next to your data directory and get PocketBase's own hook API, plus cron, queue, and webhooks.",
+    intro: "Drop a *.cb.js file next to your data directory to add hooks and custom routes, plus cron, queue, and webhooks.",
     items: [
       { name: "JS hooks", body: "onRecordCreate/onRecordUpdate-style lifecycle hooks and routerAdd for custom endpoints, on an embedded QuickJS runtime.", href: "/docs/extending/js-hooks/", code: "onRecordCreate, routerAdd" },
-      { name: "JS migrations", body: "pb_migrations/*.js with PocketBase's migrate(up, down) API — apply, revert, or scaffold from the CLI.", href: "/docs/reference/cli/", code: "cratebase migrate up/down/create" },
+      { name: "JS migrations", body: "cb_migrations/*.js with a migrate(up, down) API — apply, revert, or scaffold from the CLI.", href: "/docs/reference/cli/", code: "cratebase migrate up/down/create" },
       { name: "Cron jobs", body: "A _cron_jobs record is a schedule plus raw SQL, reactive with no redeploy.", href: "/docs/extending/cron-jobs/", code: "_cron_jobs" },
       { name: "Queue", body: "An opt-in durable job queue with retry-with-backoff and stale-job reclaim.", href: "/docs/extending/queue/", code: "_queue_jobs" },
       { name: "Outgoing webhooks", body: "Signed HTTP callbacks on record events, verifiable on the receiving end.", href: "/docs/extending/outgoing-webhooks/", code: "X-Cratebase-Signature" },
@@ -111,9 +111,9 @@ const groups: Group[] = [
     title: "AI",
     intro: "Vector search, an LLM chat gateway, and auto-embedding, backed by the same collections and API rules as everything else — not a bolt-on.",
     items: [
-      { name: "Vector search", body: "A vector field and nearestTo(...) similarity search over your own collections.", href: "/docs/ai/vector-search/", code: "nearestTo(pb, collection, field, vec, opts)" },
+      { name: "Vector search", body: "A vector field and nearestTo(...) similarity search over your own collections.", href: "/docs/ai/vector-search/", code: "nearestTo(cb, collection, field, vec, opts)" },
       { name: "Auto-embedding", body: "Write text, get an embedding computed automatically on create/update.", href: "/docs/ai/auto-embedding/" },
-      { name: "LLM chat gateway", body: "Stream a chat completion over the realtime connection you already have.", href: "/docs/ai/llm-chat-gateway/", code: "chat(pb, messages, { onDelta })" },
+      { name: "LLM chat gateway", body: "Stream a chat completion over the realtime connection you already have.", href: "/docs/ai/llm-chat-gateway/", code: "chat(cb, messages, { onDelta })" },
       { name: "MCP server", body: "Runtime tools (call_rpc, send_email, search_nearby) and superuser dev tools (schema, rules, logs, SQL) over MCP.", href: "/docs/ai/mcp-server/", code: "POST /api/mcp" },
     ],
   },

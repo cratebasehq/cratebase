@@ -20,7 +20,7 @@
 # against the data directory directly (`crates/server/src/main.rs`'s
 # `schema()`/`typegen()`), bypassing whatever `cratebase serve` process
 # already has that directory open. Live-verified while building this
-# example: running `cratebase schema push schema.json --dir ./pb_data`
+# example: running `cratebase schema push schema.json --dir ./cb_data`
 # against a directory a `cratebase serve --dev` process already had open
 # updated the on-disk database (confirmed via a fresh `GET
 # /api/collections/<name>` after restarting the server) but the *running*

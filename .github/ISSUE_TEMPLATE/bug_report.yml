@@ -69,11 +69,9 @@ body:
     attributes:
       label: Expected behavior
       description: >-
-        What should have happened? If this is a REST API surface, note
-        what real PocketBase does here if you know it — Cratebase's
-        stated compatibility rule (CONTRIBUTING.md) is to match
-        PocketBase byte for byte unless there's a documented reason not
-        to.
+        What should have happened? If this is a REST API surface, point to
+        the documentation page or `openapi.yaml` entry that describes the
+        behavior you expected.
     validations:
       required: true
 

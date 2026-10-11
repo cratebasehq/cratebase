@@ -3,7 +3,16 @@ import { toast } from "sonner";
 import { describeFailure } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import { settingsItemFor } from "@/lib/settings-nav";
+import { StatusBadge } from "@/components/layout/stat-card";
+import { Button } from "@/components/ui/button";
 import { NumberSetting, SettingRow, SettingsPage, SettingsSaveBar, SettingsSection } from "@/components/settings/settings-form";
+
+const RETENTION_PRESETS = [
+  { days: 7, label: "7 days" },
+  { days: 30, label: "30 days" },
+  { days: 90, label: "90 days" },
+  { days: 0, label: "Forever" },
+];
 
 type NotificationsSettings = ServerSettings["notifications"];
 
@@ -52,21 +61,43 @@ export function NotificationsPage() {
       {current ? (
         <SettingsSection
           title="Retention"
-          description="Applies to _notifications rows only — email/push deliveries have their own logs (Mail log, provider dashboards)."
+          description="Controls how long in-app notifications are kept. Email and push deliveries have their own logs (Mail log, provider dashboards)."
+          action={
+            <StatusBadge tone={current.retentionDays > 0 ? "info" : "neutral"}>
+              {current.retentionDays > 0 ? `Pruned after ${current.retentionDays} days` : "Kept forever"}
+            </StatusBadge>
+          }
         >
           <SettingRow
             label="Delete read notifications after"
             htmlFor="notifications-retention"
-            help="Only a notification the recipient has already marked read is ever deleted — an unread one is kept regardless of age. 0 keeps them forever."
+            help="Only notifications the recipient has already marked read are ever deleted — unread ones are kept regardless of age. 0 keeps everything forever."
             error={errors[0]}
           >
-            <NumberSetting
-              id="notifications-retention"
-              min={0}
-              value={current.retentionDays}
-              onChange={(retentionDays) => setDraft({ retentionDays })}
-              suffix="days"
-            />
+            <div className="flex flex-col gap-2">
+              <NumberSetting
+                id="notifications-retention"
+                min={0}
+                value={current.retentionDays}
+                onChange={(retentionDays) => setDraft({ retentionDays })}
+                suffix="days"
+                invalid={errors.length > 0}
+              />
+              <div role="group" aria-label="Retention presets" className="flex flex-wrap gap-1.5">
+                {RETENTION_PRESETS.map((preset) => (
+                  <Button
+                    key={preset.days}
+                    type="button"
+                    size="xs"
+                    variant={current.retentionDays === preset.days ? "secondary" : "outline"}
+                    aria-pressed={current.retentionDays === preset.days}
+                    onClick={() => setDraft({ retentionDays: preset.days })}
+                  >
+                    {preset.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
           </SettingRow>
         </SettingsSection>
       ) : null}

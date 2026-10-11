@@ -1,6 +1,6 @@
 //! Compilation of a parsed [`Expr`] into a parameterized SQL fragment.
 //!
-//! The output mirrors PocketBase's `search.FilterData` semantics:
+//! The output follows these semantics:
 //!
 //! * Every root column is fully qualified (`"posts"."title"`) so the
 //!   fragment stays valid once joins are added.
@@ -8,7 +8,7 @@
 //!   parameters (numbered from `param_offset + 1`); comparisons between
 //!   two bound values are constant-folded to `1 = 1` / `1 = 0`.
 //! * `= ""`/`= null` and their negations use `IS NULL`-aware SQL, `!=`
-//!   against a value also matches `NULL` columns (PocketBase compiles
+//!   against a value also matches `NULL` columns (Cratebase compiles
 //!   `!=` as `IS NOT`).
 //! * `~`/`!~` are `LIKE` (SQLite, case-insensitive for ASCII) or `ILIKE`
 //!   (Postgres) with `ESCAPE '\'`; an operand that already carries a `%`
@@ -19,7 +19,7 @@
 //!   elements: `?op` = any element, bare op = every element (plus at
 //!   least one, unless the operator is satisfied by the missing row:
 //!   `!=`, or `= ""`). A *bare* multi-valued column is **not** an element
-//!   operand: like PocketBase it compares as the raw JSON text of the
+//!   operand: like Cratebase it compares as the raw JSON text of the
 //!   column, so `tags = "a"` is false for `["a","b"]` and `:each` is the
 //!   opt-in that unpacks it.
 //! * Back-relations and `@collection.X` produce [`Join`]s the query
@@ -27,7 +27,7 @@
 //!   several conditions constrain the same joined row. A bare operator
 //!   over such a path additionally requires that *no* joined row fails
 //!   it, via a correlated `NOT EXISTS` over a `__mm_`-aliased copy of the
-//!   path — PocketBase's "multi-match" subquery. `?op` keeps meaning "at
+//!   path — Cratebase's "multi-match" subquery. `?op` keeps meaning "at
 //!   least one joined row matches".
 //! * `geoDistance(lonA, latA, lonB, latB)` is emitted as a call to the
 //!   `geoDistance` SQL function on SQLite (the engine must register it;
@@ -274,8 +274,8 @@ impl<'a> Compiler<'a> {
     ///
     /// Only `:each` (and a path that already runs through a multi relation)
     /// produces an element set; a bare multi-valued column stays the raw
-    /// JSON text of the column, like PocketBase. `:length` on a
-    /// single-valued path is silently ignored, also like PocketBase — it is
+    /// JSON text of the column, like Cratebase. `:length` on a
+    /// single-valued path is silently ignored, also like Cratebase — it is
     /// not an error, so `comments_via_post.id:length = 0` still compiles.
     fn shape(
         &mut self,
@@ -695,7 +695,7 @@ impl<'a> Compiler<'a> {
                     (Dialect::Postgres, CompareOp::Like) => "ILIKE",
                     (Dialect::Postgres, _) => "NOT ILIKE",
                 };
-                // PocketBase always declares the escape character, so a `_`
+                // Cratebase always declares the escape character, so a `_`
                 // or `%` escaped by `like_pattern` is matched literally.
                 format!("{subject} {kw} {pattern} ESCAPE '\\'")
             }

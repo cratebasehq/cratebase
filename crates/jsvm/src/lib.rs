@@ -1,5 +1,5 @@
-//! Embedded JavaScript runtime for Cratebase: PocketBase's `pb_hooks` and
-//! `pb_migrations`, on QuickJS (via `rquickjs`).
+//! Embedded JavaScript runtime for Cratebase: `cb_hooks` and
+//! `cb_migrations`, on QuickJS (via `rquickjs`).
 //!
 //! The crate is decoupled from the server through the [`HostApi`] trait:
 //! JavaScript globals (`$app`, `$http`, `routerAdd`, `on*`, ...) call
@@ -13,7 +13,7 @@
 //! # use std::sync::Arc;
 //! # use cratebase_jsvm::{Runtime, RuntimeConfig, HostApi};
 //! # async fn demo(host: Arc<dyn HostApi>) -> Result<(), cratebase_core::AppError> {
-//! let rt = Runtime::start(host, RuntimeConfig::new("pb_hooks", "pb_migrations")).await?;
+//! let rt = Runtime::start(host, RuntimeConfig::new("cb_hooks", "cb_migrations")).await?;
 //! // The host now knows every hook/route/cron the hook files registered
 //! // and dispatches back through rt.call_hook / call_route / call_cron.
 //! # Ok(()) }

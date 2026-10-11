@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { AlertCircle, Database, Users } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Sheet,
@@ -15,8 +17,23 @@ import { Spinner } from "@/components/ui/spinner";
 import { CollectionForm } from "@/components/collections/collection-form";
 import { authOptionsPayload, collectionFormErrors, emptyCollectionForm, type CollectionFormValue } from "@/lib/collection-form-value";
 import { useCollections } from "@/hooks/use-collections";
-import { cb } from "@/lib/api";
+import { cb, describeFailure } from "@/lib/api";
 import { defaultTimestampFields } from "@/lib/field-types";
+
+const TYPE_CARDS = [
+  {
+    value: "base",
+    label: "Base",
+    icon: Database,
+    description: "A plain table of records — posts, products, orders.",
+  },
+  {
+    value: "auth",
+    label: "Auth",
+    icon: Users,
+    description: "Records that can sign in: email or username, password, tokens, OAuth2.",
+  },
+] as const;
 
 interface NewCollectionDialogProps {
   open: boolean;
@@ -67,7 +84,11 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
       void navigate({ to: "/collections/$name", params: { name: created.name } });
     },
     onError: (error) => {
-      toast.error(error instanceof Error ? error.message : "Failed to create collection");
+      const failure = describeFailure(error);
+      const fieldMessages = Object.entries(failure.fields).map(([k, v]) => `${k}: ${v}`);
+      toast.error(failure.title, {
+        description: fieldMessages.length > 0 ? fieldMessages.join("; ") : failure.serverMessage || failure.detail,
+      });
     },
   });
 
@@ -94,10 +115,55 @@ export function NewCollectionDialog({ open, onOpenChange }: NewCollectionDialogP
           </SheetHeader>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+            <fieldset className="mb-6 flex flex-col gap-2">
+              <legend className="mb-1.5 text-sm font-medium text-foreground">Collection type</legend>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {TYPE_CARDS.map((card) => {
+                  const selected = value.type === card.value;
+                  return (
+                    <label
+                      key={card.value}
+                      className={cn(
+                        "relative flex cursor-pointer flex-col gap-1 rounded-lg border p-3 transition-[border-color,background-color,box-shadow] duration-fast ease-out-strong has-[:focus-visible]:ring-3 has-[:focus-visible]:ring-ring/40",
+                        selected ? "border-primary bg-brand-soft shadow-xs" : "border-border bg-card hover:border-border-strong",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="collection-type"
+                        value={card.value}
+                        checked={selected}
+                        onChange={() => {
+                          if (!selected) setValue({ ...value, type: card.value, auth: emptyCollectionForm(card.value).auth });
+                        }}
+                        className="sr-only"
+                      />
+                      <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <card.icon className={cn("size-4", selected ? "text-brand-text" : "text-muted-foreground")} />
+                        {card.label}
+                      </span>
+                      <span className="text-xs text-muted-foreground">{card.description}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
             <CollectionForm value={value} onChange={setValue} otherCollections={collections} isNew />
           </div>
 
-          <SheetFooter className="flex-row justify-end border-t border-border">
+          <SheetFooter className="flex-row items-center justify-end gap-3 border-t border-border">
+            {errors.length > 0 ? (
+              <span className="mr-auto flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                <AlertCircle className="size-3.5 shrink-0" />
+                <span className="truncate" title={errors.join("\n")}>
+                  {errors[0]}
+                  {errors.length > 1 ? ` (+${errors.length - 1} more)` : ""}
+                </span>
+              </span>
+            ) : null}
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
             <Button type="submit" disabled={pending || errors.length > 0} title={errors[0]}>
               {pending ? <Spinner /> : null}
               {pending ? "Creating…" : "Create collection"}

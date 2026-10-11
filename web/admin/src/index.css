@@ -1,39 +1,42 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/ibm-plex-sans";
-@import "@fontsource-variable/jetbrains-mono";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
 /* ===========================================================================
  * Cratebase design tokens
  *
- * Identity: monochrome. The brand is a value, not a hue — near-white on
- * ink, near-black on paper — so the only saturated colour anywhere in
- * the product carries meaning: red is a failure, green a success, amber
- * a warning, blue information. A branded accent competing with those is
- * exactly how a destructive button ends up looking like a primary one.
- * IBM Plex Sans for UI text — a technical grotesque with actual
- * character at 13px, drawn for interfaces rather than for headlines —
- * and JetBrains Mono for anything tabular or identifier-shaped (record
- * ids, timestamps, field types, JSON). The grid is mostly monospace, so
- * the mono face is the one that decides how the product feels: JetBrains
- * has a taller x-height and a wider aperture than the usual UI monos,
- * which is what keeps a 500-row column of ids readable.
+ * Identity: warm ink and paper, one crate-orange accent. The neutrals lean a
+ * hair warm (stone, not zinc) so the product reads as a place rather than a
+ * default theme, and the single accent — the orange of the crate mark and
+ * the favicon — is spent on exactly three things: the primary action, the
+ * focus ring, and "you are here" (active nav, selected tab). Everything else
+ * that is saturated carries meaning: red is a failure, green a success,
+ * yellow a warning, blue information. The accent is orange and the warning
+ * is yellow *on purpose*: they sit far enough apart in hue that a warning
+ * badge never reads as a branded one, and a destructive button (crimson,
+ * pushed toward pink) never reads as a primary one.
+ *
+ * Geist for UI text — drawn for interfaces, tabular numerals by default,
+ * and clean at 13px — and Geist Mono for anything tabular or identifier-
+ * shaped (record ids, timestamps, field types, JSON). Same family, so the
+ * mono face sits on the same baseline rhythm as the sans.
  *
  * This is a data tool, not a marketing site: density over air, hairlines
  * over shadows, one accent per view. Every size, shadow, duration and
  * stacking level below is a named token — components must never reach for
  * an arbitrary pixel font size, a hand-rolled box-shadow, a raw millisecond
- * duration or a bare z-index again.
+ * duration or a bare z-index again. See web/admin/DESIGN.md.
  * ========================================================================= */
 
 @theme inline {
     /* --- Typeface ------------------------------------------------------- */
     --font-heading: var(--font-sans);
-    --font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, sans-serif;
-    --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, monospace;
+    --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, monospace;
 
     /* --- Type scale ------------------------------------------------------
      * A ~1.2 modular scale anchored on 13px, the reading size of a dense
@@ -207,122 +210,138 @@
     --color-background: var(--background);
     --color-surface-sunken: var(--surface-sunken);
     --color-surface-raised: var(--surface-raised);
+    --color-brand-text: var(--brand-text);
+    --color-brand-soft: var(--brand-soft);
+    --color-border-subtle: var(--border-subtle);
 }
 
 :root {
-    --background: #ffffff;
-    --foreground: #09090b;
-    --surface-sunken: #f4f4f5;
+    /* Paper. Warm, low-chroma neutrals; text is never pure black. */
+    --background: #fbfaf8;
+    --foreground: #1b1815;
+    --surface-sunken: #f3f1ed;
     --surface-raised: #ffffff;
     --card: #ffffff;
-    --card-foreground: #09090b;
+    --card-foreground: #1b1815;
     --popover: #ffffff;
-    --popover-foreground: #09090b;
-    --primary: #18181b;
-    --primary-foreground: #fafafa;
-    --secondary: #f4f4f5;
-    --secondary-foreground: #18181b;
-    --muted: #f4f4f5;
-    --muted-foreground: #64646d;
-    --accent: #f4f4f5;
-    --accent-foreground: #18181b;
-    --destructive: #c62d2d;
+    --popover-foreground: #1b1815;
+
+    /* Brand: crate orange. Dark ink on it (7:1) rather than white (2.9:1);
+       `--brand-text` is the same hue pulled dark enough to read as text on
+       paper (4.9:1), and `--brand-soft` the wash behind an active item. */
+    --primary: #ef7d3e;
+    --primary-foreground: #1f1007;
+    --brand-text: #b24a14;
+    --brand-soft: #fdeee4;
+
+    --secondary: #f1eeea;
+    --secondary-foreground: #1b1815;
+    --muted: #f1eeea;
+    --muted-foreground: #6a645c;
+    --accent: #eeebe6;
+    --accent-foreground: #1b1815;
+    --destructive: #cf2a3e;
     --destructive-foreground: #ffffff;
-    --success: #15803d;
+    --success: #16803f;
     --success-foreground: #ffffff;
-    --warning: #a45700;
+    --warning: #9a6200;
     --warning-foreground: #ffffff;
-    --info: #1d4ed8;
+    --info: #1c62c8;
     --info-foreground: #ffffff;
-    --border: #e4e4e7;
-    --border-strong: #8f8f98;
-    --input: #e4e4e7;
-    --ring: #18181b;
+    --border: #e7e3dd;
+    --border-subtle: #efece7;
+    --border-strong: #8d867d;
+    --input: #ddd8d1;
+    --ring: #d4601f;
 
     /* Charts are the one place saturation is allowed to be decorative, so
-       they carry a categorical ramp of their own rather than tints of a
-       brand colour that no longer has a hue. Ordered for maximum
-       adjacent-pair separation, including for deuteranopia. */
-    --chart-1: #2563eb;
-    --chart-2: #7c3aed;
+       they carry a categorical ramp of their own. The first step is the
+       brand; the rest are ordered for maximum adjacent-pair separation,
+       including for deuteranopia. */
+    --chart-1: #ef7d3e;
+    --chart-2: #3b82f6;
     --chart-3: #0d9488;
-    --chart-4: #c2410c;
-    --chart-5: #be185d;
+    --chart-4: #8b5cf6;
+    --chart-5: #db2777;
     --radius: 0.625rem;
-    --sidebar: #fafafa;
-    --sidebar-foreground: #09090b;
-    --sidebar-primary: #18181b;
-    --sidebar-primary-foreground: #fafafa;
-    --sidebar-accent: #f0f0f2;
-    --sidebar-accent-foreground: #18181b;
-    --sidebar-border: #e4e4e7;
-    --sidebar-ring: #18181b;
+    --sidebar: #f6f4f0;
+    --sidebar-foreground: #1b1815;
+    --sidebar-primary: #ef7d3e;
+    --sidebar-primary-foreground: #1f1007;
+    --sidebar-accent: #ebe7e1;
+    --sidebar-accent-foreground: #1b1815;
+    --sidebar-border: #e7e3dd;
+    --sidebar-ring: #d4601f;
 
-    /* Paper elevation: a tight contact shadow plus a soft ambient one.
-       Neutral now that the ink underneath it is neutral — a warm umbra
-       under a colourless palette reads as a stain. */
-    --elevation-0: 0 0 0 1px rgb(9 9 11 / 0.06);
-    --elevation-1: 0 1px 1px 0 rgb(9 9 11 / 0.05), 0 1px 3px -1px rgb(9 9 11 / 0.08);
-    --elevation-2: 0 1px 2px 0 rgb(9 9 11 / 0.06), 0 4px 10px -3px rgb(9 9 11 / 0.10);
-    --elevation-3: 0 2px 4px -1px rgb(9 9 11 / 0.06), 0 10px 24px -8px rgb(9 9 11 / 0.15);
-    --elevation-4: 0 4px 8px -2px rgb(9 9 11 / 0.07), 0 20px 44px -14px rgb(9 9 11 / 0.20);
-    --elevation-5: 0 8px 16px -4px rgb(9 9 11 / 0.08), 0 36px 72px -24px rgb(9 9 11 / 0.28);
-    --elevation-lift: 0 1px 2px 0 rgb(9 9 11 / 0.16), 0 8px 20px -8px rgb(9 9 11 / 0.30);
+    /* Paper elevation: a tight contact shadow plus a soft ambient one, both
+       tinted with the ink so the umbra never reads as a grey stain. */
+    --elevation-0: 0 0 0 1px rgb(27 24 21 / 0.06);
+    --elevation-1: 0 1px 1px 0 rgb(27 24 21 / 0.05), 0 1px 3px -1px rgb(27 24 21 / 0.08);
+    --elevation-2: 0 1px 2px 0 rgb(27 24 21 / 0.06), 0 4px 10px -3px rgb(27 24 21 / 0.10);
+    --elevation-3: 0 2px 4px -1px rgb(27 24 21 / 0.06), 0 10px 24px -8px rgb(27 24 21 / 0.15);
+    --elevation-4: 0 4px 8px -2px rgb(27 24 21 / 0.07), 0 20px 44px -14px rgb(27 24 21 / 0.20);
+    --elevation-5: 0 8px 16px -4px rgb(27 24 21 / 0.08), 0 36px 72px -24px rgb(27 24 21 / 0.28);
+    --elevation-lift: 0 1px 2px 0 rgb(120 50 10 / 0.30), 0 8px 20px -8px rgb(120 50 10 / 0.40);
 }
 
 .dark {
-    --background: #09090b;
-    --foreground: #fafafa;
-    --surface-sunken: #050506;
-    --surface-raised: #1e1e21;
-    --card: #131316;
-    --card-foreground: #fafafa;
-    --popover: #131316;
-    --popover-foreground: #fafafa;
-    --primary: #fafafa;
-    --primary-foreground: #09090b;
-    --secondary: #1c1c1f;
-    --secondary-foreground: #fafafa;
-    --muted: #1c1c1f;
-    --muted-foreground: #a1a1aa;
-    --accent: #232327;
-    --accent-foreground: #fafafa;
-    --destructive: #f0563c;
-    --destructive-foreground: #1a0906;
+    /* Ink. Not pure black: a faint warm cast keeps the orange from vibrating
+       against a blue-black field. */
+    --background: #0e0d0c;
+    --foreground: #f4f1ec;
+    --surface-sunken: #080807;
+    --surface-raised: #211f1c;
+    --card: #151412;
+    --card-foreground: #f4f1ec;
+    --popover: #191715;
+    --popover-foreground: #f4f1ec;
+    --primary: #f0843f;
+    --primary-foreground: #1a0d05;
+    --brand-text: #f59a62;
+    --brand-soft: #2a1a10;
+    --secondary: #1e1c1a;
+    --secondary-foreground: #f4f1ec;
+    --muted: #1e1c1a;
+    --muted-foreground: #a69f96;
+    --accent: #292623;
+    --accent-foreground: #f4f1ec;
+    --destructive: #f26a7c;
+    --destructive-foreground: #1c0508;
     --success: #4ec27f;
     --success-foreground: #05190e;
-    --warning: #e0a038;
-    --warning-foreground: #1c1204;
+    --warning: #e8b53b;
+    --warning-foreground: #1c1404;
     --info: #6aaae8;
     --info-foreground: #04121f;
-    --border: #ffffff14;
-    --border-strong: #6e6e77;
-    --input: #ffffff1f;
-    --ring: #d4d4d8;
-    --chart-1: #60a5fa;
-    --chart-2: #a78bfa;
+    --border: #fff0e117;
+    --border-subtle: #fff0e10d;
+    --border-strong: #736d65;
+    --input: #fff0e121;
+    --ring: #f59a62;
+    --chart-1: #f0843f;
+    --chart-2: #60a5fa;
     --chart-3: #2dd4bf;
-    --chart-4: #fb923c;
+    --chart-4: #a78bfa;
     --chart-5: #f472b6;
-    --sidebar: #0d0d0f;
-    --sidebar-foreground: #fafafa;
-    --sidebar-primary: #fafafa;
-    --sidebar-primary-foreground: #09090b;
-    --sidebar-accent: #1c1c1f;
-    --sidebar-accent-foreground: #fafafa;
-    --sidebar-border: #ffffff14;
-    --sidebar-ring: #d4d4d8;
+    --sidebar: #0a0908;
+    --sidebar-foreground: #f4f1ec;
+    --sidebar-primary: #f0843f;
+    --sidebar-primary-foreground: #1a0d05;
+    --sidebar-accent: #1e1c1a;
+    --sidebar-accent-foreground: #f4f1ec;
+    --sidebar-border: #fff0e112;
+    --sidebar-ring: #f59a62;
 
     /* Ink elevation: a lit top edge does the lifting, the shadow only
        separates. Copying the paper shadows here would read as smudge. */
-    --elevation-0: inset 0 0 0 1px rgb(255 255 255 / 0.06);
-    --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.5), inset 0 1px 0 0 rgb(255 255 255 / 0.04);
-    --elevation-2: 0 2px 6px -1px rgb(0 0 0 / 0.55), inset 0 1px 0 0 rgb(255 255 255 / 0.05);
-    --elevation-3: 0 8px 22px -6px rgb(0 0 0 / 0.62), inset 0 1px 0 0 rgb(255 255 255 / 0.06);
-    --elevation-4: 0 16px 40px -12px rgb(0 0 0 / 0.7), inset 0 1px 0 0 rgb(255 255 255 / 0.07);
-    --elevation-5: 0 28px 68px -20px rgb(0 0 0 / 0.78), inset 0 1px 0 0 rgb(255 255 255 / 0.08);
-    --elevation-lift: 0 1px 2px 0 rgb(0 0 0 / 0.6), 0 10px 26px -10px rgb(0 0 0 / 0.75),
-        inset 0 1px 0 0 rgb(255 255 255 / 0.14);
+    --elevation-0: inset 0 0 0 1px rgb(255 240 225 / 0.07);
+    --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.5), inset 0 1px 0 0 rgb(255 240 225 / 0.04);
+    --elevation-2: 0 2px 6px -1px rgb(0 0 0 / 0.55), inset 0 1px 0 0 rgb(255 240 225 / 0.05);
+    --elevation-3: 0 8px 22px -6px rgb(0 0 0 / 0.62), inset 0 1px 0 0 rgb(255 240 225 / 0.06);
+    --elevation-4: 0 16px 40px -12px rgb(0 0 0 / 0.7), inset 0 1px 0 0 rgb(255 240 225 / 0.07);
+    --elevation-5: 0 28px 68px -20px rgb(0 0 0 / 0.78), inset 0 1px 0 0 rgb(255 240 225 / 0.08);
+    --elevation-lift: 0 1px 2px 0 rgb(0 0 0 / 0.6), 0 10px 26px -10px rgb(240 132 63 / 0.35),
+        inset 0 1px 0 0 rgb(255 255 255 / 0.22);
 }
 
 /* Motion and stacking are theme-independent, so they live once on :root.
@@ -370,7 +389,19 @@
   }
 
   ::selection {
-    background-color: color-mix(in oklab, var(--primary) 30%, transparent);
+    background-color: color-mix(in oklab, var(--primary) 32%, transparent);
+  }
+
+  /* One focus language everywhere: a 2px brand ring, offset so it never
+     merges with a bordered control. Components that draw their own ring
+     (buttons, inputs) keep it; this catches everything else — links,
+     summary, tabindex containers — which used to show the UA default. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  :where(button, input, textarea, select, [role="combobox"], [role="option"], [role="checkbox"], [role="switch"], [role="tab"]):focus-visible {
+    outline: none;
   }
 
   /* A dev tool scrolls constantly; the default scrollbar is the loudest
@@ -411,6 +442,21 @@
   100% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 0%, transparent); }
 }
 
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@keyframes status-ping {
+  0% { transform: scale(1); opacity: 0.5; }
+  80%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
 /* --- Named motion utilities --------------------------------------------
  * Tailwind has no `--duration-*` theme namespace, so the scale is exposed
  * as named utilities instead of arbitrary bracketed millisecond values.
@@ -444,6 +490,28 @@
   .hairline-r {
     box-shadow: inset -1px 0 0 0 var(--border);
   }
+}
+
+/* Content arriving: a short rise-and-fade, staggered by `--i` (set inline as
+   `style={{ "--i": n }}`). 30ms per step, capped by the caller; exits are
+   never animated. Under reduced motion it collapses to the global
+   0.01ms override below, so nothing moves and nothing is hidden. */
+@utility animate-rise {
+  animation: page-in var(--duration-slow) var(--ease-out-strong) backwards;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+
+/* Loading placeholders sweep a faint highlight instead of pulsing the whole
+   block: a pulse reads as "disabled", a sweep reads as "working". */
+@utility skeleton-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in oklab, var(--foreground) 6%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

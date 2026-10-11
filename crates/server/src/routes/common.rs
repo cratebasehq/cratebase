@@ -13,9 +13,9 @@
 //!
 //! # Staging
 //!
-//! Uploads are staged before the row is written, because PocketBase
-//! validates `maxSize`/`mimeTypes`/`maxSelect` against the *pending*
-//! files and the record's file columns must already hold their final
+//! Uploads are staged before the row is written, because
+//! `maxSize`/`mimeTypes`/`maxSelect` are validated against the *pending*
+//! files, and the record's file columns must already hold their final
 //! names when the insert runs. Staging keeps small files in memory and
 //! spills anything larger than [`SPILL_THRESHOLD`] to a temp file, so a
 //! 2 GB upload costs a 2 GB disk write and not a 2 GB allocation. The
@@ -55,7 +55,7 @@ const SNIFF_LEN: usize = 512;
 
 /// Random suffix length in a stored file name (`notes_<10>.txt`).
 const SUFFIX_LEN: usize = 10;
-/// PocketBase pads a very short base name so the result is not just the
+/// A very short base name so the result is not just the
 /// random suffix.
 const MIN_BASE_LEN: usize = 3;
 /// Lowercase alphanumerics — the conformance suite pins the stored name
@@ -172,7 +172,7 @@ pub async fn records_matching_rule(
         .collect())
 }
 
-/// PocketBase's "auth manage access": a superuser, or a caller the
+/// "Auth manage access": a superuser, or a caller the
 /// collection's `manageRule` lets through for this record. A `manageRule`
 /// of `null` means superusers only.
 pub async fn has_manage_access(
@@ -267,8 +267,8 @@ pub struct StagedUpload {
     pub field: String,
     /// The name stored in the record and in the object key.
     pub name: String,
-    /// The name the client uploaded it under. PocketBase quotes *this*
-    /// one in its size/mime errors, not the generated one.
+    /// The name the client uploaded it under. Size/mime errors quote *this*
+    /// one, not the generated one.
     pub original: String,
     pub size: i64,
     pub mime: String,
@@ -404,8 +404,8 @@ impl ParsedBody {
     }
 }
 
-/// Parse a JSON body. A malformed one is PocketBase's *generic* 400 on
-/// the record endpoints (KNOWN_DIVERGENCES §17), which is why this does
+/// Parse a JSON body. A malformed one is a *generic* 400 on
+/// the record endpoints, which is why this does
 /// not go through [`crate::http_error::ApiJson`].
 pub fn parse_json_body(bytes: &[u8]) -> ApiResult<ParsedBody> {
     if bytes.iter().all(u8::is_ascii_whitespace) {
@@ -421,7 +421,7 @@ pub fn parse_json_body(bytes: &[u8]) -> ApiResult<ParsedBody> {
     }
 }
 
-/// PocketBase's `+`/`-` modifiers on **number** fields
+/// The `+`/`-` modifiers on **number** fields
 /// (`{"views+": 5}` increments, `{"views-": 3}` decrements).
 ///
 /// [`cratebase_db::validate::apply_modifiers`] only covers the
@@ -471,7 +471,7 @@ fn whole_or_float(n: f64) -> Value {
 }
 
 /// Go's `cast.ToFloat64`: anything unparsable is `0`, matching how
-/// PocketBase coerces a number field elsewhere.
+/// number fields are coerced elsewhere.
 fn number(value: &Value) -> f64 {
     match value {
         Value::Number(n) => n.as_f64().unwrap_or(0.0),
@@ -488,7 +488,7 @@ fn number(value: &Value) -> f64 {
 ///   body under the original key so the `+`/`-` modifiers still apply;
 /// * `@jsonPayload` is parsed and merged;
 /// * every other part is a text value, with repeated keys collected into
-///   an array (PocketBase's behaviour, pinned by `records.test.ts`).
+///   an array (pinned by `records.test.ts`).
 pub async fn parse_multipart(
     collection: &Arc<Collection>,
     mut multipart: Multipart,
@@ -629,8 +629,8 @@ pub(crate) async fn stage_field(
 /// `None` and this falls back to the declared header's *essence*
 /// (browsers and `fetch` send `text/plain;charset=utf-8`, and comparing
 /// that against a configured `text/plain` would reject every text
-/// upload), then to the extension — which is what PocketBase lands on
-/// for files its own content sniffer cannot place either.
+/// upload), then to the extension — which is where
+/// files its own content sniffer cannot place land.
 fn mime_of(declared: Option<&str>, filename: &str, head: &[u8]) -> String {
     if let Some(kind) = infer::get(head) {
         return kind.mime_type().to_string();
@@ -649,7 +649,7 @@ fn mime_of(declared: Option<&str>, filename: &str, head: &[u8]) -> String {
 
 /// Rewrite the generated file names in a validation error back into the
 /// names the client used. `crates/db` only knows the stored name, but
-/// PocketBase's message quotes the uploaded one.
+/// the message quotes the uploaded one.
 pub fn relabel_upload_errors(error: ApiError, uploads: &[StagedUpload]) -> ApiError {
     let AppError::Validation { message, fields } = error.error else {
         return error;
@@ -672,7 +672,7 @@ pub fn relabel_upload_errors(error: ApiError, uploads: &[StagedUpload]) -> ApiEr
     }
 }
 
-/// Collect repeated multipart keys into an array, as PocketBase does.
+/// Collect repeated multipart keys into an array.
 fn push_value(map: &mut Map<String, Value>, key: &str, value: Value) {
     match map.get_mut(key) {
         Some(Value::Array(items)) => items.push(value),
@@ -697,7 +697,7 @@ pub fn strip_modifier(key: &str) -> &str {
     key.strip_suffix('-').unwrap_or(key)
 }
 
-/// PocketBase's stored file name: the sanitized base name (padded when it
+/// The stored file name: the sanitized base name (padded when it
 /// is very short), a 10-character random suffix and the original
 /// extension — `notes.txt` → `notes_a1b2c3d4e5.txt`.
 pub fn stored_file_name(original: &str) -> String {
@@ -735,7 +735,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stored_names_follow_pocketbase() {
+    fn stored_names_follow_cratebase_format() {
         let name = stored_file_name("notes.txt");
         assert!(regex_like(&name, "notes_", ".txt", SUFFIX_LEN), "{name}");
         // A one-character base name is padded, so the result never reads

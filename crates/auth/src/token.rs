@@ -1,6 +1,6 @@
-//! PocketBase-compatible HS256 JWTs.
+//! HS256 JWTs.
 //!
-//! A token's payload is exactly PocketBase's:
+//! A token's payload is:
 //!
 //! ```json
 //! {"collectionId":"pbc_3142635823","exp":1788526100,"id":"l5rhsibvzk6xatx","refreshable":true,"type":"auth"}
@@ -23,8 +23,7 @@ use serde_json::Value;
 
 use crate::error::{AuthError, AuthResult};
 
-/// The `type` claim. String values match PocketBase's `core.Token*Type`
-/// constants exactly, since they end up inside the signed payload.
+/// The `type` claim. String values are fixed, since they end up inside the signed payload.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TokenType {
     /// A session token (`"auth"`).
@@ -88,7 +87,7 @@ impl<'de> Deserialize<'de> for TokenType {
     }
 }
 
-/// The JWT payload. Field names serialize exactly as PocketBase writes
+/// The JWT payload. Field names serialize exactly as Cratebase writes
 /// them (`id`, `type`, `collectionId`, `refreshable`, `exp`); anything
 /// else (`email`, `newEmail`, ...) lives in [`Claims::extra`] and is
 /// flattened into the same JSON object.
@@ -236,7 +235,7 @@ pub fn new_email_change_claims(
     .with_extra("newEmail", new_email)
 }
 
-/// Derives the HS256 key for a record's token, PocketBase style: the
+/// Derives the HS256 key for a record's token: the
 /// app-wide secret, the record's `tokenKey`, and the per-collection
 /// per-type secret suffix (`TokenConfig.secret`, usually empty), as raw
 /// bytes concatenated in that order.
@@ -301,9 +300,9 @@ mod tests {
         signing_key(APP_SECRET, TOKEN_KEY, "")
     }
 
-    /// The payload of a token captured from PocketBase 0.40.
+    /// The serialized payload of an auth token.
     #[test]
-    fn claims_serialize_with_pocketbase_key_names() {
+    fn claims_serialize_with_cratebase_key_names() {
         let claims = Claims {
             id: "l5rhsibvzk6xatx".into(),
             token_type: TokenType::Auth,
@@ -328,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn pocketbase_style_token_round_trips() {
+    fn token_round_trips() {
         let claims = new_auth_claims("l5rhsibvzk6xatx", "pbc_3142635823", 3600, true);
         let token = sign(&claims, &key()).unwrap();
         assert_eq!(token.split('.').count(), 3);

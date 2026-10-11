@@ -40,9 +40,7 @@ use crate::routes::auth::{
 };
 use crate::routes::common;
 
-/// PocketBase-shaped `validation_required`-style wording is out of scope
-/// here (these are new endpoints, not a PocketBase-compatible surface),
-/// so messages are plain English.
+/// Messages are plain English rather than `validation_required`-style codes.
 const ALREADY_ENABLED: &str = "TOTP is already enabled for this account.";
 const NOT_SET_UP: &str = "TOTP has not been set up for this account.";
 const NOT_CONFIRMED: &str = "TOTP setup has not been confirmed yet.";

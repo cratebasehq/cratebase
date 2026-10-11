@@ -180,7 +180,7 @@ async fn search_vs_like_micro_benchmark_50k_rows() {
     }
     assert_eq!(search_rows, 3);
 
-    // `~` — a portable case-insensitive LIKE scan, PocketBase/Cratebase's
+    // `~` — a portable case-insensitive LIKE scan, Cratebase's
     // pre-existing substring operator, over the same column.
     let mut like_best = std::time::Duration::MAX;
     let mut like_rows = 0;

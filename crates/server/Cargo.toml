@@ -62,10 +62,6 @@ base64 = "0.22"
 # shells out to Mozilla's `ece` via openssl bindings.
 http = "1"
 web-push-native = "0.5"
-# Reading a PocketBase `pb_data/data.db` file directly for
-# `migrate-from-pocketbase` — the same bundled-SQLite crate `cratebase-db`
-# already uses, so no second SQLite implementation enters the binary.
-rusqlite = { version = "0.32", features = ["bundled"] }
 cratebase-wasm-plugin.workspace = true
 toml = "1.1.5"
 # CIDR parsing for settings.superuserIPs (10.0.0.0/8-style entries
@@ -77,11 +73,6 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 rand.workspace = true
-# `bcrypt::hash` for building a real PocketBase-shaped bcrypt password
-# hash in the `migrate-from-pocketbase` end-to-end test
-# (`tests/pocketbase_migrate_e2e.rs`); `rusqlite` is already a normal
-# dependency above, reused here for building that test's `data.db`.
-bcrypt = "0.17"
 # Mocks the OIDC issuer (discovery document + JWKS) in
 # `routes::oidc`'s tests, so the generic-OIDC login path is exercised
 # end to end without a real network round trip.

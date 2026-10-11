@@ -38,7 +38,7 @@ impl Harness {
     /// test can register hooks and plugins that boot with it.
     async fn with(tweak: impl FnOnce(&App)) -> Harness {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         tweak(&app);
         app.bootstrap().await.expect("bootstrap");
         let id = app
@@ -332,7 +332,7 @@ async fn a_settings_hook_can_veto_the_update() {
 // ------------------------------------------------------------------ health
 
 #[tokio::test]
-async fn health_matches_the_pocketbase_envelope() {
+async fn health_matches_the_envelope() {
     let harness = Harness::new().await;
 
     let (status, body) = harness.get("/api/health").await;
@@ -628,12 +628,12 @@ async fn crons_list_the_system_jobs_and_run_on_demand() {
         .iter()
         .map(|j| (j["id"].as_str().unwrap(), j["expression"].as_str().unwrap()))
         .collect();
-    assert_eq!(by_id["__pbDBOptimize__"], "0 0 * * *");
-    assert_eq!(by_id["__pbMFACleanup__"], "0 * * * *");
-    assert_eq!(by_id["__pbOTPCleanup__"], "0 * * * *");
-    assert_eq!(by_id["__pbLogsCleanup__"], "0 */6 * * *");
+    assert_eq!(by_id["__cbDBOptimize__"], "0 0 * * *");
+    assert_eq!(by_id["__cbMFACleanup__"], "0 * * * *");
+    assert_eq!(by_id["__cbOTPCleanup__"], "0 * * * *");
+    assert_eq!(by_id["__cbLogsCleanup__"], "0 */6 * * *");
     // The auto-backup job only exists once a schedule is configured.
-    assert!(!by_id.contains_key("__pbAutoBackup__"));
+    assert!(!by_id.contains_key("__cbAutoBackup__"));
     for job in jobs.as_array().unwrap() {
         let mut keys: Vec<&str> = job
             .as_object()
@@ -646,7 +646,7 @@ async fn crons_list_the_system_jobs_and_run_on_demand() {
     }
 
     let response = harness
-        .raw_auth("POST", "/api/crons/__pbLogsCleanup__")
+        .raw_auth("POST", "/api/crons/__cbLogsCleanup__")
         .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
@@ -672,8 +672,8 @@ async fn the_auto_backup_job_follows_the_settings() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|j| j["id"] == "__pbAutoBackup__")
-        .expect("__pbAutoBackup__ is registered");
+        .find(|j| j["id"] == "__cbAutoBackup__")
+        .expect("__cbAutoBackup__ is registered");
     assert_eq!(backup["expression"], "0 3 * * *");
 
     // Clearing the schedule removes it again.
@@ -683,7 +683,7 @@ async fn the_auto_backup_job_follows_the_settings() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|j| j["id"] == "__pbAutoBackup__"));
+        .any(|j| j["id"] == "__cbAutoBackup__"));
 }
 
 // ----------------------------------------------------------------- backups
@@ -692,7 +692,7 @@ async fn the_auto_backup_job_follows_the_settings() {
 async fn backups_create_list_download_and_delete() {
     let dir = tempfile::tempdir().unwrap();
     // A real file-backed database, so there is something to snapshot.
-    let mut config = Config::for_data_dir(dir.path().join("pb_data"));
+    let mut config = Config::for_data_dir(dir.path().join("cb_data"));
     config.secret = "test-secret-0123456789".into();
     let app = App::new(config);
     app.bootstrap().await.unwrap();
@@ -818,7 +818,7 @@ async fn backups_create_list_download_and_delete() {
     assert_eq!(status, 400);
     assert!(body["data"]["name"].is_object());
 
-    // Deleting a missing one is a 400 with PocketBase's wording.
+    // Deleting a missing one is a 400 with the generic wording.
     let (status, body) = split(
         router()
             .oneshot(
@@ -930,7 +930,7 @@ async fn backups_create_list_download_and_delete() {
     )
     .await;
     assert_eq!(status, 200);
-    assert!(dir.path().join("pb_data").join("data.db").exists());
+    assert!(dir.path().join("cb_data").join("data.db").exists());
 
     app.terminate(false).await;
 }
@@ -972,7 +972,7 @@ fn binary_multipart(filename: &str, bytes: &[u8]) -> (String, Vec<u8>) {
 // ------------------------------------------------------------------ errors
 
 #[tokio::test]
-async fn errors_use_the_pocketbase_envelope() {
+async fn errors_use_the_error_envelope() {
     let harness = Harness::new().await;
 
     // 404: unknown route.
@@ -987,7 +987,7 @@ async fn errors_use_the_pocketbase_envelope() {
     let (status, body) = harness
         .send(Request::delete("/api/health").body(Body::empty()).unwrap())
         .await;
-    assert_eq!(status, 404, "PocketBase answers 404, not 405");
+    assert_eq!(status, 404, "a wrong method answers 404, not 405");
     assert_eq!(body["data"], json!({}));
 
     // 401: an admin endpoint without a token.
@@ -1020,7 +1020,7 @@ async fn errors_use_the_pocketbase_envelope() {
     assert_eq!(body["message"], AppError::DEFAULT_FORBIDDEN);
     harness.app.set_settings(Settings::default()).await.unwrap();
 
-    // 400: a malformed JSON body is PocketBase-shaped, not axum's text.
+    // 400: a malformed JSON body uses the error envelope, not axum's text.
     let (status, body) = harness
         .send(
             Request::patch("/api/settings")
@@ -1036,7 +1036,7 @@ async fn errors_use_the_pocketbase_envelope() {
 }
 
 #[tokio::test]
-async fn the_rate_limiter_returns_pocketbases_429() {
+async fn the_rate_limiter_returns_429() {
     let harness = Harness::new().await;
     let mut settings = Settings::default();
     settings.rate_limits.enabled = true;
@@ -1116,7 +1116,7 @@ async fn a_spoofed_forwarded_header_cannot_dodge_the_rate_limit() {
 #[tokio::test]
 async fn the_superuser_cli_path_creates_a_usable_account() {
     let dir = tempfile::tempdir().unwrap();
-    let app = App::new(Config::memory(dir.path().join("pb_data")));
+    let app = App::new(Config::memory(dir.path().join("cb_data")));
     app.bootstrap().await.unwrap();
 
     let id = app
@@ -1210,4 +1210,55 @@ async fn plugin_routes_live_inside_the_api_nest() {
         logs["totalItems"].as_i64().unwrap() >= 1,
         "plugin routes must be logged like every other /api route"
     );
+}
+
+// ------------------------------------------------- legacy collection keys
+
+#[tokio::test]
+async fn legacy_collection_keys_are_rejected_with_a_hint() {
+    let harness = Harness::new().await;
+
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/collections",
+            json!({"name": "x", "type": "base", "schema": [{"name": "t", "type": "text"}]}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["data"]["schema"]["code"], "validation_unknown_key");
+
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/schema/apply",
+            json!({"collections": [{"name": "x", "type": "base", "schema": []}]}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["data"]["schema"]["code"], "validation_unknown_key");
+
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/collections",
+            json!({"name": "y", "type": "base", "fields": [
+                {"name": "t", "type": "text", "options": {"max": 5}}
+            ]}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        body["data"]["fields"]["0"]["options"]["code"],
+        "validation_unknown_key"
+    );
+
+    let (status, body) = harness
+        .json_auth(
+            "POST",
+            "/api/collections",
+            json!({"name": "z", "type": "base", "fields": [{"name": "t", "type": "text", "max": 5}]}),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
 }

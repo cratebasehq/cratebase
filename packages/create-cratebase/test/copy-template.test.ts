@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { copyTemplate, isNonEmptyDir, projectNameFromDir, renderContents } from "../src/copy-template.js";
+import { copyTemplate, emptyDir, isNonEmptyDir, projectNameFromDir, renderContents, validateProjectDir } from "../src/copy-template.js";
 
 describe("renderContents", () => {
   test("replaces every {{PROJECT_NAME}} occurrence", () => {
@@ -27,6 +27,20 @@ describe("projectNameFromDir", () => {
 
   test("keeps an already-valid name", () => {
     expect(projectNameFromDir("/tmp/already-valid_name.2")).toBe("already-valid_name.2");
+  });
+});
+
+describe("validateProjectDir", () => {
+  test("accepts ordinary names and paths", () => {
+    expect(validateProjectDir("my-app")).toBeUndefined();
+    expect(validateProjectDir("./apps/My App")).toBeUndefined();
+    expect(validateProjectDir(".")).toBeUndefined();
+  });
+
+  test("rejects empty and illegal characters", () => {
+    expect(validateProjectDir("   ")).toBeDefined();
+    expect(validateProjectDir("bad|name")).toBeDefined();
+    expect(validateProjectDir("what?")).toBeDefined();
   });
 });
 
@@ -81,5 +95,18 @@ describe("copyTemplate + isNonEmptyDir", () => {
     await mkdir(occupied);
     await writeFile(path.join(occupied, "file.txt"), "x");
     expect(await isNonEmptyDir(occupied)).toBe(true);
+  });
+
+  test("emptyDir removes everything except .git", async () => {
+    const dir = path.join(dstParent, "full");
+    await mkdir(path.join(dir, ".git"), { recursive: true });
+    await mkdir(path.join(dir, "src"), { recursive: true });
+    await writeFile(path.join(dir, "src", "a.ts"), "x");
+    await writeFile(path.join(dir, "package.json"), "{}");
+    await writeFile(path.join(dir, ".git", "HEAD"), "ref");
+
+    await emptyDir(dir);
+
+    expect(await readdir(dir)).toEqual([".git"]);
   });
 });

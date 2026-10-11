@@ -1,6 +1,6 @@
-//! PocketBase's date macros (`@now`, `@todayStart`, `@month`, ...). All
+//! Cratebase's date macros (`@now`, `@todayStart`, `@month`, ...). All
 //! values are computed in UTC at compile time and bound as parameters:
-//! datetimes in PocketBase's `YYYY-MM-DD HH:MM:SS.sssZ` format, the
+//! datetimes in Cratebase's `YYYY-MM-DD HH:MM:SS.sssZ` format, the
 //! calendar components as integers.
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};

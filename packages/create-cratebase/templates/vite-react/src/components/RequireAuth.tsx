@@ -6,7 +6,11 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const { isValid, isLoading } = useAuth();
 
   if (isLoading) {
-    return <div className="flex min-h-screen items-center justify-center text-sm text-black/50">Loading…</div>;
+    return (
+      <div className="muted flex min-h-screen items-center justify-center text-sm" role="status">
+        Loading…
+      </div>
+    );
   }
   if (!isValid) return <Navigate to="/sign-in" replace />;
 

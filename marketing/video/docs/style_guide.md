@@ -57,7 +57,7 @@ dashboard) → paper/fog (auth) → black (email) → ink (superpowers) → navy
 
 | Level | Size | Use |
 |---|---|---|
-| Mega | 400–460 px [300] | Hook words, the 10.47× number |
+| Mega | 400–460 px [300] | Hook words, the 49,986 req/s number |
 | Display | 220–260 px [170] | "Stop rebuilding / your backend.", wordmark |
 | Statement | 120–150 px [104] | One per chapter beat, e.g. "Rules are filter expressions." |
 | Callout | 64–76 px [60] | Labels anchored to a UI detail |

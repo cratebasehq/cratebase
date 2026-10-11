@@ -2,7 +2,7 @@
 //! the bridge that turns it (plus the collection store) into a
 //! [`cratebase_filter::Resolver`].
 //!
-//! PocketBase exposes the request to API rules through the `@request.*`
+//! Cratebase exposes the request to API rules through the `@request.*`
 //! macros: `@request.auth.id`, `@request.body.title`,
 //! `@request.query.foo`, `@request.headers.x_token`, `@request.method`
 //! and `@request.context`. [`RequestContext`] is exactly that surface,
@@ -19,7 +19,7 @@ use crate::engine::quote_ident;
 
 /// The authenticated caller: the auth record itself plus the collection
 /// it belongs to. `is_superuser` is `true` only for records of the
-/// built-in `_superusers` collection (PocketBase has no separate admin
+/// built-in `_superusers` collection (Cratebase has no separate admin
 /// table since v0.23 — superusers are ordinary auth records).
 #[derive(Debug, Clone)]
 pub struct AuthContext {
@@ -59,11 +59,11 @@ pub struct RequestContext {
     pub body: Map<String, Value>,
     pub query: Map<String, Value>,
     /// Header names lowercased with `-` replaced by `_`, matching how
-    /// PocketBase spells them in rules (`@request.headers.x_token`).
+    /// Cratebase spells them in rules (`@request.headers.x_token`).
     pub headers: Map<String, Value>,
     pub method: String,
     /// One of `default`, `oauth2`, `otp`, `password`, `realtime`,
-    /// `protectedFile` — PocketBase's `@request.context` values.
+    /// `protectedFile` — Cratebase's `@request.context` values.
     pub context: String,
     /// Bypass every API rule. Set by [`RequestContext::superuser`] for
     /// internal callers (migrations, hooks, the dashboard) that have no
@@ -115,7 +115,7 @@ impl RequestContext {
         self.auth.as_ref().map(AuthContext::id)
     }
 
-    /// Normalize a header name the way PocketBase does before looking it
+    /// Normalize a header name the way Cratebase does before looking it
     /// up in a rule (`X-Token` → `x_token`).
     pub fn header_key(name: &str) -> String {
         name.to_ascii_lowercase().replace('-', "_")
@@ -247,7 +247,7 @@ impl Resolver for CollectionResolver<'_> {
     fn request_value(&self, path: &RequestPath) -> Value {
         match path {
             // Bare `@request.auth` is truthy when someone is signed in;
-            // PocketBase compiles `@request.auth.id != ""` the same way.
+            // Cratebase compiles `@request.auth.id != ""` the same way.
             RequestPath::Auth(None) => Value::Bool(self.ctx.auth.is_some()),
             RequestPath::Auth(Some(p)) => match &self.ctx.auth {
                 Some(auth) => auth_value(auth, p),

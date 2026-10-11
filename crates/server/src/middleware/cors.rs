@@ -1,8 +1,7 @@
 //! CORS, driven by `config.origins` (`CORS_ALLOW_ORIGINS` / `--origins`).
 //!
-//! `*` mirrors PocketBase's default (it ships wide open, on the grounds
-//! that the API is token-authenticated and cookies are never used by
-//! default). A concrete list switches to an allow-list and drops any
+//! `*` is the default (wide open, on the grounds that the API is
+//! token-authenticated and cookies are never used by default). A concrete list switches to an allow-list and drops any
 //! entry that is not a valid header value.
 //!
 //! `allow_headers` mirrors the preflight's own `Access-Control-Request-Headers`

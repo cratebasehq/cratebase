@@ -1,8 +1,12 @@
 import { useMemo, useRef, useState } from "react";
-import { CircleAlert, CircleHelp, CornerDownLeft, Filter, Search, X } from "lucide-react";
+import { CircleAlert, CircleHelp, CornerDownLeft, Filter, ListFilter, Plus, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { FieldSchema } from "@/lib/field-types";
 
 /**
@@ -108,7 +112,7 @@ interface FilterBarProps {
 }
 
 /**
- * A monospace expression input for the PocketBase filter language, with the
+ * A monospace expression input for the filter language, with the
  * grammar one keystroke away and the server's own rejection shown inline.
  *
  * The expression is applied on Enter (not per keystroke) because a
@@ -167,6 +171,7 @@ export function FilterBar({ value, onApply, error, collectionName, fields, extra
       >
         <Filter className={cn("size-3.5 shrink-0", error ? "text-destructive" : "text-muted-foreground")} />
         <input
+          id="records-filter"
           ref={inputRef}
           value={draft}
           spellCheck={false}
@@ -211,6 +216,8 @@ export function FilterBar({ value, onApply, error, collectionName, fields, extra
             <X className="size-3.5" />
           </button>
         ) : null}
+
+        <ConditionBuilder fields={fields} onAdd={insert} />
 
         <Popover>
           <PopoverTrigger asChild>
@@ -298,6 +305,180 @@ function HelpSection({ title, children }: { title: string; children: React.React
       <h4 className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground/70">{title}</h4>
       {children}
     </section>
+  );
+}
+
+const TEXT_OPS: [string, string][] = [
+  ["~", "contains"],
+  ["=", "equals"],
+  ["!=", "is not"],
+  ["!~", "does not contain"],
+];
+const ORDER_OPS: [string, string][] = [
+  ["=", "equals"],
+  ["!=", "is not"],
+  [">", "greater than"],
+  [">=", "at least"],
+  ["<", "less than"],
+  ["<=", "at most"],
+];
+const EQUAL_OPS: [string, string][] = [
+  ["=", "is"],
+  ["!=", "is not"],
+];
+
+function operatorsFor(type: string): [string, string][] {
+  if (type === "number" || type === "date" || type === "autodate") return ORDER_OPS;
+  if (type === "bool" || type === "select" || type === "relation" || type === "id") return EQUAL_OPS;
+  return TEXT_OPS;
+}
+
+/** The filter-language literal for a value typed into the builder. */
+function literal(type: string, value: string): string {
+  if (type === "number" || type === "bool") return value;
+  return JSON.stringify(value);
+}
+
+/**
+ * Point-and-click version of one filter condition: pick a field, an operator
+ * that makes sense for its type, a value. It writes the expression into the
+ * filter box (ANDed onto what is there) rather than hiding it, so the
+ * language is learned from using it.
+ */
+function ConditionBuilder({ fields, onAdd }: { fields: FieldSchema[]; onAdd: (snippet: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const columns = useMemo(
+    () => [
+      { name: "id", type: "id", values: undefined as string[] | undefined },
+      ...fields.map((f) => ({ name: f.name, type: String(f.type), values: f.values as string[] | undefined })),
+      { name: "created", type: "autodate", values: undefined },
+    ],
+    [fields],
+  );
+  const [fieldName, setFieldName] = useState("");
+  const [op, setOp] = useState("");
+  const [value, setValue] = useState("");
+
+  const column = columns.find((c) => c.name === fieldName) ?? columns[Math.min(1, columns.length - 1)]!;
+  const ops = operatorsFor(column.type);
+  const activeOp = ops.some(([o]) => o === op) ? op : ops[0]![0];
+  const needsChoice = column.type === "bool" || (column.type === "select" && (column.values?.length ?? 0) > 0);
+  const choices = column.type === "bool" ? ["true", "false"] : (column.values ?? []);
+  const effectiveValue = needsChoice && !choices.includes(value) ? choices[0]! : value;
+  const complete = needsChoice || value.trim().length > 0;
+  const isNumeric = column.type === "number";
+  const numberInvalid = isNumeric && value.trim() !== "" && Number.isNaN(Number(value));
+  const preview = `${column.name} ${activeOp} ${literal(column.type, effectiveValue)}`;
+
+  function submit() {
+    if (!complete || numberInvalid) return;
+    onAdd(preview);
+    setValue("");
+    setOpen(false);
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Add a condition"
+          title="Add a condition"
+          className="grid size-control-xs shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <ListFilter className="size-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 gap-3 p-3">
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+        >
+          <p className="text-xs font-medium">Add a condition</p>
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Field</Label>
+            <Select
+              value={column.name}
+              onValueChange={(next) => {
+                setFieldName(next);
+                setValue("");
+              }}
+            >
+              <SelectTrigger className="h-control-sm w-full font-mono" aria-label="Field">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {columns.map((c) => (
+                  <SelectItem key={c.name} value={c.name} className="font-mono">
+                    {c.name}
+                    <span className="ml-2 text-2xs text-muted-foreground">{c.type}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-[9rem_1fr] gap-2">
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">Operator</Label>
+              <Select value={activeOp} onValueChange={setOp}>
+                <SelectTrigger className="h-control-sm w-full" aria-label="Operator">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ops.map(([o, label]) => (
+                    <SelectItem key={o} value={o}>
+                      {label} <span className="ml-1 font-mono text-2xs text-muted-foreground">{o}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="condition-value" className="text-xs">
+                Value
+              </Label>
+              {needsChoice ? (
+                <Select value={effectiveValue} onValueChange={setValue}>
+                  <SelectTrigger id="condition-value" className="h-control-sm w-full font-mono">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {choices.map((choice) => (
+                      <SelectItem key={choice} value={choice} className="font-mono">
+                        {choice}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id="condition-value"
+                  value={value}
+                  onChange={(event) => setValue(event.target.value)}
+                  inputMode={isNumeric ? "decimal" : undefined}
+                  aria-invalid={numberInvalid || undefined}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-control-sm font-mono"
+                />
+              )}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <code className="min-w-0 truncate rounded bg-surface-sunken px-1.5 py-1 font-mono text-2xs text-muted-foreground">
+              {numberInvalid ? "Value must be a number" : complete ? preview : "…"}
+            </code>
+            <Button type="submit" size="sm" className="gap-1" disabled={!complete || numberInvalid}>
+              <Plus className="size-3.5" />
+              Add
+            </Button>
+          </div>
+        </form>
+      </PopoverContent>
+    </Popover>
   );
 }
 

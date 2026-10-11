@@ -1,17 +1,17 @@
-# Phase 2 — Core rewrite: PocketBase v0.23+ parity, storage engine, hooks, JS runtime
+# Phase 2 — Core rewrite: original API v0.23+ parity, storage engine, hooks, JS runtime
 
 Date: 2026-09-03. Status: approved (owner delegated to recommendations).
-Inputs: `docs/superpowers/audits/2026-09-03-full-audit.md`, the PocketBase
-v0.40.2 response fixtures in `docs/superpowers/specs/pb-fixtures/`, and
+Inputs: `docs/superpowers/audits/2026-09-03-full-audit.md`, the captured
+v0.40.2 response fixtures (since removed), and
 `docs/superpowers/specs/2026-09-03-phase1-perf-quick-wins-design.md`.
 
 ## 1. Goal and non-goals
 
-**Goal.** After this phase, the official PocketBase JS SDK (`pocketbase`
-npm, v0.28) works against Cratebase unchanged for every documented
-endpoint, and Cratebase is faster than PocketBase on every cell of
+**Goal.** After this phase, the third-party JS SDK (npm, v0.28)
+works against Cratebase unchanged for every documented
+endpoint, and Cratebase is faster than the reference server on every cell of
 `benchmarks/run.sh`. Extension is possible three ways: Rust (typed hooks
-on an `App`), JavaScript (`pb_hooks/*.pb.js`, PocketBase's JSVM contract),
+on an `App`), JavaScript (`cb_hooks/*.cb.js`, the original JSVM contract),
 and HTTP webhooks (a built-in plugin). Postgres remains a first-class
 backend selected by `DATABASE_URL`.
 
@@ -25,37 +25,37 @@ old `cb_*` layout**. A fresh data directory is required.
 
 ## 2. Compatibility contract
 
-The contract is PocketBase v0.40.2's HTTP behavior as observed, not the
+The contract is the original v0.40.2 HTTP behavior as observed, not the
 docs. Concretely:
 
 - **Every URL, method, query parameter, request body, response body, and
-  status code** in PocketBase's public API. The fixtures directory holds
-  captured responses; implementers add fixtures whenever they need a
-  shape not yet captured (start the PocketBase binary in
-  `/tmp/pb-bench/pb`, hit the endpoint, save the JSON).
+  status code** in the original public API. The fixtures directory held
+  captured responses; implementers added fixtures whenever they needed a
+  shape not yet captured (start the reference binary, hit the endpoint,
+  save the JSON).
 - **Error body** is `{"status": <int>, "message": "...", "data": {...}}`
   (v0.23+ renamed `code` to `status`). Validation errors put
   `{"code": "validation_required", "message": "..."}` per field under
-  `data`. Messages match PocketBase's wording where the fixture shows it
+  `data`. Messages match the original wording where the fixture shows it
   (`"Failed to create record."`, `"Missing collection context."`,
   `"Something went wrong while processing your request."`).
 - **Dates** serialize as `2026-09-03 12:44:06.146Z` (space separator,
   millisecond precision, `Z`). Inputs accept that form and RFC3339.
 - **Ids**: records `[a-z0-9]{15}`; collections `pbc_` + crc32(name) as
   decimal (`pbc_2279338944`); the built-in users collection keeps
-  PocketBase's literal id `_pb_users_auth_`; fields `<type><crc32(name)>`
+  the original literal id `_pb_users_auth_`; fields `<type><crc32(name)>`
   (`text3208210256`). Superuser records are ordinary auth records.
 - **Tables are named after collections** (`posts`, `users`,
-  `_superusers`), so `viewQuery` SQL written for PocketBase works.
+  `_superusers`), so `viewQuery` SQL written for the original works.
 - **Tokens** are HS256 JWTs with claims `{id, type, collectionId,
   refreshable, exp}` signed with `settings.secret + record.tokenKey`
   (auth tokens) or `secret + tokenKey + purpose` for action tokens,
-  exactly as PocketBase, so rotating `tokenKey` invalidates a record's
+  exactly as the original, so rotating `tokenKey` invalidates a record's
   sessions.
-- **JSVM globals** match PocketBase's `pb_hooks` API for the subset in
+- **JSVM globals** match the original `cb_hooks` API for the subset in
   §12.
 
-Where PocketBase behavior is arguably a bug, we still match it; a
+Where the original behavior is arguably a bug, we still match it; a
 deliberate divergence is listed in §15 with the reason.
 
 ## 3. Crate layout
@@ -75,7 +75,7 @@ crates/
   mailer   unchanged + `MailBackend` trait made public so plugins can
            replace it; templates rendered from collection-level
            `{APP_NAME}`/`{TOKEN}` templates.
-  jsvm     QuickJS runtime (rquickjs) hosting pb_hooks and pb_migrations.
+  jsvm     QuickJS runtime (rquickjs) hosting cb_hooks and cb_migrations.
   server   `App` (builder, lifecycle, hooks, cron, store), services
            (records, collections, auth, files, realtime, settings,
            backups, logs), axum routes, plugin registry, dashboard
@@ -150,7 +150,7 @@ Common: `id, name, system, hidden, presentable, required, help`. A field
 is multi-valued when `maxSelect > 1` (select/file/relation). Serialize
 every option even when zero (fixture shows `"max": 0`).
 
-System fields PocketBase adds by default and we add on create when
+System fields the original adds by default and we add on create when
 absent: `id` (text, primaryKey, `[a-z0-9]{15}`), and for auth
 collections `password` (hidden), `tokenKey` (hidden, autogenerate
 `[a-zA-Z0-9]{50}`), `email`, `emailVisibility`, `verified`. `created` /
@@ -315,18 +315,18 @@ final `Record` (and previous) and the service layer does the rest.
 `migrations::Runner { engine, dir }`: `_migrations(file TEXT PRIMARY KEY,
 applied BIGINT)`. Core migrations are Rust functions registered in
 order (`1_init_system.rs`, ...). User migrations are files in
-`pb_migrations/` (also `cb_migrations/`) run by the JS runtime (§12).
+`cb_migrations/` run by the JS runtime (§12).
 `up()` applies unapplied in filename order inside one transaction each;
 `down(n)` reverts the last n; `history_sync()` prunes ledger rows whose
 file is gone. Automigrate: every collection create/update/delete through
-the API writes `pb_migrations/<unix>_<created|updated|deleted>_<name>.js`
-containing the collection JSON snapshot (PB's format) when
+the API writes `cb_migrations/<unix>_<created|updated|deleted>_<name>.js`
+containing the collection JSON snapshot (the original format) when
 `settings.meta.hideControls` is false and the process is started with
-`--automigrate` (default true, like the prebuilt PocketBase).
+`--automigrate` (default true, like the original prebuilt binary).
 
 ## 6. Filter language (`crates/filter`)
 
-Grammar (superset of today's, matching PocketBase):
+Grammar (superset of today's, matching the original):
 
 ```
 expr     := or
@@ -408,7 +408,7 @@ func: Arc<dyn Fn(&mut E) -> BoxFuture<Result<()>>> }`, `bind`, `bind_func`,
 `unbind(id)`, `trigger(e, finalizer)`. Every event type implements
 `Event { fn next(&mut self) -> BoxFuture<Result<()>> }` which invokes
 the remainder of the chain and finally the framework's own action. A
-handler that does not call `e.next()` stops the chain, as in PocketBase.
+handler that does not call `e.next()` stops the chain, as in the original.
 Tagged hooks (`on_record_create("posts")`) filter by collection name or
 id.
 
@@ -443,13 +443,13 @@ One place per concern, called by routes, batch, JSVM, and Rust plugins:
   `thumbs` list plus `100x100` default? (PB: any size allowed only if in
   `thumbs`; the dashboard requests `100x100` which PB adds implicitly for
   images). Protected files via file token. `?download=1`.
-- `RealtimeService`: PB wire protocol; topics with `?options=` (JSON
-  with `query`, `headers`, and PB applies `filter/expand/fields` from
-  `query`); event name = topic; `PB_CONNECT` on connect; per-subscriber
+- `RealtimeService`: the original wire protocol; topics with `?options=` (JSON
+  with `query`, `headers`, and `filter/expand/fields` are applied from
+  `query`); event name = topic; `CB_CONNECT` on connect; per-subscriber
   `listRule`/`viewRule`/filter evaluation using an in-process evaluator
   for the cached AST against the record snapshot (no SQL round trip per
   subscriber); publish is spawned after commit; connection cap 30 min
-  with a reconnect hint like PB (`settings`-tunable).
+  with a reconnect hint like the original (`settings`-tunable).
 - `SettingsService`: get/patch/test S3/test email/apple secret.
 - `LogService`: writes `_logs` rows (`type: request` with PB's data keys)
   through the Phase 1 batching writer; `list/view/stats`; retention cron.
@@ -458,8 +458,8 @@ One place per concern, called by routes, batch, JSVM, and Rust plugins:
   token)/delete/restore (extract to a temp dir, swap, then `exec` a
   restart of the current binary, PB style); cron per settings.
 - `CronService`: `add(id, expr, fn)`, `remove`, `list`, `run(id)`; system
-  jobs `__pbLogsCleanup__`, `__pbOTPCleanup__`, `__pbMFACleanup__`,
-  `__pbDBOptimize__` keep PB's ids so the dashboard/API match.
+  jobs `__cbLogsCleanup__`, `__cbOTPCleanup__`, `__cbMFACleanup__`,
+  `__cbDBOptimize__` are registered at boot so the dashboard/API can list them.
 - `BatchService`: PB's `/api/batch` contract (array response, `PUT`
   upsert, multipart with `requests.N.body` / `@jsonPayload`), gated by
   `settings.batch`.
@@ -529,24 +529,24 @@ against a virtual schema (`level, message, data.*, created`).
 ## 11. CLI
 
 ```
-cratebase serve [--http=host:port] [--https=...] [--dir=pb_data] [--publicDir]
+cratebase serve [--http=host:port] [--https=...] [--dir=cb_data] [--publicDir]
                 [--origins=*] [--dev] [--automigrate=true] [--indexFallback]
 cratebase superuser create|update|upsert|delete|otp <email> [password]
 cratebase superuser ips  (manage settings.superuserIPs)
 cratebase migrate up|down [n]|create <name>|collections|history-sync
-cratebase admin ...       (alias of superuser, PB compat)
+cratebase admin ...       (alias of superuser)
 ```
 
-`--dir` defaults to `./pb_data` for drop-in parity; `CRATEBASE_DATA_DIR`
+`--dir` defaults to `./cb_data`; `CRATEBASE_DATA_DIR`
 and `DATABASE_URL` still override. Env vars keep working.
 
 ## 12. JavaScript runtime (`crates/jsvm`)
 
 - Engine: `rquickjs` (QuickJS-ng), one runtime per worker thread, pool
   size = cores/2 min 2. Hooks are dispatched to a worker by message
-  passing; the worker owns its `Context`. Each `*.pb.js` in `pb_hooks/`
+  passing; the worker owns its `Context`. Each `*.cb.js` in `cb_hooks/`
   is loaded on every worker at boot (and reloaded on change in `--dev`).
-- Globals implemented in this phase (PocketBase names):
+- Globals implemented in this phase (original names):
   `$app` (findCollectionByNameOrId, findRecordById, findRecordsByFilter,
   findFirstRecordByFilter, findAllRecords, save, delete, settings,
   runInTransaction, newMailClient, logger, store, cron), `routerAdd`,
@@ -556,20 +556,20 @@ and `DATABASE_URL` still override. Env vars keep working.
   `$mails` (sendRecordVerification, ...), `$filesystem` (fileFromPath,
   fileFromBytes, fileFromURL), `$apis` (requireAuth, requireSuperuserAuth,
   enrichRecord), `$dbx` (exp, hashExp, params), `require` (CommonJS,
-  relative files under `pb_hooks`, JSON), `console`, `sleep`, `migrate`.
-- Event objects mirror PB: `e.record`, `e.collection`, `e.auth`,
+  relative files under `cb_hooks`, JSON), `console`, `sleep`, `migrate`.
+- Event objects mirror the original: `e.record`, `e.collection`, `e.auth`,
   `e.requestInfo()`, `e.json(status, body)`, `e.string()`, `e.next()`,
   `e.app` (transactional app inside record hooks).
 - Errors thrown in JS map to `ApiError` (BadRequestError etc. constructors
   exposed).
-- `pb_migrations/*.js` run through the same runtime with `migrate(up,
+- `cb_migrations/*.js` run through the same runtime with `migrate(up,
   down)` and `app` argument helpers.
 - Not in this phase: `$template` HTML rendering, `$geo`, `$files` serve
   helpers beyond download, `$app.newBackupsFilesystem`.
 
 ## 13. Single binary
 
-`web/admin/dist` is **committed** (PocketBase commits `ui/dist`). A
+`web/admin/dist` is **committed** (the original commits `ui/dist`). A
 `build.rs` in `server` embeds it with `rust-embed` and fails the build
 with a clear message if the directory is missing. CI rebuilds the
 dashboard and fails if the committed `dist` is stale. Docker compose is
@@ -580,21 +580,21 @@ unchanged apart from the data dir default.
 - Rust: unit tests per crate; `db` integration tests on SQLite and
   Postgres (`TEST_POSTGRES_URL`); `server` API tests ported from the
   current `tests/api.rs` to the new shapes.
-- **Conformance**: `tests/conformance/` is a Bun project using the
-  official `pocketbase` npm SDK against a spawned `cratebase serve` and,
-  when `PB_BIN` is set, the same suite against PocketBase to prove the
+- **Conformance**: `tests/conformance/` (since removed) was a Bun project using the
+  third-party JS SDK against a spawned `cratebase serve` and,
+  when `CB_BIN` was set, the same suite against the reference server to prove the
   suite itself is right. Covers collections CRUD/import, records CRUD,
   filter/sort/expand/fields/skipTotal, auth flows (password, OTP, MFA,
   refresh, impersonate, verification, reset, email change), files +
   thumbs + protected, realtime subscribe/events with options, batch,
   settings, logs, backups list/create, crons, health. CI runs it.
-- JSVM: fixture `pb_hooks` directory with hooks exercising each global;
+- JSVM: fixture `cb_hooks` directory with hooks exercising each global;
   asserted through HTTP.
 - Benchmarks: `benchmarks/run.sh` in CI on a schedule.
 
 ### 14b. The benchmark gate (release blocker)
 
-Being faster than PocketBase is the reason to switch, so this is a gate,
+Being faster than the reference server is the reason to switch, so this is a gate,
 not a metric. `benchmarks/run.sh` must show **no cell below 1.0x** and
 the two categories Phase 1 still lost must flip:
 
@@ -609,10 +609,10 @@ in Phase 1, not "Rust is already fast enough". Record the numbers in
 `benchmarks/README.md` with the same honesty as the Phase 1 table,
 including anything that got worse.
 
-## 15. Deliberate divergences from PocketBase
+## 15. Deliberate divergences from the original
 
-1. Password hashes are Argon2id (PB: bcrypt). bcrypt hashes are still
-   verified, so imported PB users can log in; they are rehashed on next
+1. Password hashes are Argon2id (original: bcrypt). bcrypt hashes are still
+   verified, so imported users can log in; they are rehashed on next
    login.
 2. Postgres backend exists; `viewQuery` SQL must be valid for the
    selected backend.
@@ -625,10 +625,10 @@ including anything that got worse.
 ## 15b. Known parity risks in the filter layer (must be closed or accepted)
 
 Surfaced while implementing §6. Items 1-3 are **closed** (measured against
-the PocketBase v0.40.2 binary with `--dev` SQL logging and pinned by tests
+the original v0.40.2 binary with `--dev` SQL logging and pinned by tests
 in `crates/filter`); 4 and 5 remain accepted divergences.
 
-1. ~~**Multi-valued fields without `:each`.**~~ **Closed.** PocketBase
+1. ~~**Multi-valued fields without `:each`.**~~ **Closed.** The original
    compares the raw JSON text of the column: `tags = "a"` is false for
    `["a","b"]`, `tags ~ "a"` is a substring match on `["a","b"]`, and the
    `?` prefix is a no-op because there are no elements to quantify over
@@ -638,7 +638,7 @@ in `crates/filter`); 4 and 5 remain accepted divergences.
    `tags:length = 0` is the way to find empty ones.
 2. ~~**Bare operators through a join.**~~ **Closed, and it was a security
    bug**: "any joined row" is strictly more permissive than the rule's
-   author intended. A bare operator now emits PocketBase's multi-match
+   author intended. A bare operator now emits the original's multi-match
    form — the joined comparison ANDed with
    `NOT EXISTS (SELECT 1 FROM "<root>" AS "__mm_<root>" <the same joins>
    WHERE "__mm_<root>"."id" = "<root>"."id" AND NOT (<cond>))` — so it
@@ -656,15 +656,15 @@ in `crates/filter`); 4 and 5 remain accepted divergences.
    escaped: `a\_b` stays `a\_b` (a literal underscore) while a lone
    `a\b` becomes `a\\b` (a literal backslash).
 4. `@request.auth.<relation>.<field>` does not traverse into the related
-   record (PocketBase joins). Accepted for now: rules needing it can use
+   record (the original joins). Accepted for now: rules needing it can use
    `@collection`.
 5. Column-vs-column `=` uses null-safe equality (`IS` /
-   `IS NOT DISTINCT FROM`) rather than PocketBase's
+   `IS NOT DISTINCT FROM`) rather than the original's
    `COALESCE(a,'') = COALESCE(b,'')`, so `''` and `NULL` compare unequal
    in that one shape. Accepted; Postgres type safety makes the
    `COALESCE` form awkward.
 6. ~~**`:length` on a single-valued path was rejected.**~~ **Closed.**
-   PocketBase silently *ignores* `:length` unless the field is
+   The original silently *ignores* `:length` unless the field is
    multi-valued — `title:length = 3` compiles to `"posts"."title" = 3`
    and `comments_via_post.id:length = 0` to
    `"posts_comments_via_post"."id" = 0` (so it finds nothing, and
@@ -674,12 +674,12 @@ in `crates/filter`); 4 and 5 remain accepted divergences.
 ### Still open, found while closing the above
 
 * **`:each` on the same field twice shares one `json_each` alias in
-  PocketBase**, so `tags:each ?= "a" && tags:each ?= "b"` requires a
+  the original**, so `tags:each ?= "a" && tags:each ?= "b"` requires a
   single element equal to both and can never match. We compile two
   independent `EXISTS`, so it matches an array holding both. Ours is the
-  useful reading; PocketBase's is an artefact of its alias reuse. Not yet
+  useful reading; the original's is an artefact of its alias reuse. Not yet
   covered by the conformance suite.
-* **`:each` on a single-valued field** is accepted by PocketBase (the
+* **`:each` on a single-valued field** is accepted by the original (the
   value becomes a one-element set, so `title:each = "abc"` behaves like
   `title = "abc"`); we still reject it with an invalid-modifier error.
 

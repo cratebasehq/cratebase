@@ -159,18 +159,18 @@ cards, users Alice Chen, Bob Diaz, Carol Nkemelu).
 
 ## 7. Proof (48–56) — navy, real numbers only
 
-- **48.0–50.0** Sub hit. Mega "10.47×" counts up on tabular digits; two
-  full-width bars grow: Cratebase 49,986 req/s (crate) vs PocketBase 4,774
-  req/s. Lines: "Full-text search, 50 concurrent clients" /
+- **48.0–50.0** Sub hit. Mega "49,986" counts up on tabular digits; one
+  full-width bar grows: Cratebase 49,986 req/s. Lines: "Record list reads
+  per second, 50 concurrent clients" /
   "benchmarks/README.md, run of 2026-09-04".
-- **50.0–52.0** three more cells stack in on beats: 9.72× (search as a
-  signed-in user, c100), 8.53× (wide search, c100), 1.81× (create, c100).
-  Statement: "Faster in 22 of 24 benchmark cells."
+- **50.0–52.0** three more cells stack in on beats: 38.8k req/s (list
+  reads as a signed-in user, c100), 16.4k (wide list reads, c100), 12.0k
+  (create, c100). Statement: "Measured over HTTP, back to back."
 - **52.0–54.0** `DATABASE_URL=sqlite://…` flips to `postgres://…` on each
   beat while the result list beside it stays identical. Statement: "SQLite
   or Postgres. Zero code changes."
-- **54.0–56.0** `import PocketBase from "pocketbase"` + "180/181 SDK
-  conformance tests pass." Statement: "PocketBase-wire-compatible."
+- **54.0–56.0** `import { createClient } from "@cratebase/client"` +
+  "Typed end to end." Statement: "A typed TypeScript SDK."
 
 ## 8. CTA (56–64)
 

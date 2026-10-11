@@ -1,8 +1,8 @@
-//! The event/hook system, with PocketBase's `e.next()` semantics.
+//! The event/hook system, with `e.next()` middleware semantics.
 //!
 //! # Why a chain rather than a callback list
 //!
-//! PocketBase hooks are *middleware*, not observers. Every handler
+//! Hooks are *middleware*, not observers. Every handler
 //! receives the event and decides whether the rest of the chain — and,
 //! last of all, the framework's own action (the *finalizer*) — runs at
 //! all:
@@ -17,8 +17,8 @@
 //! ```
 //!
 //! A handler that returns without calling `next()` stops the chain and
-//! the framework action never happens (PocketBase uses exactly this to
-//! let a hook replace a built-in behaviour). An error aborts the chain
+//! the framework action never happens (this is how a hook replaces a
+//! built-in behaviour). An error aborts the chain
 //! and propagates to the caller.
 //!
 //! # Why the cursor lives on the event
@@ -31,7 +31,7 @@
 //! first handler runs, so a handler that registers or unbinds another
 //! handler mid-flight neither deadlocks on the registry lock nor mutates
 //! the sequence it is part of. The change is visible from the next
-//! trigger onwards, as in PocketBase.
+//! trigger onwards.
 //!
 //! [`trigger`]: Hook::trigger
 
@@ -56,10 +56,9 @@ pub type Finalizer<E> = Box<dyn for<'a> FnOnce(&'a mut E) -> BoxFuture<'a, HookR
 /// One registered handler.
 pub struct Handler<E> {
     /// Optional identity, so [`Hook::unbind`] can remove it later. Two
-    /// handlers registered with the same id replace each other, matching
-    /// PocketBase's `BindFunc`/`Bind(Handler{Id})` behaviour.
+    /// handlers registered with the same id replace each other.
     pub id: Option<String>,
-    /// Lower runs first. PocketBase's default is 0.
+    /// Lower runs first. The default is 0.
     pub priority: i32,
     /// When non-empty the handler only fires for events carrying at least
     /// one of these tags (a collection name or id).
@@ -347,8 +346,8 @@ use crate::events::*;
 
 macro_rules! hook_set {
     ( $( $(#[$meta:meta])* $field:ident : $ty:ty ),* $(,)? ) => {
-        /// Every hook chain the app exposes, mirroring PocketBase's `App`
-        /// `On*` methods one-for-one (spec §7.1). Fields are public so
+        /// Every hook chain the app exposes, one per `On*` hook
+        /// (spec §7.1). Fields are public so
         /// Rust plugins, the JS runtime and W4b's services all register
         /// the same way:
         ///
@@ -375,7 +374,7 @@ macro_rules! hook_set {
             }
 
             /// Remove every handler registered under `id` from every
-            /// hook. The JS runtime uses this when a `pb_hooks` file is
+            /// hook. The JS runtime uses this when a `cb_hooks` file is
             /// reloaded in `--dev`.
             pub fn unbind_all_by_id(&self, id: &str) -> usize {
                 0 $( + self.$field.unbind(id) )*
@@ -499,7 +498,7 @@ use crate::jsvm_host::{wrap_host, wrap_tx_host};
 /// Bridges one native hook event to and from the JavaScript runtime's
 /// snapshot/outcome shapes, so [`bind_js_hook`] can drive any event kind
 /// a [`cratebase_jsvm::HookKind`] can target through one generic body.
-/// Most kinds are notification-only in PocketBase too (only whether the
+/// Most kinds are notification-only (only whether the
 /// handler called `next()` matters); the default `apply_js` reflects
 /// that, and only the event kinds carrying a `record`/`collection`/other
 /// mutable payload override it.
@@ -514,7 +513,7 @@ pub trait JsHookEvent: Event {
 /// Register a JavaScript-runtime handler on a native hook chain. It
 /// receives the same snapshot/outcome shape as `Runtime::call_hook` and
 /// joins the priority-ordered chain exactly like a Rust [`Handler`], so a
-/// `pb_hooks` file and a Rust plugin bound to the same hook run in
+/// `cb_hooks` file and a Rust plugin bound to the same hook run in
 /// priority order relative to each other rather than JS always running
 /// first or last.
 ///

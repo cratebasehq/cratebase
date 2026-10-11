@@ -28,7 +28,7 @@ This one command:
 
 1. Builds `cratebase-server` if `target/debug/cratebase` doesn't exist
    yet (`cargo build -p cratebase-server`, `CARGO_BUILD_JOBS=3`).
-2. Starts it (`cratebase serve --dev --dir ./pb_data`) with a fixed
+2. Starts it (`cratebase serve --dev --dir ./cb_data`) with a fixed
    `CB_SETUP_TOKEN` and `CB_TYPEGEN_OUT` pointed at
    `src/cratebase-types.d.ts`.
 3. Runs `scripts/setup.sh`: creates the superuser via `POST /api/setup`,
@@ -103,7 +103,7 @@ cream/terracotta look generated UIs default to:
   deletes it — invisible to every client (including its own creator),
   in both listings and realtime, because `cards`' rules exclude
   `isQuery = true` rows.
-- **`pb_hooks/team-board.pb.js`**: derives `searchText`, notifies +
+- **`cb_hooks/team-board.cb.js`**: derives `searchText`, notifies +
   emails a card's assignee on (re)assignment via `$mails.send` (called
   from `onRecordAfterCreateSuccess`/`onRecordAfterUpdateSuccess`, still
   inside the card write's own open transaction — `$mails.send` defers its
@@ -139,7 +139,7 @@ Same conventions as every other example (`CRATEBASE_URL`,
 |---|---|---|
 | `CRATEBASE_HOST` / `CRATEBASE_PORT` | `127.0.0.1` / `8090` | Where `cratebase serve` listens |
 | `CB_SETUP_TOKEN` | `team-board-dev-setup-token` | First-run install token for `POST /api/setup` |
-| `CB_DATA_DIR` | `./pb_data` | Data directory (siblings `./pb_hooks`) |
+| `CB_DATA_DIR` | `./cb_data` | Data directory (siblings `./cb_hooks`) |
 | `CRATEBASE_BIN` | `../../target/debug/cratebase` if built, else `cratebase` on `PATH` | Server binary to run |
 
 ## Verification status

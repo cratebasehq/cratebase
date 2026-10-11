@@ -15,29 +15,29 @@ small ticker pinned to the bottom of the page (`POST
 /collections/todos/records · 201 · 8ms`), so none of this is a black box:
 you see the literal HTTP call behind every click.
 
-## Importing `pocketbase` with zero build step
+## Importing `@cratebase/client` with zero build step
 
-Cratebase's API is byte-compatible with PocketBase v0.23+, so this example
-uses the official PocketBase JS SDK straight off a CDN instead of a
-bespoke client. `index.html` declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
-mapping the bare specifier to the published package on esm.sh:
+This example uses the first-party `@cratebase/client` SDK. `index.html`
+declares an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap)
+mapping the bare specifier to a single-file browser bundle of
+`sdk/js/client`, which `examples/serve.sh` builds (with `bun build`) into
+`examples/lib/cratebase-client.js` before serving:
 
 ```html
 <script type="importmap">
-  { "imports": { "pocketbase": "https://esm.sh/pocketbase@0.28" } }
+  { "imports": { "@cratebase/client": "/examples/lib/cratebase-client.js" } }
 </script>
 ```
 
 so `app.js` can just write:
 
 ```js
-import PocketBase from "pocketbase";
+import { createClient } from "@cratebase/client";
 ```
 
-No npm install and no bundler step needed. Swapping the import map's one
-entry for a local `node_modules/pocketbase` resolution (or dropping the
-import map entirely and using a bundler) is a drop-in change if you'd
-rather not depend on a CDN — `app.js` doesn't change at all.
+No npm install in the example itself. In your own app, install
+`@cratebase/client` from npm and import it the same way (with or without a
+bundler) — `app.js` doesn't change at all.
 
 ## 1. Start Cratebase
 
@@ -101,30 +101,30 @@ watch them sync live in the other.
 
 ## How it works
 
-- **Register**: `users.create({ email, password, passwordConfirm })`
-  then `users.authWithPassword(email, password)` — the same default
-  `users` auth collection every Cratebase instance ships with.
-- **Sign in**: `users.authWithPassword(identity, password)`. The SDK's
-  `AuthStore` persists the resulting token/record to `localStorage` and
+- **Register**: `users.signUp({ email, password, passwordConfirm })`
+  (`users` is `cb.auth`, bound to the default `users` auth collection every
+  Cratebase instance ships with), which signs in immediately.
+- **Sign in**: `users.signIn.password({ identity, password })`. The SDK's
+  auth store persists the resulting token/record to `localStorage` and
   fires `onChange`, which is what drives the guest-view ↔ todo-view
-  swap (`cb.authStore.isValid`) — reloading the page while signed in
+  swap (`cb.auth.isValid`) — reloading the page while signed in
   skips straight to the todo list.
 - **Auth-gated CRUD**: the `todos` collection's rules are
   `@request.auth.id != ""`. Since `cb.collection("todos")` shares the
-  same `PocketBase` client (and therefore the same `authStore`) as
-  `cb.collection("users")`, every `todos` request automatically carries
+  same client (and therefore the same auth store) as `cb.auth`, every
+  `todos` request automatically carries
   the `Authorization: Bearer <token>` header once signed in — no manual
   header wiring in `app.js`. Signed-out requests to `todos` get rejected
   server-side by that rule.
 - **List + realtime**: on sign-in, it fetches every todo sorted
-  newest-first with `todos.getList(1, 200, { sort: "-created" })`, then
-  calls `cb.realtime.subscribe("todos", callback)`, which opens an SSE
-  connection to `/api/realtime`, waits for the `PB_CONNECT` event to get
+  newest-first with `todos.list({ page: 1, perPage: 200, sort: "-created" })`, then
+  calls `todos.subscribe("*", callback)`, which opens an SSE
+  connection to `/api/realtime`, waits for the `CB_CONNECT` event to get
   a `clientId`, and posts a subscription for the `todos` topic. Every
   subsequent `create`/`update`/`delete` event calls the callback, which
   inserts, updates, or removes the corresponding list item live — this
   is what makes the two-tab sync work. Signing out calls
-  `cb.realtime.disconnect()` to close that connection.
+  `cb.realtime.stop()` to close that connection.
 - **Add/toggle/delete**: `todos.create({ title, done: false })`,
   `todos.update(id, { done })` (`PATCH`), `todos.delete(id)`. Each is
   applied optimistically in the acting tab and reconciled (or reverted,

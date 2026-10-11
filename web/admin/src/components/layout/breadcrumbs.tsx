@@ -1,5 +1,6 @@
 import { Fragment } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
+import { useNavLocation } from "@/hooks/use-nav-location";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -8,7 +9,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { settingsItemFor } from "@/lib/settings-nav";
+import { SETTINGS_GROUPS } from "@/lib/settings-nav";
 
 type Crumb = { label: string; to?: string; mono?: boolean };
 
@@ -31,8 +32,12 @@ function crumbsFor(pathname: string, tab?: string): Crumb[] {
 
   if (segments[0] === "settings") {
     const crumbs: Crumb[] = [{ label: "Settings", to: "/settings" }];
-    const item = settingsItemFor(pathname);
-    if (item) crumbs.push({ label: item.label });
+    const group = SETTINGS_GROUPS.find((g) => g.to === pathname);
+    if (group) {
+      const activeTab = group.tabs.find((t) => t.value === tab) ?? group.tabs[0];
+      crumbs.push({ label: group.label, to: group.to });
+      if (group.tabs.length > 1 && activeTab) crumbs.push({ label: activeTab.label });
+    }
     return crumbs;
   }
 
@@ -40,12 +45,7 @@ function crumbsFor(pathname: string, tab?: string): Crumb[] {
 }
 
 export function Breadcrumbs() {
-  const { pathname, tab } = useRouterState({
-    select: (state) => ({
-      pathname: state.location.pathname,
-      tab: (state.location.search as { tab?: string }).tab,
-    }),
-  });
+  const { pathname, tab } = useNavLocation();
   const crumbs = crumbsFor(pathname, tab);
 
   return (

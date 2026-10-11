@@ -1,13 +1,12 @@
 ---
 name: cratebase
-description: Build apps on top of Cratebase, the self-hostable Rust backend (PocketBase-wire-compatible — dynamic collections, auth, file storage, realtime, filter-expression API rules, JS hooks). Use this whenever the user wants to design a collection schema, write or debug an API rule / filter expression, wire up the `pocketbase` JS/TS SDK for CRUD, auth, realtime or file uploads against a Cratebase instance, write a `pb_hooks/*.pb.js` lifecycle hook or `routerAdd`/`cronAdd` handler, or asks "how do I do X in Cratebase/PocketBase" — even if they never say the word "skill". Also use it to sanity-check that a proposed change matches Cratebase's actual API shape instead of guessing from PocketBase docs alone (Cratebase is compatible but has its own source of truth).
+description: Build apps on top of Cratebase, the self-hostable Rust backend (dynamic collections, auth, file storage, realtime, filter-expression API rules, JS hooks). Use this whenever the user wants to design a collection schema, write or debug an API rule / filter expression, wire up the `@cratebase/client` JS/TS SDK for CRUD, auth, realtime or file uploads against a Cratebase instance, write a `cb_hooks/*.cb.js` lifecycle hook or `routerAdd`/`cronAdd` handler, or asks "how do I do X in Cratebase" — even if they never say the word "skill". Also use it to sanity-check that a proposed change matches Cratebase's actual API shape instead of guessing.
 ---
 
 # Cratebase
 
 Cratebase is a single Rust binary: dynamic collections, auth, file
-storage, realtime, and filter-expression API rules behind one REST API
-that's wire-compatible with PocketBase's official SDKs.
+storage, realtime, and filter-expression API rules behind one REST API.
 
 ## Mental model
 
@@ -37,21 +36,22 @@ map) — check those before guessing. Outside that repo, this mental model
 plus `references/` in this skill is the whole story; no network fetch
 required.
 
-## The PocketBase-compatibility trick
+## The client SDK
 
 Cratebase ships a first-party SDK, `@cratebase/client` — use it by
 default: `npm install @cratebase/client`, typed methods, built-in auth
-state, realtime, plus Cratebase-only extras (vector search, LLM chat, MCP
-tool schemas, presence) with no extra package. Cratebase's API is also
-byte-compatible with PocketBase v0.23+, so the official `pocketbase` SDK
-still works unmodified if a project is already on it — don't hand-roll
-`fetch`/`axios` calls either way. For a typed client with no hand-written
-interfaces, run `cratebase typegen` (or `GET /api/typegen`, or the
-dashboard's "Download TypeScript types" button) and pass its
+state, realtime, plus vector search, LLM chat, MCP tool schemas and
+presence with no extra package. Don't hand-roll `fetch`/`axios` calls.
+For a non-interactive client (scripts, servers) pass a bearer token:
+`createClient(url, { token: "cb_…" })`. For a typed client with no
+hand-written interfaces, run `cratebase typegen` (or `GET /api/typegen`,
+or the dashboard's "Download TypeScript types" button) and pass its
 `Schema`/`SchemaCreate`/`SchemaUpdate` exports to `createClient` — see
-`references/collections-and-sdk.md`. The `cratebase` repo's `examples/`
-directory has six real, runnable reference apps (todo list, kanban, chat,
-webhooks, RAG/vector search, realtime cursors):
+`references/collections-and-sdk.md`. Schema can also be written as code
+with `@cratebase/schema`, and TanStack Start apps get cookie sessions and
+auth middleware from `@cratebase/start`. The `cratebase` repo's
+`examples/` directory has runnable reference apps (todo list, kanban,
+chat, webhooks, RAG/vector search, realtime cursors):
 https://github.com/cratebasehq/cratebase/tree/main/examples
 
 ## Recipe: server → collection → rules → auth → data → realtime
@@ -59,7 +59,7 @@ https://github.com/cratebasehq/cratebase/tree/main/examples
 1. **Bring up the server**: `cratebase dev` for local work — one command
    that provisions a superuser (`admin@localhost` with a random,
    printed-once password), applies `./schema.json` if present, seeds
-   `./pb_seed/` if the database is empty, writes TypeScript types, and
+   `./cb_seed/` if the database is empty, writes TypeScript types, and
    serves with verbose logging + hook hot-reload; the startup banner
    prints everything it did. In production, `cratebase serve` (SQLite +
    local disk, zero config) or `docker compose up` instead — it starts
@@ -74,13 +74,13 @@ https://github.com/cratebasehq/cratebase/tree/main/examples
    `references/filter-syntax.md` for the grammar, operators, and
    `@request.*` context variables before writing anything beyond
    `owner = @request.auth.id`.
-4. **Auth and CRUD from the client** with the `pocketbase` SDK — see
+4. **Auth and CRUD from the client** with `@cratebase/client` — see
    `references/collections-and-sdk.md` for real call shapes.
 5. **Realtime**: `collection.subscribe("*", handler)` — gated by the
    same `listRule`/`viewRule` as everything else, not a bypass.
 6. **When a filter rule can't express the logic** (side effects, calling
    another API, computed fields, custom endpoints, cron), drop a
-   `pb_hooks/*.pb.js` file next to the data directory — see
+   `cb_hooks/*.cb.js` file next to the data directory — see
    `references/js-hooks.md` for every lifecycle hook, `routerAdd`/
    `cronAdd`, and the `$app`/`$http`/`$security`/etc. globals.
 
@@ -133,7 +133,7 @@ request — prototype a rule there before pasting it into a `*Rule` field.
   via `sendRule`, no-code `_emailTriggers`, and magic-link + TOTP login.
 - `references/js-hooks.md` — every hook, `routerAdd`/`cronAdd`/
   `onQueueJob`, request context, and the globals available inside
-  `pb_hooks/*.pb.js`.
+  `cb_hooks/*.cb.js`.
 
 These reference files cite exact `crates/filter/src/...` and
 `examples/...` paths from the `cratebase` repo as evidence for each

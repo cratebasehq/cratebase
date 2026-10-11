@@ -41,7 +41,7 @@ Never compile the Rust workspace for this — use the released binary.
 
 ```bash
 curl -fsSL https://cratebase.dev/install.sh | sh
-mkdir -p /tmp/cbfilm/run && cd /tmp/cbfilm/run     # empty cwd: dev resolves pb_hooks/pb_migrations from cwd
+mkdir -p /tmp/cbfilm/run && cd /tmp/cbfilm/run     # empty cwd: dev resolves cb_hooks/cb_migrations from cwd
 cratebase dev --http 127.0.0.1:8097 --dir /tmp/cbfilm/data   # note the printed superuser password
 # in marketing/video:
 CRATEBASE_URL=http://127.0.0.1:8097 CRATEBASE_SUPERUSER_EMAIL=admin@localhost \

@@ -5,7 +5,7 @@ description: "A pg_boss-style durable job queue: JS or Rust handlers, dedupe, pr
 
 The Queue (`crates/server/src/queue.rs`) is a durable, retrying job
 queue — a pg_boss-style worker, not a hosted service. A job can be
-handled from a `pb_hooks/*.pb.js` file with no Rust code at all, or from
+handled from a `cb_hooks/*.cb.js` file with no Rust code at all, or from
 Rust for anything that needs to run at native speed or reach a crate
 JavaScript can't.
 
@@ -42,13 +42,13 @@ as if it had never had one.
 
 A **Rust handler always takes precedence** over a JS `onQueueJob` for the
 same queue name — `crate::mails`'s own queued-mail-delivery path
-registers under a fixed name the same way a `pb_hooks` file can't
+registers under a fixed name the same way a `cb_hooks` file can't
 accidentally shadow it.
 
 ## Enqueueing a job
 
 ```js
-// From a pb_hooks/*.pb.js file:
+// From a cb_hooks/*.cb.js file:
 const job = $queue.enqueue("send-welcome-email", { userId: "abc123" }, {
   maxAttempts: 5,
   dedupeKey: `welcome-${userId}`,
@@ -68,10 +68,8 @@ queued job's `payload` is handed verbatim to whatever handler its
 response is `{ id, queue, status, runAfter, deduped }`. The older `POST
 /api/plugins/queue/enqueue` still works, unchanged, as an alias.
 
-From JavaScript, [`@cratebase/extras`](/docs/ai/extras-package/)'s
-`enqueue(pb, queue, payload, options)` wraps the same call, and the
-`cb` SDK client exposes it as `cb.queue.enqueue(queue, payload,
-options)`.
+From JavaScript, the `cb` SDK client exposes it as
+`cb.queue.enqueue(queue, payload, options)`.
 
 ### Options
 

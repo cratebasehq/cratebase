@@ -8,17 +8,25 @@ Every collection gets a generic CRUD surface:
 `filter`, `sort`, `search`, `expand`), `GET .../records/:id` (view, with `expand`),
 `POST .../records` (create), `PATCH .../records/:id` (update), and
 `DELETE .../records/:id`. `expand` resolves `relation` fields inline in
-the same response, following PocketBase's own dot-notation for nested
+the same response, using dot-notation for nested
 relations. `search` runs a full-text query over the collection's
 `searchable` fields, ANDed onto `filter` — see
 [Database → Full-text search](/docs/database/full-text-search/). Errors
 follow a consistent shape across every endpoint — see
 [Error responses](/docs/reference/error-responses/).
 
+### Fused search: `search` + `nearestTo`
+
+Passing `?search=` together with `?nearestTo=` fuses the two rankings into
+one result: the vector candidates and the full-text candidates (up to 200
+of each) are combined with reciprocal rank fusion (`k = 60`), so a record
+that ranks well in either list surfaces near the top. `filter` and API
+rules still apply. See [AI → Vector search](/docs/ai/vector-search/).
+
 ### Footgun: `expand` silently drops fields the viewer can't see
 
 `expand` re-runs the target collection's own `viewRule` for the
-requesting user before including it — matching PocketBase. If that rule
+requesting user before including it. If that rule
 says no, the expanded field is just **absent** from the response, not an
 error. The built-in `users` collection's default `viewRule` is
 `id = @request.auth.id` (self-service only), so `expand=someUserRelation`

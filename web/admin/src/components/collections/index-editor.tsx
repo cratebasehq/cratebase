@@ -42,6 +42,10 @@ function IndexForm({
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border bg-surface-sunken/60 p-3">
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium text-foreground/80">
+          Columns <span className="font-normal text-muted-foreground">— click in order; the number is the position in the index</span>
+        </span>
       <div className="flex flex-wrap gap-1.5">
         {columnOptions.map((column) => {
           const on = draft.columns.includes(column);
@@ -49,9 +53,10 @@ function IndexForm({
             <button
               key={column}
               type="button"
+              aria-pressed={on}
               onClick={() => setColumns(on ? draft.columns.filter((c) => c !== column) : [...draft.columns, column])}
               className={cn(
-                "rounded-md border px-2 py-1 font-mono text-2xs transition-colors",
+                "h-control-xs rounded-md border px-2 font-mono text-2xs transition-colors duration-fast",
                 on
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-border text-muted-foreground hover:border-border-strong hover:text-foreground",
@@ -64,6 +69,7 @@ function IndexForm({
             </button>
           );
         })}
+      </div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto]">
@@ -178,9 +184,26 @@ export function IndexEditor({
       </div>
 
       {value.length === 0 && editingIndex === null ? (
-        <p className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
-          No indexes. Every lookup on this collection is a full scan.
-        </p>
+        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border px-4 py-6 text-center">
+          <p className="text-sm font-medium text-foreground">No indexes</p>
+          <p className="max-w-sm text-xs text-muted-foreground">
+            Every filter or sort on this collection scans the whole table. Add an index on the columns you query by,
+            or make one unique to forbid duplicates.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => {
+              setRawIndex(null);
+              setEditingIndex(-1);
+            }}
+          >
+            <Plus className="size-3.5" />
+            Add the first index
+          </Button>
+        </div>
       ) : null}
 
       <div className="flex flex-col gap-2">
@@ -211,7 +234,7 @@ export function IndexEditor({
                   spellCheck={false}
                   rows={3}
                   aria-label="Index statement"
-                  className="w-full resize-y rounded-md border border-input bg-background p-2 font-mono text-sm outline-none focus-visible:border-ring"
+                  className="w-full resize-y rounded-md border border-input bg-background p-2 font-mono text-sm focus-visible:border-ring"
                 />
                 <div className="flex justify-end gap-2">
                   <Button type="button" variant="ghost" size="sm" onClick={() => setRawIndex(null)}>

@@ -9,7 +9,7 @@
 //! 3. turn the request into a [`RequestContext`] so rules and filters see
 //!    `@request.body`, `@request.query`, `@request.headers`,
 //!    `@request.method` and `@request.auth`;
-//! 4. apply the API rule — and PocketBase's four *different* outcomes for
+//! 4. apply the API rule — and the four *different* outcomes for
 //!    a failing one (see [`crate::http_error::rule_errors`]);
 //! 5. run the hook sequence (`*Request` → validate → `*Execute` →
 //!    `AfterSuccess`/`AfterError`) with the write inside one transaction;
@@ -51,7 +51,7 @@ use crate::http_error::{rule_errors, ApiError, ApiQuery, ApiResult};
 use crate::realtime::{self, RecordAction};
 use crate::routes::common::{self, ParsedBody};
 
-/// PocketBase's per-operation error wrappers.
+/// Per-operation error wrappers.
 pub(crate) const CREATE_FAILED: &str = "Failed to create record.";
 pub(crate) const UPDATE_FAILED: &str = "Failed to update record.";
 pub(crate) const DELETE_FAILED: &str = "Failed to delete record.";
@@ -110,7 +110,7 @@ pub(crate) struct SingleQuery {
     pub(crate) fields: Option<String>,
 }
 
-/// The envelope PocketBase wraps every list in.
+/// The envelope every list is wrapped in.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct Page {
     page: i64,
@@ -275,6 +275,38 @@ const NEAREST_CANDIDATE_CAP: usize = 20_000;
 /// through [`records::list`], independent of the caller's own `perPage`.
 const NEAREST_FETCH_PAGE: i64 = 1000;
 
+/// Candidates taken from each side (vector, text) when `?search=` is
+/// combined with `?nearestTo=`.
+const HYBRID_TEXT_CAP: i64 = 200;
+/// Reciprocal Rank Fusion constant.
+const RRF_K: f64 = 60.0;
+
+/// Reciprocal Rank Fusion of the vector ranking (best first) and the text
+/// relevance ranking: `score(id) = Σ 1/(60 + rank)`, ties broken by id.
+fn fuse_rrf(vector: Vec<(f32, Record)>, text: Vec<Record>, limit: usize) -> Vec<Record> {
+    let mut scored: std::collections::HashMap<String, (f64, Record)> =
+        std::collections::HashMap::new();
+    let vector = vector
+        .into_iter()
+        .take(HYBRID_TEXT_CAP as usize)
+        .map(|(_, r)| r);
+    for list in [vector.collect::<Vec<_>>(), text] {
+        for (i, record) in list.into_iter().enumerate() {
+            let score = 1.0 / (RRF_K + (i + 1) as f64);
+            scored
+                .entry(record.id().to_string())
+                .and_modify(|e| e.0 += score)
+                .or_insert((score, record));
+        }
+    }
+    let mut fused: Vec<(String, f64, Record)> = scored
+        .into_iter()
+        .map(|(id, (score, r))| (id, score, r))
+        .collect();
+    fused.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    fused.into_iter().take(limit).map(|(_, _, r)| r).collect()
+}
+
 /// `?nearestTo={field}:{target}` — fetch every row the list rule/filter
 /// would normally return (paginated internally up to
 /// [`NEAREST_CANDIDATE_CAP`], ignoring `?sort=`), rank by cosine
@@ -348,8 +380,35 @@ async fn nearest_list(
         })
         .collect();
     ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
-    ranked.truncate(limit);
-    let mut items: Vec<Record> = ranked.into_iter().map(|(_, r)| r).collect();
+
+    let hybrid = query
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let mut items: Vec<Record> = if let Some(search) = hybrid {
+        let text = records::list(
+            app.db(),
+            &app.db().collections,
+            ctx,
+            collection,
+            ListParams {
+                page: 1,
+                per_page: HYBRID_TEXT_CAP,
+                sort: None,
+                filter: query.filter.as_deref(),
+                search: Some(search),
+                expand: None,
+                skip_total: true,
+            },
+        )
+        .await
+        .map_err(read_error)?;
+        fuse_rrf(ranked, text.items, limit)
+    } else {
+        ranked.truncate(limit);
+        ranked.into_iter().map(|(_, r)| r).collect()
+    };
 
     if let Some(spec) = query
         .expand
@@ -834,7 +893,7 @@ pub(crate) async fn delete_record(
     }
 
     // Deleting a superuser account is always owner-only, self or not —
-    // PocketBase-style admin/session lockout is a worse failure mode
+    // admin/session lockout is a worse failure mode
     // than a superuser having to ask an owner to remove their own
     // account. The permission check is safe outside the transaction;
     // the sole-owner lockout is not (see `count_owners`'s doc) — it is
@@ -1108,10 +1167,10 @@ where
 /// having the caller apply auto-embeddings before this function even
 /// starts — so that `vector` fields get (re)computed from the record
 /// *after* `onRecordCreate`/`onRecordUpdate` have had a chance to
-/// mutate it, mirroring PocketBase's own
+/// mutate it, following the
 /// "onRecordCreate → e.next() → persist" ordering. Computing embeddings
 /// any earlier means a hook that derives or overwrites a vector field's
-/// `sourceField` (a common pattern — see `pb_hooks/*.pb.js` examples)
+/// `sourceField` (a common pattern — see `cb_hooks/*.cb.js` examples)
 /// gets embedded from stale or empty text instead of what the hook
 /// actually wrote.
 pub(crate) async fn write_record(
@@ -1318,7 +1377,7 @@ pub(crate) async fn delete_in_tx(
     }
 }
 
-/// PocketBase's guards on the auth system fields.
+/// Guards on the auth system fields.
 ///
 /// * `password` needs a matching `passwordConfirm`, and — unless the
 ///   caller is a superuser or holds `manageRule` access — the current
@@ -1326,7 +1385,7 @@ pub(crate) async fn delete_in_tx(
 ///   invalidates every outstanding session for the record without a
 ///   server-side session table.
 /// * `verified` (and, on update, `email`) cannot be changed by the record
-///   itself: PocketBase reports `validation_values_mismatch`, *not* a
+///   itself: it reports `validation_values_mismatch`, *not* a
 ///   permission error (KNOWN_DIVERGENCES §21). `email` is only guarded on
 ///   update, because a signup has to be able to supply one.
 pub(crate) async fn apply_auth_fields(
@@ -1403,8 +1462,8 @@ pub(crate) async fn apply_auth_fields(
     Ok(())
 }
 
-/// Go's `cast.ToBool`, which is what PocketBase compares a submitted
-/// `verified` against.
+/// Go's `cast.ToBool`, which is what a submitted `verified` is compared
+/// against.
 fn truthy(value: &Value) -> bool {
     match value {
         Value::Bool(b) => *b,
@@ -1489,7 +1548,7 @@ async fn read_body(
 ///    happens to be valid JSON" from *any* submission, string or not.
 /// 2. `cratebase_db::validate::json` then requires the field's value, if
 ///    it is *still* a string at that point, to itself be valid JSON on
-///    its own (matching PocketBase's `json.Valid`) — a plain filter
+///    its own (as `json.Valid` would) — a plain filter
 ///    expression like `status = "paid"` is not, and is rejected as
 ///    `validation_invalid_json`.
 ///
@@ -1542,7 +1601,7 @@ fn reject_non_readat_notification_fields(data: &Map<String, Value>) -> Result<()
 ///    happens to be valid JSON" from *any* submission, string or not.
 /// 2. `cratebase_db::validate::json` then requires the field's value, if
 ///    it is *still* a string at that point, to itself be valid JSON on
-///    its own (matching PocketBase's `json.Valid`) — a plain filter
+///    its own (as `json.Valid` would) — a plain filter
 ///    expression like `status = "paid"` is not, and is rejected as
 ///    `validation_invalid_json`.
 ///
@@ -1581,7 +1640,7 @@ fn normalize_json_rule_fields(collection: &Collection, data: &mut Map<String, Va
     }
 }
 
-/// A read failure. `NotFound` is PocketBase's plain 404; a rejected
+/// A read failure. `NotFound` is a plain 404; a rejected
 /// `sort`/`filter` surfaces as [`DbError::Filter`] and must become the
 /// *generic* 400 with an empty `data` (KNOWN_DIVERGENCES §18).
 pub(crate) fn read_error(error: DbError) -> AppError {
@@ -1746,7 +1805,7 @@ mod superuser_role_tests {
 
     async fn test_app() -> (App, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
-        let app = App::new(Config::memory(dir.path().join("pb_data")));
+        let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
     }

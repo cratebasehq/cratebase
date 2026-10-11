@@ -14,7 +14,7 @@
 //! * a `<collection>_via_<field>` segment is a back-relation: rows of
 //!   `<collection>` whose relation `<field>` points at the current row.
 //!   At the root it becomes a `LEFT JOIN` (deduplicated by alias, so two
-//!   references share the same joined row, like PocketBase); inside an
+//!   references share the same joined row, like Cratebase); inside an
 //!   element set it becomes an inner join of that set;
 //! * a `json` field consumes the remaining segments as a JSON path, a
 //!   `geoPoint` field accepts `lon`/`lat`.
@@ -29,7 +29,7 @@ use cratebase_core::{Collection, FieldKind, FieldType};
 use crate::error::FilterError;
 use crate::resolver::{Dialect, Resolver};
 
-/// Maximum number of relation hops in one path (PocketBase's
+/// Maximum number of relation hops in one path (Cratebase's
 /// `maxNestedRels`).
 pub const MAX_DEPTH: usize = 6;
 
@@ -85,7 +85,7 @@ pub struct FieldRef {
     pub joined: bool,
 }
 
-/// Prefix PocketBase gives the aliases of the correlated copy of a path it
+/// Prefix Cratebase gives the aliases of the correlated copy of a path it
 /// builds for a multi-match subquery.
 const MM_PREFIX: &str = "__mm_";
 
@@ -374,7 +374,7 @@ impl<'a> PathResolver<'a> {
     }
 
     /// Resolve the same path a second time under `__mm_`-prefixed aliases,
-    /// correlated to the outer row. PocketBase pairs a bare comparison over
+    /// correlated to the outer row. Cratebase pairs a bare comparison over
     /// a joined path with a `NOT EXISTS` over this copy so the comparison
     /// means "and no joined row fails it" rather than "some joined row
     /// passes it". `self.joins` is left untouched.
@@ -567,7 +567,7 @@ impl<'a> PathResolver<'a> {
         Err(unknown())
     }
 
-    /// Whole json fields compare their decoded value, like PocketBase's
+    /// Whole json fields compare their decoded value, like Cratebase's
     /// `JSON_EXTRACT(col, '$')`.
     pub fn json_root(&self, col: &str) -> String {
         match self.dialect {

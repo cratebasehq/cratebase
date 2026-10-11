@@ -1,10 +1,8 @@
 /**
  * Presentation for the server's scheduled jobs.
  *
- * The job ids are PocketBase's verbatim (`__pbLogsCleanup__` and friends)
- * because `GET /api/crons` has to match for tooling written against
- * PocketBase. That is an API compatibility decision, not a naming one —
- * showing a raw internal id as the label tells an operator nothing about
+ * The job ids are the server's (`__cbLogsCleanup__` and friends).
+ * Showing a raw internal id as the label tells an operator nothing about
  * what the job does or when it runs, so the id is demoted to secondary
  * detail here and the human description leads.
  */
@@ -15,23 +13,23 @@ export interface JobDescription {
 }
 
 const KNOWN: Record<string, JobDescription> = {
-  __pbDBOptimize__: {
+  __cbDBOptimize__: {
     title: "Database upkeep",
     detail: "Reclaims space and refreshes query statistics.",
   },
-  __pbMFACleanup__: {
+  __cbMFACleanup__: {
     title: "Expired two-factor sessions",
     detail: "Removes half-finished multi-factor logins that were never completed.",
   },
-  __pbOTPCleanup__: {
+  __cbOTPCleanup__: {
     title: "Expired one-time codes",
     detail: "Removes one-time login codes past their lifetime.",
   },
-  __pbLogsCleanup__: {
+  __cbLogsCleanup__: {
     title: "Request log trimming",
     detail: "Drops request history older than the retention set on Application.",
   },
-  __pbAutoBackup__: {
+  __cbAutoBackup__: {
     title: "Automatic backup",
     detail: "Snapshots the database on the schedule set on Backups.",
   },
@@ -39,7 +37,7 @@ const KNOWN: Record<string, JobDescription> = {
 
 /** `true` for one of the built-in jobs registered in Rust — everything
  * else that isn't a `custom:`-prefixed `_cron_jobs` record is a JS
- * `cronAdd` registration from a `pb_hooks/*.pb.js` file. */
+ * `cronAdd` registration from a `cb_hooks/*.cb.js` file. */
 export function isKnownSystemJob(id: string): boolean {
   return id in KNOWN;
 }

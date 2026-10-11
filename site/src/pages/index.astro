@@ -7,14 +7,13 @@ import DashboardTour from "../components/DashboardTour.astro";
 import BenchChart from "../components/BenchChart.astro";
 import Mark from "../components/Mark.astro";
 import LoadedPallet from "../components/illustrations/LoadedPallet.astro";
-import Dolly from "../components/illustrations/Dolly.astro";
 import HeroUnpack from "../components/illustrations/HeroUnpack.astro";
 import CrateStack from "../components/illustrations/CrateStack.astro";
 
 const proof = [
   "One binary, dashboard included",
   "SQLite or Postgres",
-  "Works with the official PocketBase SDKs",
+  "Typed TypeScript SDK",
   "MIT licensed",
 ];
 
@@ -34,7 +33,7 @@ const packing = [
 
 <LandingLayout
   title="Cratebase — a backend in one crate"
-  description="Collections, auth, files, realtime and an admin dashboard in one self-hostable Rust binary. SQLite today, Postgres when you need it, PocketBase-compatible if you're migrating one in."
+  description="Collections, auth, files, realtime and an admin dashboard in one self-hostable Rust binary. SQLite today, Postgres when you need it."
 >
   <!-- ============================== HERO ============================== -->
   <section class="hero">
@@ -139,7 +138,7 @@ const packing = [
   <section class="band-paper" id="performance">
     <div class="wrap section perf">
       <div class="perf-head">
-        <h2>10× PocketBase's search throughput, on the same machine.</h2>
+        <h2>Tens of thousands of searches a second, on one machine.</h2>
         <p>22 of 24 benchmark cells faster in the latest idle-host run, measured over HTTP, back to back.</p>
         <a class="more" href="/docs/benchmarks/">Methodology and every result</a>
         <div class="perf-art"><LoadedPallet label="A pallet stacked with crates, moving fast" /></div>
@@ -148,21 +147,6 @@ const packing = [
         <BenchChart />
       </div>
     </div>
-  </section>
-
-  <!-- ======================= MOVING FROM POCKETBASE ==================== -->
-  <section class="wrap section migrate">
-    <div class="migrate-art"><Dolly label="A hand truck carrying two crates: the migration tool" /></div>
-    <div class="migrate-copy">
-      <h2>Coming from PocketBase? Your SDK already works.</h2>
-      <p>Same wire protocol: 180 of 181 conformance tests pass against the official SDK. Your data moves in one command, and passwords keep working.</p>
-      <a class="more" href="/docs/migrating/compatibility/">Migration guide</a>
-    </div>
-    <pre class="migrate-code"><code><span class="p">$</span> cratebase migrate-from-pocketbase pb_data \
-    --dir cratebase_data
-
-<span class="del">- new PocketBase("https://pocketbase.example.com")</span>
-<span class="add">+ new PocketBase("https://cratebase.example.com")</span></code></pre>
   </section>
 
   <!-- ============================= FINAL CTA ============================ -->
@@ -192,7 +176,6 @@ const packing = [
   .head h2,
   .label h2,
   .perf-head h2,
-  .migrate h2,
   .final h2 {
     font-family: var(--font-display);
     font-weight: 750;
@@ -205,8 +188,7 @@ const packing = [
   }
   .head p,
   .label-head p,
-  .perf-head p,
-  .migrate p {
+  .perf-head p {
     font-size: var(--text-lg);
     line-height: 1.5;
     color: var(--color-text-secondary);
@@ -505,46 +487,6 @@ const packing = [
     margin-top: clamp(1.5rem, 4vw, 3rem);
   }
 
-  /* ---------------- migrate ---------------- */
-  .migrate {
-    display: grid;
-    grid-template-columns: 7.5rem minmax(0, 1fr) minmax(0, 1fr);
-    gap: clamp(1.5rem, 4vw, 3.5rem);
-    align-items: center;
-  }
-  .migrate-art {
-    width: 100%;
-  }
-  .migrate h2 {
-    font-size: var(--text-2xl);
-  }
-  .migrate p {
-    font-size: var(--text-base);
-  }
-  .migrate-code {
-    margin: 0;
-    padding: 1.1rem 1.25rem;
-    border-radius: var(--radius);
-    background: var(--color-harbor);
-    color: #eef1f4;
-    font-size: 0.82rem;
-    line-height: 1.8;
-    overflow-x: auto;
-  }
-  :root[data-theme="dark"] .migrate-code {
-    background: #06101a;
-    box-shadow: inset 0 0 0 1px var(--color-border);
-  }
-  .migrate-code .p {
-    color: var(--color-crate);
-  }
-  .migrate-code .del {
-    color: #ffaaa6;
-  }
-  .migrate-code .add {
-    color: #9ed9b5;
-  }
-
   /* ---------------- final ---------------- */
   .final {
     text-align: center;
@@ -587,12 +529,6 @@ const packing = [
     .perf-art {
       display: none;
     }
-    .migrate {
-      grid-template-columns: 6rem minmax(0, 1fr);
-    }
-    .migrate-code {
-      grid-column: 1 / -1;
-    }
   }
   @media (max-width: 760px) {
     .packing {
@@ -602,12 +538,6 @@ const packing = [
       grid-template-columns: 1fr;
       gap: 0.2rem;
       padding: 0.9rem 0;
-    }
-    .migrate {
-      grid-template-columns: minmax(0, 1fr);
-    }
-    .migrate-art {
-      width: 5.5rem;
     }
     .proof {
       justify-content: flex-start;

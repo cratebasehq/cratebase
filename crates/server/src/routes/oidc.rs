@@ -1,7 +1,7 @@
 //! Generic OpenID Connect provider support: discovery-document + JWKS
 //! fetch-and-cache for an issuer-only-configured provider (any
 //! `OAuth2Provider` with a non-empty `extra.issuer` — conventionally
-//! named `oidc`/`oidc2`/`oidc3`, matching PocketBase's own convention for
+//! named `oidc`/`oidc2`/`oidc3`, a convention for
 //! more than one hand-configured OIDC issuer), and for Apple's fixed
 //! JWKS (`https://appleid.apple.com/auth/keys`) used to verify its own
 //! `id_token`.
@@ -129,7 +129,7 @@ pub async fn fetch_jwks(
 }
 
 /// Apple's fixed (never discovered — it has no `/.well-known/...`
-/// document PocketBase-style providers rely on) JWKS + issuer.
+/// document discovery-based providers rely on) JWKS + issuer.
 pub const APPLE_JWKS_URL: &str = "https://appleid.apple.com/auth/keys";
 pub const APPLE_ISSUER: &str = "https://appleid.apple.com";
 

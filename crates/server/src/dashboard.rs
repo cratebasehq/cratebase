@@ -1,9 +1,9 @@
 //! The admin dashboard, embedded in the binary (spec §13).
 //!
-//! `web/admin/dist` is committed, as PocketBase commits `ui/dist`, so a
+//! `web/admin/dist` is committed so a
 //! plain `cargo build` produces one self-contained executable with no
-//! separate frontend to host. The bundle is served at `/_/` (PocketBase's
-//! path, which the SDK's `getDownloadURL`-style helpers assume) and `/`
+//! separate frontend to host. The bundle is served at `/_/` (the path the SDK's
+//! `getDownloadURL`-style helpers assume) and `/`
 //! redirects there.
 //!
 //! The email templates that used to be embedded here are gone: templates
@@ -37,7 +37,7 @@ async fn serve(State(app): State<App>, uri: Uri) -> Response {
     let path = if path.is_empty() { "index.html" } else { path };
 
     // `--publicDir` lets an operator override the embedded bundle without
-    // rebuilding, which is how PocketBase's `--publicDir` behaves.
+    // rebuilding.
     if let Some(dir) = &app.config().public_dir {
         let candidate = std::path::Path::new(dir).join(path);
         if candidate.starts_with(dir) {

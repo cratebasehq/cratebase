@@ -125,10 +125,6 @@ export default defineConfig({
           items: [{ autogenerate: { directory: "docs/deploy" } }],
         },
         {
-          label: "Migrating from PocketBase",
-          items: [{ autogenerate: { directory: "docs/migrating" } }],
-        },
-        {
           label: "Reference",
           items: [{ autogenerate: { directory: "docs/reference" } }],
         },

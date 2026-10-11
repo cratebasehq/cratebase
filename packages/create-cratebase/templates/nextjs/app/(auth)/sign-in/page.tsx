@@ -5,10 +5,17 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { CratebaseError } from "@cratebase/client";
 import { cb } from "@/lib/cratebase";
+import { Field } from "@/components/Field";
 import { OAuthButtons } from "@/components/OAuthButtons";
 import { TotpChallenge } from "@/components/TotpChallenge";
 
 type Tab = "password" | "otp" | "magic-link";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "password", label: "Password" },
+  { id: "otp", label: "Email code" },
+  { id: "magic-link", label: "Magic link" },
+];
 
 export default function SignInPage() {
   const router = useRouter();
@@ -18,8 +25,8 @@ export default function SignInPage() {
   const [pending, setPending] = useState(false);
 
   // Password tab state
-  const [identity, setIdentity] = useState("demo@example.com");
-  const [password, setPassword] = useState("password123");
+  const [identity, setIdentity] = useState("");
+  const [password, setPassword] = useState("");
 
   // OTP tab state
   const [otpEmail, setOtpEmail] = useState("");
@@ -88,7 +95,7 @@ export default function SignInPage() {
     try {
       await cb.auth.magicLink.request({
         email: magicEmail,
-        redirectUrl: typeof window !== "undefined" ? `${window.location.origin}/auth/magic-link` : undefined,
+        redirectUrl: `${window.location.origin}/auth/magic-link`,
       });
       setMagicSent(true);
     } catch (err) {
@@ -100,122 +107,152 @@ export default function SignInPage() {
 
   if (mfaId) {
     return (
-      <div className="card mx-auto mt-24 w-full max-w-sm">
+      <main className="card mx-auto my-16 w-full max-w-sm">
         <h1 className="mb-4 text-xl font-semibold">Two-factor verification</h1>
         <TotpChallenge mfaId={mfaId} onSuccess={() => router.push("/dashboard")} />
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="card mx-auto mt-24 w-full max-w-sm">
+    <main className="card mx-auto my-16 w-full max-w-sm">
       <h1 className="mb-1 text-xl font-semibold">Sign in</h1>
-      <p className="mb-4 text-sm text-black/60 dark:text-white/60">
-        No account? <Link href="/sign-up" className="underline">Create one</Link>.
+      <p className="muted mb-5 text-sm">
+        No account?{" "}
+        <Link href="/sign-up" className="underline">
+          Create one
+        </Link>
+        .
       </p>
 
-      <div className="mb-4 flex gap-1 rounded-lg bg-black/5 p-1 text-sm dark:bg-white/10">
-        {(["password", "otp", "magic-link"] as const).map((t) => (
+      <div role="tablist" aria-label="Sign-in method" className="mb-5 flex gap-1 rounded-lg bg-black/5 p-1 text-sm dark:bg-white/10">
+        {TABS.map(({ id, label }) => (
           <button
-            key={t}
+            key={id}
             type="button"
+            role="tab"
+            id={`tab-${id}`}
+            aria-selected={tab === id}
+            aria-controls="signin-panel"
             onClick={() => {
-              setTab(t);
+              setTab(id);
               setError(null);
             }}
             className={`flex-1 rounded-md px-2 py-1.5 transition-colors ${
-              tab === t ? "bg-white shadow-sm dark:bg-black/40" : "text-black/50 dark:text-white/50"
+              tab === id ? "bg-white font-medium shadow-sm dark:bg-black/40" : "muted hover:text-current"
             }`}
           >
-            {t === "password" ? "Password" : t === "otp" ? "Email code" : "Magic link"}
+            {label}
           </button>
         ))}
       </div>
 
-      {tab === "password" && (
-        <form onSubmit={handlePasswordSubmit} className="flex flex-col gap-3">
-          <input
-            className="input"
-            type="email"
-            placeholder="you@example.com"
-            value={identity}
-            onChange={(e) => setIdentity(e.target.value)}
-            required
-          />
-          <input
-            className="input"
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-          <button type="submit" className="btn-primary" disabled={pending}>
-            {pending ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      )}
-
-      {tab === "otp" &&
-        (otpId === null ? (
-          <form onSubmit={handleOtpRequest} className="flex flex-col gap-3">
-            <input
-              className="input"
+      <div role="tabpanel" id="signin-panel" aria-labelledby={`tab-${tab}`}>
+        {tab === "password" && (
+          <form onSubmit={handlePasswordSubmit} className="flex flex-col gap-4">
+            <Field
+              label="Email"
               type="email"
+              autoComplete="username"
               placeholder="you@example.com"
-              value={otpEmail}
-              onChange={(e) => setOtpEmail(e.target.value)}
+              value={identity}
+              onChange={(e) => setIdentity(e.target.value)}
+              required
+            />
+            <Field
+              label="Password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               required
             />
             <button type="submit" className="btn-primary" disabled={pending}>
-              {pending ? "Sending…" : "Send me a code"}
+              {pending ? "Signing in…" : "Sign in"}
             </button>
+            {process.env.NODE_ENV !== "production" && (
+              <button
+                type="button"
+                className="muted text-xs underline"
+                onClick={() => {
+                  setIdentity("demo@example.com");
+                  setPassword("password123");
+                }}
+              >
+                Fill in the seeded demo account
+              </button>
+            )}
           </form>
-        ) : (
-          <form onSubmit={handleOtpConfirm} className="flex flex-col gap-3">
-            <p className="text-sm text-black/60 dark:text-white/60">
-              We sent a code to {otpEmail}. In dev, check the mail inbox printed by <code>cratebase dev</code>.
+        )}
+
+        {tab === "otp" &&
+          (otpId === null ? (
+            <form onSubmit={handleOtpRequest} className="flex flex-col gap-4">
+              <Field
+                label="Email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={otpEmail}
+                onChange={(e) => setOtpEmail(e.target.value)}
+                required
+              />
+              <button type="submit" className="btn-primary" disabled={pending}>
+                {pending ? "Sending…" : "Send me a code"}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleOtpConfirm} className="flex flex-col gap-4">
+              <p className="muted text-sm">
+                We sent a code to {otpEmail}. In dev, open the Mail inbox in the Cratebase dashboard (<code>localhost:8090/_/</code>).
+              </p>
+              <Field
+                label="Code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="123456"
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value)}
+                required
+              />
+              <button type="submit" className="btn-primary" disabled={pending}>
+                {pending ? "Verifying…" : "Verify code"}
+              </button>
+            </form>
+          ))}
+
+        {tab === "magic-link" &&
+          (magicSent ? (
+            <p className="muted text-sm" role="status">
+              Check your inbox for a sign-in link. In dev, open the Mail inbox in the Cratebase dashboard (<code>localhost:8090/_/</code>).
             </p>
-            <input
-              className="input"
-              inputMode="numeric"
-              placeholder="123456"
-              value={otpCode}
-              onChange={(e) => setOtpCode(e.target.value)}
-              required
-            />
-            <button type="submit" className="btn-primary" disabled={pending}>
-              {pending ? "Verifying…" : "Verify code"}
-            </button>
-          </form>
-        ))}
+          ) : (
+            <form onSubmit={handleMagicLinkRequest} className="flex flex-col gap-4">
+              <Field
+                label="Email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={magicEmail}
+                onChange={(e) => setMagicEmail(e.target.value)}
+                required
+              />
+              <button type="submit" className="btn-primary" disabled={pending}>
+                {pending ? "Sending…" : "Send magic link"}
+              </button>
+            </form>
+          ))}
+      </div>
 
-      {tab === "magic-link" &&
-        (magicSent ? (
-          <p className="text-sm text-black/60 dark:text-white/60">
-            Check your inbox for a sign-in link. In dev, check the mail inbox printed by <code>cratebase dev</code>.
-          </p>
-        ) : (
-          <form onSubmit={handleMagicLinkRequest} className="flex flex-col gap-3">
-            <input
-              className="input"
-              type="email"
-              placeholder="you@example.com"
-              value={magicEmail}
-              onChange={(e) => setMagicEmail(e.target.value)}
-              required
-            />
-            <button type="submit" className="btn-primary" disabled={pending}>
-              {pending ? "Sending…" : "Send magic link"}
-            </button>
-          </form>
-        ))}
-
-      {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
+      {error && (
+        <p role="alert" className="error-text mt-3">
+          {error}
+        </p>
+      )}
 
       <div className="mt-5">
         <OAuthButtons />
       </div>
-    </div>
+    </main>
   );
 }

@@ -44,8 +44,8 @@ ensure_superuser_and_login() {
   (cd "$repo_root" && cargo run -q -p cratebase-server --bin cratebase -- \
     superuser upsert "$ADMIN_EMAIL" "$ADMIN_PASSWORD" >/dev/null)
 
-  # `/api/admins/*` is gone as of PocketBase v0.23 — superusers are an
-  # ordinary auth collection now, and the field is `identity`, not `email`.
+  # Superusers are an ordinary auth collection (`_superusers`), and the
+  # field is `identity`, not `email`.
   ADMIN_TOKEN="$(curl -fsS -X POST "${CRATEBASE_URL}/api/collections/_superusers/auth-with-password" \
     -H 'content-type: application/json' \
     -d "$(jq -nc --arg identity "$ADMIN_EMAIL" --arg password "$ADMIN_PASSWORD" '{identity:$identity,password:$password}')" \

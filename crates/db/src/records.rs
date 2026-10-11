@@ -11,7 +11,7 @@
 //!   collection's `listRule`/`viewRule`; a record the rule hides is
 //!   absent (a denied `view` is [`DbError::NotFound`], never a 403, so
 //!   the API cannot be used to probe for hidden ids). A rule of `None`
-//!   ("superusers only") yields an empty page here — PocketBase answers
+//!   ("superusers only") yields an empty page here — Cratebase answers
 //!   that with `403` before querying, which is the server layer's call
 //!   (see [`crate::rules::evaluate`]).
 //! * **Serialization is the caller's.** Records come back as
@@ -35,7 +35,7 @@ use crate::rules;
 use crate::validate::{self, UploadMeta};
 use crate::{expand, schema};
 
-/// PocketBase's default and maximum page sizes. The cap is 1000, as
+/// Cratebase's default and maximum page sizes. The cap is 1000, as
 /// measured against v0.40.2 (`tests/conformance/records.test.ts`).
 pub const DEFAULT_PER_PAGE: i64 = 30;
 pub const MAX_PER_PAGE: i64 = 1000;
@@ -53,7 +53,7 @@ pub struct FileRef {
 pub struct ListParams<'a> {
     /// 1-based; clamped to at least 1.
     pub page: i64,
-    /// Clamped to `1..=1000`. The caller supplies PocketBase's default
+    /// Clamped to `1..=1000`. The caller supplies Cratebase's default
     /// of 30 when the request omits `perPage`.
     pub per_page: i64,
     pub sort: Option<&'a str>,
@@ -66,7 +66,7 @@ pub struct ListParams<'a> {
     pub search: Option<&'a str>,
     pub expand: Option<&'a str>,
     /// Skip the `COUNT(*)`; `totalItems`/`totalPages` come back as `-1`,
-    /// exactly as PocketBase's `?skipTotal=1`.
+    /// exactly as Cratebase's `?skipTotal=1`.
     pub skip_total: bool,
 }
 
@@ -80,7 +80,7 @@ pub struct ListResult {
 }
 
 /// Whether a value is already a password hash rather than a plaintext to
-/// be hashed: Argon2 (ours) or bcrypt (imported from PocketBase).
+/// be hashed: Argon2.
 pub fn is_hash(value: &Value) -> bool {
     matches!(value.as_str(), Some(s) if s.starts_with("$argon2") || s.starts_with("$2"))
 }
@@ -173,7 +173,7 @@ pub fn decode_column(field: &Field, value: Option<&Sql>) -> Value {
     }
 }
 
-/// `2.0` serializes as `2`, matching PocketBase's JSON output for whole
+/// `2.0` serializes as `2`, matching Cratebase's JSON output for whole
 /// numbers stored in a float column.
 fn number_value(n: f64) -> Value {
     if n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 {
@@ -220,7 +220,7 @@ impl<'a> RowDecoder<'a> {
                 let column = self.positions[i].and_then(|p| row.values.get(p));
                 let value = decode_column(field, column);
                 // A schema with duplicate field names collapses to fewer
-                // slots than fields (PocketBase allows that: last one
+                // slots than fields (Cratebase allows that: last one
                 // wins), so the alignment is verified rather than assumed.
                 if aligned(data, i, &field.name) {
                     if let Some((_, slot)) = data.get_index_mut(i) {
@@ -426,7 +426,7 @@ pub async fn find_by_ids(
     Ok(rows_to_records(collection, &rows))
 }
 
-/// Rule-free "first record matching this filter", PocketBase's
+/// Rule-free "first record matching this filter", Cratebase's
 /// `FindFirstRecordByFilter`. `params` fills `{:name}` placeholders in
 /// the filter, so a caller never has to build the expression by string
 /// concatenation.
@@ -509,7 +509,7 @@ fn normalize(record: &mut Record, is_create: bool) {
     let collection = record.collection().clone();
     let stamp = now().to_pb_string();
 
-    // Cast before anything else: PocketBase stores the cast value, so
+    // Cast before anything else: Cratebase stores the cast value, so
     // autogeneration and validation must both see it (a number field sent
     // as `"abc"` is `0`, and `0` is blank, so a required one still fails).
     validate::coerce_record(record);
@@ -560,7 +560,7 @@ fn normalize(record: &mut Record, is_create: bool) {
         }
     }
 
-    // PocketBase keeps `emailVisibility` a real bool and defaults it to
+    // Cratebase keeps `emailVisibility` a real bool and defaults it to
     // false, so an auth record never leaks an address by accident.
     if collection.is_auth() && !matches!(record.get("emailVisibility"), Some(Value::Bool(_))) {
         record.set("emailVisibility", Value::Bool(false));
@@ -679,7 +679,7 @@ pub async fn update_with_uploads(
     let mut assignments = Vec::new();
     let mut params = Vec::new();
     for field in &collection.fields {
-        // The primary key is never rewritten; PocketBase does not allow
+        // The primary key is never rewritten; Cratebase does not allow
         // changing a record's id after creation.
         if field.is_primary_key() {
             continue;
@@ -723,7 +723,7 @@ fn map_unique(collection: &Collection, e: DbError) -> DbError {
 /// Delete a record and everything that must follow it.
 ///
 /// For every relation field on any *other* collection that points at this
-/// one, PocketBase either deletes the referencing records
+/// one, Cratebase either deletes the referencing records
 /// (`cascadeDelete: true`, applied recursively) or strips this id out of
 /// their value (`''` for a single relation, removal from the array for a
 /// multi one). A visited set stops a relation cycle from looping.
@@ -937,7 +937,7 @@ fn file_refs(record: &Record) -> Vec<FileRef> {
 }
 
 /// Build a [`Record`] from a request body, ignoring keys that are not
-/// fields (PocketBase silently drops unknown keys) and the reserved
+/// fields (Cratebase silently drops unknown keys) and the reserved
 /// names it never accepts.
 pub fn from_body(collection: Arc<Collection>, body: &Map<String, Value>) -> Record {
     let mut record = Record::new(collection.clone());
@@ -953,7 +953,7 @@ pub fn from_body(collection: Arc<Collection>, body: &Map<String, Value>) -> Reco
 }
 
 /// Apply a request body onto a loaded record, leaving untouched fields at
-/// their stored value (PocketBase's `PATCH` semantics).
+/// their stored value (Cratebase's `PATCH` semantics).
 pub fn apply_body(record: &mut Record, body: &Map<String, Value>) {
     let collection = record.collection().clone();
     for (key, value) in body {

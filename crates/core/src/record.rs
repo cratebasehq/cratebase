@@ -15,7 +15,7 @@ use crate::field::FieldType;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SerializeOptions {
     /// Include `hidden` fields (`password`, `tokenKey`, custom hidden
-    /// fields). PocketBase never exposes these over HTTP; only internal
+    /// fields). Cratebase never exposes these over HTTP; only internal
     /// callers (hooks, the JS runtime) ask for them.
     pub with_hidden: bool,
     /// Show `email` on an auth record regardless of `emailVisibility`
@@ -239,7 +239,7 @@ impl Record {
     /// JSON as the HTTP API emits it: schema fields in order (minus hidden
     /// ones and a masked `email`), then `collectionId`, `collectionName`,
     /// then `expand` when non-empty. Keys are sorted at the end to match
-    /// PocketBase's map serialization.
+    /// Cratebase's map serialization.
     pub fn to_json(&self, opts: SerializeOptions) -> Value {
         let mut m = Map::new();
         for f in &self.collection.fields {
@@ -250,7 +250,7 @@ impl Record {
                 continue;
             }
             // An email the viewer may not see is omitted entirely rather
-            // than blanked — PocketBase drops the key, and a client that
+            // than blanked — Cratebase drops the key, and a client that
             // checks `"email" in record` would otherwise see a field that
             // looks present but empty. Measured in
             // tests/conformance/KNOWN_DIVERGENCES.md #20.
@@ -292,7 +292,7 @@ impl Record {
     }
 }
 
-/// The value a field holds when nothing has been set: PocketBase returns
+/// The value a field holds when nothing has been set: Cratebase returns
 /// `""` for text-like fields, `0` for numbers, `false` for bools, `[]`
 /// for multi-valued fields, `null` for json/geoPoint-less fields.
 pub fn zero_value(t: FieldType, multiple: bool) -> Value {
@@ -308,7 +308,7 @@ pub fn zero_value(t: FieldType, multiple: bool) -> Value {
     }
 }
 
-/// Apply a PocketBase `?fields=` projection to a serialized record or
+/// Apply a Cratebase `?fields=` projection to a serialized record or
 /// list. Supports `*`, comma-separated paths, `expand.rel.field`, and the
 /// `:excerpt(maxLength, withEllipsis)` modifier on string values.
 pub fn project_fields(value: &mut Value, spec: &str) {
@@ -474,7 +474,7 @@ fn apply_excerpt(v: Value, excerpt: Option<(usize, bool)>) -> Value {
     };
     match v {
         Value::String(s) => {
-            // PocketBase strips HTML tags and collapses whitespace first.
+            // Cratebase strips HTML tags and collapses whitespace first.
             let plain = strip_tags(&s);
             let chars: Vec<char> = plain.chars().collect();
             if chars.len() <= max {
@@ -491,7 +491,7 @@ fn apply_excerpt(v: Value, excerpt: Option<(usize, bool)>) -> Value {
     }
 }
 
-/// Drop HTML tags and collapse runs of whitespace, the way PocketBase
+/// Drop HTML tags and collapse runs of whitespace, the way Cratebase
 /// prepares an `:excerpt` operand.
 ///
 /// A tag is removed, not replaced with a space: `Hello <b>world</b>, ...`
@@ -565,8 +565,7 @@ mod tests {
     #[test]
     fn star_yields_to_a_deeper_spec_for_the_same_key() {
         // `*` must not emit the whole `expand`, or the narrower spec has
-        // nothing left to trim. Asserted against PocketBase in
-        // tests/conformance/records.test.ts.
+        // nothing left to trim. Pinned by this test.
         let mut v = serde_json::json!({
             "id": "1",
             "title": "t",
@@ -649,7 +648,7 @@ mod tests {
         let users = Arc::new(Collection::default_users());
         let mut r = Record::new(users);
         r.set("email", Value::String("a@b.co".into()));
-        // Not visible: the key is absent entirely, as PocketBase does.
+        // Not visible: the key is absent entirely, as Cratebase does.
         let v = r.to_json(SerializeOptions::default());
         assert!(v.get("email").is_none());
         assert!(v.get("emailVisibility").is_some());

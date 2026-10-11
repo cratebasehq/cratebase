@@ -8,6 +8,7 @@ import { AppTopbar } from "@/components/layout/app-topbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useCollections } from "@/hooks/use-collections";
+import { useNavShortcuts } from "@/hooks/use-nav-shortcuts";
 
 interface ShellActions {
   openNewCollection: () => void;
@@ -36,6 +37,7 @@ export function useShellActions(): ShellActions {
  */
 export function AppShell() {
   const { data: collections, isPending } = useCollections();
+  useNavShortcuts();
   const [newCollectionOpen, setNewCollectionOpen] = useState(false);
   const [importCollectionsOpen, setImportCollectionsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -59,6 +61,12 @@ export function AppShell() {
             } as React.CSSProperties
           }
         >
+          <a
+            href="#main"
+            className="sr-only fixed top-2 left-2 z-max rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground focus:not-sr-only"
+          >
+            Skip to content
+          </a>
           <AppSidebar
             collections={collections ?? []}
             loading={isPending}
@@ -68,7 +76,7 @@ export function AppShell() {
 
           <SidebarInset className="flex min-w-0 flex-col overflow-hidden">
             <AppTopbar onOpenSearch={actions.openSearch} />
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div id="main" tabIndex={-1} className="flex min-h-0 flex-1 flex-col overflow-hidden outline-none">
               <Outlet />
             </div>
           </SidebarInset>

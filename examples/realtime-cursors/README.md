@@ -6,19 +6,19 @@ else's screen — the smallest possible demo of Cratebase's realtime
 record CRUD together.
 
 Plain HTML/CSS + one ES module (`app.js`). No build step, no framework —
-Cratebase's API is byte-compatible with PocketBase v0.23+, so it imports
-the official PocketBase JS SDK via a bare specifier:
+it imports the first-party `@cratebase/client` SDK via a bare specifier:
 
 ```js
-import PocketBase, { ClientResponseError } from "pocketbase";
+import { createClient, CratebaseError } from "@cratebase/client";
 ```
 
 resolved by an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/script/type/importmap) in `index.html` pointing
-`"pocketbase"` at the published package on esm.sh
-(`https://esm.sh/pocketbase@0.28`) — no npm install and no bundler step.
+`"@cratebase/client"` at a browser bundle of `sdk/js/client` that
+`examples/serve.sh` builds into `examples/lib/cratebase-client.js` — no npm
+install and no bundler step in the example.
 One deliberate exception: the best-effort cursor cleanup on tab close
 uses raw `fetch(..., {keepalive: true})` directly, since
-`RecordService.delete` doesn't expose that fetch option — see the
+`collection.delete` doesn't expose that fetch option — see the
 comment above `deleteOwnCursor` in `app.js`.
 
 ## 1. Start Cratebase
@@ -97,7 +97,7 @@ duplicated with a rendered dot.
   recovery path also handles the case where a record for this `clientId`
   already exists server-side but the local id was lost.
 - **Realtime**: on load the page opens `GET /api/realtime` (SSE), waits
-  for the `PB_CONNECT` event to learn its `clientId`, then
+  for the `CB_CONNECT` event to learn its `clientId`, then
   `POST /api/realtime` with `{"clientId", "subscriptions": ["cursors/*"]}`.
   Every subsequent `create`/`update`/`delete` event for any record in the
   collection arrives as an SSE `message` event and moves (or removes) the

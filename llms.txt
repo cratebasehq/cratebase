@@ -19,7 +19,7 @@ source. Everything referenced below is real and current, not aspirational.
   `cratebase dev` for local development — one command that creates the
   data dir, provisions a superuser (`admin@localhost` with a
   random, printed-once password, or `CB_ADMIN_EMAIL`/`CB_ADMIN_PASSWORD`),
-  applies `./schema.json` additively, seeds `./pb_seed/` if the database
+  applies `./schema.json` additively, seeds `./cb_seed/` if the database
   is empty, writes `./cratebase-types.d.ts`, then serves exactly like
   `serve --dev`; see `cratebase dev --help` and
   `crates/server/src/dev.rs`. Re-running it against the same data dir is
@@ -64,8 +64,18 @@ source. Everything referenced below is real and current, not aspirational.
   (list supports `?filter=`, `?sort=`, `?page=`, `?perPage=`, `?search=`
   — full-text query over the collection's `searchable` fields, ANDed
   onto `?filter=`, ranked by relevance unless `?sort=` is given, `400` if
-  the collection has none searchable; create/update accept JSON or
+  the collection has none searchable; combined with `?nearestTo=` it
+  fuses vector and full-text ranking by reciprocal rank fusion (k=60, up
+  to 200 candidates from each); create/update accept JSON or
   `multipart/form-data` when the collection has file fields)
+- Collections bodies use `fields` with flat per-field options; the legacy
+  top-level `schema` key and per-field `options` objects are rejected with
+  `400 validation_unknown_key`.
+- LLM usage ledger (superuser or API key only): `PATCH /settings` with
+  `settings.llm.prices` (per-model USD per 1M tokens) and `priceVersion`;
+  `POST /llm/usage` logs `{ model, promptTokens, completionTokens, ... }`
+  and returns `{ id, costUsd }`; `GET /llm/usage/summary?groupBy=model|surface|purpose|actor|day&from=&to=`
+  returns `{ items: [{ key, calls, promptTokens, completionTokens, costUsd }] }`.
 - `POST /batch` — several record create/update/upsert/delete calls (JSON
   or multipart, for file fields) in one HTTP round trip and one SQL
   transaction.
@@ -107,7 +117,7 @@ source. Everything referenced below is real and current, not aspirational.
   pair (auto-leave on disconnect or 45s with no heartbeat); `GET .../stats` (superuser only)
   reports this node's own subscriber/presence counts. `$realtime.publish(channel, event, data)`
   in JS hooks runs at the trusted-hook tier (no publishRule check).
-- JS hooks: a `pb_hooks/*.pb.js` file next to the data directory can add
+- JS hooks: a `cb_hooks/*.cb.js` file next to the data directory can add
   native-style lifecycle hooks (`onRecordCreate`, ...) and mount extra
   root-level HTTP routes via `routerAdd` — see
   [ARCHITECTURE.md](./ARCHITECTURE.md#extending-with-javascript-cratesjsvm).
@@ -118,7 +128,7 @@ source. Everything referenced below is real and current, not aspirational.
   only; 404 on SQLite) — list/enable/disable Postgres extensions
   (postgis, pgvector, pg_trgm, ...); `DELETE ?cascade=true` to take
   dependents with it. `$app.db().exec(sql)` (write-capable, unlike the
-  read-only `$app.rawQuery`) lets a `pb_migrations/*.js` file version
+  read-only `$app.rawQuery`) lets a `cb_migrations/*.js` file version
   `CREATE EXTENSION IF NOT EXISTS postgis` too.
 - `POST /rpc/{name}` — call a named `_rpc` definition (superuser-managed
   via `_rpc` records: `sql` with `:name` placeholders, a `params` schema,
@@ -130,7 +140,7 @@ source. Everything referenced below is real and current, not aspirational.
 - `POST /queue/enqueue` (superuser/API key; `/plugins/queue/enqueue`
   kept as an alias) — durable, retrying background jobs. `{queue,
   payload, maxAttempts?, runAt?, delay?, dedupeKey?, priority?}`, handled
-  by a `pb_hooks/*.pb.js` `onQueueJob("queue-name", (e) => {...})` (JS)
+  by a `cb_hooks/*.cb.js` `onQueueJob("queue-name", (e) => {...})` (JS)
   or `QueuePlugin::handle().register_handler(...)` (Rust — always wins
   over a JS handler for the same name). Fixed exponential backoff,
   `FOR UPDATE SKIP LOCKED` claim (exactly-once across nodes sharing one
@@ -156,7 +166,7 @@ source. Everything referenced below is real and current, not aspirational.
   addresses blocked) on every attempt, redirects disabled.
 - `_cron_jobs` (superuser-only system collection, reactive — no restart
   needed) + `GET /crons` (list)/`POST /crons/{id}` (run now) — schedule a
-  raw SQL statement on a cron expression. A `pb_hooks/*.pb.js`
+  raw SQL statement on a cron expression. A `cb_hooks/*.cb.js`
   `cronAdd(id, cronExpr, handler)` job runs the same way from JS. Both
   get run-history rows in `_cronRuns` (`jobId`, `source` sql/js, `status`,
   `startedAt`, `durationMs`, `message`), and both are guarded by a
@@ -231,11 +241,26 @@ Error bodies are always `{ "code": 400, "message": "...", "data": { field: { cod
 first-party TypeScript SDK — `createClient(url)`, object-options
 `list`/`create`/`update`/`delete`, tagged-template filter builders, and
 the new session/impersonation/ban/OAuth2-redirect surface above built in.
-Cratebase's API is also byte-compatible with PocketBase v0.23+, so the
-official `npm install pocketbase` SDK (or any of PocketBase's other
-official SDKs) still works unchanged against it — persisted `authStore`,
-multipart file upload helpers, and realtime subscriptions included. See
-the [pocketbase package](https://www.npmjs.com/package/pocketbase).
+The SDK also ships a persisted `authStore` (with
+`authStore.exportCookie(name, { secure, maxAge, sameSite, path })` for
+server-set session cookies), multipart file upload helpers, realtime
+subscriptions, a bearer shortcut `createClient(url, { token })`, and an
+LLM usage ledger client (`cb.llm.logUsage`, `cb.llm.usageSummary`).
+
+`@cratebase/start` provides TanStack Start server helpers:
+`createCratebaseStart({ url, apiKey, cookieName, authCollection,
+maxAgeSeconds, sessionCacheTtlMs })` returns `client()`, `adminClient()`,
+`getUser({ fresh })`, `setSession`, `clearSession` and the
+`authMiddleware` / `freshAuthMiddleware` / `optionalAuthMiddleware`
+request middlewares. The session cookie's `Secure` flag is auto-detected
+from `x-forwarded-proto`. Scaffold with
+`bun create cratebase --template tanstack-start`.
+
+`@cratebase/schema` is a TypeScript schema DSL (field builders such as
+`text`, `number`, `bool`, `email`, `url`, `date`, `select`, `file`,
+`relation`, `json`, `vector`, plus `defineCollection`, `defineSchema`,
+`idx`, `collectionId`, `writeSchema`). It emits `{ collections: [...] }`
+for `POST /api/schema/apply` and for `cratebase dev`'s `./schema.json`.
 
 Run `cratebase typegen` (or `GET /api/typegen`, or run with `--dev` and
 `CB_TYPEGEN_OUT` set to regenerate on every schema change) to get a
@@ -255,7 +280,7 @@ client with no hand-written types and no separate build step. See
 - `crates/auth` — password hashing, JWT session/action tokens, OTP/TOTP
   hashing, OAuth2 preset endpoints/scopes/userinfo parsing, OIDC JWKS
   id_token verification.
-- `crates/jsvm` — embedded QuickJS runtime backing `pb_hooks/` and `routerAdd`.
+- `crates/jsvm` — embedded QuickJS runtime backing `cb_hooks/` and `routerAdd`.
 - `crates/mailer` — pluggable mail backend (Resend API, SMTP, or log-only).
 - `crates/server` — the axum HTTP API, CLI, plugin system, `jsvm`/`mailer`
   wiring, and embedded admin dashboard.

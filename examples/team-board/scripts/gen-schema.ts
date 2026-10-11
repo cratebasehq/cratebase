@@ -5,7 +5,7 @@
 // has a `relation` field pointing at Cratebase's built-in `_teams` (team
 // scoping) or `users` (assignee/author/uploader) collections, and
 // `FieldKind::Relation::collectionId` (`crates/core/src/field.rs`) must be
-// a *real* collection id, not a name — Cratebase (like PocketBase) derives
+// a *real* collection id, not a name — Cratebase derives
 // every collection's id deterministically from its type+name
 // (`scripts/lib/ids.ts`), so every id this file needs can be computed
 // offline, in one pass, with no dependency-ordered "create it, read the id
@@ -28,8 +28,8 @@ import { collectionId } from "./lib/ids.js";
 const TEAMS_ID = collectionId("base", "_teams");
 // Unlike every other collection here, the built-in `users` collection
 // does *not* get the derived id: `Collection::default_users()`
-// (`crates/core/src/collection.rs`) overrides it with PocketBase's own
-// historical fixed literal, `USERS_COLLECTION_ID` (`crates/core/src/lib.rs`).
+// (`crates/core/src/collection.rs`) overrides it with a fixed literal,
+// `USERS_COLLECTION_ID` (`crates/core/src/lib.rs`).
 // `collectionId("auth", "users")` would silently compute the wrong id.
 const USERS_ID = "_pb_users_auth_";
 const COLUMNS_ID = collectionId("base", "columns");
@@ -111,7 +111,7 @@ const collections = [
     fields: [
       teamRelation(),
       // Not required at the DB level (`minSelect: 0`): a throwaway
-      // "search query" row (`isQuery: true`, see pb_hooks/team-board.pb.js's
+      // "search query" row (`isQuery: true`, see cb_hooks/team-board.cb.js's
       // `/api/search` route) has no column. Every *real* card is required
       // to have one — enforced in `onRecordCreate` in the hooks file,
       // where it can be conditioned on `isQuery`, which a DB-level
@@ -201,7 +201,7 @@ const collections = [
       { name: "read", type: "bool" },
       { name: "created", type: "autodate", onCreate: true },
     ],
-    // Written exclusively by pb_hooks/team-board.pb.js via `e.app.save()`
+    // Written exclusively by cb_hooks/team-board.cb.js via `e.app.save()`
     // (bypasses API rules entirely, like every `$app` write) — no end
     // user ever POSTs one directly, hence `createRule: null`.
     listRule: "userRef = @request.auth.id",

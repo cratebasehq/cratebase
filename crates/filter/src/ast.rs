@@ -56,7 +56,7 @@ impl CompareOp {
     }
 }
 
-/// The optional `:modifier` suffix on an identifier, as in PocketBase.
+/// The optional `:modifier` suffix on an identifier, as in Cratebase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Modifier {
     /// `@request.body.x:isset` — whether the key was sent at all.

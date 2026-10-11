@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { cb } from "@/lib/cratebase";
+import { Field } from "@/components/Field";
 import { OAuthButtons } from "@/components/OAuthButtons";
 
 export function SignUp() {
@@ -26,31 +27,41 @@ export function SignUp() {
   }
 
   return (
-    <div className="card mx-auto mt-24 w-full max-w-sm">
+    <main className="card mx-auto my-16 w-full max-w-sm">
       <h1 className="mb-1 text-xl font-semibold">Create an account</h1>
-      <p className="mb-4 text-sm text-black/60 dark:text-white/60">
-        Already have one? <Link to="/sign-in" className="underline">Sign in</Link>.
+      <p className="muted mb-5 text-sm">
+        Already have one?{" "}
+        <Link to="/sign-in" className="underline">
+          Sign in
+        </Link>
+        .
       </p>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <input className="input" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-        <input
-          className="input"
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <Field label="Name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Field
+          label="Email"
           type="email"
+          autoComplete="email"
           placeholder="you@example.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
         />
-        <input
-          className="input"
+        <Field
+          label="Password"
           type="password"
-          placeholder="Password (min 8 characters)"
+          autoComplete="new-password"
+          hint="At least 8 characters."
           minLength={8}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
         />
-        {error && <p className="text-sm text-red-500">{error}</p>}
+        {error && (
+          <p role="alert" className="error-text">
+            {error}
+          </p>
+        )}
         <button type="submit" className="btn-primary" disabled={pending}>
           {pending ? "Creating account…" : "Create account"}
         </button>
@@ -58,6 +69,6 @@ export function SignUp() {
       <div className="mt-5">
         <OAuthButtons />
       </div>
-    </div>
+    </main>
   );
 }

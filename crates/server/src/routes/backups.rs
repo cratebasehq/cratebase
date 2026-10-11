@@ -30,7 +30,7 @@
 //! `_params`, and re-exec'ing is the same "start from a clean slate"
 //! mechanism SQLite already needs, reused rather than duplicated with an
 //! in-place reload path. Either way the process id survives, so
-//! systemd/Docker see no crash. PocketBase restarts for the same reason.
+//! systemd/Docker see no crash.
 //!
 //! # What actually gets swapped
 //!
@@ -117,14 +117,13 @@ pub fn router() -> Router<App> {
         .route("/backups", get(list).post(create))
         .route("/backups/upload", post(upload))
         // Ahead of `/backups/{key}` on purpose: axum prefers the literal
-        // segment, and this is an extension rather than a PocketBase route.
+        // segment, and this is an extension route.
         .route("/backups/storage-info", get(storage_info))
         .route("/backups/{key}", get(download).delete(delete))
         .route("/backups/{key}/restore", post(restore))
 }
 
-/// `GET /api/backups/storage-info` — a Cratebase extension, not a
-/// PocketBase route.
+/// `GET /api/backups/storage-info` — a Cratebase extension.
 ///
 /// Backups go wherever `settings.backups.s3` points, which is a different
 /// store from the one serving uploaded files. Nothing on the backups
@@ -457,7 +456,7 @@ struct DownloadQuery {
 
 /// Streams the archive. Authenticated by a superuser **file token** in
 /// the query string, since `<a download>` and `window.open` cannot send
-/// headers. A missing or invalid token is a 403, matching PocketBase.
+/// headers. A missing or invalid token is a 403.
 async fn download(
     State(app): State<App>,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -1019,10 +1018,10 @@ async fn record_scheduled_backup_result(app: &App, error: Option<&AppError>) {
     }
 }
 
-/// PocketBase's generated name: `pb_backup_YYYYMMDDHHMMSS.zip`.
+/// The generated name: `cb_backup_YYYYMMDDHHMMSS.zip`.
 fn auto_name() -> String {
     format!(
-        "pb_backup_{}.zip",
+        "cb_backup_{}.zip",
         chrono::Utc::now().format("%Y%m%d%H%M%S")
     )
 }
@@ -1088,7 +1087,7 @@ mod tests {
 
     #[test]
     fn keys_cannot_escape_the_store() {
-        validate_key("pb_backup_20260903120000.zip").unwrap();
+        validate_key("cb_backup_20260903120000.zip").unwrap();
         validate_key("my-backup.zip").unwrap();
         for bad in [
             "../escape.zip",
@@ -1103,9 +1102,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_names_follow_pocketbase() {
+    fn auto_names_have_cratebase_prefix() {
         let name = auto_name();
-        assert!(name.starts_with("pb_backup_"), "{name}");
+        assert!(name.starts_with("cb_backup_"), "{name}");
         assert!(name.ends_with(".zip"));
         validate_key(&name).unwrap();
     }

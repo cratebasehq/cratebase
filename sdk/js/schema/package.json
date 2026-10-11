@@ -1,0 +1,37 @@
+{
+  "name": "@cratebase/schema",
+  "version": "0.1.0",
+  "description": "Schema-as-code for Cratebase: typed field builders, deterministic collection ids and defineSchema() that emits the JSON accepted by `cratebase dev`, `cratebase schema` and POST /api/schema/apply.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cratebasehq/cratebase.git",
+    "directory": "sdk/js/schema"
+  },
+  "homepage": "https://github.com/cratebasehq/cratebase/tree/main/sdk/js/schema#readme",
+  "bugs": "https://github.com/cratebasehq/cratebase/issues",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "bun-types": "^1.4.2",
+    "typescript": "~6.0.2"
+  }
+}

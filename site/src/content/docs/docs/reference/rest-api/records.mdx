@@ -25,7 +25,7 @@ wire shape.
 | `filter` | — | Filter expression, e.g. `published = true && title ~ "hello"` |
 | `sort` | `-created` | Comma-separated fields, `-` prefix for descending |
 | `page` | `1` | `0` is coerced to `1` |
-| `perPage` | `30` | Capped at 500 by this endpoint's own validation (1000 server-wide, per `KNOWN_DIVERGENCES.md`) |
+| `perPage` | `30` | Capped at 500 by this endpoint's own validation (1000 server-wide) |
 | `search` | — | Full-text query over the collection's `searchable` fields, ANDed onto `filter`. `400` if the collection has none. See [Full-text search](/docs/database/full-text-search/) |
 
 Response:
@@ -61,3 +61,7 @@ with `filter` and the collection's `listRule` still applied on top. See
 [AI → Vector search](/docs/ai/vector-search/) for the full behavior and
 its candidate-row ceiling — it isn't in `openapi.yaml` as a distinct
 path since it's a query-parameter mode of this same endpoint.
+
+When `search` is sent together with `nearestTo`, the two rankings are
+fused with reciprocal rank fusion (`k = 60`, up to 200 candidates from
+each) rather than `search` merely narrowing the vector results.

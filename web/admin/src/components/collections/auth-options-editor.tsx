@@ -101,8 +101,8 @@ function DurationField({
   );
 }
 
-/** Where to get a client id/secret for the providers PocketBase (and
- * Cratebase) build endpoints in for — everything else is a "bring your
+/** Where to get a client id/secret for the providers Cratebase
+ * builds endpoints in for — everything else is a "bring your
  * own OAuth2/OpenID app" case with no console to link to. */
 const PROVIDER_GUIDES: Record<string, { console: string; consoleLabel: string; steps: string }> = {
   google: {
@@ -575,7 +575,7 @@ function TokenDurationField({
  * Everything `cratebase_core::collection::AuthOptions` adds to an auth
  * collection beyond its fields and API rules: how a superuser signs
  * everyone else in (password, OAuth2, OTP, MFA) and how long each kind of
- * token this collection issues stays valid. PocketBase puts all of this on
+ * token this collection issues stays valid. All of this lives on
  * the collection, not in the app-wide settings — a `posts` collection's
  * rate limit is global, but whether `users` accepts GitHub logins is not.
  */

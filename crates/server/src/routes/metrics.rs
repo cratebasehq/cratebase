@@ -14,7 +14,7 @@
 //!
 //! For the same reason this route is mounted at the router root (see
 //! `crate::router`) rather than nested under `/api`: it is not part of
-//! the PocketBase-compatible surface, must not compete with `/api`'s rate
+//! the record API surface, must not compete with `/api`'s rate
 //! limiter (a scraper polling every few seconds would otherwise trip it),
 //! and must not show up as a logged API call in `_logs`.
 //!

@@ -2,7 +2,7 @@
 // `@cratebase/client` SDK (consumed from source via the Vite alias in
 // `vite.config.ts` — this package isn't published to npm yet; see
 // README.md). Typed CRUD, realtime, and auth all come from the same
-// client instance, no separate PocketBase-family SDK involved.
+// client instance.
 import { createClient, CratebaseError } from "@cratebase/client";
 
 // Defaults to the Cratebase dev server. Override with `?api=http://host:port`

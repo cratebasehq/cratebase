@@ -74,77 +74,13 @@ CI's `email` job runs the same build to make sure the templates still
 compile; this bundle is also committed and embedded into the binary the
 same way as the admin dashboard.
 
-## Conformance suite
+## The API surface
 
-```bash
-bun run conformance
-```
-
-This runs `tests/conformance` (a Bun test suite against the real
-[`pocketbase`](https://www.npmjs.com/package/pocketbase) JS SDK) against a
-Cratebase server. It's the suite that verifies byte-for-byte compatibility
-with real PocketBase behavior — see the next section for what that means
-in practice, and `tests/conformance/KNOWN_DIVERGENCES.md` for its current
-pass/fail status (180 passing, 1 skipped against a real PocketBase server;
-181 pass against Cratebase, since two assertions widen for Cratebase's
-extra system collections/settings keys).
-
-`tests/conformance` deliberately keeps its `pocketbase`-SDK-driven suites
-even now that `@cratebase/client` exists — they're what prove wire
-compatibility stays true, and that's a claim worth defending on its own.
-The same directory's `client.test.ts` and `client-auth.test.ts` exercise
-`@cratebase/client` instead; they cover ergonomics and behavior the
-official SDK has no surface for (cookie sessions, impersonation, session
-revocation, and so on). Both suites matter, for different reasons —
-neither replaces the other, and a change to either client's behavior
-should be checked against both.
-
-## The compatibility rule
-
-The project's stated engineering rule, from the existing
-`docs/superpowers/specs/2026-09-04-next-work-handoff.md` handoff doc:
-
-> **Match PocketBase byte for byte** unless there is a written reason not
-> to. Divergences go in `tests/conformance/KNOWN_DIVERGENCES.md` with the
-> measurement that justifies them.
-
-In practice this means: if you're implementing or touching anything on
-the REST API surface, your first source of truth is real PocketBase
-behavior (status codes, error message wording, JSON field names/casing,
-response shapes), not what seems more "correct" or what the PocketBase
-docs describe — the docs and the actual server disagree in places, and
-the actual server wins. `tests/conformance/KNOWN_DIVERGENCES.md` is full
-of exactly these surprises (e.g. `=` being case-sensitive while `~` isn't,
-a failing `listRule` returning an empty list rather than an error, batch
-errors nesting a level deeper than documented).
-
-### Adding a documented divergence
-
-If your change intentionally differs from real PocketBase behavior (for
-example, a new Cratebase-only feature, or a case where matching upstream
-exactly isn't worth the cost), add an entry to
-`tests/conformance/KNOWN_DIVERGENCES.md`. Its existing structure:
-
-- **"Skipped tests"** — a table of test name → reason, for conformance
-  tests that can't run against this harness at all (e.g. a restore test
-  that would kill the harness mid-run).
-- **"PocketBase behaviours the Rust implementation must match"** — a
-  numbered list of specific, sometimes non-obvious upstream behaviors the
-  suite asserts, grouped by area (Collections, Records/filters, Auth,
-  Files, Batch/settings/logs/crons/backups). Add a new numbered item here
-  if you discover (and now match) another one.
-- **"Cratebase-only additions (not present in PocketBase)"** — capabilities
-  that don't exist upstream at all, so they widen an expected-value list
-  in the test suite rather than describing a behavioral difference on a
-  shared surface (e.g. the extra system collections, extra settings keys).
-- **"Suite-side workarounds (not PocketBase behaviour)"** — quirks of the
-  test harness itself (e.g. Bun's test runtime lacking a global
-  `EventSource`), not of either server.
-
-Pick the section that matches your case, and justify it with the same
-kind of evidence the existing entries use (a measurement, a concrete
-error response, a specific endpoint/test name) — not just a prose
-assertion that the new behavior is fine.
+The REST API is Cratebase's own contract: `openapi.yaml` and the site's
+REST reference are the source of truth. When you add or change an
+endpoint, update both, add a test in `crates/server/tests`, and note a
+breaking change in CHANGELOG.md. Prefer rejecting unknown or legacy input
+with a clear error over silently ignoring it.
 
 ## What CI actually checks
 
@@ -163,20 +99,19 @@ From `.github/workflows/ci.yml`, a PR must pass all of:
   ignored — see the workflow's inline comment for why it doesn't apply to
   any code path Cratebase actually exercises) and `bun audit
   --audit-level=high` against the committed `bun.lock` across
-  `web/admin`, `web/email`, and `tests/conformance`.
+  `web/admin`, `web/email`, and `packages/create-cratebase`.
 - **`docker`** — builds the Docker image (`docker/build-push-action`,
   `push: false`) to make sure the `Dockerfile` still produces a working
   image; it runs after `rust`, `dashboard`, and `email` all pass.
 
-The conformance suite (`bun run conformance`) is not currently wired into
-`ci.yml` as its own job, but any change to the REST API surface should
-still be run against it locally before opening a PR — it's the ground
-truth for the compatibility rule above.
+SDK packages are checked locally with `bun run sdk:check` (typecheck,
+build and tests for `sdk/js/{client,react,start,schema}`); it is not a
+CI job of its own, so run it before opening a PR that touches `sdk/`.
 
 ## Pull requests
 
-- Keep changes scoped; note any intentional behavioral divergence from
-  PocketBase (and where you documented it) in the PR description.
+- Keep changes scoped; call out any change to the REST API surface (it
+  may break existing clients) in the PR description and CHANGELOG.md.
 - If you touch `web/admin/src`, commit the rebuilt `web/admin/dist` in the
   same PR.
 - Match the existing crate boundaries described in the README's "Project

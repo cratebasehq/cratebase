@@ -1,21 +1,41 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNotifications } from "@/lib/cratebase";
 
 export function NotificationsBell() {
   const [open, setOpen] = useState(false);
   const { items, unreadCount, markRead, markAllRead } = useNotifications();
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Close on Escape or a click outside the popover.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    const onClick = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onClick);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onClick);
+    };
+  }, [open]);
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="btn-secondary relative !px-3"
-        aria-label="Notifications"
+        aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"}
+        aria-expanded={open}
       >
-        🔔
+        <span aria-hidden="true">🔔</span>
         {unreadCount > 0 && (
-          <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent)] px-1 text-[10px] font-semibold text-white">
+          <span
+            aria-hidden="true"
+            className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--color-accent)] px-1 text-[10px] font-semibold text-white"
+          >
             {unreadCount > 9 ? "9+" : unreadCount}
           </span>
         )}
@@ -26,18 +46,18 @@ export function NotificationsBell() {
           <div className="flex items-center justify-between border-b border-black/10 px-4 py-2 dark:border-white/10">
             <span className="text-sm font-medium">Notifications</span>
             {unreadCount > 0 && (
-              <button type="button" onClick={() => markAllRead()} className="text-xs text-[var(--color-accent)]">
+              <button type="button" onClick={() => markAllRead()} className="text-xs text-[var(--color-accent)] underline">
                 Mark all read
               </button>
             )}
           </div>
           <ul className="max-h-72 divide-y divide-black/10 overflow-y-auto dark:divide-white/10">
-            {items.length === 0 && <li className="px-4 py-6 text-center text-sm text-black/40">No notifications yet.</li>}
+            {items.length === 0 && <li className="muted px-4 py-6 text-center text-sm">No notifications yet.</li>}
             {items.map((n) => (
               <li key={n.id} className={`px-4 py-2 text-sm ${n.readAt ? "opacity-50" : ""}`}>
                 <button type="button" className="w-full text-left" onClick={() => !n.readAt && markRead(n.id)}>
                   <p className="font-medium">{n.title}</p>
-                  {n.body && <p className="text-black/60 dark:text-white/60">{n.body}</p>}
+                  {n.body && <p className="muted">{n.body}</p>}
                 </button>
               </li>
             ))}

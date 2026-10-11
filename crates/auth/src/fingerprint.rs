@@ -9,10 +9,10 @@ use sha2::{Digest, Sha256};
 ///
 /// Computed as the first 32 hex characters of
 /// `SHA-256(user_agent + "\n" + client_ip)`. This only needs to be stable
-/// within a Cratebase instance (it is never exchanged with PocketBase), so
+/// within a Cratebase instance (it is never exchanged with another system), so
 /// the exact recipe is ours; the newline separator keeps `("ab", "c")`
 /// and `("a", "bc")` distinct, and truncating to 32 hex chars keeps the
-/// column PocketBase-sized.
+/// column compact.
 pub fn auth_origin_fingerprint(user_agent: &str, client_ip: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(user_agent.as_bytes());

@@ -25,7 +25,7 @@ pub enum RequestPath {
     /// `@request.query.<path>`.
     Query(String),
     /// `@request.headers.<name>`; the name is passed as written in the
-    /// rule (PocketBase convention: lowercase, `-` replaced by `_`).
+    /// rule (Cratebase convention: lowercase, `-` replaced by `_`).
     Headers(String),
     /// `@request.method`.
     Method,
@@ -67,7 +67,7 @@ pub trait Resolver: Send + Sync {
     fn collection(&self, name_or_id: &str) -> Option<Arc<Collection>>;
 
     /// Value of a `@request.*` path. Missing values are `Value::Null`
-    /// (which the compiler treats like PocketBase's empty value).
+    /// (which the compiler treats like Cratebase's empty value).
     fn request_value(&self, path: &RequestPath) -> Value;
 
     /// Whether a body key is present (for `@request.body.x:isset`).

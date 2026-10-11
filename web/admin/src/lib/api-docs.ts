@@ -15,7 +15,7 @@ import { userFields, type FieldSchema } from "@/lib/field-types";
 
 export type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
-/** Mirrors PocketBase's own phrasing for the four rule states a collection
+/** Standard phrasing for the four rule states a collection
  * can be in, so "null means superusers only" doesn't have to be relearned
  * per rule field. */
 export type RuleTone = "public" | "restricted" | "locked" | "fixed";
@@ -26,7 +26,7 @@ export interface RuleInfo {
   field?: string;
   value: string | null | undefined;
   tone: RuleTone;
-  /** Human sentence, PocketBase-dashboard style. */
+  /** Human sentence. */
   summary: string;
 }
 
@@ -100,7 +100,7 @@ function sampleResponseValue(field: FieldSchema): unknown {
   return sampleRequestValue(field);
 }
 
-/** PocketBase's own dashboard puts it exactly this bluntly: a `null` rule
+/** In short: a `null` rule
  * is superuser-only, `""` is public, anything else is a filter expression
  * evaluated against the request. A whitespace-only rule (e.g. the rule
  * editor's own Custom-mode placeholder, `" "`) is neither — `evaluate()`
@@ -173,8 +173,8 @@ function sampleRecord(collection: CollectionModel, fields: FieldSchema[], identi
   return record;
 }
 
-/** Every REST endpoint this collection exposes, in the order PocketBase's
- * own API-preview lists them: auth actions first for auth collections, then
+/** Every REST endpoint this collection exposes, in the order the
+ * API preview lists them: auth actions first for auth collections, then
  * the five CRUD verbs. Each endpoint carries everything the docs tab needs
  * to render one panel — no further lookups against `collection` required. */
 export function buildDocEndpoints(collection: CollectionModel, origin: string): DocEndpoint[] {

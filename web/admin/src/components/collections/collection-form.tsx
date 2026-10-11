@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus } from "lucide-react";
+import { Lock, Plus } from "lucide-react";
 import type { CollectionModel } from "@cratebase/client";
 import { type FieldSchema, newField } from "@/lib/field-types";
 import {
@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SortableFieldRow } from "@/components/collections/sortable-field-row";
@@ -214,6 +215,15 @@ export function CollectionForm({
 
   const dropsColumn = pendingRemoval ? (persistedFieldNames?.has(pendingRemoval.field.name) ?? false) : false;
 
+  const ruleValues = [value.listRule, value.viewRule, value.createRule, value.updateRule, value.deleteRule];
+  /** The field the "Owner" rule preset compares against: the configured
+   * quota owner field, else a conventionally named field on the schema. */
+  const ownerCandidate =
+    value.ownerField ??
+    value.schema.find((f) => f.name && ["owner", "user", "author", "created_by", "user_id", "owner_id"].includes(f.name))
+      ?.name ??
+    null;
+
   return (
     <div className="flex flex-col gap-8">
       <ValidatedTextField
@@ -264,9 +274,14 @@ export function CollectionForm({
       ) : null}
 
       <section className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
+        <div className="flex items-end justify-between gap-2">
           <div className="flex flex-col">
-            <span className="text-sm font-medium text-foreground">Fields</span>
+            <span className="text-sm font-medium text-foreground">
+              Fields <span className="font-tabular text-xs font-normal text-muted-foreground">{value.schema.length}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Drag the handle to reorder, or focus it and press Alt + ↑ / ↓. Open a row for options.
+            </span>
             {value.type === "auth" ? (
               <span className="text-xs text-muted-foreground">
                 {value.identityFields.map((f) => (
@@ -278,14 +293,10 @@ export function CollectionForm({
               </span>
             ) : null}
           </div>
-          <button
-            type="button"
-            onClick={addField}
-            className="flex h-control-sm items-center gap-1.5 rounded-md border border-border px-2 text-sm font-medium transition-colors hover:bg-accent"
-          >
+          <Button type="button" variant="outline" size="sm" className="h-control-sm shrink-0 gap-1.5" onClick={addField}>
             <Plus className="size-3.5" />
             Add field
-          </button>
+          </Button>
         </div>
 
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -304,12 +315,21 @@ export function CollectionForm({
                   onExpandedChange={(open) => setExpandedFieldId(open ? field.id : null)}
                   nameError={field.name.length > 0 ? validateFieldName(field, value.schema) : null}
                   optionsError={validateFieldOptions(field)}
+                  isNew={persistedFieldNames ? !persistedFieldNames.has(field.name) : false}
                 />
               ))}
               {value.schema.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
-                  No fields yet.
-                </p>
+                <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border px-4 py-8 text-center">
+                  <p className="text-sm font-medium text-foreground">No fields yet</p>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    Fields are the columns of this collection. Add a title, a number, a relation — whatever a record
+                    needs to hold.
+                  </p>
+                  <Button type="button" variant="outline" size="sm" className="gap-1.5" onClick={addField}>
+                    <Plus className="size-3.5" />
+                    Add the first field
+                  </Button>
+                </div>
               ) : null}
             </div>
           </SortableContext>
@@ -392,18 +412,64 @@ export function CollectionForm({
         </OptionField>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex flex-col">
-          <span className="text-sm font-medium text-foreground">API rules</span>
-          <span className="text-xs text-muted-foreground">
-            A filter expression evaluated per request. Empty means public; unset means superusers only.
-          </span>
+      <section className="flex flex-col gap-2">
+        <div className="flex items-end justify-between gap-2">
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-foreground">API rules</span>
+            <span className="text-xs text-muted-foreground">
+              Decide who may call each operation. <span className="font-medium">Locked</span> means superusers only;{" "}
+              <span className="font-medium">Open</span> means anyone; a rule is a filter expression checked per request.
+            </span>
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-control-sm shrink-0 gap-1.5"
+            disabled={ruleValues.every((r) => r === null)}
+            onClick={() =>
+              onChange({ ...value, listRule: null, viewRule: null, createRule: null, updateRule: null, deleteRule: null })
+            }
+          >
+            <Lock className="size-3.5" />
+            Lock all
+          </Button>
         </div>
-        <RuleField label="List / Search" value={value.listRule} onChange={(listRule) => onChange({ ...value, listRule })} />
-        <RuleField label="View" value={value.viewRule} onChange={(viewRule) => onChange({ ...value, viewRule })} />
-        <RuleField label="Create" value={value.createRule} onChange={(createRule) => onChange({ ...value, createRule })} />
-        <RuleField label="Update" value={value.updateRule} onChange={(updateRule) => onChange({ ...value, updateRule })} />
-        <RuleField label="Delete" value={value.deleteRule} onChange={(deleteRule) => onChange({ ...value, deleteRule })} />
+        <RuleField
+          label="List / Search"
+          description="Who can list and search records."
+          ownerField={ownerCandidate}
+          value={value.listRule}
+          onChange={(listRule) => onChange({ ...value, listRule })}
+        />
+        <RuleField
+          label="View"
+          description="Who can fetch a single record by id."
+          ownerField={ownerCandidate}
+          value={value.viewRule}
+          onChange={(viewRule) => onChange({ ...value, viewRule })}
+        />
+        <RuleField
+          label="Create"
+          description="Who can add new records."
+          ownerField={ownerCandidate}
+          value={value.createRule}
+          onChange={(createRule) => onChange({ ...value, createRule })}
+        />
+        <RuleField
+          label="Update"
+          description="Who can change existing records."
+          ownerField={ownerCandidate}
+          value={value.updateRule}
+          onChange={(updateRule) => onChange({ ...value, updateRule })}
+        />
+        <RuleField
+          label="Delete"
+          description="Who can remove records."
+          ownerField={ownerCandidate}
+          value={value.deleteRule}
+          onChange={(deleteRule) => onChange({ ...value, deleteRule })}
+        />
       </section>
 
       <IndexEditor

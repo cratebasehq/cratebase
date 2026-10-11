@@ -60,11 +60,11 @@ services:
       - S3_FORCE_PATH_STYLE
     volumes:
       - cratebase_data:/app/data
-      # JS hooks/migrations (crate::jsvm, PocketBase's `pb_hooks`/
-      # `pb_migrations`), siblings of the data dir by default — see
+      # JS hooks/migrations (crate::jsvm, `cb_hooks`/
+      # `cb_migrations`), siblings of the data dir by default — see
       # CB_HOOKS_DIR/CB_MIGRATIONS_DIR in .env.example to relocate them.
-      - ./pb_hooks:/app/pb_hooks
-      - ./pb_migrations:/app/pb_migrations
+      - ./cb_hooks:/app/cb_hooks
+      - ./cb_migrations:/app/cb_migrations
     restart: unless-stopped
     healthcheck:
       # The runtime image (debian:bookworm-slim) has neither curl nor

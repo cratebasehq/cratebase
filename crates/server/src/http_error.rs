@@ -1,7 +1,7 @@
-//! Rendering [`AppError`] as PocketBase's error envelope, plus the
+//! Rendering [`AppError`] as the API error envelope, plus the
 //! extractors that make axum's own rejections look the same.
 //!
-//! PocketBase answers *every* failure with
+//! Every failure is answered with
 //! `{"status": <int>, "message": "...", "data": {...}}`. axum's built-in
 //! rejections answer with `text/plain`, which breaks the official SDK's
 //! `ClientResponseError` parsing — hence [`ApiJson`] and [`ApiQuery`],
@@ -18,8 +18,8 @@ use serde::de::DeserializeOwned;
 
 /// Wraps [`AppError`] so handlers can `return Err(...)` directly.
 ///
-/// `data` overrides the envelope's `data` object when set. PocketBase
-/// nests validation errors for structured payloads — settings report
+/// `data` overrides the envelope's `data` object when set. Structured
+/// payloads nest validation errors — settings report
 /// `data.meta.appName.code`, batch reports
 /// `data.requests["0"].response.status` — and [`AppError::Validation`] is
 /// deliberately flat, so those routes supply the tree here instead.
@@ -65,9 +65,9 @@ impl ApiError {
     }
 }
 
-/// The statuses PocketBase answers a failed API rule with. Verified
-/// against v0.40.2 by `tests/conformance/errors.test.ts`; they are not
-/// what you would guess, so `routes::records` uses these constructors
+/// The statuses a failed API rule is answered with. Verified by
+/// `tests/conformance/errors.test.ts`; they are not what you would
+/// guess, so `routes::records` uses these constructors
 /// rather than inventing its own.
 ///
 /// * a failing `listRule` is **not** an error — return an empty list;
@@ -171,7 +171,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// `Json<T>` whose rejection is PocketBase-shaped.
+/// `Json<T>` whose rejection uses the API error envelope.
 pub struct ApiJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
@@ -189,7 +189,7 @@ where
     }
 }
 
-/// PocketBase reports every malformed payload as a plain 400 with its
+/// Every malformed payload is reported as a plain 400 with a
 /// generic wording; the parser detail goes to the log, not the client.
 fn json_rejection(rejection: JsonRejection) -> ApiError {
     tracing::debug!(detail = %rejection, "rejected request body");
@@ -198,7 +198,7 @@ fn json_rejection(rejection: JsonRejection) -> ApiError {
     ))
 }
 
-/// `Query<T>` whose rejection is PocketBase-shaped.
+/// `Query<T>` whose rejection uses the API error envelope.
 pub struct ApiQuery<T>(pub T);
 
 impl<S, T> FromRequestParts<S> for ApiQuery<T>
@@ -223,12 +223,12 @@ fn query_rejection(rejection: QueryRejection) -> ApiError {
     ))
 }
 
-/// Router fallback: an unknown path is a PocketBase 404, not axum's empty
+/// Router fallback: an unknown path is a 404 envelope, not axum's empty
 /// body.
 ///
 /// The same handler is wired as axum's *method-not-allowed* fallback:
-/// PocketBase answers a wrong method on an existing route with 404 rather
-/// than 405 (confirmed against v0.40.2), and the SDK's error handling
+/// a wrong method on an existing route is answered with 404 rather
+/// than 405, and the SDK's error handling
 /// depends on it.
 pub async fn not_found_fallback() -> Response {
     ApiError(AppError::not_found("")).into_response()
@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn renders_pocketbase_shapes() {
+    async fn renders_error_envelope_shapes() {
         for (err, status, message) in [
             (
                 AppError::bad_request(""),

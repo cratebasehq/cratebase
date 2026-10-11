@@ -15,7 +15,7 @@ use crate::postgres::PostgresEngine;
 use crate::sqlite::{self, SqliteEngine};
 use crate::{migrations, system};
 
-/// File name of the logs database inside the data directory (PocketBase's
+/// File name of the logs database inside the data directory (Cratebase's
 /// name, so a data directory is recognisable).
 pub const AUXILIARY_DB: &str = "auxiliary.db";
 

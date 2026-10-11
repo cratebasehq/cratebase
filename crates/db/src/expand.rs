@@ -8,7 +8,7 @@
 //! Expanded records go through the target collection's `viewRule` for
 //! non-superusers. A record the rule hides is simply left out of the
 //! `expand` object rather than failing the request — that is what
-//! PocketBase does, and it keeps a list from becoming an oracle for
+//! Cratebase does, and it keeps a list from becoming an oracle for
 //! hidden ids.
 
 use std::collections::{HashMap, HashSet};
@@ -28,9 +28,9 @@ use crate::query::{in_placeholders, Query};
 use crate::records::RowDecoder;
 use crate::{rules, schema};
 
-/// PocketBase's `maxExpandDepth`.
+/// Cratebase's `maxExpandDepth`.
 pub const MAX_DEPTH: usize = 6;
-/// PocketBase caps a back-relation expansion at 1000 rows per parent.
+/// Cratebase caps a back-relation expansion at 1000 rows per parent.
 pub const MAX_BACK_RELATION_ROWS: usize = 1000;
 
 /// Expand `spec` (comma-separated, `.`-nested paths) onto `records`.
@@ -124,7 +124,7 @@ fn resolve_paths<'a>(
         let mut targets: IndexMap<String, Target> = IndexMap::new();
         for key in groups.keys() {
             // An unresolvable path is skipped rather than failing the
-            // whole request, matching PocketBase's tolerance for expands
+            // whole request, matching Cratebase's tolerance for expands
             // that no longer exist.
             if let Some(target) = classify(store, &root, key) {
                 targets.insert(key.clone(), target);
@@ -274,7 +274,7 @@ async fn attach_back(
         }
     }
 
-    // PocketBase collapses a back-relation to a single object when the
+    // Cratebase collapses a back-relation to a single object when the
     // referencing column carries a UNIQUE index (there can only ever be
     // one row per parent).
     let single = !field.is_multiple() && has_unique_index(collection, &field.name);

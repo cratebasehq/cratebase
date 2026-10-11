@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "{{PROJECT_NAME}}",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry"
+  // Production settings (never commit real values):
+  //   npx wrangler secret put CRATEBASE_URL      e.g. https://api.example.com
+  //   npx wrangler secret put CRATEBASE_API_KEY  a `cb_…` API key for server-side admin calls (optional)
+  // Local dev reads `.env` (copy `.env.example`).
+}

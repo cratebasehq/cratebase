@@ -12,7 +12,7 @@ export const DEFAULT_PAGE_SIZE = 50;
 export interface RecordsQuery {
   page: number;
   perPage: number;
-  /** A PocketBase filter expression, or "" for none. */
+  /** A filter expression, or "" for none. */
   filter: string;
   /** A `sort` param exactly as the server takes it (`-created`, `author.name`, `@random`). */
   sort: string;

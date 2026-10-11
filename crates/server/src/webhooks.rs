@@ -42,7 +42,7 @@
 //! on every webhook status write-back, forever. [`dispatch_after_success`]
 //! simply skips events whose own collection is `_webhooks`; a `_webhooks`
 //! row can never be selected as a dispatch target in the first place
-//! (`default_system_collections` never gives it PocketBase's "no
+//! (`default_system_collections` never gives it a "no
 //! equivalent" caveat away — see its own comment).
 //!
 //! # Why the status write-back bypasses the record API

@@ -253,7 +253,7 @@ fn like_wraps_unless_wildcard_present() {
     );
 }
 
-/// PocketBase escapes the SQL wildcards in a `~` operand and declares
+/// Cratebase escapes the SQL wildcards in a `~` operand and declares
 /// `ESCAPE '\'`, so `title ~ "a_b"` looks for a literal underscore instead
 /// of matching any character. An operand that already carries a `%` is a
 /// hand-written pattern and is passed through untouched — verified against
@@ -354,7 +354,7 @@ fn param_offset_shifts_placeholders() {
 // --- multi-valued fields ------------------------------------------------------
 
 /// A multi-valued column without `:each` is the raw JSON text of the
-/// column, exactly as PocketBase compiles it: `tags ?= "rust"` never
+/// column, exactly as Cratebase compiles it: `tags ?= "rust"` never
 /// matches `["rust","go"]` and the `?` prefix changes nothing, because
 /// there are no elements to quantify over. Verified against the v0.40.2
 /// binary, which emits `WHERE "posts"."tags" = 'rust'` for both.
@@ -427,7 +427,7 @@ fn each_elements_any_of_and_all_of() {
     );
 }
 
-/// `categories = ''` tests the *column*, not the array: PocketBase stores
+/// `categories = ''` tests the *column*, not the array: Cratebase stores
 /// an empty multi-select as the text `[]`, which is not empty, so
 /// `tags = ""` finds nothing while `tags:length = 0` finds the empty ones.
 #[test]
@@ -726,7 +726,7 @@ fn collection_macro_shares_one_join() {
 
 /// **Security.** A bare operator through a join means *every* joined row,
 /// not any of them: `teams_via_members.role = "admin"` must not pass for
-/// someone who is an admin of one team out of several. PocketBase expresses
+/// someone who is an admin of one team out of several. Cratebase expresses
 /// that by pairing the joined comparison with a `NOT EXISTS` over a
 /// correlated `__mm_` copy of the path, which is why its docs push `?=`.
 #[test]
@@ -786,10 +786,10 @@ fn bare_operator_through_a_join_means_every_row() {
     ));
 }
 
-/// PocketBase ignores `:length` on a single-valued path instead of
+/// Cratebase ignores `:length` on a single-valued path instead of
 /// rejecting it, so `comments_via_post.id:length = 0` compiles (and, like
-/// PocketBase, compares the raw column). Rejecting it turned a filter that
-/// works against PocketBase into a 400.
+/// Cratebase, compares the raw column). Rejecting it turned a filter that
+/// works against Cratebase into a 400.
 #[test]
 fn length_on_a_single_valued_path_is_ignored() {
     assert_eq!(sqlite("title:length = 3").sql, "\"posts\".\"title\" = $1");
@@ -967,7 +967,7 @@ fn request_paths() {
         "(\"posts\".\"title\" = '' OR \"posts\".\"title\" IS NULL)"
     );
 
-    // Unauthenticated: @request.auth.* is empty, like PocketBase.
+    // Unauthenticated: @request.auth.* is empty, like Cratebase.
     let anon = TestResolver::sqlite("posts");
     assert_eq!(with("@request.auth.id != ''", &anon).sql, "1 = 0");
     assert_eq!(with("@request.auth = true", &anon).sql, "1 = 0");
@@ -1568,11 +1568,11 @@ fn like_matcher_semantics() {
     assert!(!like_match("ab", "%a\\\\b%"));
 }
 
-/// The escaper is PocketBase's: it leaves a sequence the author already
+/// The escaper is Cratebase's: it leaves a sequence the author already
 /// escaped alone, so `a\_b` still means a literal underscore rather than
 /// a literal backslash followed by one.
 #[test]
-fn escape_like_matches_pocketbase() {
+fn escape_like_matches_cratebase() {
     use super::eval::{escape_like, like_pattern};
     assert_eq!(escape_like("a_b"), "a\\_b");
     assert_eq!(escape_like("_b"), "\\_b");
@@ -1648,7 +1648,7 @@ fn agreement_db() -> rusqlite::Connection {
     db
 }
 
-/// Insert a PocketBase-shaped record snapshot: multi-valued fields and
+/// Insert a record snapshot: multi-valued fields and
 /// json/geo fields are stored as the JSON text the engine writes.
 fn insert_record(db: &rusqlite::Connection, table: &str, record: &Map<String, Value>) {
     let cols: Vec<&str> = record.keys().map(String::as_str).collect();

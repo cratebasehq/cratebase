@@ -80,6 +80,11 @@ export interface ServerSettings {
     baseUrl: string;
     model: string;
     apiKey?: string;
+    /** USD per 1M tokens, keyed by exact model name. Drives `costUsd` in the
+     * `_llm_usage` ledger; a model with no entry is recorded unpriced. */
+    prices: Record<string, { input: number; output: number; cachedInput?: number | null }>;
+    /** Free-form label copied into each ledger row's `priceVersion`. */
+    priceVersion: string;
   };
   rateLimits: {
     enabled: boolean;

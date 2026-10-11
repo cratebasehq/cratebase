@@ -14,12 +14,14 @@ Query params: `?dryRun=1` computes and returns the plan without writing
 anything; `?force=1` actually drops fields the payload omits (without
 it, omitted fields are left in place and reported as `pendingRemoval`).
 
-Accepts three interchangeable body shapes — a bare array, `{"collections": [...]}`,
+The same strict validation as the collections API applies: a top-level
+`schema` key or a per-field `options` object is rejected with `400`
+(`validation_unknown_key`). Accepts three interchangeable body shapes — a bare array, `{"collections": [...]}`,
 or `{"items": [...]}` (verbatim `GET /collections` output, so
 `schema/apply` can consume its own export unmodified):
 
 ```json
-[ { "name": "posts", "type": "base", "schema": [ /* FieldSchema[] */ ] } ]
+[ { "name": "posts", "type": "base", "fields": [ /* FieldSchema[] */ ] } ]
 ```
 
 Response (`200`, whether or not it was applied — check `applied`):

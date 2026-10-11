@@ -1,5 +1,7 @@
 import { cb } from "@/lib/api";
 
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
 /**
  * Uploads `file` to the `_emailAssets` system collection (a single
  * `file` field, image mime types only, 8MB cap — see
@@ -19,6 +21,12 @@ import { cb } from "@/lib/api";
  * session, which is exactly what an emailed image needs.
  */
 export async function uploadEmailImage(file: File, appUrl: string): Promise<{ url: string }> {
+  if (!file.type.startsWith("image/")) {
+    throw new Error(`${file.name || "That file"} isn't an image — only image files can be embedded in an email.`);
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new Error(`${file.name || "That image"} is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 8 MB.`);
+  }
   const formData = new FormData();
   formData.append("file", file);
   const record = await cb.collection("_emailAssets").create(formData);

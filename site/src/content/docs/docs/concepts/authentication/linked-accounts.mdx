@@ -14,8 +14,7 @@ collection API.
 
 - `GET /api/collections/{collection}/records/{id}/external-auths` — every
   provider currently linked to `id`. A bare array (not the usual
-  `{items: [...]}` list envelope), matching PocketBase's own
-  `listExternalAuths` shape: `[{id, created, updated, recordId,
+  `{items: [...]}` list envelope), in the shape: `[{id, created, updated, recordId,
   collectionId, provider, providerId}, ...]`.
 - `DELETE .../records/{id}/external-auths/{provider}` — unlinks it.
 
@@ -30,7 +29,7 @@ const linked = await superuserAuth.admin.listExternalAuths("users", recordId);
 await superuserAuth.admin.unlinkExternalAuth("users", recordId, "google");
 ```
 
-## The one check PocketBase doesn't have
+## Unlinking the last sign-in method
 
 Unlinking the provider that happens to be a record's *only* way to sign
 in would otherwise lock it out permanently — `DELETE .../external-auths/

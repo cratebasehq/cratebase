@@ -4,7 +4,7 @@
 //! Payloads are deliberately thin: the *shape* is what matters, so the
 //! remaining services (realtime, batch) and the JS runtime can add fields
 //! without renaming a hook or changing a registration signature. Every struct owns a `hook_chain` cursor and,
-//! where PocketBase supports tagged hooks, a `tags` list holding the
+//! where hooks can be tagged, a `tags` list holding the
 //! collection's name and id.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use crate::extract::{Auth, RequestInfo};
 use crate::hooks::Chain;
 use crate::impl_event;
 
-/// Both identifiers PocketBase accepts in a hook tag: the collection's
+/// Both identifiers accepted in a hook tag: the collection's
 /// name and its id.
 pub fn collection_tags(collection: &Collection) -> Vec<String> {
     vec![collection.name.clone(), collection.id.clone()]

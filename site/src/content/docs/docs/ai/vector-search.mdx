@@ -21,11 +21,24 @@ returns an ordinary `ListResult`-shaped page — same envelope
 clamped like a normal `perPage`). `nearestTo`'s target after the field
 name is either a comma-separated vector or another record's id, whose
 own value on that field (subject to *that* record's `viewRule`) becomes
-the query vector — "more like this one." See the
-[`@cratebase/extras`](/docs/ai/extras-package/) `nearestTo()` helper for
-the client-side wrapper, and the
+the query vector — "more like this one." See
+`cb.vector.nearestTo()` in `@cratebase/client` for the client-side
+wrapper, and the
 [Records](/docs/reference/rest-api/records/) reference for the rest of
 the list endpoint's parameters this composes with.
+
+## Hybrid search: `nearestTo` + `search`
+
+Add `?search=` to a `nearestTo` query and Cratebase fuses vector and
+full-text ranking instead of ANDing them: it takes up to 200 candidates
+from each ranking (the collection needs `searchable` fields — see
+[Full-text search](/docs/database/full-text-search/)) and merges them with
+reciprocal rank fusion, scoring each record by `Σ 1 / (60 + rank)` across
+the two lists. `filter` and API rules still apply on top.
+
+```sh
+curl "http://localhost:8090/api/collections/chunks/records?nearestTo=embedding:0.12,-0.4,0.91&search=refund+policy&nearestLimit=5"
+```
 
 ## Example: an owner-scoped vector collection
 
