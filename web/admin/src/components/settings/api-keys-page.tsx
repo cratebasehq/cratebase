@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Check, Copy, KeyRound, Plus, ShieldAlert, Trash2 } from "lucide-react";
-import { cb, describeFailure } from "@/lib/api";
+import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useCollections } from "@/hooks/use-collections";
 import { settingsItemFor } from "@/lib/settings-nav";
@@ -26,6 +26,19 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SettingsPage } from "@/components/settings/settings-form";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailChip,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 import { TimeAgo } from "@/components/settings/time-ago";
 import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -75,6 +88,7 @@ export function ApiKeysPage() {
   const [creating, setCreating] = useState(false);
   const [minted, setMinted] = useState<MintedApiKey | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ApiKeyRecord | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const { data, isPending, error, refetch } = useQuery({
     queryKey: ["api-keys"],
@@ -118,6 +132,8 @@ export function ApiKeysPage() {
 
   const keys = data ?? [];
   const showCreateAction = !isPending && !error && keys.length > 0;
+  const selectedIndex = keys.findIndex((k) => k.id === selectedId);
+  const selected = selectedIndex >= 0 ? keys[selectedIndex] : null;
 
   const item = settingsItemFor("/settings/api-keys")!;
   return (
@@ -170,7 +186,21 @@ export function ApiKeysPage() {
               {keys.map((key) => {
                 const label = keyLabel(key);
                 return (
-                  <TableRow key={key.id} className={cn(!key.enabled && "text-muted-foreground")}>
+                  <TableRow
+                    key={key.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${label}, open details`}
+                    data-state={key.id === selectedId ? "selected" : undefined}
+                    onClick={() => setSelectedId(key.id)}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        setSelectedId(key.id);
+                      }
+                    }}
+                    className={cn("cursor-pointer", !key.enabled && "text-muted-foreground")}
+                  >
                     <TableCell className={cn(CELL, "pl-3 font-medium")}>
                       {key.name || <span className="text-muted-foreground">Untitled</span>}
                     </TableCell>
@@ -193,7 +223,7 @@ export function ApiKeysPage() {
                     <TableCell className={cn(CELL, "text-xs text-muted-foreground")}>
                       <TimeAgo value={key.lastUsedAt} fallback="Never" />
                     </TableCell>
-                    <TableCell className={CELL}>
+                    <TableCell className={CELL} onClick={(e) => e.stopPropagation()}>
                       <Switch
                         checked={key.enabled}
                         disabled={toggle.isPending && toggle.variables?.id === key.id}
@@ -201,7 +231,7 @@ export function ApiKeysPage() {
                         onCheckedChange={(checked) => toggle.mutate({ id: key.id, enabled: checked, name: label })}
                       />
                     </TableCell>
-                    <TableCell className={cn(CELL, "pr-3 text-right")}>
+                    <TableCell className={cn(CELL, "pr-3 text-right")} onClick={(e) => e.stopPropagation()}>
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -245,7 +275,167 @@ export function ApiKeysPage() {
         pending={remove.isPending}
         onConfirm={() => deleteTarget && remove.mutate(deleteTarget)}
       />
+
+      <DetailSheet open={selected !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
+        {selected ? (
+          <ApiKeyDetail
+            apiKey={selected}
+            index={selectedIndex}
+            total={keys.length}
+            onStep={(delta) => {
+              const next = keys[selectedIndex + delta];
+              if (next) setSelectedId(next.id);
+            }}
+            toggling={toggle.isPending && toggle.variables?.id === selected.id}
+            onToggle={(enabled) => toggle.mutate({ id: selected.id, enabled, name: keyLabel(selected) })}
+            onRevoke={() => setDeleteTarget(selected)}
+          />
+        ) : null}
+      </DetailSheet>
     </SettingsPage>
+  );
+}
+
+function ApiKeyDetail({
+  apiKey,
+  index,
+  total,
+  onStep,
+  toggling,
+  onToggle,
+  onRevoke,
+}: {
+  apiKey: ApiKeyRecord;
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  toggling: boolean;
+  onToggle: (enabled: boolean) => void;
+  onRevoke: () => void;
+}) {
+  const [tab, setTab] = useState("overview");
+  const json = useMemo(() => JSON.stringify(apiKey, null, 2), [apiKey]);
+  const { copy } = useCopyToClipboard();
+  const scoped = apiKey.actsAsCollection !== "";
+  const label = keyLabel(apiKey);
+  return (
+    <>
+      <DetailSheetHeader
+        id={apiKey.id}
+        pager={{
+          index: index + 1,
+          total,
+          hasPrev: index > 0,
+          hasNext: index < total - 1,
+          onPrev: () => onStep(-1),
+          onNext: () => onStep(1),
+        }}
+        menu={[
+          { label: "Copy key prefix", onSelect: () => void copy(`cb_${apiKey.prefix}`), icon: <Copy /> },
+          { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+          { label: "Revoke key", onSelect: onRevoke, destructive: true, icon: <Trash2 /> },
+        ]}
+        title={apiKey.name || "Untitled"}
+        status={
+          <StatusBadge tone={apiKey.enabled ? "success" : "neutral"}>{apiKey.enabled ? "Enabled" : "Disabled"}</StatusBadge>
+        }
+        meta={[
+          <span key="prefix" className="font-mono">cb_{apiKey.prefix}…</span>,
+          scoped ? "Acts as record" : "Superuser",
+          <span key="used">
+            Last used <TimeAgo value={apiKey.lastUsedAt} fallback="never" />
+          </span>,
+        ]}
+        actions={
+          <>
+            <Button
+              size="sm"
+              variant={apiKey.enabled ? "outline" : "default"}
+              disabled={toggling}
+              aria-label={apiKey.enabled ? `Disable ${label}` : `Enable ${label}`}
+              onClick={() => onToggle(!apiKey.enabled)}
+            >
+              {toggling ? <Spinner /> : null}
+              {apiKey.enabled ? "Disable" : "Enable"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={onRevoke}>
+              <Trash2 />
+              Revoke
+            </Button>
+          </>
+        }
+      />
+      <DetailTabs
+        value={tab}
+        onValueChange={setTab}
+        tabs={[
+          { value: "overview", label: "Overview" },
+          { value: "raw", label: "Raw JSON" },
+        ]}
+      >
+        <DetailTabPanel value="overview">
+          <DetailBody>
+            {!apiKey.enabled ? (
+              <DetailCallout tone="info" title="Key disabled">
+                Requests that present this key are rejected until it is enabled again.
+              </DetailCallout>
+            ) : !scoped ? (
+              <DetailCallout tone="warning" title="Unscoped key">
+                This key acts as a superuser with full access to the dashboard API. Prefer a key that acts as a record where you can.
+              </DetailCallout>
+            ) : null}
+
+            <DetailSection title="Access">
+              <DetailList>
+                <DetailRow label="Acts as">
+                  {scoped ? (
+                    <DetailChip className="font-mono">
+                      {apiKey.actsAsCollection}/{apiKey.actsAsRecord}
+                    </DetailChip>
+                  ) : (
+                    <DetailChip>Superuser</DetailChip>
+                  )}
+                </DetailRow>
+                {scoped ? (
+                  <>
+                    <DetailRow label="Collection">
+                      <span className="font-mono text-xs break-all">{apiKey.actsAsCollection}</span>
+                    </DetailRow>
+                    <DetailRow label="Record">
+                      <span className="font-mono text-xs break-all">{apiKey.actsAsRecord}</span>
+                    </DetailRow>
+                  </>
+                ) : null}
+              </DetailList>
+            </DetailSection>
+
+            <DetailSection title="Details">
+              <DetailList>
+                <DetailRow label="Name">{apiKey.name || <span className="text-muted-foreground">Untitled</span>}</DetailRow>
+                <DetailRow label="Key">
+                  <span className="font-mono text-xs">cb_{apiKey.prefix}…</span>
+                </DetailRow>
+                <DetailRow label="Enabled">{apiKey.enabled ? "Yes" : "No"}</DetailRow>
+                <DetailRow label="Created" hint={parseServerDate(apiKey.created).toLocaleString()}>
+                  <TimeAgo value={apiKey.created} />
+                </DetailRow>
+                <DetailRow label="Last used" hint={apiKey.lastUsedAt ? parseServerDate(apiKey.lastUsedAt).toLocaleString() : undefined}>
+                  <TimeAgo value={apiKey.lastUsedAt} fallback="Never" />
+                </DetailRow>
+                <DetailRow label="ID">
+                  <span className="font-mono text-xs break-all">{apiKey.id}</span>
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+          </DetailBody>
+        </DetailTabPanel>
+        <DetailTabPanel value="raw">
+          <DetailBody>
+            <CodeBlock title="Raw record" json={json} copyLabel="Copy JSON" />
+          </DetailBody>
+        </DetailTabPanel>
+      </DetailTabs>
+    </>
   );
 }
 

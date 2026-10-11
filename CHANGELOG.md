@@ -87,6 +87,15 @@ backend.
   them. Migration `23_extend_llm_usage.rs` adds the columns to existing
   databases.
 
+- **Uploadable brand logo** — `POST /api/settings/logo` (superuser, multipart
+  `file`, PNG/JPEG/WebP/GIF ≤ 1 MiB, sniffed by magic bytes; SVG rejected)
+  stores the image under the reserved key `_branding/logo` and sets
+  `settings.meta.logoUrl` to the absolute, publicly fetchable
+  `<appURL>/api/branding/logo?v=<hash>` so system emails can embed it;
+  `DELETE /api/settings/logo` removes it (a custom external `logoUrl` is left
+  alone). The dashboard gets a drag-and-drop logo uploader on Settings →
+  Application → Branding and inline in the "Getting started" checklist.
+
 ### Fixed
 
 - **`create-cratebase` search box returned nothing while typing** —

@@ -87,7 +87,7 @@ function OptionGroup({
   return (
     <div className="flex flex-col gap-3 border-t border-border bg-surface-sunken/60 px-3 py-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground/70">{title}</p>
+        <p className="text-xs font-medium tracking-wide text-muted-foreground">{title}</p>
         {error ? (
           <span className="flex items-center gap-1 text-2xs font-medium text-destructive">
             <AlertCircle className="size-3" />
@@ -115,7 +115,7 @@ function NumberInput({
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
       placeholder={placeholder}
-      className="h-control-md text-sm"
+      className="font-tabular h-control-md text-sm"
     />
   );
 }

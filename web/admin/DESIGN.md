@@ -127,6 +127,56 @@ Past-tense, no trailing period for success; errors say what failed and why.
 For undoable actions use `toast("Deleted", { action: { label: "Undo", … } })`.
 Toasts are tinted per type from the status tokens and auto-dismiss at 4s.
 
+## Detail sheets
+
+Row/record/job detail drawers all use `src/components/layout/detail-sheet.tsx`:
+top bar (mono id + copy, prev/next pager, overflow menu, close), title + status,
+dot-separated meta, action row, underlined tabs, then a scrolling body of
+callout and collapsible sections. 560px on desktop, full width on mobile.
+
+```tsx
+import * as D from "@/components/layout/detail-sheet";
+
+<D.DetailSheet open={open} onOpenChange={setOpen}>
+  <D.DetailSheetHeader
+    id="JOB-219"                                   {/* copy button copies this */}
+    pager={{ index: 2, total: 32, hasPrev, hasNext, onPrev, onNext }}   {/* also k/j, ↑/↓ */}
+    menu={[{ label: "Delete", destructive: true, onSelect }]}
+    title="Import bank settlement files"
+    status={<StatusBadge tone="danger">Failing</StatusBadge>}
+    meta={[<span className="font-mono">30 * * * *</span>, "Hourly at :30 UTC"]}
+    actions={<><Button size="sm">Run now</Button><Button size="sm" variant="outline">Pause</Button></>}
+  />
+  <D.DetailTabs defaultValue="overview" tabs={[{ value: "overview", label: "Overview" }, { value: "runs", label: "Runs", count: 21 }]}>
+    <D.DetailTabPanel value="overview">
+      <D.DetailBody>
+        <D.DetailCallout title="Exit 137" action={<Button size="xs" variant="outline">View log</Button>}>OOMKilled.</D.DetailCallout>
+        <D.DetailSection title="Schedule">
+          <D.DetailGrid cols={5}><D.DetailGridItem label="Minute">30</D.DetailGridItem>…</D.DetailGrid>
+        </D.DetailSection>
+        <D.DetailSection title="Details">
+          <D.DetailList><D.DetailRow label="Concurrency" hint="skip if still running">Forbid</D.DetailRow></D.DetailList>
+        </D.DetailSection>
+        <D.DetailSection title="Next 5 runs" defaultOpen={false}>
+          <D.DetailTimeline><D.DetailListItem meta="in 10m">Tue, 14:30 UTC</D.DetailListItem></D.DetailTimeline>
+        </D.DetailSection>
+      </D.DetailBody>
+    </D.DetailTabPanel>
+  </D.DetailTabs>
+</D.DetailSheet>
+```
+
+No tabs? Put `DetailBody` straight after the header. `DetailTabs` is controlled
+with `value`/`onValueChange`, otherwise uncontrolled. Use `DetailChip` for tags,
+`DetailEmpty` for an empty tab or section.
+
+* Do: mono for ids/cron/timestamps, one `Button` (primary) in `actions`, let
+  `hint` carry secondary text, keep callouts for the one thing that needs
+  attention (tone = severity), titles in sentence case.
+* Don't: stack several callouts, nest cards inside sections, put forms in the
+  overview (use a dedicated tab), hand-roll a close button or header, or
+  remember section open state.
+
 ## Do / don't
 
 * Do: sentence case, concrete empty-state copy, mono for identifiers, one

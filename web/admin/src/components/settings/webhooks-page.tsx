@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronRight, Copy, Eye, EyeOff, Pencil, Plus, Send, Sparkles, Trash2, Webhook } from "lucide-react";
+import { useMutation, useQuery, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
+import { Check, ChevronRight, Copy, Eye, EyeOff, Pause, Pencil, Play, Plus, RotateCw, Send, Sparkles, Trash2, Webhook } from "lucide-react";
 import { toast } from "sonner";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { useCollections } from "@/hooks/use-collections";
@@ -17,7 +17,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -35,6 +34,21 @@ import { Switch } from "@/components/ui/switch";
 import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
 import { SettingsPage } from "@/components/settings/settings-form";
 import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailChip,
+  DetailEmpty,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { TimeAgo } from "@/components/settings/time-ago";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 const EVENT_KINDS = [
@@ -81,7 +95,9 @@ function failureToast(failure: unknown) {
 export function WebhooksPage() {
   const queryClient = useQueryClient();
   const { data: collections } = useCollections();
-  const [dialogWebhook, setDialogWebhook] = useState<WebhookRecord | "new" | null>(null);
+  const [dialogWebhook, setDialogWebhook] = useState<"new" | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState("overview");
   const [deleteTarget, setDeleteTarget] = useState<WebhookRecord | null>(null);
   const [search, setSearch] = useState("");
 
@@ -92,10 +108,11 @@ export function WebhooksPage() {
 
   const remove = useMutation({
     mutationFn: (id: string) => cb.collection("_webhooks").delete(id),
-    onSuccess: (_result, _id) => {
+    onSuccess: (_result, id) => {
       toast.success(`Webhook "${deleteTarget?.name ?? ""}" deleted`);
       void queryClient.invalidateQueries({ queryKey: ["webhooks"] });
       setDeleteTarget(null);
+      setSelectedId((current) => (current === id ? null : current));
     },
     onError: failureToast,
   });
@@ -165,6 +182,12 @@ export function WebhooksPage() {
     : webhooks;
   const collectionName = (ref: string) =>
     collections?.find((c) => c.id === ref || c.name === ref)?.name ?? ref;
+  const selectedIndex = visible.findIndex((w) => w.id === selectedId);
+  const selected = selectedIndex >= 0 ? (visible[selectedIndex] ?? null) : null;
+  function openWebhook(id: string, nextTab = "overview") {
+    setSelectedId(id);
+    setTab(nextTab);
+  }
 
   const newButton = (
     <Button size="sm" onClick={() => setDialogWebhook("new")}>
@@ -212,10 +235,24 @@ export function WebhooksPage() {
                 </TableHeader>
                 <TableBody>
                   {visible.map((webhook) => (
-                    <TableRow key={webhook.id} className="align-top">
+                    <TableRow
+                      key={webhook.id}
+                      className="cursor-pointer align-top"
+                      data-state={webhook.id === selectedId ? "selected" : undefined}
+                      onClick={() => openWebhook(webhook.id)}
+                    >
                       <TableCell className="py-2.5">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">{webhook.name}</span>
+                          <button
+                            type="button"
+                            className="rounded-sm text-left font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openWebhook(webhook.id);
+                            }}
+                          >
+                            {webhook.name}
+                          </button>
                           <StatusBadge tone={webhook.enabled ? "success" : "neutral"}>
                             {webhook.enabled ? "Enabled" : "Disabled"}
                           </StatusBadge>
@@ -260,7 +297,7 @@ export function WebhooksPage() {
                         )}
                       </TableCell>
                       <TableCell className="py-2.5">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                           <Switch
                             checked={webhook.enabled}
                             disabled={toggle.isPending && toggle.variables?.webhook.id === webhook.id}
@@ -282,7 +319,7 @@ export function WebhooksPage() {
                             size="icon-sm"
                             aria-label={`Edit ${webhook.name}`}
                             title="Edit"
-                            onClick={() => setDialogWebhook(webhook)}
+                            onClick={() => openWebhook(webhook.id, "settings")}
                           >
                             <Pencil />
                           </Button>
@@ -306,17 +343,39 @@ export function WebhooksPage() {
         </>
       )}
 
-      <WebhookDeliveries webhooks={webhooks} paused={dialogWebhook !== null || deleteTarget !== null} />
+      <WebhookDeliveries
+        webhooks={webhooks}
+        paused={dialogWebhook !== null || deleteTarget !== null || selected !== null}
+      />
 
       {dialogWebhook ? (
         <WebhookDialog
-          webhook={dialogWebhook === "new" ? null : dialogWebhook}
           collections={collections ?? []}
           onOpenChange={(open) => {
             if (!open) setDialogWebhook(null);
           }}
         />
       ) : null}
+
+      <WebhookDetailSheet
+        webhook={selected}
+        index={selectedIndex}
+        total={visible.length}
+        onStep={(delta) => {
+          const next = visible[selectedIndex + delta];
+          if (next) setSelectedId(next.id);
+        }}
+        onClose={() => setSelectedId(null)}
+        tab={tab}
+        onTabChange={setTab}
+        collections={collections ?? []}
+        collectionName={collectionName}
+        onToggle={(webhook, enabled) => toggle.mutate({ webhook, enabled })}
+        toggling={toggle.isPending}
+        onPing={(webhook) => ping.mutate(webhook)}
+        pinging={ping.isPending}
+        onDelete={setDeleteTarget}
+      />
 
       <TypedConfirmDialog
         open={deleteTarget !== null}
@@ -360,14 +419,16 @@ function urlProblem(url: string): { error?: string; warning?: string } {
 }
 
 /** Create or edit one `_webhooks` record. `webhook === null` means create. */
-function WebhookDialog({
+function WebhookForm({
   webhook,
   collections,
-  onOpenChange,
+  onDone,
+  onCancel,
 }: {
   webhook: WebhookRecord | null;
   collections: { id: string; name: string }[];
-  onOpenChange: (open: boolean) => void;
+  onDone: () => void;
+  onCancel?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(webhook?.name ?? "");
@@ -414,7 +475,8 @@ function WebhookDialog({
     onSuccess: () => {
       toast.success(webhook ? `Webhook "${name.trim()}" updated` : `Webhook "${name.trim()}" created`);
       void queryClient.invalidateQueries({ queryKey: ["webhooks"] });
-      onOpenChange(false);
+      setSecret("");
+      onDone();
     },
     onError: (failure) => {
       const described = describeFailure(failure);
@@ -454,30 +516,21 @@ function WebhookDialog({
   const secretError = fieldErrors["secret"];
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
-        <form
-          className="flex flex-col gap-4"
-          noValidate
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>{webhook ? "Edit webhook" : "New webhook"}</DialogTitle>
-            <DialogDescription>
-              Fires after the record write already succeeded — it never blocks the write, and failed deliveries are retried
-              with backoff.
-            </DialogDescription>
-          </DialogHeader>
+    <form
+      className="flex flex-col gap-4"
+      noValidate
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="webhook-name">Name</Label>
             <Input
               id="webhook-name"
               value={name}
-              autoFocus
+              autoFocus={!webhook}
               onChange={(e) => {
                 setName(e.target.value);
                 setFieldErrors(({ name: _n, ...rest }) => rest);
@@ -648,16 +701,46 @@ function WebhookDialog({
             <Label htmlFor="webhook-enabled">Enabled</Label>
           </div>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {onCancel ? (
+              <Button type="button" variant="outline" onClick={onCancel}>
+                Cancel
+              </Button>
+            ) : null}
             <Button type="submit" disabled={save.isPending}>
               {save.isPending ? <Spinner /> : null}
               {webhook ? "Save changes" : "Create webhook"}
             </Button>
-          </DialogFooter>
-        </form>
+          </div>
+    </form>
+  );
+}
+
+/** Create dialog for a new `_webhooks` record; existing rows are edited in
+ * the detail sheet's Settings tab. */
+function WebhookDialog({
+  collections,
+  onOpenChange,
+}: {
+  collections: { id: string; name: string }[];
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New webhook</DialogTitle>
+          <DialogDescription>
+            Fires after the record write already succeeded — it never blocks the write, and failed deliveries are retried
+            with backoff.
+          </DialogDescription>
+        </DialogHeader>
+        <WebhookForm
+          webhook={null}
+          collections={collections}
+          onDone={() => onOpenChange(false)}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   );
@@ -688,6 +771,7 @@ interface WebhookDelivery {
   nextAttemptAt?: string;
   deliveredAt?: string;
   error?: string;
+  payload?: unknown;
   created: string;
 }
 
@@ -699,7 +783,6 @@ const DELIVERIES_PAGE_SIZE = 50;
  * fired-and-forgotten, so this is the operational view into that. Polls
  * while visible, so a retry or test event shows its result on its own. */
 function WebhookDeliveries({ webhooks, paused }: { webhooks: WebhookRecord[]; paused: boolean }) {
-  const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<DeliveryStatus | "all">("all");
   const [webhookFilter, setWebhookFilter] = useState<string>("all");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -721,15 +804,7 @@ function WebhookDeliveries({ webhooks, paused }: { webhooks: WebhookRecord[]; pa
     refetchInterval: live && !paused ? LIVE_INTERVAL_MS : false,
   });
 
-  const replay = useMutation({
-    mutationFn: (id: string) =>
-      cb.send<void>(`/api/webhooks/deliveries/${encodeURIComponent(id)}/replay`, { method: "POST" }),
-    onSuccess: () => {
-      toast.success("Delivery queued for retry");
-      void queryClient.invalidateQueries({ queryKey: ["webhook-deliveries"] });
-    },
-    onError: failureToast,
-  });
+  const replay = useReplayDelivery();
 
   const deliveries = data?.items ?? [];
   const nameFor = (webhookRef: string) => webhooks.find((w) => w.id === webhookRef)?.name ?? webhookRef;
@@ -911,5 +986,340 @@ function WebhookDeliveries({ webhooks, paused }: { webhooks: WebhookRecord[]; pa
         </div>
       )}
     </section>
+  );
+}
+
+/** Queues one delivery for an immediate retry. */
+function useReplayDelivery() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      cb.send<void>(`/api/webhooks/deliveries/${encodeURIComponent(id)}/replay`, { method: "POST" }),
+    onSuccess: () => {
+      toast.success("Delivery queued for retry");
+      void queryClient.invalidateQueries({ queryKey: ["webhook-deliveries"] });
+    },
+    onError: failureToast,
+  });
+}
+/** One delivery inside the webhook sheet: a summary row that expands to the
+ * full attempt record (error, response, payload) with a Retry button. */
+function DeliveryItem({
+  delivery,
+  replay,
+}: {
+  delivery: WebhookDelivery;
+  replay: UseMutationResult<void, unknown, string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const view = DELIVERY_STATUS_VIEW[delivery.status] ?? { label: String(delivery.status), tone: "neutral" as Tone };
+  const retrying = replay.isPending && replay.variables === delivery.id;
+  const busy = delivery.status === "pending" || delivery.status === "in_progress";
+  return (
+    <li className="border-b border-border last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 py-2 text-left text-sm outline-none transition-colors duration-fast ease-out-strong hover:bg-surface-sunken focus-visible:ring-2 focus-visible:ring-ring/50"
+      >
+        <ChevronRight
+          className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform duration-fast ease-out-strong", open && "rotate-90")}
+        />
+        <StatusBadge tone={view.tone}>{view.label}</StatusBadge>
+        <span className="font-mono text-xs">{delivery.event}</span>
+        <span className="font-tabular font-mono text-xs text-muted-foreground">{delivery.responseCode || "—"}</span>
+        <span className="font-tabular ml-auto shrink-0 text-xs text-muted-foreground">
+          {delivery.durationMs != null ? `${delivery.durationMs} ms · ` : ""}
+          <TimeAgo value={delivery.created} />
+        </span>
+      </button>
+      {open ? (
+        <div className="flex flex-col gap-3 pr-1 pb-3 pl-5">
+          <DetailList>
+            <DetailRow label="Delivery id">
+              <span className="font-mono text-xs">{delivery.id}</span>
+            </DetailRow>
+            <DetailRow label="Attempts">
+              <span className="font-tabular">
+                {delivery.attempts} / {delivery.maxAttempts}
+              </span>
+            </DetailRow>
+            <DetailRow label="HTTP">
+              <span className="font-tabular font-mono">{delivery.responseCode || "—"}</span>
+            </DetailRow>
+            <DetailRow label="Duration">
+              <span className="font-tabular">{delivery.durationMs != null ? `${delivery.durationMs} ms` : "—"}</span>
+            </DetailRow>
+            <DetailRow label="Created">
+              <TimeAgo value={delivery.created} />
+            </DetailRow>
+            {delivery.nextAttemptAt && delivery.status === "pending" ? (
+              <DetailRow label="Next attempt">
+                <TimeAgo value={delivery.nextAttemptAt} />
+              </DetailRow>
+            ) : null}
+            {delivery.deliveredAt ? (
+              <DetailRow label="Delivered">
+                <TimeAgo value={delivery.deliveredAt} />
+              </DetailRow>
+            ) : null}
+          </DetailList>
+          {delivery.error ? (
+            <DetailCallout title="Delivery error">
+              <span className="font-mono break-words">{delivery.error}</span>
+            </DetailCallout>
+          ) : null}
+          {delivery.responseBody ? (
+            <CodeBlock title="Response" plain={delivery.responseBody} copyLabel="Copy response" />
+          ) : (
+            <p className="m-0 text-sm text-muted-foreground">No response body captured</p>
+          )}
+          {delivery.payload !== undefined && delivery.payload !== null && delivery.payload !== "" ? (
+            <CodeBlock
+              title="Request payload"
+              json={typeof delivery.payload === "string" ? delivery.payload : JSON.stringify(delivery.payload, null, 2)}
+              copyLabel="Copy payload"
+            />
+          ) : null}
+          <div>
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="Retry delivery"
+              disabled={retrying || busy}
+              onClick={() => replay.mutate(delivery.id)}
+            >
+              {retrying ? <Spinner /> : <RotateCw />}
+              Retry
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+/** Everything about one webhook: overview, its deliveries, and the edit
+ * form. The pager walks the table's (filtered) webhooks. */
+function WebhookDetailSheet({
+  webhook,
+  index,
+  total,
+  onStep,
+  onClose,
+  tab,
+  onTabChange,
+  collections,
+  collectionName,
+  onToggle,
+  toggling,
+  onPing,
+  pinging,
+  onDelete,
+}: {
+  webhook: WebhookRecord | null;
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  onClose: () => void;
+  tab: string;
+  onTabChange: (tab: string) => void;
+  collections: { id: string; name: string }[];
+  collectionName: (ref: string) => string;
+  onToggle: (webhook: WebhookRecord, enabled: boolean) => void;
+  toggling: boolean;
+  onPing: (webhook: WebhookRecord) => void;
+  pinging: boolean;
+  onDelete: (webhook: WebhookRecord) => void;
+}) {
+  const replay = useReplayDelivery();
+  const id = webhook?.id;
+  const { data, isPending, error, refetch } = useQuery({
+    queryKey: ["webhook-deliveries", "webhook", id],
+    enabled: id !== undefined,
+    queryFn: () =>
+      cb.collection("_webhookDeliveries").list({
+        page: 1,
+        perPage: DELIVERIES_PAGE_SIZE,
+        sort: "-created",
+        filter: `webhookRef = "${id}"`,
+      }) as unknown as Promise<{ items: WebhookDelivery[]; totalItems?: number }>,
+    refetchInterval: LIVE_INTERVAL_MS,
+  });
+  const deliveries = data?.items ?? [];
+  const deliveryCount = data?.totalItems ?? deliveries.length;
+
+  return (
+    <DetailSheet open={webhook !== null} onOpenChange={(open) => !open && onClose()}>
+      {webhook ? (
+        <>
+          <DetailSheetHeader
+            id={webhook.id}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[
+              { label: "Delete webhook", destructive: true, icon: <Trash2 />, onSelect: () => onDelete(webhook) },
+            ]}
+            title={webhook.name}
+            description={`Webhook ${webhook.name} posting to ${webhook.url}`}
+            status={
+              <StatusBadge
+                tone={!webhook.enabled ? "neutral" : webhook.lastStatus === "error" ? "danger" : "success"}
+              >
+                {!webhook.enabled ? "Disabled" : webhook.lastStatus === "error" ? "Failing" : "Enabled"}
+              </StatusBadge>
+            }
+            meta={[
+              <span key="events" className="font-tabular">
+                {eventsOf(webhook).length} {eventsOf(webhook).length === 1 ? "event" : "events"}
+              </span>,
+              <span key="collection" className="font-mono">{collectionName(webhook.collectionRef)}</span>,
+              webhook.lastTriggeredAt ? (
+                <Fragment key="fired">
+                  Last fired <TimeAgo value={webhook.lastTriggeredAt} />
+                </Fragment>
+              ) : (
+                "Never triggered"
+              ),
+            ]}
+            actions={
+              <>
+                <Button size="sm" disabled={pinging} onClick={() => onPing(webhook)}>
+                  {pinging ? <Spinner /> : <Send />}
+                  Send test
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={toggling}
+                  onClick={() => onToggle(webhook, !webhook.enabled)}
+                >
+                  {webhook.enabled ? <Pause /> : <Play />}
+                  {webhook.enabled ? "Disable" : "Enable"}
+                </Button>
+              </>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={onTabChange}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "deliveries", label: "Deliveries", count: deliveryCount },
+              { value: "settings", label: "Settings" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                {webhook.lastStatus === "error" ? (
+                  <DetailCallout
+                    title="Last delivery failed"
+                    action={
+                      <Button size="xs" variant="outline" onClick={() => onTabChange("deliveries")}>
+                        View deliveries
+                      </Button>
+                    }
+                  >
+                    <span className="break-words">{webhook.lastMessage || "No error message recorded."}</span>
+                    {webhook.lastTriggeredAt ? (
+                      <>
+                        {" "}
+                        <TimeAgo value={webhook.lastTriggeredAt} />
+                      </>
+                    ) : null}
+                  </DetailCallout>
+                ) : null}
+                {!webhook.enabled && (webhook.consecutiveFailures ?? 0) > 0 ? (
+                  <DetailCallout tone="warning" title="Stopped automatically">
+                    Disabled after <span className="font-tabular">{webhook.consecutiveFailures}</span> consecutive
+                    failures. Fix the endpoint, then enable it again.
+                  </DetailCallout>
+                ) : null}
+                <DetailSection title="Details">
+                  <DetailList>
+                    <DetailRow label="Endpoint">
+                      <span className="font-mono text-xs break-all">{webhook.url}</span>
+                    </DetailRow>
+                    <DetailRow label="Collection">
+                      <span className="font-mono">{collectionName(webhook.collectionRef)}</span>
+                    </DetailRow>
+                    <DetailRow label="Events">
+                      <span className="flex flex-wrap gap-1">
+                        {eventsOf(webhook).map((event) => (
+                          <DetailChip key={event}>{event}</DetailChip>
+                        ))}
+                      </span>
+                    </DetailRow>
+                    <DetailRow label="Status">
+                      {webhook.enabled ? "Enabled" : "Disabled"}
+                    </DetailRow>
+                    <DetailRow label="Signing" hint="The secret is write-only — rotate it in Settings.">
+                      HMAC-SHA256
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title="Last delivery">
+                  <DetailList>
+                    <DetailRow label="Result">
+                      {webhook.lastTriggeredAt ? (
+                        <StatusBadge tone={webhook.lastStatus === "error" ? "danger" : "success"}>
+                          {webhook.lastStatus === "error" ? "Failing" : "Delivered"}
+                        </StatusBadge>
+                      ) : (
+                        <span className="text-muted-foreground">Never triggered</span>
+                      )}
+                    </DetailRow>
+                    <DetailRow label="Triggered">
+                      <TimeAgo value={webhook.lastTriggeredAt} fallback="Never" />
+                    </DetailRow>
+                    {webhook.lastMessage ? (
+                      <DetailRow label="Message">
+                        <span className="font-mono text-xs break-words">{webhook.lastMessage}</span>
+                      </DetailRow>
+                    ) : null}
+                    <DetailRow label="Failures in a row">
+                      <span className="font-tabular">{webhook.consecutiveFailures ?? 0}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="deliveries">
+              <DetailBody>
+                {error ? (
+                  <ErrorState title="Couldn't load deliveries" error={error} onRetry={() => void refetch()} compact />
+                ) : isPending ? (
+                  <ListSkeleton rows={4} />
+                ) : deliveries.length === 0 ? (
+                  <DetailEmpty
+                    icon={<Webhook />}
+                    title="No deliveries yet"
+                    description="Send a test event, or change a record in the watched collection."
+                  />
+                ) : (
+                  <ul className="m-0 flex list-none flex-col p-0">
+                    {deliveries.map((delivery) => (
+                      <DeliveryItem key={delivery.id} delivery={delivery} replay={replay} />
+                    ))}
+                  </ul>
+                )}
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="settings">
+              <DetailBody>
+                <WebhookForm key={webhook.id} webhook={webhook} collections={collections} onDone={() => undefined} />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
   );
 }

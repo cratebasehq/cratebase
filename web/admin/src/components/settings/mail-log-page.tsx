@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { MailWarning, RotateCw } from "lucide-react";
+import { Copy, MailWarning, RotateCw } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { settingsEmailRoute, type EmailSearch } from "@/routes/settings-email";
 import { settingsItemFor } from "@/lib/settings-nav";
@@ -11,7 +11,19 @@ import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states
 import { Button } from "@/components/ui/button";
 import { Pagination } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { Spinner } from "@/components/ui/spinner";
 import { LiveToggle, LIVE_INTERVAL_MS } from "@/components/settings/live-toggle";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -59,6 +71,142 @@ const STATUS_LABEL: Record<MailLogEntry["status"], string> = {
 
 function formatAddresses(to: MailAddress[]): string {
   return to.map((a) => a.address).join(", ") || "(none)";
+}
+
+function formatRecipients(to: MailAddress[]): string {
+  return to.length === 0 ? "(none)" : to.map((a) => (a.name ? `${a.name} <${a.address}>` : a.address)).join(", ");
+}
+
+/** One send attempt. The log stores no body or template data, so the second
+ * tab is the raw record rather than a rendered preview. */
+function MailDetail({
+  entry,
+  index,
+  total,
+  onStep,
+  retrying,
+  onRetry,
+}: {
+  entry: MailLogEntry;
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const [tab, setTab] = useState("overview");
+  const json = useMemo(() => JSON.stringify(entry, null, 2), [entry]);
+  const { copy } = useCopyToClipboard();
+  const canRetry = entry.status === "failed" && Boolean(entry.template);
+  return (
+    <>
+      <DetailSheetHeader
+        id={entry.id}
+        pager={{
+          index: index + 1,
+          total,
+          hasPrev: index > 0,
+          hasNext: index < total - 1,
+          onPrev: () => onStep(-1),
+          onNext: () => onStep(1),
+        }}
+        menu={[
+          { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+          ...(entry.messageId
+            ? [{ label: "Copy message ID", onSelect: () => void copy(entry.messageId), icon: <Copy /> }]
+            : []),
+        ]}
+        title={entry.subject || "(no subject)"}
+        status={<StatusBadge tone={STATUS_TONE[entry.status]}>{STATUS_LABEL[entry.status]}</StatusBadge>}
+        meta={[
+          <span key="to" className="font-mono">{entry.to[0]?.address ?? "(none)"}{entry.to.length > 1 ? ` +${entry.to.length - 1}` : ""}</span>,
+          entry.template ? <span key="tpl" className="font-mono">{entry.template}</span> : "raw send",
+          <TimeAgo key="a" value={entry.created} />,
+        ]}
+        actions={
+          canRetry ? (
+            <Button size="sm" disabled={retrying} onClick={onRetry}>
+              {retrying ? <Spinner /> : <RotateCw />}
+              Retry send
+            </Button>
+          ) : undefined
+        }
+      />
+      <DetailTabs
+        value={tab}
+        onValueChange={setTab}
+        tabs={[
+          { value: "overview", label: "Overview" },
+          { value: "raw", label: "Raw JSON" },
+        ]}
+      >
+        <DetailTabPanel value="overview">
+          <DetailBody>
+            {entry.error ? (
+              <DetailCallout tone="danger" title="Send failed">
+                <span className="font-mono text-xs break-words whitespace-pre-wrap">{entry.error}</span>
+              </DetailCallout>
+            ) : null}
+            {entry.status === "queued" ? (
+              <DetailCallout tone="info" title="Queued">
+                Waiting for the queue worker. A row that stays queued means the worker hasn't picked it up yet.
+              </DetailCallout>
+            ) : null}
+
+            <DetailSection title="Message">
+              <DetailList>
+                <DetailRow label="To">
+                  <span className="font-mono text-xs break-all">{formatRecipients(entry.to)}</span>
+                </DetailRow>
+                <DetailRow label="Subject">{entry.subject || "(no subject)"}</DetailRow>
+                <DetailRow label="Template">
+                  {entry.template ? (
+                    <span className="font-mono text-xs">{entry.template}</span>
+                  ) : (
+                    <span className="text-muted-foreground italic">raw (no template)</span>
+                  )}
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+
+            <DetailSection title="Delivery">
+              <DetailList>
+                <DetailRow label="Status">
+                  <StatusBadge tone={STATUS_TONE[entry.status]}>{STATUS_LABEL[entry.status]}</StatusBadge>
+                </DetailRow>
+                <DetailRow label="Sent" hint={parseServerDate(entry.created).toLocaleString()}>
+                  <TimeAgo value={entry.created} />
+                </DetailRow>
+                <DetailRow label="Message ID">
+                  {entry.messageId ? (
+                    <span className="font-mono text-xs break-all">{entry.messageId}</span>
+                  ) : (
+                    <span className="text-muted-foreground">Not assigned yet</span>
+                  )}
+                </DetailRow>
+                <DetailRow label="Log ID">
+                  <span className="font-mono text-xs break-all">{entry.id}</span>
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+
+            {entry.status === "failed" ? (
+              <p className="px-0 text-xs text-muted-foreground">
+                {entry.template
+                  ? `Retry sends “${entry.template}” again to the same recipients. The original template data isn't stored, so placeholders that need it render empty.`
+                  : "Raw sends can't be retried from here — the body isn't stored in the log. Send it again from the original caller."}
+              </p>
+            ) : null}
+          </DetailBody>
+        </DetailTabPanel>
+        <DetailTabPanel value="raw">
+          <DetailBody>
+            <CodeBlock title="Raw entry" json={json} copyLabel="Copy JSON" />
+          </DetailBody>
+        </DetailTabPanel>
+      </DetailTabs>
+    </>
+  );
 }
 
 /**
@@ -142,7 +290,8 @@ export function MailLogPage() {
 
   const item = settingsItemFor("/settings/mail-log")!;
   const items = data?.items ?? [];
-  const selected = items.find((entry) => entry.id === selectedId) ?? null;
+  const selectedIndex = items.findIndex((entry) => entry.id === selectedId);
+  const selected = selectedIndex >= 0 ? items[selectedIndex] : null;
   const filtered = Boolean(status || template);
 
   return (
@@ -283,86 +432,21 @@ export function MailLogPage() {
         </div>
       ) : null}
 
-      <Sheet open={selected !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-md">
-          {selected ? (
-            <>
-              <SheetHeader>
-                <SheetTitle className="pr-8">{selected.subject || "(no subject)"}</SheetTitle>
-                <SheetDescription>Details of this send attempt.</SheetDescription>
-              </SheetHeader>
-              <div className="flex flex-col gap-4 px-4 pb-4">
-                <dl className="grid grid-cols-[6rem_1fr] gap-x-3 gap-y-2.5 text-sm">
-                  <dt className="text-muted-foreground">Status</dt>
-                  <dd>
-                    <StatusBadge tone={STATUS_TONE[selected.status]}>{STATUS_LABEL[selected.status]}</StatusBadge>
-                  </dd>
-                  <dt className="text-muted-foreground">To</dt>
-                  <dd className="font-mono text-xs break-all">
-                    {selected.to.length === 0
-                      ? "(none)"
-                      : selected.to.map((a) => (a.name ? `${a.name} <${a.address}>` : a.address)).join(", ")}
-                  </dd>
-                  <dt className="text-muted-foreground">Template</dt>
-                  <dd className="font-mono text-xs">
-                    {selected.template || <span className="font-sans text-muted-foreground italic">raw (no template)</span>}
-                  </dd>
-                  <dt className="text-muted-foreground">Sent</dt>
-                  <dd className="font-mono text-xs">{parseServerDate(selected.created).toLocaleString()}</dd>
-                  <dt className="text-muted-foreground">Message ID</dt>
-                  <dd className="font-mono text-xs break-all">
-                    {selected.messageId || <span className="font-sans text-muted-foreground">Not assigned yet</span>}
-                  </dd>
-                  <dt className="text-muted-foreground">Log ID</dt>
-                  <dd className="font-mono text-xs break-all">{selected.id}</dd>
-                </dl>
-
-                {selected.error ? (
-                  <div
-                    role="alert"
-                    className="rounded-md border border-destructive/30 bg-destructive/10 p-3 font-mono text-xs break-words whitespace-pre-wrap text-destructive"
-                  >
-                    {selected.error}
-                  </div>
-                ) : null}
-
-                {selected.status === "queued" ? (
-                  <p className="text-xs text-muted-foreground">
-                    Waiting for the queue worker. A row that stays queued means the worker hasn't picked it up yet.
-                  </p>
-                ) : null}
-
-                {selected.status === "failed" ? (
-                  selected.template ? (
-                    <div className="flex flex-col gap-1.5">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="self-start"
-                        disabled={retry.isPending}
-                        onClick={() => retry.mutate(selected)}
-                      >
-                        {retry.isPending ? <Spinner /> : <RotateCw />}
-                        Retry send
-                      </Button>
-                      <p className="text-xs text-muted-foreground">
-                        Sends “{selected.template}” again to the same recipients. The original template data isn't
-                        stored, so placeholders that need it render empty.
-                      </p>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      Raw sends can't be retried from here — the body isn't stored in the log. Send it again from the
-                      original caller.
-                    </p>
-                  )
-                ) : null}
-              </div>
-            </>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+      <DetailSheet open={selected !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
+        {selected ? (
+          <MailDetail
+            entry={selected}
+            index={selectedIndex}
+            total={items.length}
+            onStep={(delta) => {
+              const next = items[selectedIndex + delta];
+              if (next) setSelectedId(next.id);
+            }}
+            retrying={retry.isPending}
+            onRetry={() => retry.mutate(selected)}
+          />
+        ) : null}
+      </DetailSheet>
     </SettingsPage>
   );
 }

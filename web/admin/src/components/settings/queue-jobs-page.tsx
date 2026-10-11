@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CircleAlert, Copy, Eye, ListChecks, LoaderCircle, RotateCcw, Timer, Trash2 } from "lucide-react";
+import { CircleAlert, Check, Eye, ListChecks, LoaderCircle, RotateCcw, Timer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Link } from "@tanstack/react-router";
 import { cb, describeFailure } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { useSettings } from "@/hooks/use-settings";
-import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { DataTableToolbar } from "@/components/layout/data-table-toolbar";
 import { StatCard, StatusBadge, type Tone } from "@/components/layout/stat-card";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
@@ -25,6 +24,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { SettingsPage } from "@/components/settings/settings-form";
 import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
 import { TimeAgo } from "@/components/settings/time-ago";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 
 const STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
 type JobStatus = (typeof STATUSES)[number];
@@ -73,12 +82,12 @@ export function QueueJobsPage() {
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
   const [search, setSearch] = useState("");
-  const [payloadJob, setPayloadJob] = useState<QueueJob | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<QueueJob | null>(null);
 
   const [live, setLive] = useState(true);
   // Hold still while a dialog is open so rows don't shift under the operator.
-  const refetchInterval = live && payloadJob === null && deleteTarget === null ? LIVE_INTERVAL_MS : false;
+  const refetchInterval = live && selectedId === null && deleteTarget === null ? LIVE_INTERVAL_MS : false;
 
   // The queue is a toggle-gated module: while it is off its collection does not
   // exist, so don't query it at all.
@@ -181,6 +190,7 @@ export function QueueJobsPage() {
   const filtering = statusFilter !== "all" || needle !== "";
 
   const item = settingsItemFor("/settings/queue")!;
+  const selectedJob = selectedId ? jobs.find((job) => job.id === selectedId) : undefined;
   if (queueOff) {
     return (
       <SettingsPage title={item.label} description={item.description} width="wide">
@@ -340,7 +350,7 @@ export function QueueJobsPage() {
                       <button
                         type="button"
                         className="rounded-sm font-mono text-sm font-medium underline-offset-2 hover:underline"
-                        onClick={() => setPayloadJob(job)}
+                        onClick={() => setSelectedId(job.id)}
                       >
                         {job.queue}
                       </button>
@@ -375,7 +385,7 @@ export function QueueJobsPage() {
                           variant="ghost"
                           size="icon-xs"
                           aria-label={`View payload of ${job.queue} job ${job.id}`}
-                          onClick={() => setPayloadJob(job)}
+                          onClick={() => setSelectedId(job.id)}
                         >
                           <Eye />
                         </Button>
@@ -414,7 +424,17 @@ export function QueueJobsPage() {
         </p>
       ) : null}
 
-      <PayloadDialog job={payloadJob} onClose={() => setPayloadJob(null)} />
+      {selectedJob ? (
+        <QueueJobSheet
+          job={selectedJob}
+          jobs={jobs}
+          onSelect={setSelectedId}
+          onClose={() => setSelectedId(null)}
+          onRetry={(id) => retry.mutate(id)}
+          retrying={retry.isPending && retry.variables === selectedJob.id}
+          onDelete={setDeleteTarget}
+        />
+      ) : null}
 
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
@@ -445,56 +465,108 @@ export function QueueJobsPage() {
   );
 }
 
-function PayloadDialog({ job, onClose }: { job: QueueJob | null; onClose: () => void }) {
-  const { copy, copied } = useCopyToClipboard();
-  const payload = job ? (JSON.stringify(job.payload, null, 2) ?? "null") : "";
+/** Detail drawer for one `_queue_jobs` record: state, attempts, the payload and the last error. */
+function QueueJobSheet({
+  job,
+  jobs,
+  onSelect,
+  onClose,
+  onRetry,
+  retrying,
+  onDelete,
+}: {
+  job: QueueJob;
+  jobs: QueueJob[];
+  onSelect: (id: string) => void;
+  onClose: () => void;
+  onRetry: (id: string) => void;
+  retrying: boolean;
+  onDelete: (job: QueueJob) => void;
+}) {
+  const payload = JSON.stringify(job.payload, null, 2) ?? "null";
+  const index = jobs.findIndex((j) => j.id === job.id);
+  const pager =
+    index >= 0
+      ? {
+          index: index + 1,
+          total: jobs.length,
+          hasPrev: index > 0,
+          hasNext: index < jobs.length - 1,
+          onPrev: () => onSelect(jobs[index - 1].id),
+          onNext: () => onSelect(jobs[index + 1].id),
+        }
+      : undefined;
+  const attemptsLeft = Math.max(0, job.maxAttempts - job.attempts);
+
   return (
-    <Dialog open={job !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="font-mono">{job?.queue}</DialogTitle>
-          <DialogDescription>
-            {job ? (
-              <>
-                <span className="font-mono">{job.id}</span> · {STATUS_LABEL[job.status]} ·{" "}
-                <span className="font-tabular">
-                  {job.attempts}/{job.maxAttempts}
-                </span>{" "}
-                attempts · priority <span className="font-tabular">{job.priority}</span>
-              </>
-            ) : null}
-          </DialogDescription>
-        </DialogHeader>
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium">Payload</p>
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => void copy(payload).then((ok) => (ok ? toast.success("Payload copied") : toast.error("Couldn't copy the payload")))}
-            >
-              {copied ? <Check /> : <Copy />}
-              {copied ? "Copied" : "Copy"}
+    <DetailSheet open onOpenChange={(open) => !open && onClose()}>
+      <DetailSheetHeader
+        id={job.id}
+        pager={pager}
+        title={<span className="font-mono">{job.queue}</span>}
+        description={`${STATUS_LABEL[job.status]} queue job ${job.id}`}
+        status={<StatusBadge tone={STATUS_TONE[job.status]}>{STATUS_LABEL[job.status]}</StatusBadge>}
+        meta={[
+          <span key="attempts" className="font-tabular">
+            {job.attempts}/{job.maxAttempts} attempts
+          </span>,
+          <span key="priority" className="font-tabular">
+            priority {job.priority}
+          </span>,
+        ]}
+        actions={
+          job.status === "failed" ? (
+            <Button size="sm" disabled={retrying} onClick={() => onRetry(job.id)}>
+              {retrying ? <Spinner className="size-3.5" /> : <RotateCcw />}
+              Retry
             </Button>
-          </div>
-          <pre className="max-h-80 overflow-auto rounded-md border border-border bg-surface-sunken p-3 font-mono text-xs">
-            {payload}
-          </pre>
-        </div>
-        {job?.lastError ? (
-          <div className="flex flex-col gap-1.5">
-            <p className="text-sm font-medium">Last error</p>
-            <pre className="max-h-40 overflow-auto rounded-md bg-destructive/10 p-3 font-mono text-xs break-words whitespace-pre-wrap text-destructive">
-              {job.lastError}
-            </pre>
-          </div>
+          ) : undefined
+        }
+        menu={[{ label: "Delete job", icon: <Trash2 />, destructive: true, onSelect: () => onDelete(job) }]}
+      />
+      <DetailBody>
+        {job.lastError ? (
+          <DetailCallout
+            tone={job.status === "failed" ? "danger" : "warning"}
+            title={
+              job.status === "failed"
+                ? `Failed after ${job.attempts} ${job.attempts === 1 ? "attempt" : "attempts"}`
+                : "Last attempt failed"
+            }
+          >
+            <span className="font-mono break-words whitespace-pre-wrap">{job.lastError}</span>
+          </DetailCallout>
         ) : null}
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <DetailSection title="Details">
+          <DetailList>
+            <DetailRow label="Status">
+              <StatusBadge tone={STATUS_TONE[job.status]}>{STATUS_LABEL[job.status]}</StatusBadge>
+            </DetailRow>
+            <DetailRow label="Attempts" hint={`${attemptsLeft} left`}>
+              <span className="font-tabular font-mono">
+                {job.attempts} / {job.maxAttempts}
+              </span>
+            </DetailRow>
+            <DetailRow label="Priority">
+              <span className="font-tabular font-mono">{job.priority}</span>
+            </DetailRow>
+            <DetailRow label="Runs at">
+              <TimeAgo value={job.runAfter} />
+            </DetailRow>
+            <DetailRow label="Enqueued">
+              <TimeAgo value={job.created} />
+            </DetailRow>
+            {job.dedupeKey ? (
+              <DetailRow label="Dedupe key">
+                <span className="font-mono text-xs break-all">{job.dedupeKey}</span>
+              </DetailRow>
+            ) : null}
+          </DetailList>
+        </DetailSection>
+        <DetailSection title="Payload">
+          <CodeBlock json={payload} copyLabel="Copy payload" />
+        </DetailSection>
+      </DetailBody>
+    </DetailSheet>
   );
 }

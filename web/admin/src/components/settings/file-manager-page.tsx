@@ -53,6 +53,8 @@ import { Lightbox } from "@/components/ui/lightbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { SettingsPage } from "@/components/settings/settings-form";
+import { TimeAgo } from "@/components/settings/time-ago";
+import * as D from "@/components/layout/detail-sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
@@ -290,6 +292,147 @@ function FilePreview({ file, onClose }: { file: FileEntry; onClose: () => void }
   );
 }
 
+/** Kind label from the extension — the storage list API carries no MIME type. */
+function kindOf(key: string): string {
+  if (isImage(key)) return "Image";
+  if (/\.(mp4|mov|webm|mkv|avi)$/i.test(key)) return "Video";
+  if (/\.(mp3|wav|ogg|flac|m4a)$/i.test(key)) return "Audio";
+  if (/\.(zip|tar|gz|tgz|7z|rar)$/i.test(key)) return "Archive";
+  if (/\.(txt|md|json|csv|log|pdf|xml|ya?ml|html?)$/i.test(key)) return "Document";
+  return "File";
+}
+
+/** Largest image the detail sheet fetches for its inline preview. */
+const DETAIL_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+
+/** One stored object: name, size/type/modified, preview and the natural
+ * actions, with a pager over the files currently listed. */
+function FileDetailSheet({
+  file,
+  files,
+  onSelect,
+  onClose,
+  onPreview,
+  onDownload,
+  downloading,
+  onCopy,
+  onRename,
+  onDuplicate,
+  onDelete,
+}: {
+  file: FileEntry;
+  files: FileEntry[];
+  onSelect: (file: FileEntry) => void;
+  onClose: () => void;
+  onPreview: () => void;
+  onDownload: () => void;
+  downloading: boolean;
+  onCopy: () => void;
+  onRename: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+}) {
+  const image = isImage(file.key);
+  const inline = image && file.size <= DETAIL_PREVIEW_MAX_BYTES;
+  const { url, isError } = useObjectUrl(file, inline);
+  const name = baseName(file.key);
+  const dir = file.key.slice(0, file.key.length - name.length);
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toUpperCase() : "";
+  const modified = parseServerDate(file.lastModified);
+  const index = files.findIndex((f) => f.key === file.key);
+  const pager: D.DetailPager | undefined =
+    index >= 0 && files.length > 1
+      ? {
+          index: index + 1,
+          total: files.length,
+          hasPrev: index > 0,
+          hasNext: index < files.length - 1,
+          onPrev: () => onSelect(files[index - 1]),
+          onNext: () => onSelect(files[index + 1]),
+        }
+      : undefined;
+
+  return (
+    <D.DetailSheet open onOpenChange={(open) => !open && onClose()}>
+      <D.DetailSheetHeader
+        id={file.key}
+        idLabel={file.key.length > 40 ? `…${file.key.slice(-39)}` : file.key}
+        description={`Details for ${file.key}`}
+        pager={pager}
+        menu={[
+          { label: "Rename", icon: <Pencil />, onSelect: onRename },
+          { label: "Duplicate", icon: <Copy />, onSelect: onDuplicate },
+          { label: "Delete…", icon: <Trash2 />, destructive: true, onSelect: onDelete },
+        ]}
+        title={<span className="font-mono text-lg break-all">{name}</span>}
+        status={ext ? <D.DetailChip>{ext}</D.DetailChip> : undefined}
+        meta={[
+          <span key="s" className="font-tabular">{formatBytes(file.size)}</span>,
+          kindOf(file.key),
+          <span key="m">
+            modified <TimeAgo value={file.lastModified} />
+          </span>,
+        ]}
+        actions={
+          <>
+            <Button size="sm" onClick={onDownload} disabled={downloading}>
+              {downloading ? <Spinner /> : <Download />}
+              Download
+            </Button>
+            <Button size="sm" variant="outline" onClick={onCopy}>
+              <Copy />
+              Copy path
+            </Button>
+            {image ? (
+              <Button size="sm" variant="outline" onClick={onPreview}>
+                <FileImage />
+                Full size
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+      <D.DetailBody>
+        {image ? (
+          <D.DetailSection title="Preview">
+            <div className="grid min-h-40 place-items-center overflow-hidden rounded-lg border border-border bg-surface-sunken">
+              {url ? (
+                <img src={url} alt={name} className="max-h-72 w-full object-contain" draggable={false} />
+              ) : inline && !isError ? (
+                <Skeleton className="h-40 w-full rounded-none" />
+              ) : (
+                <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+                  {inline ? "Couldn't load the preview." : "Too large to preview inline. Use Full size to load it."}
+                </p>
+              )}
+            </div>
+          </D.DetailSection>
+        ) : null}
+        <D.DetailSection title="Details">
+          <D.DetailList>
+            <D.DetailRow label="Name">
+              <span className="font-mono break-all">{name}</span>
+            </D.DetailRow>
+            <D.DetailRow label="Path">
+              <span className="font-mono break-all">{file.key}</span>
+            </D.DetailRow>
+            <D.DetailRow label="Folder">
+              <span className="font-mono break-all">{dir === "" ? "Bucket root" : dir}</span>
+            </D.DetailRow>
+            <D.DetailRow label="Size" hint={`${file.size.toLocaleString()} bytes`}>
+              <span className="font-tabular">{formatBytes(file.size)}</span>
+            </D.DetailRow>
+            <D.DetailRow label="Type">{kindOf(file.key)}{ext ? <span className="font-mono"> .{ext.toLowerCase()}</span> : null}</D.DetailRow>
+            <D.DetailRow label="Modified" hint={<TimeAgo value={file.lastModified} />}>
+              <span className="font-tabular">{modified.toLocaleString()}</span>
+            </D.DetailRow>
+          </D.DetailList>
+        </D.DetailSection>
+      </D.DetailBody>
+    </D.DetailSheet>
+  );
+}
+
 /** Raw bucket/file browser over the storage backend configured in
  * Application → Storage (`settings.s3`), independent of any record — see
  * `crate::routes::file_manager`'s doc comment for why this exists next to
@@ -303,6 +446,7 @@ export function FileManagerPage() {
   const [deleting, setDeleting] = useState<Target[] | null>(null);
   const [nameAction, setNameAction] = useState<NameAction | null>(null);
   const [previewing, setPreviewing] = useState<FileEntry | null>(null);
+  const [detailKey, setDetailKey] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -496,6 +640,7 @@ export function FileManagerPage() {
   const needle = filter.trim().toLowerCase();
   const folders = needle ? allFolders.filter((f) => baseName(f).toLowerCase().includes(needle)) : allFolders;
   const files = needle ? allFiles.filter((f) => baseName(f.key).toLowerCase().includes(needle)) : allFiles;
+  const detail = detailKey ? (allFiles.find((f) => f.key === detailKey) ?? null) : null;
   const takenNames = new Set([...allFolders.map((f) => baseName(f)), ...allFiles.map((f) => baseName(f.key))]);
   const visibleKeys = [...folders, ...files.map((f) => f.key)];
   const selectedVisible = visibleKeys.filter((key) => selected.has(key));
@@ -787,22 +932,15 @@ export function FileManagerPage() {
                             />
                           </TableCell>
                           <TableCell>
-                            {isImage(file.key) ? (
-                              <button
-                                type="button"
-                                onClick={() => setPreviewing(file)}
-                                title="Preview"
-                                className="flex items-center gap-2 rounded-sm font-mono text-xs hover:text-brand-text"
-                              >
-                                <FileTypeIcon fileKey={file.key} className="size-3.5 text-muted-foreground" />
-                                {baseName(file.key)}
-                              </button>
-                            ) : (
-                              <span className="flex items-center gap-2 font-mono text-xs">
-                                <FileTypeIcon fileKey={file.key} className="size-3.5 text-muted-foreground" />
-                                {baseName(file.key)}
-                              </span>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => setDetailKey(file.key)}
+                              title="Details"
+                              className="flex items-center gap-2 rounded-sm font-mono text-xs hover:text-brand-text"
+                            >
+                              <FileTypeIcon fileKey={file.key} className="size-3.5 text-muted-foreground" />
+                              {baseName(file.key)}
+                            </button>
                           </TableCell>
                           <TableCell className="font-tabular text-right text-xs text-muted-foreground">
                             {formatBytes(file.size)}
@@ -864,20 +1002,14 @@ export function FileManagerPage() {
                       selected.has(file.key) ? "border-primary" : "border-border",
                     )}
                   >
-                    {isImage(file.key) ? (
-                      <button
-                        type="button"
-                        onClick={() => setPreviewing(file)}
-                        aria-label={`Preview ${baseName(file.key)}`}
-                        className="aspect-[4/3] w-full"
-                      >
-                        <Thumb file={file} />
-                      </button>
-                    ) : (
-                      <div className="aspect-[4/3] w-full">
-                        <Thumb file={file} />
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => setDetailKey(file.key)}
+                      aria-label={`Details for ${baseName(file.key)}`}
+                      className="aspect-[4/3] w-full"
+                    >
+                      <Thumb file={file} />
+                    </button>
                     <div className="flex min-w-0 flex-col border-t border-border px-2.5 py-1.5">
                       <span className="truncate font-mono text-xs" title={baseName(file.key)}>
                         {baseName(file.key)}
@@ -922,6 +1054,22 @@ export function FileManagerPage() {
       ) : null}
 
       {previewing ? <FilePreview file={previewing} onClose={() => setPreviewing(null)} /> : null}
+
+      {detail ? (
+        <FileDetailSheet
+          file={detail}
+          files={files}
+          onSelect={(next) => setDetailKey(next.key)}
+          onClose={() => setDetailKey(null)}
+          onPreview={() => setPreviewing(detail)}
+          onDownload={() => void handleDownload(detail.key)}
+          downloading={downloadingKey === detail.key}
+          onCopy={() => void copyKey(detail.key)}
+          onRename={() => setNameAction({ kind: "rename", target: { type: "file", key: detail.key } })}
+          onDuplicate={() => duplicate.mutate(detail.key)}
+          onDelete={() => setDeleting([{ type: "file", key: detail.key }])}
+        />
+      ) : null}
 
       {nameAction ? (
         <NameDialog

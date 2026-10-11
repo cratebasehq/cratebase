@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { LogOut, Radio, X } from "lucide-react";
-import { cb, describeFailure, superuserAuth } from "@/lib/api";
+import { Copy, LogOut, Radio, X } from "lucide-react";
+import { cb, describeFailure, parseServerDate, superuserAuth } from "@/lib/api";
 import { useCollections } from "@/hooks/use-collections";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { cn } from "@/lib/utils";
@@ -24,6 +24,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SettingsPage } from "@/components/settings/settings-form";
 import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
 import { TimeAgo } from "@/components/settings/time-ago";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 /** As `_sessions` stores them (`crates/core/src/collection.rs`). Every
@@ -57,6 +70,155 @@ function kindLabel(kind: string): string {
   return "Bearer";
 }
 
+/** One live session: who, how it signed in, from where, and when it lapses.
+ * Revoking is the one action; the confirmation dialog is owned by the page. */
+function SessionSheet({
+  row,
+  index,
+  total,
+  isCurrent,
+  isMine,
+  collectionName,
+  onClose,
+  onStep,
+  onRevoke,
+}: {
+  row: SessionRecord | null;
+  index: number;
+  total: number;
+  isCurrent: boolean;
+  isMine: boolean;
+  collectionName: (id: string) => string;
+  onClose: () => void;
+  onStep: (delta: -1 | 1) => void;
+  onRevoke: (row: SessionRecord) => void;
+}) {
+  const [tab, setTab] = useState("overview");
+  const { copy } = useCopyToClipboard();
+  const json = row ? JSON.stringify(row, null, 2) : "";
+  return (
+    <DetailSheet open={row !== null} onOpenChange={(open) => !open && onClose()}>
+      {row ? (
+        <>
+          <DetailSheetHeader
+            id={row.id}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[
+              { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+              { label: "Copy record id", onSelect: () => void copy(row.recordRef), icon: <Copy /> },
+              { label: "Revoke session", onSelect: () => onRevoke(row), destructive: true, icon: <X /> },
+            ]}
+            title={<span className="font-mono text-base">{row.recordRef}</span>}
+            description={`Session for ${row.recordRef}`}
+            status={
+              <StatusBadge tone={row.kind === "impersonation" ? "danger" : "neutral"}>{kindLabel(row.kind)}</StatusBadge>
+            }
+            meta={[
+              collectionName(row.collectionRef),
+              row.ip ? <span key="ip" className="font-mono">{row.ip}</span> : "no IP",
+              <span key="seen">
+                last seen <TimeAgo value={row.lastSeenAt} />
+              </span>,
+            ]}
+            actions={
+              <Button size="sm" variant="destructive" onClick={() => onRevoke(row)}>
+                <X />
+                Revoke
+              </Button>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={setTab}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "raw", label: "Raw JSON" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                {isCurrent ? (
+                  <DetailCallout tone="warning" title="This is your session">
+                    Revoking it signs you out of this browser.
+                  </DetailCallout>
+                ) : row.kind === "impersonation" ? (
+                  <DetailCallout tone="warning" title="Impersonation">
+                    The device fingerprint is the impersonator's, recorded against the target record.
+                  </DetailCallout>
+                ) : null}
+
+                <DetailSection title="Account">
+                  <DetailList>
+                    <DetailRow label="Record">
+                      <span className="font-mono text-xs">{row.recordRef}</span>
+                      {isCurrent ? (
+                        <StatusBadge tone="brand" className="ml-2">
+                          This session
+                        </StatusBadge>
+                      ) : isMine ? (
+                        <StatusBadge tone="neutral" className="ml-2">
+                          Your account
+                        </StatusBadge>
+                      ) : null}
+                    </DetailRow>
+                    <DetailRow label="Collection">
+                      <span className="font-mono text-xs">{collectionName(row.collectionRef)}</span>
+                    </DetailRow>
+                    <DetailRow label="Kind">{kindLabel(row.kind)}</DetailRow>
+                  </DetailList>
+                </DetailSection>
+
+                <DetailSection title="Client">
+                  <DetailList>
+                    <DetailRow label="IP address">
+                      <span className="font-mono text-xs">{row.ip || "—"}</span>
+                    </DetailRow>
+                    <DetailRow label="User agent">
+                      <span className="text-xs break-words">{row.userAgent || "—"}</span>
+                    </DetailRow>
+                    <DetailRow label="Fingerprint">
+                      <span className="font-mono text-xs break-all">{row.fingerprint || "—"}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+
+                <DetailSection title="Timing">
+                  <DetailList>
+                    <DetailRow label="Signed in" hint={parseServerDate(row.created).toLocaleString()}>
+                      <TimeAgo value={row.created} />
+                    </DetailRow>
+                    <DetailRow
+                      label="Last seen"
+                      hint={row.lastSeenAt ? parseServerDate(row.lastSeenAt).toLocaleString() : undefined}
+                    >
+                      <TimeAgo value={row.lastSeenAt} />
+                    </DetailRow>
+                    <DetailRow label="Expires" hint={parseServerDate(row.expiresAt).toLocaleString()}>
+                      <TimeAgo value={row.expiresAt} />
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="raw">
+              <DetailBody>
+                <CodeBlock title="Raw session" json={json} copyLabel="Copy JSON" />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
+  );
+}
+
 /** Every live (unrevoked, unexpired) token across every auth collection.
  * Read-only aside from revoking — there is no rule-driven write path
  * for `_sessions`, only `crates/server/src/sessions.rs`'s own functions
@@ -70,6 +232,7 @@ export function SessionsPage() {
   const [live, setLive] = useState(true);
   const [revokeTarget, setRevokeTarget] = useState<SessionRecord | null>(null);
   const [revokingOthers, setRevokingOthers] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const authCollections = (collections ?? []).filter((c) => c.type === "auth");
 
@@ -79,7 +242,7 @@ export function SessionsPage() {
 
   // Poll while the tab is visible (react-query pauses in background tabs) and
   // no confirmation is open, so a row never vanishes under the cursor.
-  const dialogOpen = revokeTarget !== null || revokingOthers;
+  const dialogOpen = revokeTarget !== null || revokingOthers || selectedId !== null;
   const refetchInterval = live && !dialogOpen ? LIVE_INTERVAL_MS : false;
 
   const { data, isPending, error, refetch, isFetching } = useQuery({
@@ -150,6 +313,8 @@ export function SessionsPage() {
   const isMine = (row: SessionRecord) =>
     row.recordRef === superuserAuth.record?.id && (!superuserCollection || row.collectionRef === superuserCollection.id);
 
+  const selectedIndex = selectedId ? rows.findIndex((r) => r.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? rows[selectedIndex] : null;
   const item = settingsItemFor("/settings/sessions")!;
   return (
     <SettingsPage title={item.label} description={item.description} width="wide">
@@ -238,11 +403,26 @@ export function SessionsPage() {
                 {rows.map((row) => {
                   const isCurrent = row.id === currentId;
                   return (
-                    <TableRow key={row.id} data-current={isCurrent || undefined}>
+                    <TableRow
+                      key={row.id}
+                      data-current={isCurrent || undefined}
+                      className="cursor-pointer"
+                      onClick={() => setSelectedId(row.id)}
+                    >
                       <TableCell className={cn(CELL, "pl-3")}>
                         <div className="flex flex-col gap-0.5">
                           <span className="flex items-center gap-2">
-                            <span className="font-mono text-xs">{row.recordRef}</span>
+                            <button
+                              type="button"
+                              className="rounded-sm font-mono text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                              aria-label={`Open session for ${row.recordRef}`}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setSelectedId(row.id);
+                              }}
+                            >
+                              {row.recordRef}
+                            </button>
                             {isCurrent ? (
                               <StatusBadge tone="brand">This session</StatusBadge>
                             ) : isMine(row) ? (
@@ -279,7 +459,10 @@ export function SessionsPage() {
                           aria-label={`Revoke session for ${row.recordRef}${isCurrent ? " (this session)" : ""}`}
                           title="Revoke session"
                           className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          onClick={() => setRevokeTarget(row)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setRevokeTarget(row);
+                          }}
                         >
                           <X />
                         </Button>
@@ -298,6 +481,21 @@ export function SessionsPage() {
           </p>
         </div>
       )}
+
+      <SessionSheet
+        row={selected}
+        index={selectedIndex}
+        total={rows.length}
+        isCurrent={selected?.id === currentId}
+        isMine={selected ? isMine(selected) : false}
+        collectionName={collectionName}
+        onClose={() => setSelectedId(null)}
+        onStep={(delta) => {
+          const next = rows[selectedIndex + delta];
+          if (next) setSelectedId(next.id);
+        }}
+        onRevoke={(row) => setRevokeTarget(row)}
+      />
 
       <AlertDialog open={revokeTarget !== null} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <AlertDialogContent>

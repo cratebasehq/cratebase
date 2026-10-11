@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Pencil, Plus, Trash2, Zap } from "lucide-react";
+import { ArrowRight, Pause, Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { cb, describeFailure } from "@/lib/api";
@@ -27,6 +27,20 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { SettingsPage } from "@/components/settings/settings-form";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailEmpty,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { cn } from "@/lib/utils";
 
 const EVENT_KINDS = ["create", "update", "delete"] as const;
 
@@ -59,8 +73,10 @@ export function EmailTriggersPage() {
   const queryClient = useQueryClient();
   const { data: collections } = useCollections();
   const [q, setQ] = useState("");
-  const [dialogTrigger, setDialogTrigger] = useState<TriggerRecord | "new" | null>(null);
+  const [dialogTrigger, setDialogTrigger] = useState<"new" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TriggerRecord | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [sheetTab, setSheetTab] = useState("overview");
 
   const { data, isPending, error, refetch } = useQuery({
     queryKey: ["email-triggers"],
@@ -106,6 +122,16 @@ export function EmailTriggersPage() {
     );
   }, [triggers, q]);
   const item = settingsItemFor("/settings/email-triggers")!;
+  const selectedIndex = selectedId ? visible.findIndex((t) => t.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? visible[selectedIndex] : null;
+  function step(delta: -1 | 1) {
+    const next = visible[selectedIndex + delta];
+    if (next) setSelectedId(next.id);
+  }
+  function openSheet(trigger: TriggerRecord, tab = "overview") {
+    setSheetTab(tab);
+    setSelectedId(trigger.id);
+  }
 
   const newTriggerButton = (
     <Button size="sm" onClick={() => setDialogTrigger("new")}>
@@ -176,7 +202,24 @@ export function EmailTriggersPage() {
             </TableHeader>
             <TableBody>
               {visible.map((trigger) => (
-                <TableRow key={trigger.id} className={trigger.enabled ? undefined : "text-muted-foreground"}>
+                <TableRow
+                  key={trigger.id}
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`${trigger.template} trigger, open details`}
+                  data-state={trigger.id === selectedId ? "selected" : undefined}
+                  onClick={(event) => {
+                    if ((event.target as HTMLElement).closest("a,button,[role=switch]")) return;
+                    openSheet(trigger);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                      event.preventDefault();
+                      openSheet(trigger);
+                    }
+                  }}
+                  className={cn("cursor-pointer", trigger.enabled ? undefined : "text-muted-foreground")}
+                >
                   <TableCell>
                     <Switch
                       checked={trigger.enabled}
@@ -207,7 +250,7 @@ export function EmailTriggersPage() {
                         size="icon-sm"
                         aria-label={`Edit ${trigger.template} trigger`}
                         title="Edit"
-                        onClick={() => setDialogTrigger(trigger)}
+                        onClick={() => openSheet(trigger, "settings")}
                       >
                         <Pencil />
                       </Button>
@@ -231,13 +274,27 @@ export function EmailTriggersPage() {
 
       {dialogTrigger ? (
         <TriggerDialog
-          trigger={dialogTrigger === "new" ? null : dialogTrigger}
           collections={collections ?? []}
           onOpenChange={(open) => {
             if (!open) setDialogTrigger(null);
           }}
         />
       ) : null}
+
+      <TriggerDetailSheet
+        trigger={selected}
+        index={selectedIndex}
+        total={visible.length}
+        tab={sheetTab}
+        onTabChange={setSheetTab}
+        collections={collections ?? []}
+        collectionName={collectionName}
+        toggling={toggle.isPending}
+        onToggle={(trigger, enabled) => toggle.mutate({ trigger, enabled })}
+        onClose={() => setSelectedId(null)}
+        onStep={step}
+        onDelete={setDeleteTarget}
+      />
 
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && !remove.isPending && setDeleteTarget(null)}>
         <DialogContent>
@@ -272,6 +329,138 @@ export function EmailTriggersPage() {
   );
 }
 
+/** Overview and edit form for one `_emailTriggers` record. The pager walks the
+ * filtered list; the edit form lives in the Settings tab. */
+function TriggerDetailSheet({
+  trigger,
+  index,
+  total,
+  tab,
+  onTabChange,
+  collections,
+  collectionName,
+  toggling,
+  onToggle,
+  onClose,
+  onStep,
+  onDelete,
+}: {
+  trigger: TriggerRecord | null;
+  index: number;
+  total: number;
+  tab: string;
+  onTabChange: (tab: string) => void;
+  collections: CollectionOption[];
+  collectionName: (value: string) => string;
+  toggling: boolean;
+  onToggle: (trigger: TriggerRecord, enabled: boolean) => void;
+  onClose: () => void;
+  onStep: (delta: -1 | 1) => void;
+  onDelete: (trigger: TriggerRecord) => void;
+}) {
+  return (
+    <DetailSheet open={trigger !== null} onOpenChange={(open) => !open && onClose()}>
+      {trigger ? (
+        <>
+          <DetailSheetHeader
+            id={trigger.id}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[{ label: "Delete", destructive: true, icon: <Trash2 />, onSelect: () => onDelete(trigger) }]}
+            title={<span className="font-mono text-base">{trigger.template}</span>}
+            description={`Email trigger for ${trigger.template}`}
+            status={
+              <StatusBadge tone={trigger.enabled ? "success" : "neutral"}>{trigger.enabled ? "Enabled" : "Disabled"}</StatusBadge>
+            }
+            meta={[
+              <span key="collection" className="font-mono">{collectionName(trigger.collection)}</span>,
+              EVENT_PHRASE[trigger.event] ?? trigger.event,
+              <span key="to" className="font-mono">{trigger.toField}</span>,
+            ]}
+            actions={
+              <>
+                <Button size="sm" variant="outline" onClick={() => onTabChange("settings")}>
+                  <Pencil />
+                  Edit
+                </Button>
+                <Button size="sm" variant="outline" disabled={toggling} onClick={() => onToggle(trigger, !trigger.enabled)}>
+                  {trigger.enabled ? <Pause /> : <Play />}
+                  {trigger.enabled ? "Disable" : "Enable"}
+                </Button>
+              </>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={onTabChange}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "settings", label: "Settings" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                {trigger.enabled ? null : (
+                  <DetailCallout tone="warning" title="Disabled">
+                    This trigger is not firing. Enable it to send “{trigger.template}” again.
+                  </DetailCallout>
+                )}
+                <DetailSection title="Details">
+                  <DetailList>
+                    <DetailRow label="When">
+                      A <span className="font-mono">{collectionName(trigger.collection)}</span> record is{" "}
+                      <span className="font-medium">{EVENT_PHRASE[trigger.event] ?? trigger.event}</span>
+                    </DetailRow>
+                    <DetailRow label="Send template">
+                      <span className="font-mono text-xs">{trigger.template}</span>
+                    </DetailRow>
+                    <DetailRow label="To">
+                      <span className="font-mono text-xs break-all">{trigger.toField}</span>
+                    </DetailRow>
+                    <DetailRow label="Condition">
+                      {trigger.condition ? (
+                        <code className="font-mono text-xs break-all">{trigger.condition}</code>
+                      ) : (
+                        <span className="text-muted-foreground italic">always</span>
+                      )}
+                    </DetailRow>
+                    <DetailRow label="Enabled">{trigger.enabled ? "Yes" : "No"}</DetailRow>
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title="Extra template data">
+                  {trigger.dataMap ? (
+                    <CodeBlock json={JSON.stringify(trigger.dataMap, null, 2)} copyLabel="Copy JSON" />
+                  ) : (
+                    <DetailEmpty title="No extra data" description="Only the written record is passed to the template." />
+                  )}
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="settings" forceMount className="data-[state=inactive]:hidden">
+              <DetailBody>
+                <TriggerForm
+                  key={trigger.id}
+                  trigger={trigger}
+                  collections={collections}
+                  inSheet
+                  onSaved={() => {}}
+                  onCancel={() => {}}
+                />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
+  );
+}
+
 /** One field's inline error, wired to its input via `aria-describedby`. */
 function FieldError({ id, message }: { id: string; message?: string }) {
   if (!message) return null;
@@ -282,15 +471,21 @@ function FieldError({ id, message }: { id: string; message?: string }) {
   );
 }
 
+type CollectionOption = { id: string; name: string; fields?: { name: string }[] };
+
 /** Create or edit one `_emailTriggers` record. `trigger === null` means create. */
-function TriggerDialog({
+function TriggerForm({
   trigger,
   collections,
-  onOpenChange,
+  onSaved,
+  onCancel,
+  inSheet = false,
 }: {
   trigger: TriggerRecord | null;
-  collections: { id: string; name: string; fields?: { name: string }[] }[];
-  onOpenChange: (open: boolean) => void;
+  collections: CollectionOption[];
+  onSaved: () => void;
+  onCancel: () => void;
+  inSheet?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [collection, setCollection] = useState(trigger?.collection ?? "");
@@ -328,7 +523,7 @@ function TriggerDialog({
     onSuccess: () => {
       toast.success(trigger ? `Updated the “${template}” trigger` : `Created a trigger for “${template}”`);
       void queryClient.invalidateQueries({ queryKey: ["email-triggers"] });
-      onOpenChange(false);
+      onSaved();
     },
     onError: (failure) => {
       const described = describeFailure(failure);
@@ -360,15 +555,12 @@ function TriggerDialog({
   }
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
         <form onSubmit={submit} noValidate className="flex flex-col gap-4">
-          <DialogHeader>
-            <DialogTitle>{trigger ? "Edit trigger" : "New trigger"}</DialogTitle>
-            <DialogDescription>Fires after the record write already succeeded — this never blocks it.</DialogDescription>
-          </DialogHeader>
+          {inSheet ? (
+            <p className="text-xs text-muted-foreground">Fires after the record write already succeeded — this never blocks it.</p>
+          ) : null}
 
-          <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto px-0.5 pr-1">
+          <div className={cn("flex flex-col gap-4", !inSheet && "max-h-[60vh] overflow-y-auto px-0.5 pr-1")}>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="trigger-collection">Collection</Label>
@@ -503,16 +695,49 @@ function TriggerDialog({
             </div>
           </div>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={save.isPending}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? <Spinner /> : null}
-              {trigger ? "Save trigger" : "Create trigger"}
-            </Button>
-          </DialogFooter>
+          {inSheet ? (
+            <div className="flex justify-end gap-2">
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? <Spinner /> : null}
+                Save trigger
+              </Button>
+            </div>
+          ) : (
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={onCancel} disabled={save.isPending}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? <Spinner /> : null}
+                {trigger ? "Save trigger" : "Create trigger"}
+              </Button>
+            </DialogFooter>
+          )}
         </form>
+  );
+}
+
+/** Create dialog for a new `_emailTriggers` record; existing rows edit in the detail sheet. */
+function TriggerDialog({
+  collections,
+  onOpenChange,
+}: {
+  collections: CollectionOption[];
+  onOpenChange: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New trigger</DialogTitle>
+          <DialogDescription>Fires after the record write already succeeded — this never blocks it.</DialogDescription>
+        </DialogHeader>
+        <TriggerForm
+          trigger={null}
+          collections={collections}
+          onSaved={() => onOpenChange(false)}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   );

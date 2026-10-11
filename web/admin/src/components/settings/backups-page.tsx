@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Archive, Download, HardDrive, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { Archive, Copy, Download, HardDrive, RotateCcw, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { cb, checkBackupCapability, describeFailure, parseServerDate, superuserAuth } from "@/lib/api";
 import { describeSchedule } from "@/lib/cron";
 import { SETTINGS_GROUPS } from "@/lib/settings-nav";
@@ -31,6 +31,16 @@ import {
   SettingsSection,
   TextSetting,
 } from "@/components/settings/settings-form";
+import {
+  DetailBody,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useSaveShortcut } from "@/components/settings/use-save-shortcut";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
@@ -151,6 +161,7 @@ export function BackupsPage() {
   const [deleting, setDeleting] = useState<BackupInfo | null>(null);
   const [restoring, setRestoring] = useState<BackupInfo | null>(null);
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: settings } = useSettings();
@@ -280,6 +291,8 @@ export function BackupsPage() {
     [backups],
   );
   const latest = sorted[0];
+  const selectedIndex = sorted.findIndex((b) => b.key === selectedKey);
+  const selectedBackup = selectedIndex >= 0 ? sorted[selectedIndex] : null;
   const scheduleText = settings?.backups.cron.trim()
     ? describeSchedule(settings.backups.cron)
     : null;
@@ -466,7 +479,21 @@ export function BackupsPage() {
                 {sorted.map((backup, index) => {
                   const created = parseServerDate(backup.modified);
                   return (
-                    <TableRow key={backup.key}>
+                    <TableRow
+                      key={backup.key}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`${backup.key}, open details`}
+                      data-state={backup.key === selectedKey ? "selected" : undefined}
+                      onClick={() => setSelectedKey(backup.key)}
+                      onKeyDown={(event) => {
+                        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                          event.preventDefault();
+                          setSelectedKey(backup.key);
+                        }
+                      }}
+                      className="cursor-pointer"
+                    >
                       <TableCell className="font-mono text-xs">
                         <span className="inline-flex items-center gap-2">
                           {backup.key}
@@ -482,7 +509,7 @@ export function BackupsPage() {
                           · {created.toLocaleString()}
                         </span>
                       </TableCell>
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <div className="flex justify-end gap-0.5">
                           <Button
                             variant="ghost"
@@ -633,6 +660,115 @@ export function BackupsPage() {
           if (target) restore.mutate(target.key);
         }}
       />
+
+      <DetailSheet open={selectedBackup !== null} onOpenChange={(open) => !open && setSelectedKey(null)}>
+        {selectedBackup ? (
+          <BackupDetail
+            backup={selectedBackup}
+            isLatest={selectedIndex === 0}
+            storage={storageInfo}
+            index={selectedIndex}
+            total={sorted.length}
+            onStep={(delta) => {
+              const next = sorted[selectedIndex + delta];
+              if (next) setSelectedKey(next.key);
+            }}
+            downloading={downloadingKey === selectedBackup.key}
+            onDownload={() => download.mutate(selectedBackup.key)}
+            onRestore={() => setRestoring(selectedBackup)}
+            onDelete={() => setDeleting(selectedBackup)}
+          />
+        ) : null}
+      </DetailSheet>
     </SettingsPage>
+  );
+}
+
+function BackupDetail({
+  backup,
+  isLatest,
+  storage,
+  index,
+  total,
+  onStep,
+  downloading,
+  onDownload,
+  onRestore,
+  onDelete,
+}: {
+  backup: BackupInfo;
+  isLatest: boolean;
+  storage: StorageInfo | undefined;
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  downloading: boolean;
+  onDownload: () => void;
+  onRestore: () => void;
+  onDelete: () => void;
+}) {
+  const { copy } = useCopyToClipboard();
+  const created = parseServerDate(backup.modified);
+  const json = useMemo(() => JSON.stringify(backup, null, 2), [backup]);
+  return (
+    <>
+      <DetailSheetHeader
+        id={backup.key}
+        pager={{
+          index: index + 1,
+          total,
+          hasPrev: index > 0,
+          hasNext: index < total - 1,
+          onPrev: () => onStep(-1),
+          onNext: () => onStep(1),
+        }}
+        menu={[
+          { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+          { label: "Delete backup", onSelect: onDelete, destructive: true, icon: <Trash2 /> },
+        ]}
+        title={<span className="font-mono text-base break-all">{backup.key}</span>}
+        description={`Backup ${backup.key}`}
+        status={isLatest ? <StatusBadge tone="success">Latest</StatusBadge> : undefined}
+        meta={[
+          <span key="size" className="font-tabular">{formatBytes(backup.size)}</span>,
+          <TimeAgo key="created" value={backup.modified} />,
+        ]}
+        actions={
+          <>
+            <Button size="sm" onClick={onDownload} disabled={downloading}>
+              {downloading ? <Spinner /> : <Download />}
+              Download
+            </Button>
+            <Button size="sm" variant="outline" onClick={onRestore}>
+              <RotateCcw />
+              Restore
+            </Button>
+          </>
+        }
+      />
+      <DetailBody>
+        <DetailSection title="Details">
+          <DetailList>
+            <DetailRow label="File name">
+              <span className="font-mono text-xs break-all">{backup.key}</span>
+            </DetailRow>
+            <DetailRow label="Size" hint={`${backup.size.toLocaleString()} bytes`}>
+              <span className="font-tabular">{formatBytes(backup.size)}</span>
+            </DetailRow>
+            <DetailRow label="Created" hint={created.toLocaleString()}>
+              <TimeAgo value={backup.modified} />
+            </DetailRow>
+            {storage ? (
+              <DetailRow label="Stored on" hint={storage.driver === "s3" ? "S3" : "local disk"}>
+                <span className="font-mono text-xs break-all">{storage.location}</span>
+              </DetailRow>
+            ) : null}
+          </DetailList>
+        </DetailSection>
+        <DetailSection title="Raw JSON" defaultOpen={false}>
+          <CodeBlock json={json} copyLabel="Copy JSON" />
+        </DetailSection>
+      </DetailBody>
+    </>
   );
 }

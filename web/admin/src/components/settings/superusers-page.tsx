@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Check, Circle, KeyRound, Plus, ShieldUser, Trash2 } from "lucide-react";
+import { Check, Circle, Copy, KeyRound, Plus, ShieldUser, Trash2 } from "lucide-react";
 import type { RecordModel } from "@cratebase/client";
-import { cb, currentSuperuser, describeFailure } from "@/lib/api";
+import { cb, currentSuperuser, describeFailure, parseServerDate } from "@/lib/api";
 import { settingsItemFor } from "@/lib/settings-nav";
 import { cn } from "@/lib/utils";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
@@ -23,6 +23,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SettingsPage } from "@/components/settings/settings-form";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { TimeAgo } from "@/components/settings/time-ago";
 import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
 
@@ -61,6 +74,7 @@ export function SuperusersPage() {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<RecordModel | null>(null);
   const [resetting, setResetting] = useState<RecordModel | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const superusers = useQuery({
     queryKey: ["superusers"],
@@ -108,6 +122,24 @@ export function SuperusersPage() {
   const myRole = rows.find((r) => r.id === me?.id)?.role;
   const isOwner = myRole === OWNER;
   const ownerCount = rows.filter((r) => r.role === OWNER).length;
+  const selectedIndex = rows.findIndex((r) => r.id === selectedId);
+  const selected = selectedIndex >= 0 ? rows[selectedIndex] : null;
+
+  function describeRow(row: RecordModel): SuperuserInfo {
+    const isMe = row.id === me?.id;
+    const email = String(row.email ?? row.id);
+    const role = typeof row.role === "string" && row.role ? row.role : ADMIN;
+    // The lockout the server refuses to let happen: the last owner can't be
+    // re-roled or removed, by anyone (in practice always the viewer's own row
+    // — nobody else could be the sole owner while also being able to act here).
+    const isSoleOwner = role === OWNER && ownerCount <= 1;
+    const removeBlocked = isMe
+      ? "You can't remove the account you're signed in with"
+      : isSoleOwner
+        ? "The last remaining owner can't be removed"
+        : undefined;
+    return { isMe, email, role, isSoleOwner, removeBlocked };
+  }
 
   const item = settingsItemFor("/settings/superusers")!;
   return (
@@ -155,21 +187,23 @@ export function SuperusersPage() {
             </TableHeader>
             <TableBody>
               {rows.map((row) => {
-                const isMe = row.id === me?.id;
-                const email = String(row.email ?? row.id);
-                const role = typeof row.role === "string" && row.role ? row.role : ADMIN;
-                // The lockout the server refuses to let happen: the last
-                // owner can't be re-roled or removed, by anyone (in
-                // practice always the viewer's own row — nobody else could
-                // be the sole owner while also being able to act here).
-                const isSoleOwner = role === OWNER && ownerCount <= 1;
-                const removeBlocked = isMe
-                  ? "You can't remove the account you're signed in with"
-                  : isSoleOwner
-                    ? "The last remaining owner can't be removed"
-                    : undefined;
+                const { isMe, email, role, isSoleOwner, removeBlocked } = describeRow(row);
                 return (
-                  <TableRow key={row.id}>
+                  <TableRow
+                    key={row.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${email}, open details`}
+                    data-state={row.id === selectedId ? "selected" : undefined}
+                    onClick={() => setSelectedId(row.id)}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        setSelectedId(row.id);
+                      }
+                    }}
+                    className="cursor-pointer"
+                  >
                     <TableCell className={cn(CELL, "pl-3")}>
                       <span className="flex items-center gap-2">
                         <ShieldUser aria-hidden className="size-4 shrink-0 text-muted-foreground" />
@@ -177,7 +211,7 @@ export function SuperusersPage() {
                         {isMe ? <StatusBadge tone="brand">You</StatusBadge> : null}
                       </span>
                     </TableCell>
-                    <TableCell className={CELL}>
+                    <TableCell className={CELL} onClick={(e) => e.stopPropagation()}>
                       {isOwner ? (
                         <Select
                           value={role}
@@ -206,7 +240,7 @@ export function SuperusersPage() {
                     <TableCell className={cn(CELL, "text-xs text-muted-foreground")}>
                       <TimeAgo value={typeof row.created === "string" ? row.created : null} />
                     </TableCell>
-                    <TableCell className={cn(CELL, "pr-3")}>
+                    <TableCell className={cn(CELL, "pr-3")} onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1">
                         {isOwner || isMe ? (
                           <Button variant="ghost" size="sm" onClick={() => setResetting(row)}>
@@ -260,6 +294,29 @@ export function SuperusersPage() {
 
       <PasswordDialog record={resetting} onOpenChange={(open) => !open && setResetting(null)} />
 
+      <DetailSheet open={selected !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
+        {selected ? (
+          <SuperuserDetail
+            row={selected}
+            info={describeRow(selected)}
+            isOwner={isOwner}
+            index={selectedIndex}
+            total={rows.length}
+            onStep={(delta) => {
+              const next = rows[selectedIndex + delta];
+              if (next) setSelectedId(next.id);
+            }}
+            rolePending={changeRole.isPending}
+            onRole={(next) => {
+              const { email } = describeRow(selected);
+              changeRole.mutate({ id: selected.id, role: next, email });
+            }}
+            onPassword={() => setResetting(selected)}
+            onRemove={() => setDeleting(selected)}
+          />
+        ) : null}
+      </DetailSheet>
+
       <TypedConfirmDialog
         open={deleting !== null}
         onOpenChange={(open) => !open && !remove.isPending && setDeleting(null)}
@@ -277,6 +334,168 @@ export function SuperusersPage() {
         onConfirm={() => deleting && remove.mutate(deleting)}
       />
     </SettingsPage>
+  );
+}
+
+interface SuperuserInfo {
+  isMe: boolean;
+  email: string;
+  role: string;
+  isSoleOwner: boolean;
+  removeBlocked: string | undefined;
+}
+
+function SuperuserDetail({
+  row,
+  info,
+  isOwner,
+  index,
+  total,
+  onStep,
+  rolePending,
+  onRole,
+  onPassword,
+  onRemove,
+}: {
+  row: RecordModel;
+  info: SuperuserInfo;
+  isOwner: boolean;
+  index: number;
+  total: number;
+  onStep: (delta: -1 | 1) => void;
+  rolePending: boolean;
+  onRole: (role: string) => void;
+  onPassword: () => void;
+  onRemove: () => void;
+}) {
+  const [tab, setTab] = useState("overview");
+  const json = useMemo(() => JSON.stringify(row, null, 2), [row]);
+  const { copy } = useCopyToClipboard();
+  const { isMe, email, role, isSoleOwner, removeBlocked } = info;
+  const created = typeof row.created === "string" ? row.created : null;
+  const updated = typeof row.updated === "string" ? row.updated : null;
+  const canPassword = isOwner || isMe;
+  const tabs = [
+    { value: "overview", label: "Overview" },
+    ...(isOwner ? [{ value: "settings", label: "Settings" }] : []),
+    { value: "raw", label: "Raw JSON" },
+  ];
+  return (
+    <>
+      <DetailSheetHeader
+        id={row.id}
+        pager={{
+          index: index + 1,
+          total,
+          hasPrev: index > 0,
+          hasNext: index < total - 1,
+          onPrev: () => onStep(-1),
+          onNext: () => onStep(1),
+        }}
+        menu={[
+          { label: "Copy email", onSelect: () => void copy(email), icon: <Copy /> },
+          { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+          ...(canPassword ? [{ label: "Change password", onSelect: onPassword, icon: <KeyRound /> }] : []),
+          ...(isOwner && removeBlocked === undefined
+            ? [{ label: "Remove superuser", onSelect: onRemove, destructive: true, icon: <Trash2 /> }]
+            : []),
+        ]}
+        title={<span className="font-mono text-base break-all">{email}</span>}
+        description={`Superuser ${email}`}
+        status={
+          <>
+            <StatusBadge tone={role === OWNER ? "info" : "neutral"} className="capitalize">
+              {role}
+            </StatusBadge>
+            {isMe ? <StatusBadge tone="brand">You</StatusBadge> : null}
+          </>
+        }
+        meta={[
+          row.verified === true ? "Verified" : row.verified === false ? "Not verified" : null,
+          <>
+            Created <TimeAgo value={created} />
+          </>,
+        ].filter((m) => m !== null)}
+        actions={
+          canPassword ? (
+            <Button size="sm" variant="outline" onClick={onPassword}>
+              <KeyRound />
+              Change password
+            </Button>
+          ) : undefined
+        }
+      />
+      <DetailTabs value={tab} onValueChange={setTab} tabs={tabs}>
+        <DetailTabPanel value="overview">
+          <DetailBody>
+            {removeBlocked ? (
+              <DetailCallout tone="info" title="Can't be removed">
+                {removeBlocked}.
+              </DetailCallout>
+            ) : null}
+            <DetailSection title="Account">
+              <DetailList>
+                <DetailRow label="Email">
+                  <span className="font-mono text-xs break-all">{email}</span>
+                </DetailRow>
+                <DetailRow
+                  label="Role"
+                  hint={role === OWNER ? "manages every superuser" : "full dashboard and API access"}
+                >
+                  <span className="capitalize">{role}</span>
+                </DetailRow>
+                {typeof row.verified === "boolean" ? (
+                  <DetailRow label="Verified">{row.verified ? "Yes" : "No"}</DetailRow>
+                ) : null}
+                <DetailRow label="ID">
+                  <span className="font-mono text-xs break-all">{row.id}</span>
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+            <DetailSection title="Timing">
+              <DetailList>
+                <DetailRow label="Created" hint={created ? parseServerDate(created).toLocaleString() : undefined}>
+                  <TimeAgo value={created} />
+                </DetailRow>
+                <DetailRow label="Updated" hint={updated ? parseServerDate(updated).toLocaleString() : undefined}>
+                  <TimeAgo value={updated} />
+                </DetailRow>
+              </DetailList>
+            </DetailSection>
+          </DetailBody>
+        </DetailTabPanel>
+        {isOwner ? (
+          <DetailTabPanel value="settings">
+            <DetailBody>
+              <DetailSection title="Permissions">
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="su-detail-role">Role</Label>
+                  <Select value={role} disabled={isSoleOwner || rolePending} onValueChange={onRole}>
+                    <SelectTrigger id="su-detail-role" size="sm" className="h-control-sm w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={OWNER}>Owner</SelectItem>
+                      <SelectItem value={ADMIN}>Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {isSoleOwner
+                      ? "The last remaining owner can't be re-roled."
+                      : "Owners can add and remove superusers and change roles. Admins have full dashboard and API access otherwise."}
+                  </p>
+                </div>
+              </DetailSection>
+            </DetailBody>
+          </DetailTabPanel>
+        ) : null}
+        <DetailTabPanel value="raw">
+          <DetailBody>
+            <CodeBlock title="Raw record" json={json} copyLabel="Copy JSON" />
+          </DetailBody>
+        </DetailTabPanel>
+      </DetailTabs>
+    </>
   );
 }
 

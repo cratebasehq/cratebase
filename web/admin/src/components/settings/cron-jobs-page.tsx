@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, CircleAlert, Clock, History, Pencil, Play, Plus, Trash2 } from "lucide-react";
+import { CalendarClock, CircleAlert, Clock, History, Pause, Pencil, Play, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { describeJob, describeSchedule, isKnownSystemJob } from "@/lib/cron";
@@ -30,6 +30,23 @@ import { nextCronRun } from "@/components/settings/job-support";
 import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
 import { TimeAgo, relativeTime } from "@/components/settings/time-ago";
 import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailEmpty,
+  DetailGrid,
+  DetailGridItem,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+  DetailTimeline,
+  DetailListItem,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 
 /** As `GET /api/crons` returns them. */
 type CronJob = {
@@ -96,9 +113,10 @@ export function CronJobsPage() {
   const [source, setSource] = useState<SourceFilter>("all");
   const [dialogJob, setDialogJob] = useState<CustomCronJob | "new" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomCronJob | null>(null);
-  const [historyJob, setHistoryJob] = useState<{ id: string; title: string } | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState("overview");
 
-  const dialogOpen = dialogJob !== null || deleteTarget !== null || historyJob !== null;
+  const dialogOpen = dialogJob !== null || deleteTarget !== null;
   const [live, setLive] = useState(true);
   // Hold still while a dialog is open so rows don't shift under the operator.
   const refetchInterval = live && !dialogOpen ? LIVE_INTERVAL_MS : false;
@@ -166,8 +184,9 @@ export function CronJobsPage() {
 
   const remove = useMutation({
     mutationFn: (id: string) => cb.collection("_cron_jobs").delete(id),
-    onSuccess: () => {
+    onSuccess: (_result, id) => {
       toast.success(`Deleted ${deleteTarget?.name ?? "job"}`);
+      setSelectedId((current) => (current === `custom:${id}` ? null : current));
       refreshAll();
       setDeleteTarget(null);
     },
@@ -250,6 +269,11 @@ export function CronJobsPage() {
     if (!needle) return true;
     return [row.title, row.id, row.expression, row.detail].some((text) => text.toLowerCase().includes(needle));
   });
+  const selected = selectedId ? rows.find((row) => row.id === selectedId) : undefined;
+  function openJob(id: string, nextTab = "overview") {
+    setSelectedId(id);
+    setTab(nextTab);
+  }
 
   const failing = rows.filter((row) => row.last?.status === "error").length;
   const disabled = rows.filter((row) => !row.enabled).length;
@@ -425,7 +449,13 @@ export function CronJobsPage() {
                       <TableRow key={row.id} className="align-top">
                         <TableCell className="min-w-56 py-2.5">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium">{row.title}</span>
+                            <button
+                              type="button"
+                              className="rounded-sm text-left font-medium underline-offset-2 hover:underline"
+                              onClick={() => openJob(row.id)}
+                            >
+                              {row.title}
+                            </button>
                             <Badge variant="outline" className="h-4 px-1.5 text-2xs font-normal text-muted-foreground">
                               {SOURCE_LABEL[row.source]}
                             </Badge>
@@ -507,7 +537,7 @@ export function CronJobsPage() {
                               variant="ghost"
                               size="icon-xs"
                               aria-label={`View history for ${row.title}`}
-                              onClick={() => setHistoryJob({ id: row.id, title: row.title })}
+                              onClick={() => openJob(row.id, "runs")}
                             >
                               <History />
                             </Button>
@@ -517,7 +547,7 @@ export function CronJobsPage() {
                                   variant="ghost"
                                   size="icon-xs"
                                   aria-label={`Edit ${customJob.name}`}
-                                  onClick={() => setDialogJob(customJob)}
+                                  onClick={() => openJob(row.id, "settings")}
                                 >
                                   <Pencil />
                                 </Button>
@@ -551,7 +581,7 @@ export function CronJobsPage() {
       )}
 
       {dialogJob ? (
-        <CustomCronJobDialog
+        <CustomCronJobForm
           job={dialogJob === "new" ? null : dialogJob}
           onOpenChange={(open) => {
             if (!open) setDialogJob(null);
@@ -559,8 +589,20 @@ export function CronJobsPage() {
         />
       ) : null}
 
-      {historyJob ? (
-        <CronHistoryDialog job={historyJob} onOpenChange={(open) => !open && setHistoryJob(null)} />
+      {selected ? (
+        <CronJobSheet
+          row={selected}
+          visible={visible}
+          tab={tab}
+          onTabChange={setTab}
+          onSelect={(id) => setSelectedId(id)}
+          onClose={() => setSelectedId(null)}
+          onRun={(id) => run.mutate(id)}
+          running={runningId === selected.id}
+          onToggle={(job, enabled) => toggle.mutate({ job, enabled })}
+          toggling={toggle.isPending}
+          onDelete={(job) => setDeleteTarget(job)}
+        />
       ) : null}
 
       <TypedConfirmDialog
@@ -578,94 +620,360 @@ export function CronJobsPage() {
   );
 }
 
-/** Run history for one job id — `GET /api/crons` gives `custom:<id>` for
- * a SQL `_cron_jobs` row or the raw `cronAdd` id otherwise, which is
- * exactly `_cronRuns.jobId`. Empty is normal: a job that's never fired,
- * or whose ticks all lost the multi-node advisory-lock race on this
- * node, has zero rows. */
-function CronHistoryDialog({
-  job,
-  onOpenChange,
+/** Health shown in the table and the sheet header. */
+function jobHealth(row: JobRow): { tone: "success" | "danger" | "neutral"; label: string } {
+  if (!row.enabled) return { tone: "neutral", label: "Paused" };
+  if (row.last?.status === "error") return { tone: "danger", label: "Failing" };
+  return { tone: "success", label: "Healthy" };
+}
+
+const UTC_FORMAT = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "UTC",
+});
+
+function formatUtc(date: Date): string {
+  return `${UTC_FORMAT.format(date)} UTC`;
+}
+
+function inRelative(date: Date): string {
+  return relativeTime(date).replace(/\.$/, "");
+}
+
+/** The next `count` fire times after now; empty for syntax the reader can't parse. */
+function upcomingRuns(expression: string, count = 5): Date[] {
+  const out: Date[] = [];
+  let from = new Date();
+  for (let i = 0; i < count; i++) {
+    const next = nextCronRun(expression, from);
+    if (!next) break;
+    out.push(next);
+    from = next;
+  }
+  return out;
+}
+
+const SOURCE_HINT: Record<Source, string> = {
+  system: "built in",
+  code: "registered with cronAdd",
+  sql: "_cron_jobs record",
+};
+
+const SCHEDULE_FIELDS = ["Minute", "Hour", "Day", "Month", "Weekday"];
+
+/** Detail drawer for one scheduled job. Run history comes from `_cronRuns`:
+ * `GET /api/crons` gives `custom:<id>` for a SQL `_cron_jobs` row or the raw
+ * `cronAdd` id otherwise, which is exactly `_cronRuns.jobId`. Empty is
+ * normal: a job that's never fired, or whose ticks all lost the multi-node
+ * advisory-lock race on this node, has zero rows. */
+function CronJobSheet({
+  row,
+  visible,
+  tab,
+  onTabChange,
+  onSelect,
+  onClose,
+  onRun,
+  running,
+  onToggle,
+  toggling,
+  onDelete,
 }: {
-  job: { id: string; title: string };
-  onOpenChange: (open: boolean) => void;
+  row: JobRow;
+  visible: JobRow[];
+  tab: string;
+  onTabChange: (tab: string) => void;
+  onSelect: (id: string) => void;
+  onClose: () => void;
+  onRun: (id: string) => void;
+  running: boolean;
+  onToggle: (job: CustomCronJob, enabled: boolean) => void;
+  toggling: boolean;
+  onDelete: (job: CustomCronJob) => void;
 }) {
-  const { data, isPending, error, refetch } = useQuery({
-    queryKey: ["cron-runs", job.id],
+  const history = useQuery({
+    queryKey: ["cron-runs", row.id],
     queryFn: () =>
       cb.collection("_cronRuns").list({
         page: 1,
-        perPage: 20,
+        perPage: 50,
         sort: "-startedAt",
-        filter: `jobId = "${job.id}"`,
-      }) as unknown as Promise<{ items: CronRun[] }>,
+        filter: `jobId = "${row.id}"`,
+      }) as unknown as Promise<{ items: CronRun[]; totalItems: number }>,
   });
+  const runs = history.data?.items ?? [];
+  const runCount = history.data?.totalItems ?? runs.length;
+  let streak = 0;
+  for (const r of runs) {
+    if (r.status !== "error") break;
+    streak++;
+  }
 
-  const runs = data?.items ?? [];
+  const health = jobHealth(row);
+  const custom = row.custom;
+  const schedule = describeSchedule(row.expression);
+  const scheduleText = schedule === row.expression ? "Custom schedule" : schedule;
+  const fields = row.expression.trim().split(/\s+/);
+  const upcoming = row.enabled ? upcomingRuns(row.expression) : [];
+
+  const index = visible.findIndex((r) => r.id === row.id);
+  const pager =
+    index >= 0
+      ? {
+          index: index + 1,
+          total: visible.length,
+          hasPrev: index > 0,
+          hasNext: index < visible.length - 1,
+          onPrev: () => onSelect(visible[index - 1].id),
+          onNext: () => onSelect(visible[index + 1].id),
+        }
+      : undefined;
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{job.title} — history</DialogTitle>
-          <DialogDescription>The 20 most recent runs recorded in _cronRuns.</DialogDescription>
-        </DialogHeader>
+    <DetailSheet open onOpenChange={(open) => !open && onClose()}>
+      <DetailSheetHeader
+        id={row.id}
+        pager={pager}
+        title={row.title}
+        description={`${SOURCE_LABEL[row.source]} job ${row.id}, ${scheduleText}`}
+        status={<StatusBadge tone={health.tone}>{health.label}</StatusBadge>}
+        meta={[
+          <span key="expr" className="font-mono">
+            {row.expression}
+          </span>,
+          `${scheduleText} UTC`,
+          SOURCE_LABEL[row.source],
+        ]}
+        actions={
+          <>
+            <Button size="sm" disabled={running} onClick={() => onRun(row.id)}>
+              {running ? <Spinner className="size-3.5" /> : <Play />}
+              {running ? "Running…" : "Run now"}
+            </Button>
+            {custom ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={toggling}
+                onClick={() => onToggle(custom, !custom.enabled)}
+              >
+                {custom.enabled ? <Pause /> : <Play />}
+                {custom.enabled ? "Pause" : "Resume"}
+              </Button>
+            ) : null}
+          </>
+        }
+        menu={
+          custom
+            ? [
+                { label: "Edit job", icon: <Pencil />, onSelect: () => onTabChange("settings") },
+                { label: "Delete job", icon: <Trash2 />, destructive: true, onSelect: () => onDelete(custom) },
+              ]
+            : undefined
+        }
+      />
+      <DetailTabs
+        value={tab}
+        onValueChange={onTabChange}
+        tabs={[
+          { value: "overview", label: "Overview" },
+          { value: "runs", label: "Runs", count: runCount },
+          { value: "settings", label: "Settings" },
+        ]}
+      >
+        <DetailTabPanel value="overview">
+          <DetailBody>
+            {row.last?.status === "error" && row.enabled ? (
+              <DetailCallout
+                title="Last run failed"
+                action={
+                  <Button size="xs" variant="outline" onClick={() => onTabChange("runs")}>
+                    View log
+                  </Button>
+                }
+              >
+                <span className="block">
+                  {row.last.message ? (
+                    <span className="font-mono break-words">{row.last.message}</span>
+                  ) : (
+                    "No message was recorded."
+                  )}
+                </span>
+                <span className="mt-1 block text-xs opacity-80">
+                  {streak > 1 ? `${streak} failed runs in a row · ` : null}last run <TimeAgo value={row.last.at.toISOString()} />
+                </span>
+              </DetailCallout>
+            ) : null}
+            <DetailSection title="Schedule">
+              {fields.length === 5 ? (
+                <DetailGrid cols={5}>
+                  {SCHEDULE_FIELDS.map((label, i) => (
+                    <DetailGridItem key={label} label={label}>
+                      {fields[i]}
+                    </DetailGridItem>
+                  ))}
+                </DetailGrid>
+              ) : (
+                <p className="m-0 font-mono text-sm">{row.expression}</p>
+              )}
+            </DetailSection>
+            <DetailSection title="Details">
+              <DetailList>
+                <DetailRow label="Runs" hint="UTC">
+                  {scheduleText}
+                </DetailRow>
+                <DetailRow label="Next run" hint={row.next ? inRelative(row.next) : undefined}>
+                  {row.next ? (
+                    <time dateTime={row.next.toISOString()} title={row.next.toLocaleString()} className="font-tabular">
+                      {formatUtc(row.next)}
+                    </time>
+                  ) : (
+                    <span className="text-muted-foreground">{row.enabled ? "—" : "Paused"}</span>
+                  )}
+                </DetailRow>
+                <DetailRow
+                  label="Last run"
+                  hint={typeof row.last?.durationMs === "number" ? `${row.last.durationMs}ms` : undefined}
+                >
+                  {row.last ? (
+                    <>
+                      <StatusBadge tone={row.last.status === "error" ? "danger" : "success"}>
+                        {row.last.status === "error" ? "Failed" : "Succeeded"}
+                      </StatusBadge>
+                      <TimeAgo value={row.last.at.toISOString()} />
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">No run recorded</span>
+                  )}
+                </DetailRow>
+                {row.last?.message && row.last.status !== "error" ? (
+                  <DetailRow label="Message">
+                    <span className="font-mono text-xs break-words">{row.last.message}</span>
+                  </DetailRow>
+                ) : null}
+                <DetailRow label="Source" hint={SOURCE_HINT[row.source]}>
+                  {SOURCE_LABEL[row.source]}
+                </DetailRow>
+                <DetailRow label="Enabled" hint={custom ? undefined : "always on"}>
+                  {custom && !custom.enabled ? "No" : "Yes"}
+                </DetailRow>
+                {row.source !== "sql" ? (
+                  <DetailRow label="Handler" hint={row.detail}>
+                    <span className="font-mono text-xs">{row.id}</span>
+                  </DetailRow>
+                ) : null}
+              </DetailList>
+            </DetailSection>
+            {row.source === "sql" ? (
+              <DetailSection title="SQL">
+                <CodeBlock plain={row.detail} copyLabel="Copy SQL" />
+              </DetailSection>
+            ) : null}
+            <DetailSection title="Next 5 runs">
+              {upcoming.length > 0 ? (
+                <DetailTimeline>
+                  {upcoming.map((date) => (
+                    <DetailListItem key={date.getTime()} meta={inRelative(date)}>
+                      <time dateTime={date.toISOString()} title={date.toLocaleString()}>
+                        {formatUtc(date)}
+                      </time>
+                    </DetailListItem>
+                  ))}
+                </DetailTimeline>
+              ) : (
+                <p className="m-0 text-sm text-muted-foreground">
+                  {row.enabled ? "Couldn't compute upcoming runs for this expression." : "Paused jobs don't fire."}
+                </p>
+              )}
+            </DetailSection>
+          </DetailBody>
+        </DetailTabPanel>
 
-        {error ? (
-          <ErrorState title="Couldn't load history" error={error} onRetry={() => void refetch()} compact />
-        ) : isPending ? (
-          <ListSkeleton rows={3} />
-        ) : runs.length === 0 ? (
-          <EmptyState
-            compact
-            icon={<History />}
-            title="No runs recorded yet"
-            description="A job that hasn't fired yet — or whose ticks ran on another node — has no history. Use Run now to record one."
-          />
-        ) : (
-          <div className="max-h-96 overflow-auto rounded-lg border border-border">
-            <ul className="divide-y divide-border">
-              {runs.map((run) => (
-                <li key={run.id} className="flex flex-col gap-1 px-3 py-2 text-xs">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <StatusBadge tone={run.status === "success" ? "success" : "danger"}>
-                      {run.status === "success" ? "Succeeded" : "Failed"}
-                    </StatusBadge>
-                    <Badge variant="outline" className="h-4 px-1.5 text-2xs font-normal uppercase">
-                      {run.source}
-                    </Badge>
-                    <TimeAgo value={run.startedAt} className="text-muted-foreground" />
-                    <span className="font-mono text-muted-foreground">
-                      {parseServerDate(run.startedAt).toLocaleString()}
-                    </span>
-                    {typeof run.durationMs === "number" ? (
-                      <span className="font-tabular ml-auto font-mono text-muted-foreground">{run.durationMs}ms</span>
-                    ) : null}
-                  </div>
-                  {run.message ? (
-                    <div
-                      className={
-                        run.status === "error"
-                          ? "font-mono break-words text-destructive"
-                          : "font-mono break-words text-muted-foreground"
-                      }
-                    >
-                      {run.message}
-                    </div>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <DetailTabPanel value="runs">
+          <DetailBody>
+            {history.error ? (
+              <ErrorState
+                title="Couldn't load history"
+                error={history.error}
+                onRetry={() => void history.refetch()}
+                compact
+              />
+            ) : history.isPending ? (
+              <ListSkeleton rows={3} />
+            ) : runs.length === 0 ? (
+              <DetailEmpty
+                icon={<History />}
+                title="No runs recorded yet"
+                description="A job that hasn't fired yet — or whose ticks ran on another node — has no history. Use Run now to record one."
+              />
+            ) : (
+              <>
+                <ul className="m-0 flex list-none flex-col divide-y divide-border p-0">
+                  {runs.map((r) => (
+                    <li key={r.id} className="flex flex-col gap-1 py-2 text-xs first:pt-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge tone={r.status === "success" ? "success" : "danger"}>
+                          {r.status === "success" ? "Succeeded" : "Failed"}
+                        </StatusBadge>
+                        <Badge variant="outline" className="h-4 px-1.5 text-2xs font-normal uppercase">
+                          {r.source}
+                        </Badge>
+                        <TimeAgo value={r.startedAt} className="text-muted-foreground" />
+                        <span className="font-tabular font-mono text-muted-foreground">
+                          {parseServerDate(r.startedAt).toLocaleString()}
+                        </span>
+                        {typeof r.durationMs === "number" ? (
+                          <span className="font-tabular ml-auto font-mono text-muted-foreground">{r.durationMs}ms</span>
+                        ) : null}
+                      </div>
+                      {r.message ? (
+                        <div
+                          className={
+                            r.status === "error"
+                              ? "font-mono break-words text-destructive"
+                              : "font-mono break-words text-muted-foreground"
+                          }
+                        >
+                          {r.message}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {runCount > runs.length ? (
+                  <p className="font-tabular mt-3 mb-0 text-xs text-muted-foreground">
+                    Showing the newest {runs.length} of {runCount} runs.
+                  </p>
+                ) : null}
+              </>
+            )}
+          </DetailBody>
+        </DetailTabPanel>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <DetailTabPanel value="settings">
+          <DetailBody>
+            {custom ? (
+              <CustomCronJobForm key={custom.id} job={custom} inline onOpenChange={() => onTabChange("overview")} />
+            ) : (
+              <DetailEmpty
+                icon={<Clock />}
+                title={row.source === "system" ? "Built-in job" : "Registered in code"}
+                description={
+                  row.source === "system"
+                    ? "System jobs are built in. Run one from the header; its schedule can't be changed here."
+                    : "This job comes from cronAdd in a cb_hooks/*.cb.js file. Edit the file and restart the server to change it."
+                }
+              />
+            )}
+          </DetailBody>
+        </DetailTabPanel>
+      </DetailTabs>
+    </DetailSheet>
   );
 }
 
@@ -675,12 +983,15 @@ function CronHistoryDialog({
  * this dialog surfaces that inline instead of a generic toast — alongside
  * the same checks done up front for an empty name, expression or SQL.
  * Create or edit one `_cron_jobs` record. `job === null` means create. */
-function CustomCronJobDialog({
+function CustomCronJobForm({
   job,
   onOpenChange,
+  inline = false,
 }: {
   job: CustomCronJob | null;
   onOpenChange: (open: boolean) => void;
+  /** Rendered inside a detail sheet instead of a dialog. */
+  inline?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState(job?.name ?? "");
@@ -726,9 +1037,7 @@ function CustomCronJobDialog({
     if (serverErrors[field]) setServerErrors((prev) => ({ ...prev, [field]: "" }));
   }
 
-  return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+  const formEl = (
         <form
           className="flex flex-col gap-4"
           noValidate
@@ -740,12 +1049,14 @@ function CustomCronJobDialog({
             save.mutate();
           }}
         >
-          <DialogHeader>
-            <DialogTitle>{job ? "Edit SQL job" : "New SQL job"}</DialogTitle>
-            <DialogDescription>
-              Runs with no rule enforcement — treat the SQL below the same as a collection schema edit.
-            </DialogDescription>
-          </DialogHeader>
+          {inline ? null : (
+            <DialogHeader>
+              <DialogTitle>{job ? "Edit SQL job" : "New SQL job"}</DialogTitle>
+              <DialogDescription>
+                Runs with no rule enforcement — treat the SQL below the same as a collection schema edit.
+              </DialogDescription>
+            </DialogHeader>
+          )}
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="cron-name">Name</Label>
@@ -827,16 +1138,23 @@ function CustomCronJobDialog({
           </div>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
+            {inline ? null : (
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+            )}
             <Button type="submit" disabled={save.isPending}>
               {save.isPending ? <Spinner className="size-3.5" /> : null}
               {job ? "Save" : "Create"}
             </Button>
           </DialogFooter>
         </form>
-      </DialogContent>
+  );
+
+  if (inline) return formEl;
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">{formEl}</DialogContent>
     </Dialog>
   );
 }

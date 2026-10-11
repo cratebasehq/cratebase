@@ -13,6 +13,7 @@ pub mod api_keys;
 pub mod auth;
 pub mod backups;
 pub mod batch;
+pub mod branding;
 pub mod collections;
 pub mod common;
 pub mod crons;
@@ -84,6 +85,7 @@ pub fn api_router(app: &App) -> Router<App> {
         .merge(push::router())
         .merge(mails::router())
         .merge(notifications::router())
+        .merge(branding::router())
         .merge(llm_usage::router())
         .merge(queue::router())
         .merge(crate::webhook_deliveries::router())

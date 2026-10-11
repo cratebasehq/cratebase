@@ -22,6 +22,7 @@ import {
   ToggleSetting,
 } from "@/components/settings/settings-form";
 import { useSaveShortcut } from "@/components/settings/use-save-shortcut";
+import { LogoUploader } from "@/components/settings/logo-uploader";
 
 const GROUP = SETTINGS_GROUPS.find((g) => g.to === "/settings/application")!;
 
@@ -326,32 +327,17 @@ export function ApplicationPage() {
             description="Used in system emails and as the email-template editor's default theme."
           >
             <SettingRow
-              label="Logo URL"
+              label="Logo"
               htmlFor="app-logo-url"
-              help="Shown at the top of system emails and as the email-template editor's default theme logo. Left blank, a text wordmark of the application name is used instead."
+              help="Shown at the top of system emails and as the email-template editor's default theme logo. Uploading saves immediately and hosts the image on this instance (set the application URL to its public address so email clients can load it). Left blank, a text wordmark of the application name is used instead."
               error={fieldErrs.logoUrl}
             >
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <TextSetting
-                    id="app-logo-url"
-                    value={draft.meta.logoUrl}
-                    onChange={(logoUrl) => patch({ meta: { ...draft.meta, logoUrl } })}
-                    placeholder="https://example.com/logo.png"
-                    mono
-                    invalid={!!fieldErrs.logoUrl}
-                  />
-                </div>
-                {draft.meta.logoUrl.trim() && !fieldErrs.logoUrl ? (
-                  <img
-                    src={draft.meta.logoUrl.trim()}
-                    alt="Logo preview"
-                    className="size-control-md shrink-0 rounded-md border border-border bg-surface-sunken object-contain p-0.5"
-                    onError={(e) => (e.currentTarget.style.visibility = "hidden")}
-                    onLoad={(e) => (e.currentTarget.style.visibility = "visible")}
-                  />
-                ) : null}
-              </div>
+              <LogoUploader
+                id="app-logo-url"
+                value={draft.meta.logoUrl}
+                onChange={(logoUrl) => setDraft((d) => (d ? { ...d, meta: { ...d.meta, logoUrl } } : d))}
+                error={fieldErrs.logoUrl}
+              />
             </SettingRow>
             <SettingRow
               label="Brand color"

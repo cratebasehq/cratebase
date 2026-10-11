@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
-import { Check, ChevronDown, ChevronUp, Copy, ListTree, RefreshCw } from "lucide-react";
+import { Copy, ListTree, RefreshCw } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { useSettings, useSettingsMutation, type ServerSettings } from "@/hooks/use-settings";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
@@ -13,7 +13,19 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Pagination } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
+import { TimeAgo } from "@/components/settings/time-ago";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DataTableToolbar } from "@/components/layout/data-table-toolbar";
 import { EmptyState, ErrorState, ListSkeleton } from "@/components/layout/states";
@@ -263,136 +275,155 @@ function timeOf(entry: RequestLogEntry): Date {
   return parseServerDate(entry.created);
 }
 
-function FactRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="grid grid-cols-[6.5rem_1fr] gap-2 py-1.5 text-sm">
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 break-words">{children}</dd>
-    </div>
-  );
-}
-
-/** Everything the server recorded about one request, with prev/next so a
- * run of rows can be read without closing the sheet in between. */
+/** Everything the server recorded about one request. The pager walks the
+ * currently loaded page (newest first), so `prev` is the newer row. */
 function RequestDetailSheet({
   entry,
+  index,
+  total,
   onClose,
   onStep,
-  canPrev,
-  canNext,
 }: {
   entry: RequestLogEntry | null;
+  index: number;
+  total: number;
   onClose: () => void;
   onStep: (delta: -1 | 1) => void;
-  canPrev: boolean;
-  canNext: boolean;
 }) {
-  const { copy, status } = useCopyToClipboard();
+  const { copy } = useCopyToClipboard();
   const json = useMemo(() => (entry ? JSON.stringify(entry, null, 2) : ""), [entry]);
-
-  useEffect(() => {
-    if (!entry) return;
-    function onKeyDown(event: KeyboardEvent) {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
-      if (event.key === "ArrowUp" || event.key === "k") {
-        event.preventDefault();
-        onStep(-1);
-      } else if (event.key === "ArrowDown" || event.key === "j") {
-        event.preventDefault();
-        onStep(1);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [entry, onStep]);
+  const [tab, setTab] = useState("overview");
 
   const d = entry?.data;
   const created = entry ? timeOf(entry) : null;
+  const status = d?.status;
   return (
-    <Sheet open={entry !== null} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-lg" aria-describedby={undefined}>
-        {entry ? (
-          <>
-            <SheetHeader className="border-b border-border pr-14">
-              <div className="flex items-center gap-2">
-                <span className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-xs font-medium">
-                  {d?.method ?? "—"}
-                </span>
-                <StatusBadge tone={statusTone(d?.status ?? 0)}>
-                  {d?.status ?? "—"}
-                  {d?.status && STATUS_TEXT[d.status] ? ` ${STATUS_TEXT[d.status]}` : ""}
-                </StatusBadge>
-              </div>
-              <SheetTitle className="mt-1 break-all font-mono text-sm">{pathOf(entry)}</SheetTitle>
-              <SheetDescription>{created ? created.toLocaleString() : ""}</SheetDescription>
-              <div className="mt-2 flex items-center gap-1">
-                <Button variant="outline" size="xs" disabled={!canPrev} onClick={() => onStep(-1)}>
-                  <ChevronUp />
-                  Newer
-                </Button>
-                <Button variant="outline" size="xs" disabled={!canNext} onClick={() => onStep(1)}>
-                  <ChevronDown />
-                  Older
-                </Button>
-                <span className="ml-1 text-xs text-muted-foreground">or ↑ ↓</span>
-              </div>
-            </SheetHeader>
-
-            <div className="flex flex-col gap-4 px-4 pb-4">
-              {d?.error ? (
-                <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2">
-                  <p className="text-xs font-medium text-destructive">Error</p>
-                  <p className="mt-0.5 font-mono text-xs break-words text-destructive">{d.error}</p>
-                </div>
-              ) : null}
-
-              <dl className="divide-y divide-border">
-                <FactRow label="Duration">
-                  <Latency ms={d?.execTime} />
-                </FactRow>
-                <FactRow label="Caller">
-                  <span className="font-mono text-xs">{callerLabel(entry)}</span>
-                </FactRow>
-                <FactRow label="Client IP">
-                  <span className="font-mono text-xs">{d?.userIP || d?.remoteIP || "—"}</span>
-                </FactRow>
-                {d?.remoteIP && d.userIP && d.remoteIP !== d.userIP ? (
-                  <FactRow label="Remote IP">
-                    <span className="font-mono text-xs">{d.remoteIP}</span>
-                  </FactRow>
+    <DetailSheet open={entry !== null} onOpenChange={(open) => !open && onClose()}>
+      {entry ? (
+        <>
+          <DetailSheetHeader
+            id={entry.id}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[
+              { label: "Copy JSON", onSelect: () => void copy(json), icon: <Copy /> },
+              { label: "Copy URL", onSelect: () => void copy(d?.url || pathOf(entry)), icon: <Copy /> },
+            ]}
+            title={
+              <span className="break-all font-mono text-base">
+                <span className="text-muted-foreground">{d?.method ?? "—"}</span> {pathOf(entry)}
+              </span>
+            }
+            description={`${d?.method ?? ""} ${pathOf(entry)}`}
+            status={
+              <StatusBadge tone={statusTone(status ?? 0)}>
+                {status ?? "—"}
+                {status && STATUS_TEXT[status] ? ` ${STATUS_TEXT[status]}` : ""}
+              </StatusBadge>
+            }
+            meta={[
+              d?.execTime != null ? <span key="t" className="font-tabular font-mono">{formatMs(d.execTime)}</span> : "no timing",
+              <TimeAgo key="a" value={entry.created} />,
+              <span key="c" className="font-mono">{callerLabel(entry)}</span>,
+            ]}
+            actions={
+              <Button size="sm" variant="outline" onClick={() => void copy(json)}>
+                <Copy />
+                Copy JSON
+              </Button>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={setTab}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "raw", label: "Raw JSON" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                {d?.error ? (
+                  <DetailCallout tone="danger" title={status ? `${status} ${STATUS_TEXT[status] ?? "Error"}` : "Error"}>
+                    <span className="font-mono text-xs break-words">{d.error}</span>
+                  </DetailCallout>
                 ) : null}
-                <FactRow label="Referer">
-                  <span className="font-mono text-xs">{d?.referer || "—"}</span>
-                </FactRow>
-                <FactRow label="User agent">
-                  <span className="text-xs">{d?.userAgent || "—"}</span>
-                </FactRow>
-                <FactRow label="Full URL">
-                  <span className="font-mono text-xs break-all">{d?.url || "—"}</span>
-                </FactRow>
-                <FactRow label="Log id">
-                  <span className="font-mono text-xs">{entry.id}</span>
-                </FactRow>
-              </dl>
 
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-medium">Raw entry</h3>
-                  <Button variant="ghost" size="xs" onClick={() => void copy(json)}>
-                    {status === "copied" ? <Check /> : <Copy />}
-                    {status === "copied" ? "Copied" : "Copy JSON"}
-                  </Button>
-                </div>
-                <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-surface-sunken px-3 py-2.5 font-mono text-xs leading-relaxed">
-                  {json}
-                </pre>
-              </div>
-            </div>
-          </>
-        ) : null}
-      </SheetContent>
-    </Sheet>
+                <DetailSection title="Request">
+                  <DetailList>
+                    <DetailRow label="Method">{d?.method ?? "—"}</DetailRow>
+                    <DetailRow label="Path">
+                      <span className="font-mono text-xs break-all">{pathOf(entry)}</span>
+                    </DetailRow>
+                    <DetailRow label="Full URL">
+                      <span className="font-mono text-xs break-all">{d?.url || "—"}</span>
+                    </DetailRow>
+                    <DetailRow label="Referer">
+                      <span className="font-mono text-xs break-all">{d?.referer || "—"}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+
+                <DetailSection title="Timing">
+                  <DetailList>
+                    <DetailRow label="Duration">
+                      <Latency ms={d?.execTime} />
+                    </DetailRow>
+                    <DetailRow label="Received" hint={created ? created.toLocaleString() : undefined}>
+                      <TimeAgo value={entry.created} />
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+
+                <DetailSection title="Client">
+                  <DetailList>
+                    <DetailRow label="Caller">
+                      <span className="font-mono text-xs">{callerLabel(entry)}</span>
+                    </DetailRow>
+                    <DetailRow label="Client IP">
+                      <span className="font-mono text-xs">{d?.userIP || d?.remoteIP || "—"}</span>
+                    </DetailRow>
+                    {d?.remoteIP && d.userIP && d.remoteIP !== d.userIP ? (
+                      <DetailRow label="Remote IP">
+                        <span className="font-mono text-xs">{d.remoteIP}</span>
+                      </DetailRow>
+                    ) : null}
+                    <DetailRow label="User agent">
+                      <span className="text-xs">{d?.userAgent || "—"}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+
+                <DetailSection title="Log entry" defaultOpen={false}>
+                  <DetailList>
+                    <DetailRow label="Log id">
+                      <span className="font-mono text-xs">{entry.id}</span>
+                    </DetailRow>
+                    <DetailRow label="Level">
+                      <span className="font-tabular">{entry.level}</span>
+                    </DetailRow>
+                    <DetailRow label="Message">
+                      <span className="font-mono text-xs break-all">{entry.message}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="raw">
+              <DetailBody>
+                <CodeBlock title="Raw entry" json={json} copyLabel="Copy JSON" />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
   );
 }
 
@@ -752,10 +783,10 @@ export function RequestLogsPage() {
 
       <RequestDetailSheet
         entry={selected}
+        index={selectedIndex}
+        total={items.length}
         onClose={() => setSelectedId(null)}
         onStep={step}
-        canPrev={selectedIndex > 0}
-        canNext={selectedIndex >= 0 && selectedIndex < items.length - 1}
       />
 
       {logsDraft ? (

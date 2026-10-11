@@ -294,6 +294,15 @@ function CollectionPage() {
   const result = records.data;
   const rows = result?.items ?? [];
 
+  /** Open the drawer on a new record seeded from `row`. */
+  function duplicateRecord(row: RecordModel) {
+    const copy: Record<string, unknown> = { ...row };
+    for (const key of ["id", "created", "updated"]) delete copy[key];
+    for (const field of fields) if (field.type === "file" || field.type === "password") delete copy[field.name];
+    setDuplicating(copy as RecordModel);
+    setEditing(null);
+  }
+
   // A 400 with a filter in play is almost always the filter — show the
   // server's own sentence under the expression rather than as a toast that
   // scrolls away.
@@ -718,17 +727,7 @@ function CollectionPage() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={() => setEditing(row)}>Edit record</DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={() => {
-                        const copy: Record<string, unknown> = { ...row };
-                        for (const key of ["id", "created", "updated"]) delete copy[key];
-                        for (const field of fields) if (field.type === "file" || field.type === "password") delete copy[field.name];
-                        setDuplicating(copy as RecordModel);
-                        setEditing(null);
-                      }}
-                    >
-                      Duplicate…
-                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => duplicateRecord(row)}>Duplicate…</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => copyText(row.id, "Copied record id")}>
                       <Copy /> Copy id
                     </DropdownMenuItem>
@@ -762,6 +761,9 @@ function CollectionPage() {
           record={editing}
           template={editing === null ? duplicating : null}
           open={editing !== undefined}
+          siblings={rows}
+          onNavigate={setEditing}
+          onDuplicate={duplicateRecord}
           onOpenChange={(open) => {
             if (!open) {
               setEditing(undefined);

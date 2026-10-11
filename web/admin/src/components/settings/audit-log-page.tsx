@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, History } from "lucide-react";
+import { Copy, History } from "lucide-react";
 import { cb, describeFailure, parseServerDate } from "@/lib/api";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { settingsLogsRoute } from "@/routes/settings-logs";
@@ -14,7 +14,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Pagination } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  DetailBody,
+  DetailEmpty,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 import { SettingsPage } from "@/components/settings/settings-form";
 import { LIVE_INTERVAL_MS, LiveToggle } from "@/components/settings/live-toggle";
 import { TimeAgo } from "@/components/settings/time-ago";
@@ -92,7 +103,7 @@ export function AuditLogPage() {
   const action = urlSearch.action ?? "";
   const from = urlSearch.from ?? "";
   const to = urlSearch.to ?? "";
-  const [selected, setSelected] = useState<AuditLogEntry | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [live, setLive] = useState(true);
 
   const filterParts: string[] = [];
@@ -104,7 +115,7 @@ export function AuditLogPage() {
 
   // New entries land on page 1; polling a deeper page or while the detail
   // sheet is open would shuffle rows under the reader, so it pauses there.
-  const refetchInterval = live && page === 1 && selected === null ? LIVE_INTERVAL_MS : false;
+  const refetchInterval = live && page === 1 && selectedId === null ? LIVE_INTERVAL_MS : false;
 
   const { data, isPending, error, refetch, isFetching } = useQuery({
     queryKey: ["audit-log", page, action, from, to],
@@ -128,6 +139,8 @@ export function AuditLogPage() {
   }
 
   const items = data?.items ?? [];
+  const selectedIndex = selectedId ? items.findIndex((e) => e.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? items[selectedIndex] : null;
   const firstRow = data ? (data.page - 1) * data.perPage + 1 : 0;
 
   const item = settingsItemFor("/settings/audit")!;
@@ -267,7 +280,7 @@ export function AuditLogPage() {
                         variant="ghost"
                         size="xs"
                         aria-label={`Details for ${entry.action} on ${entry.target || "—"}`}
-                        onClick={() => setSelected(entry)}
+                        onClick={() => setSelectedId(entry.id)}
                       >
                         {hasMeta ? "Details" : "View"}
                       </Button>
@@ -298,65 +311,117 @@ export function AuditLogPage() {
         </div>
       ) : null}
 
-      <EntrySheet entry={selected} onClose={() => setSelected(null)} />
+      <EntrySheet
+        entry={selected}
+        index={selectedIndex}
+        total={items.length}
+        onClose={() => setSelectedId(null)}
+        onStep={(delta) => {
+          const next = items[selectedIndex + delta];
+          if (next) setSelectedId(next.id);
+        }}
+      />
     </SettingsPage>
   );
 }
 
 /** Everything about one audit row, with the raw `meta` JSON copyable. */
-function EntrySheet({ entry, onClose }: { entry: AuditLogEntry | null; onClose: () => void }) {
-  const { copy, status } = useCopyToClipboard();
+function EntrySheet({
+  entry,
+  index,
+  total,
+  onClose,
+  onStep,
+}: {
+  entry: AuditLogEntry | null;
+  index: number;
+  total: number;
+  onClose: () => void;
+  onStep: (delta: -1 | 1) => void;
+}) {
+  const { copy } = useCopyToClipboard();
+  const [tab, setTab] = useState("overview");
   const meta = entry ? JSON.stringify(entry.meta ?? {}, null, 2) : "";
-  const hasMeta = entry ? Object.keys(entry.meta ?? {}).length > 0 : false;
+  const raw = entry ? JSON.stringify(entry, null, 2) : "";
+  const metaCount = entry ? Object.keys(entry.meta ?? {}).length : 0;
 
   return (
-    <Sheet open={entry !== null} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent side="right" className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
-        {entry ? (
-          <>
-            <SheetHeader>
-              <SheetTitle className="flex flex-wrap items-center gap-2">
-                <StatusBadge tone={actionTone(entry.action)} className="font-mono">
-                  {entry.action}
-                </StatusBadge>
-              </SheetTitle>
-              <SheetDescription>
-                <TimeAgo value={entry.created} /> · <span className="font-mono">{parseServerDate(entry.created).toLocaleString()}</span>
-              </SheetDescription>
-            </SheetHeader>
-            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-                <dt className="text-muted-foreground">Actor</dt>
-                <dd className="min-w-0 break-words">{actorLabel(entry)}</dd>
-                <dt className="text-muted-foreground">Target</dt>
-                <dd className="min-w-0 font-mono text-xs break-all">{entry.target || "—"}</dd>
-                <dt className="text-muted-foreground">Entry id</dt>
-                <dd className="min-w-0 font-mono text-xs break-all">{entry.id}</dd>
-              </dl>
-
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium">Details</span>
-                  {hasMeta ? (
-                    <Button variant="ghost" size="xs" onClick={() => void copy(meta)}>
-                      {status === "copied" ? <Check className="text-success" /> : <Copy />}
-                      {status === "copied" ? "Copied" : "Copy JSON"}
-                    </Button>
-                  ) : null}
-                </div>
-                {hasMeta ? (
-                  <pre className="overflow-x-auto rounded-lg border border-border bg-surface-sunken p-3 font-mono text-xs leading-relaxed">
-                    {meta}
-                  </pre>
-                ) : (
-                  <p className="text-sm text-muted-foreground">This action recorded no extra details.</p>
-                )}
-              </div>
-            </div>
-          </>
-        ) : null}
-      </SheetContent>
-    </Sheet>
+    <DetailSheet open={entry !== null} onOpenChange={(open) => !open && onClose()}>
+      {entry ? (
+        <>
+          <DetailSheetHeader
+            id={entry.id}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[{ label: "Copy JSON", onSelect: () => void copy(raw), icon: <Copy /> }]}
+            title={<span className="font-mono text-base">{entry.action}</span>}
+            description={`Audit entry ${entry.action}`}
+            status={
+              <StatusBadge tone={actionTone(entry.action)}>{entry.action.split(".").pop() ?? entry.action}</StatusBadge>
+            }
+            meta={[actorLabel(entry), <TimeAgo key="a" value={entry.created} />]}
+            actions={
+              <Button size="sm" variant="outline" onClick={() => void copy(raw)}>
+                <Copy />
+                Copy JSON
+              </Button>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={setTab}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "raw", label: "Raw JSON" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                <DetailSection title="Entry">
+                  <DetailList>
+                    <DetailRow label="Actor">
+                      <span className={cn(!entry.expand?.actor?.email && "text-muted-foreground italic")}>
+                        {actorLabel(entry)}
+                      </span>
+                    </DetailRow>
+                    <DetailRow label="Action">
+                      <span className="font-mono text-xs">{entry.action}</span>
+                    </DetailRow>
+                    <DetailRow label="Target">
+                      <span className="font-mono text-xs break-all">{entry.target || "—"}</span>
+                    </DetailRow>
+                    <DetailRow label="When" hint={parseServerDate(entry.created).toLocaleString()}>
+                      <TimeAgo value={entry.created} />
+                    </DetailRow>
+                    <DetailRow label="Entry id">
+                      <span className="font-mono text-xs break-all">{entry.id}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title="Details">
+                  {metaCount > 0 ? (
+                    <CodeBlock json={meta} copyLabel="Copy JSON" />
+                  ) : (
+                    <DetailEmpty title="No extra details" description="This action recorded no extra details." />
+                  )}
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="raw">
+              <DetailBody>
+                <CodeBlock title="Raw entry" json={raw} copyLabel="Copy JSON" />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
   );
 }
 

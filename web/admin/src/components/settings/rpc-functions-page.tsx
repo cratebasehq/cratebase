@@ -32,6 +32,20 @@ import { Switch } from "@/components/ui/switch";
 import { SettingsPage } from "@/components/settings/settings-form";
 import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  DetailBody,
+  DetailCallout,
+  DetailChip,
+  DetailEmpty,
+  DetailList,
+  DetailRow,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 
 type ParamType = "text" | "number" | "bool" | "json" | "date";
 
@@ -74,9 +88,10 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export function RpcFunctionsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
-  const [dialogDef, setDialogDef] = useState<RpcDefinition | "new" | null>(null);
+  const [dialogDef, setDialogDef] = useState<"new" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RpcDefinition | null>(null);
-  const [runTarget, setRunTarget] = useState<RpcDefinition | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [sheetTab, setSheetTab] = useState("overview");
 
   const { data, isPending, error, refetch } = useQuery({
     queryKey: ["rpc-definitions"],
@@ -102,6 +117,16 @@ export function RpcFunctionsPage() {
     (def) => !needle || def.name.toLowerCase().includes(needle) || def.sql.toLowerCase().includes(needle),
   );
   const item = settingsItemFor("/settings/rpc")!;
+  const selectedIndex = selectedId ? visible.findIndex((d) => d.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? visible[selectedIndex] : null;
+  function step(delta: -1 | 1) {
+    const next = visible[selectedIndex + delta];
+    if (next) setSelectedId(next.id);
+  }
+  function openSheet(def: RpcDefinition, tab: string) {
+    setSheetTab(tab);
+    setSelectedId(def.id);
+  }
 
   const newButton = (
     <Button size="sm" onClick={() => setDialogDef("new")}>
@@ -165,7 +190,24 @@ export function RpcFunctionsPage() {
               {visible.map((def) => {
                 const paramNames = (def.params ?? []).map((p) => p.name).join(", ");
                 return (
-                  <TableRow key={def.id} className="align-top">
+                  <TableRow
+                    key={def.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${def.name}, open details`}
+                    data-state={def.id === selectedId ? "selected" : undefined}
+                    onClick={(event) => {
+                      if ((event.target as HTMLElement).closest("a,button")) return;
+                      openSheet(def, "overview");
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        openSheet(def, "overview");
+                      }
+                    }}
+                    className="cursor-pointer align-top"
+                  >
                     <TableCell className="py-2.5">
                       <div className="font-mono text-sm font-medium">
                         {def.name}
@@ -203,7 +245,7 @@ export function RpcFunctionsPage() {
                     </TableCell>
                     <TableCell className="py-2.5 text-right">
                       <div className="flex justify-end gap-0.5">
-                        <Button variant="ghost" size="xs" aria-label={`Test ${def.name}`} onClick={() => setRunTarget(def)}>
+                        <Button variant="ghost" size="xs" aria-label={`Test ${def.name}`} onClick={() => openSheet(def, "test")}>
                           <Play />
                           Test
                         </Button>
@@ -211,7 +253,7 @@ export function RpcFunctionsPage() {
                           variant="ghost"
                           size="icon-xs"
                           aria-label={`Edit ${def.name}`}
-                          onClick={() => setDialogDef(def)}
+                          onClick={() => openSheet(def, "settings")}
                         >
                           <Pencil />
                         </Button>
@@ -235,14 +277,22 @@ export function RpcFunctionsPage() {
 
       {dialogDef ? (
         <RpcDefinitionDialog
-          def={dialogDef === "new" ? null : dialogDef}
           onOpenChange={(open) => {
             if (!open) setDialogDef(null);
           }}
         />
       ) : null}
 
-      {runTarget ? <RunRpcDialog def={runTarget} onOpenChange={(open) => !open && setRunTarget(null)} /> : null}
+      <RpcDetailSheet
+        def={selected}
+        index={selectedIndex}
+        total={visible.length}
+        tab={sheetTab}
+        onTabChange={setSheetTab}
+        onClose={() => setSelectedId(null)}
+        onStep={step}
+        onDelete={setDeleteTarget}
+      />
 
       <TypedConfirmDialog
         open={deleteTarget !== null}
@@ -264,6 +314,168 @@ export function RpcFunctionsPage() {
   );
 }
 
+function RuleBadge({ rule }: { rule: string | null }) {
+  if (rule === null) return <StatusBadge tone="neutral">Superusers only</StatusBadge>;
+  if (rule === "") return <StatusBadge tone="warning">Anyone</StatusBadge>;
+  return <StatusBadge tone="info">Rule</StatusBadge>;
+}
+
+/** Overview, test call and edit form for one `_rpc` record. The pager walks
+ * the filtered list; the edit form lives in the Settings tab. Test and
+ * Settings stay mounted so a result or unsaved edit survives a tab switch. */
+function RpcDetailSheet({
+  def,
+  index,
+  total,
+  tab,
+  onTabChange,
+  onClose,
+  onStep,
+  onDelete,
+}: {
+  def: RpcDefinition | null;
+  index: number;
+  total: number;
+  tab: string;
+  onTabChange: (tab: string) => void;
+  onClose: () => void;
+  onStep: (delta: -1 | 1) => void;
+  onDelete: (def: RpcDefinition) => void;
+}) {
+  const { copy } = useCopyToClipboard();
+  const params = def?.params ?? [];
+  return (
+    <DetailSheet open={def !== null} onOpenChange={(open) => !open && onClose()}>
+      {def ? (
+        <>
+          <DetailSheetHeader
+            id={def.name}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[
+              { label: "Copy SQL", icon: <Copy />, onSelect: () => void copy(def.sql) },
+              { label: "Delete", destructive: true, icon: <Trash2 />, onSelect: () => onDelete(def) },
+            ]}
+            title={
+              <span className="font-mono text-base">
+                {def.name}
+                <span className="font-normal text-muted-foreground">({params.map((p) => p.name).join(", ")})</span>
+              </span>
+            }
+            description={`RPC function ${def.name}`}
+            status={
+              def.readOnly ? (
+                <StatusBadge tone="success">Read-only</StatusBadge>
+              ) : (
+                <StatusBadge tone="warning">Can write</StatusBadge>
+              )
+            }
+            meta={[
+              <RuleBadge key="rule" rule={def.rule} />,
+              <span key="timeout" className="font-tabular font-mono">{def.timeoutMs} ms</span>,
+              <span key="rows" className="font-tabular font-mono">{def.maxRows} rows</span>,
+            ]}
+            actions={
+              <>
+                <Button size="sm" onClick={() => onTabChange("test")}>
+                  <Play />
+                  Test
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => onTabChange("settings")}>
+                  <Pencil />
+                  Edit
+                </Button>
+              </>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={onTabChange}
+            tabs={[
+              { value: "overview", label: "Overview" },
+              { value: "test", label: "Test" },
+              { value: "settings", label: "Settings" },
+            ]}
+          >
+            <DetailTabPanel value="overview">
+              <DetailBody>
+                {def.readOnly ? null : (
+                  <DetailCallout tone="warning" title="Can write data">
+                    A successful call changes the database. Read-only is off for this function.
+                  </DetailCallout>
+                )}
+                <DetailSection title="Details">
+                  <DetailList>
+                    <DetailRow label="Endpoint">
+                      <span className="font-mono text-xs break-all">POST /api/rpc/{def.name}</span>
+                    </DetailRow>
+                    <DetailRow label="Who may call it">
+                      <RuleBadge rule={def.rule} />
+                    </DetailRow>
+                    {def.rule ? (
+                      <DetailRow label="Rule">
+                        <code className="font-mono text-xs break-all">{def.rule}</code>
+                      </DetailRow>
+                    ) : null}
+                    <DetailRow label="Mode">{def.readOnly ? "Read-only transaction" : "Can write"}</DetailRow>
+                    <DetailRow label="Timeout">
+                      <span className="font-tabular">{def.timeoutMs} ms</span>
+                    </DetailRow>
+                    <DetailRow label="Max rows">
+                      <span className="font-tabular">{def.maxRows}</span>
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title={`Parameters (${params.length})`}>
+                  {params.length === 0 ? (
+                    <DetailEmpty title="No parameters" description="This call takes none." />
+                  ) : (
+                    <DetailList>
+                      {params.map((p) => (
+                        <DetailRow
+                          key={p.name}
+                          label={<span className="font-mono text-xs">{p.name}</span>}
+                          hint={
+                            p.default !== undefined && p.default !== null ? (
+                              <span className="font-mono text-xs">default {JSON.stringify(p.default)}</span>
+                            ) : undefined
+                          }
+                        >
+                          <DetailChip>{p.type}</DetailChip>
+                          {p.required ? <span className="text-xs text-muted-foreground">required</span> : null}
+                        </DetailRow>
+                      ))}
+                    </DetailList>
+                  )}
+                </DetailSection>
+                <DetailSection title="SQL">
+                  <CodeBlock plain={def.sql} copyLabel="Copy SQL" />
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="test" forceMount className="data-[state=inactive]:hidden">
+              <DetailBody>
+                <RunRpcPanel key={def.id} def={def} />
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="settings" forceMount className="data-[state=inactive]:hidden">
+              <DetailBody>
+                <RpcDefinitionForm key={def.id} def={def} inSheet onSaved={() => {}} onCancel={() => {}} />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
+  );
+}
+
 /** `:name` placeholders in a SQL statement, ignoring `::casts`. A hint for the
  * editor only — the server's own parser is the authority at save time. */
 function referencedPlaceholders(statement: string): string[] {
@@ -273,7 +485,17 @@ function referencedPlaceholders(statement: string): string[] {
 }
 
 /** Create or edit one `_rpc` record. `def === null` means create. */
-function RpcDefinitionDialog({ def, onOpenChange }: { def: RpcDefinition | null; onOpenChange: (open: boolean) => void }) {
+function RpcDefinitionForm({
+  def,
+  onSaved,
+  onCancel,
+  inSheet = false,
+}: {
+  def: RpcDefinition | null;
+  onSaved: () => void;
+  onCancel: () => void;
+  inSheet?: boolean;
+}) {
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
   const [name, setName] = useState(def?.name ?? "");
@@ -314,7 +536,7 @@ function RpcDefinitionDialog({ def, onOpenChange }: { def: RpcDefinition | null;
     onSuccess: () => {
       toast.success(def ? `Updated ${name}` : `Created ${name}`);
       void queryClient.invalidateQueries({ queryKey: ["rpc-definitions"] });
-      onOpenChange(false);
+      onSaved();
     },
     onError: (failure) => {
       const described = describeFailure(failure);
@@ -363,11 +585,9 @@ function RpcDefinitionDialog({ def, onOpenChange }: { def: RpcDefinition | null;
   const unused = declared.filter((d) => !referenced.includes(d));
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-2xl">
         <form
           noValidate
-          className="flex min-h-0 flex-1 flex-col gap-4"
+          className={cn("flex flex-col gap-4", !inSheet && "min-h-0 flex-1")}
           onSubmit={(event) => {
             event.preventDefault();
             setSubmitted(true);
@@ -376,20 +596,19 @@ function RpcDefinitionDialog({ def, onOpenChange }: { def: RpcDefinition | null;
             save.mutate();
           }}
         >
-          <DialogHeader>
-            <DialogTitle>{def ? `Edit ${def.name}` : "New RPC function"}</DialogTitle>
-            <DialogDescription>
+          {inSheet ? (
+            <p className="text-xs text-muted-foreground">
               Runs as a superuser-authored statement, gated per call by its own rule below — not by any collection's
               rules.
-            </DialogDescription>
-          </DialogHeader>
+            </p>
+          ) : null}
 
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+          <div className={cn("flex flex-col gap-4", !inSheet && "min-h-0 flex-1 overflow-y-auto pr-1")}>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rpc-name">Name</Label>
               <Input
                 id="rpc-name"
-                autoFocus
+                autoFocus={!inSheet}
                 className="font-mono"
                 value={name}
                 aria-invalid={errorFor("name") ? true : undefined}
@@ -583,16 +802,41 @@ function RpcDefinitionDialog({ def, onOpenChange }: { def: RpcDefinition | null;
             </div>
           </div>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? <Spinner className="size-3.5" /> : null}
-              {def ? "Save" : "Create"}
-            </Button>
-          </DialogFooter>
+          {inSheet ? (
+            <div className="flex justify-end gap-2">
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? <Spinner className="size-3.5" /> : null}
+                Save
+              </Button>
+            </div>
+          ) : (
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? <Spinner className="size-3.5" /> : null}
+                {def ? "Save" : "Create"}
+              </Button>
+            </DialogFooter>
+          )}
         </form>
+  );
+}
+
+/** Create dialog for a new `_rpc` record; existing rows edit in the detail sheet. */
+function RpcDefinitionDialog({ onOpenChange }: { onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>New RPC function</DialogTitle>
+          <DialogDescription>
+            Runs as a superuser-authored statement, gated per call by its own rule below — not by any collection's
+            rules.
+          </DialogDescription>
+        </DialogHeader>
+        <RpcDefinitionForm def={null} onSaved={() => onOpenChange(false)} onCancel={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
@@ -640,7 +884,7 @@ type ResultView = "table" | "json";
 /** Test panel: one input per declared parameter, a Run button that calls
  * `cb.rpc` (the same SDK method any application uses), and the raw
  * `items` back. */
-function RunRpcDialog({ def, onOpenChange }: { def: RpcDefinition; onOpenChange: (open: boolean) => void }) {
+function RunRpcPanel({ def }: { def: RpcDefinition }) {
   const params = def.params ?? [];
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(params.map((p) => [p.name, defaultParamValue(p)])),
@@ -684,11 +928,9 @@ function RunRpcDialog({ def, onOpenChange }: { def: RpcDefinition; onOpenChange:
   }
 
   return (
-    <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-2xl">
         <form
           noValidate
-          className="flex min-h-0 flex-1 flex-col gap-4"
+          className="flex flex-col gap-4"
           onSubmit={(event) => {
             event.preventDefault();
             setSubmitted(true);
@@ -696,18 +938,13 @@ function RunRpcDialog({ def, onOpenChange }: { def: RpcDefinition; onOpenChange:
             run.mutate();
           }}
         >
-          <DialogHeader>
-            <DialogTitle>
-              Test <code className="font-mono">{def.name}</code>
-            </DialogTitle>
-            <DialogDescription>
-              Calls <code className="font-mono">POST /api/rpc/{def.name}</code> as your current superuser session —
-              same as any other caller would, subject to the same rule.
-              {def.readOnly ? null : " This function can write: a successful run changes data."}
-            </DialogDescription>
-          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            Calls <code className="font-mono">POST /api/rpc/{def.name}</code> as your current superuser session — same
+            as any other caller would, subject to the same rule.
+            {def.readOnly ? null : " This function can write: a successful run changes data."}
+          </p>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="flex flex-col gap-3">
             {params.length === 0 ? (
               <p className="text-sm text-muted-foreground">This function takes no parameters.</p>
             ) : (
@@ -858,17 +1095,12 @@ function RunRpcDialog({ def, onOpenChange }: { def: RpcDefinition; onOpenChange:
             </section>
           </div>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Close
-            </Button>
+          <div>
             <Button type="submit" disabled={run.isPending}>
               {run.isPending ? <Spinner className="size-3.5" /> : <Play />}
               Run
             </Button>
-          </DialogFooter>
+          </div>
         </form>
-      </DialogContent>
-    </Dialog>
   );
 }

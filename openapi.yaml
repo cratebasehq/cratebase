@@ -2561,6 +2561,67 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
 
+  /settings/logo:
+    post:
+      summary: Upload the brand logo (superuser only)
+      description: >
+        Multipart, field `file`. PNG, JPEG, WebP or GIF up to 1 MiB,
+        identified by magic bytes (the declared content type is ignored);
+        SVG is rejected. The image is stored under the reserved object key
+        `_branding/logo`, and `settings.meta.logoUrl` is set to the absolute
+        public URL `<meta.appURL>/api/branding/logo?v=<content hash>` so
+        system emails can embed it.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "200":
+          description: Stored; `logoUrl` is the new public URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logoUrl: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Remove the uploaded brand logo (superuser only)
+      description: >
+        Deletes the stored image and clears `settings.meta.logoUrl` only when
+        it points at the uploaded logo; a custom external `logoUrl` is left
+        untouched. Always 204.
+      responses:
+        "204": { description: Removed }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /branding/logo:
+    get:
+      summary: The uploaded brand logo (public)
+      description: >
+        No authentication, so mail clients can fetch it. Served with the
+        sniffed image content type, `X-Content-Type-Options: nosniff`,
+        `Content-Disposition: inline` and an immutable one-year cache (the
+        `?v=` query of `meta.logoUrl` busts it on change).
+      security: []
+      responses:
+        "200":
+          description: The image bytes
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            image/jpeg: { schema: { type: string, format: binary } }
+            image/webp: { schema: { type: string, format: binary } }
+            image/gif: { schema: { type: string, format: binary } }
+        "404": { $ref: "#/components/responses/Error" }
+
   /settings/test/s3:
     post:
       summary: Round-trip a probe object through the configured S3 filesystem (superuser only)

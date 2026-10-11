@@ -17,6 +17,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DetailBody,
+  DetailSection,
+  DetailSheet,
+  DetailSheetHeader,
+  DetailList,
+  DetailRow,
+  DetailTabPanel,
+  DetailTabs,
+} from "@/components/layout/detail-sheet";
+import { CodeBlock } from "@/components/settings/detail-json";
 import { TypedConfirmDialog } from "@/components/settings/typed-confirm-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,6 +70,175 @@ function SendRuleBadge({ sendRule }: { sendRule: string | null }) {
   return <StatusBadge tone="info">Rule</StatusBadge>;
 }
 
+/** Preview, details and source of one template. Editing stays on its own
+ * route; the header's Edit button goes there. The pager walks the filtered list. */
+function TemplateDetailSheet({
+  template,
+  index,
+  total,
+  onClose,
+  onStep,
+  onDuplicate,
+  duplicating,
+  onDelete,
+}: {
+  template: TemplateRecord | null;
+  index: number;
+  total: number;
+  onClose: () => void;
+  onStep: (delta: -1 | 1) => void;
+  onDuplicate: (template: TemplateRecord) => void;
+  duplicating: boolean;
+  onDelete: (template: TemplateRecord) => void;
+}) {
+  const [tab, setTab] = useState("preview");
+  const preview = useQuery({
+    queryKey: ["email-templates", "preview", template?.id, template?.updated],
+    queryFn: () => cb.mails.preview({ template: template!.key, locale: template!.locale || undefined }),
+    enabled: template !== null,
+    retry: false,
+  });
+  const system = template ? isSystemTemplate(template) : false;
+  return (
+    <DetailSheet open={template !== null} onOpenChange={(open) => !open && onClose()}>
+      {template ? (
+        <>
+          <DetailSheetHeader
+            id={template.key}
+            pager={{
+              index: index + 1,
+              total,
+              hasPrev: index > 0,
+              hasNext: index < total - 1,
+              onPrev: () => onStep(-1),
+              onNext: () => onStep(1),
+            }}
+            menu={[
+              {
+                label: system ? "Reset to default" : "Delete",
+                destructive: true,
+                icon: system ? <RotateCcw /> : <Trash2 />,
+                onSelect: () => onDelete(template),
+              },
+            ]}
+            title={template.name || template.key}
+            description={`Template ${template.key}`}
+            status={<StatusBadge tone={system ? "info" : "neutral"}>{system ? "System" : "Custom"}</StatusBadge>}
+            meta={[
+              <span key="locale" className="font-mono">{template.locale || "default"}</span>,
+              <SendRuleBadge key="rule" sendRule={template.sendRule} />,
+              <TimeAgo key="updated" value={template.updated} />,
+            ]}
+            actions={
+              <>
+                <Button size="sm" asChild>
+                  <Link to="/settings/email-templates/$id" params={{ id: template.id }}>
+                    <Pencil />
+                    Edit template
+                  </Link>
+                </Button>
+                <Button size="sm" variant="outline" disabled={duplicating} onClick={() => onDuplicate(template)}>
+                  <Copy />
+                  Duplicate
+                </Button>
+              </>
+            }
+          />
+          <DetailTabs
+            value={tab}
+            onValueChange={setTab}
+            tabs={[
+              { value: "preview", label: "Preview" },
+              { value: "details", label: "Details" },
+              { value: "source", label: "Source" },
+            ]}
+          >
+            <DetailTabPanel value="preview">
+              <DetailBody>
+                <p className="text-xs text-muted-foreground">
+                  Rendered by the server with no template data, so variables may show empty. Open the editor to preview
+                  with sample data.
+                </p>
+                {preview.isPending ? (
+                  <Skeleton className="h-96 w-full" />
+                ) : preview.error ? (
+                  <ErrorState compact title="Couldn't render the preview" error={preview.error} onRetry={() => void preview.refetch()} />
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm break-words">
+                      <span className="text-muted-foreground">Subject: </span>
+                      {preview.data?.subject}
+                    </p>
+                    <iframe
+                      title={`Preview of ${template.key}`}
+                      srcDoc={preview.data?.html ?? ""}
+                      // Untrusted HTML: no scripts, no same-origin, no popups. White
+                      // like a mail client, regardless of the admin theme.
+                      sandbox=""
+                      className="h-[28rem] w-full rounded-md border border-border bg-white"
+                    />
+                  </div>
+                )}
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="details">
+              <DetailBody>
+                <DetailSection title="Template">
+                  <DetailList>
+                    <DetailRow label="Key">
+                      <span className="font-mono text-xs break-all">{template.key}</span>
+                    </DetailRow>
+                    <DetailRow label="Name">{template.name || "—"}</DetailRow>
+                    <DetailRow label="Subject">
+                      {template.subject ? <span className="break-words">{template.subject}</span> : "(none)"}
+                    </DetailRow>
+                    <DetailRow label="Description">{template.description || "—"}</DetailRow>
+                    <DetailRow label="Locale">
+                      <span className="font-mono text-xs">{template.locale || "default"}</span>
+                    </DetailRow>
+                    <DetailRow label="Layout" hint={template.layout ? "wrapped in the shared mail layout" : undefined}>
+                      {template.layout ? "Yes" : "No"}
+                    </DetailRow>
+                    <DetailRow label="Editor">{template.editor || "—"}</DetailRow>
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title="Access">
+                  <DetailList>
+                    <DetailRow label="Who can send it">
+                      <SendRuleBadge sendRule={template.sendRule} />
+                    </DetailRow>
+                    {template.sendRule ? (
+                      <DetailRow label="Send rule">
+                        <span className="font-mono text-xs break-all">{template.sendRule}</span>
+                      </DetailRow>
+                    ) : null}
+                  </DetailList>
+                </DetailSection>
+                <DetailSection title="Timing">
+                  <DetailList>
+                    <DetailRow label="Edited" hint={template.updated ? new Date(template.updated).toLocaleString() : undefined}>
+                      <TimeAgo value={template.updated} />
+                    </DetailRow>
+                    <DetailRow label="Created" hint={template.created ? new Date(template.created).toLocaleString() : undefined}>
+                      <TimeAgo value={template.created} />
+                    </DetailRow>
+                  </DetailList>
+                </DetailSection>
+              </DetailBody>
+            </DetailTabPanel>
+            <DetailTabPanel value="source">
+              <DetailBody>
+                <CodeBlock title="HTML" plain={template.html} copyLabel="Copy HTML" />
+                <CodeBlock title="Plain text" plain={template.text} copyLabel="Copy text" />
+              </DetailBody>
+            </DetailTabPanel>
+          </DetailTabs>
+        </>
+      ) : null}
+    </DetailSheet>
+  );
+}
+
 /**
  * List of `_emailTemplates` rows — the emails this instance sends, and
  * (via `sendRule`) who besides a superuser/API key may trigger one
@@ -73,19 +253,11 @@ export function EmailTemplatesPage() {
   const [kind, setKind] = useState<KindFilter>("all");
   const [deleteTarget, setDeleteTarget] = useState<TemplateRecord | null>(null);
 
-  const [previewTarget, setPreviewTarget] = useState<TemplateRecord | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const { data, isPending, error, refetch } = useQuery({
     queryKey: ["email-templates"],
     queryFn: () => cb.collection("_emailTemplates").fullList({ sort: "key,locale" }) as unknown as Promise<TemplateRecord[]>,
-  });
-
-  const preview = useQuery({
-    queryKey: ["email-templates", "preview", previewTarget?.id, previewTarget?.updated],
-    queryFn: () =>
-      cb.mails.preview({ template: previewTarget!.key, locale: previewTarget!.locale || undefined }),
-    enabled: previewTarget !== null,
-    retry: false,
   });
 
   const duplicate = useMutation({
@@ -146,6 +318,12 @@ export function EmailTemplatesPage() {
     });
   }, [templates, q, kind]);
   const item = settingsItemFor("/settings/email-templates")!;
+  const selectedIndex = selectedId ? visible.findIndex((t) => t.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? visible[selectedIndex] : null;
+  function step(delta: -1 | 1) {
+    const next = visible[selectedIndex + delta];
+    if (next) setSelectedId(next.id);
+  }
   const deleteIsReset = deleteTarget ? isSystemTemplate(deleteTarget) : false;
 
 
@@ -232,7 +410,24 @@ export function EmailTemplatesPage() {
               {visible.map((template) => {
                 const system = isSystemTemplate(template);
                 return (
-                  <TableRow key={template.id}>
+                  <TableRow
+                    key={template.id}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`${template.key}, open details`}
+                    data-state={template.id === selectedId ? "selected" : undefined}
+                    onClick={(event) => {
+                      if ((event.target as HTMLElement).closest("a,button")) return;
+                      setSelectedId(template.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        setSelectedId(template.id);
+                      }
+                    }}
+                    className="cursor-pointer"
+                  >
                     <TableCell>
                       <div className="flex flex-col">
                         <Link
@@ -265,7 +460,7 @@ export function EmailTemplatesPage() {
                           size="icon-sm"
                           aria-label={`Preview ${template.key}`}
                           title="Preview"
-                          onClick={() => setPreviewTarget(template)}
+                          onClick={() => setSelectedId(template.id)}
                         >
                           <Eye />
                         </Button>
@@ -303,50 +498,16 @@ export function EmailTemplatesPage() {
         </div>
       )}
 
-      <Dialog open={previewTarget !== null} onOpenChange={(open) => !open && setPreviewTarget(null)}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="font-mono">{previewTarget?.key}</DialogTitle>
-            <DialogDescription>
-              Rendered by the server with no template data, so variables may show empty. Open the editor to preview
-              with sample data.
-            </DialogDescription>
-          </DialogHeader>
-          {preview.isPending ? (
-            <Skeleton className="h-96 w-full" />
-          ) : preview.error ? (
-            <ErrorState compact title="Couldn't render the preview" error={preview.error} onRetry={() => void preview.refetch()} />
-          ) : (
-            <div className="flex flex-col gap-2">
-              <p className="truncate text-sm">
-                <span className="text-muted-foreground">Subject: </span>
-                {preview.data?.subject}
-              </p>
-              <iframe
-                title={`Preview of ${previewTarget?.key ?? "template"}`}
-                srcDoc={preview.data?.html ?? ""}
-                // Untrusted HTML: no scripts, no same-origin, no popups. White
-                // like a mail client, regardless of the admin theme.
-                sandbox=""
-                className="h-96 w-full rounded-md border border-border bg-white"
-              />
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPreviewTarget(null)}>
-              Close
-            </Button>
-            {previewTarget ? (
-              <Button asChild>
-                <Link to="/settings/email-templates/$id" params={{ id: previewTarget.id }}>
-                  <Pencil />
-                  Edit template
-                </Link>
-              </Button>
-            ) : null}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <TemplateDetailSheet
+        template={selected}
+        index={selectedIndex}
+        total={visible.length}
+        onClose={() => setSelectedId(null)}
+        onStep={step}
+        onDuplicate={(template) => duplicate.mutate(template)}
+        duplicating={duplicate.isPending}
+        onDelete={setDeleteTarget}
+      />
 
       <TypedConfirmDialog
         open={deleteTarget !== null && !deleteIsReset}
