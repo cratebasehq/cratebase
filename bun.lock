@@ -7,7 +7,7 @@
     },
     "packages/create-cratebase": {
       "name": "create-cratebase",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "bin": {
         "create-cratebase": "./dist/cli.js",
       },
