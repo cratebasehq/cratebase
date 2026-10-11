@@ -184,7 +184,14 @@ jobs:
       # — covers `web/admin`, `web/email`, `packages/create-cratebase`, and
       # `sdk/js/{client,react,start,schema}` (see the root `package.json`
       # workspace list) in one pass.
-      - run: bun audit --audit-level=high
+      # GHSA-vfj7-8cjw-p6xm (braces <=3.0.3, stack exhaustion on deeply
+      # nested glob patterns) has no patched release upstream (3.0.3 is
+      # the latest). It is reachable only through the `shadcn` CLI ->
+      # fast-glob -> micromatch, dev-time scaffolding code: the dashboard
+      # imports only `shadcn/tailwind.css`, and braces never ships in
+      # `web/admin/dist` or sees untrusted patterns.
+      # Re-check this ignore when `braces` publishes a fix.
+      - run: bun audit --audit-level=high --ignore=GHSA-vfj7-8cjw-p6xm
 
   docker:
     runs-on: ubuntu-latest
