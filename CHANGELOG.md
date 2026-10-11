@@ -2,13 +2,15 @@
 
 All notable changes to this project are documented in this file. The
 format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project is pre-1.0 (currently `0.6.0`, per `Cargo.toml`); the 0.1.0
+This project is pre-1.0 (currently `0.7.0`, per `Cargo.toml`); the 0.1.0
 entries below are grouped by merged pull request rather than by release
 tag, reconstructed from the actual merge history (`git log --merges` /
 `gh pr list --state merged`) on this repository, since they predate the
 first real tagged release.
 
 ## [Unreleased]
+
+## 0.7.0 — 2026-10-11
 
 ### BREAKING — Cratebase is now fully its own API
 
