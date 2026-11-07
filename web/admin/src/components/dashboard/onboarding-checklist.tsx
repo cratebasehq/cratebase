@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Check, ChevronDown, ListChecks, X } from "lucide-react";
@@ -169,6 +169,17 @@ function hasSignInMethod(collection: CollectionModel): boolean {
 export function OnboardingChecklist({ collections }: { collections: CollectionModel[] | undefined }) {
   const [dismissed, setDismissed] = useState(() => readDismissed());
   const [manualDone, setManualDone] = useState(() => readManualDone());
+  // Another tab dismissing or ticking an item should be reflected here, not
+  // overwritten the next time this tab writes.
+  useEffect(() => {
+    function onStorage(event: StorageEvent) {
+      if (event.key !== null && event.key !== DISMISSED_KEY && event.key !== MANUAL_DONE_KEY) return;
+      setDismissed(readDismissed());
+      setManualDone(readManualDone());
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   const [open, setOpen] = useState(true);
   const [brandingOpen, setBrandingOpen] = useState(false);
 

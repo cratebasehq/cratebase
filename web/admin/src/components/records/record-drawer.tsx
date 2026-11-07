@@ -125,6 +125,13 @@ function buildDraft(record: RecordModel | null, fields: FieldSchema[], identityF
 /** Bool fields worth a status chip when switched on. */
 const FLAG_FIELDS = /^(published|active|enabled|archived|featured|public|verified)$/i;
 
+/** At most one confirmation is ever open; a union makes that structural. */
+type Dialog =
+  | { kind: "close" }
+  | { kind: "delete" }
+  | { kind: "ban" }
+  | { kind: "leave"; action: PendingAction };
+
 type PendingAction = { kind: "nav"; record: RecordModel } | { kind: "duplicate"; record: RecordModel };
 
 function absoluteTime(value: string): string {
@@ -184,8 +191,7 @@ export function RecordDrawer({
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitted, setSubmitted] = useState(false);
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
 
   // Opening the drawer on a different record (or reopening it) re-seeds the
   // form — adjusted during render so no frame shows the previous record.
@@ -198,7 +204,6 @@ export function RecordDrawer({
   }
 
   const [tab, setTab] = useState("fields");
-  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const { copy: copyJson } = useCopyToClipboard({ onCopy: () => toast.success("Copied record as JSON") });
 
   const { create, update, remove } = useRecordMutations(collection.name);
@@ -209,7 +214,6 @@ export function RecordDrawer({
   const isAuth = collection.type === "auth";
   const queryClient = useQueryClient();
   const [impersonateToken, setImpersonateToken] = useState<string | null>(null);
-  const [confirmBan, setConfirmBan] = useState(false);
 
   const banStatus = useQuery({
     queryKey: ["ban-status", collection.id, record?.id],
@@ -350,8 +354,11 @@ export function RecordDrawer({
   }
 
   function requestClose(next: boolean) {
-    if (!next && dirty && !pending) {
-      setConfirmClose(true);
+    // A save in flight must neither close the sheet (a failed save would
+    // lose the edits silently) nor stack a confirmation on top of itself.
+    if (!next && pending) return;
+    if (!next && dirty) {
+      setDialog({ kind: "close" });
       return;
     }
     onOpenChange(next);
@@ -468,7 +475,8 @@ export function RecordDrawer({
     else onDuplicate?.(action.record);
   }
   function guarded(action: PendingAction) {
-    if (dirty && !pending) setPendingAction(action);
+    if (pending) return;
+    if (dirty) setDialog({ kind: "leave", action });
     else runAction(action);
   }
 
@@ -613,10 +621,10 @@ export function RecordDrawer({
               { label: "Impersonate", icon: <UserCog />, onSelect: () => !impersonate.isPending && impersonate.mutate() },
               banStatus.data
                 ? { label: "Unban", icon: <ShieldUser />, onSelect: () => unban.mutate() }
-                : { label: "Ban…", icon: <Ban />, destructive: true, onSelect: () => setConfirmBan(true) },
+                : { label: "Ban…", icon: <Ban />, destructive: true, onSelect: () => setDialog({ kind: "ban" }) },
             ]
           : []),
-        { label: "Delete…", icon: <Trash2 />, destructive: true, onSelect: () => setConfirmDelete(true) },
+        { label: "Delete…", icon: <Trash2 />, destructive: true, onSelect: () => setDialog({ kind: "delete" }) },
       ]
     : [];
 
@@ -876,7 +884,7 @@ export function RecordDrawer({
         </form>
       </DetailSheet>
 
-      <AlertDialog open={confirmClose} onOpenChange={setConfirmClose}>
+      <AlertDialog open={dialog?.kind === "close"} onOpenChange={(next) => !next && setDialog(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Discard this edit?</AlertDialogTitle>
@@ -891,7 +899,7 @@ export function RecordDrawer({
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
-                setConfirmClose(false);
+                setDialog(null);
                 onOpenChange(false);
               }}
             >
@@ -901,12 +909,12 @@ export function RecordDrawer({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={pendingAction !== null} onOpenChange={(next) => !next && setPendingAction(null)}>
+      <AlertDialog open={dialog?.kind === "leave"} onOpenChange={(next) => !next && setDialog(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
             <AlertDialogDescription>
-              {pendingAction?.kind === "duplicate"
+              {dialog?.kind === "leave" && dialog.action.kind === "duplicate"
                 ? "Duplicating starts from the saved record, so your edits to this one are lost."
                 : "Moving to another record loses the edits you haven't saved."}
             </AlertDialogDescription>
@@ -916,8 +924,8 @@ export function RecordDrawer({
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
-                const action = pendingAction;
-                setPendingAction(null);
+                const action = dialog?.kind === "leave" ? dialog.action : null;
+                setDialog(null);
                 if (action) runAction(action);
               }}
             >
@@ -927,7 +935,7 @@ export function RecordDrawer({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+      <AlertDialog open={dialog?.kind === "delete"} onOpenChange={(next) => !next && setDialog(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this record?</AlertDialogTitle>
@@ -942,7 +950,7 @@ export function RecordDrawer({
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
-                setConfirmDelete(false);
+                setDialog(null);
                 if (!record) return;
                 remove.mutate(record.id, {
                   onSuccess: () => {
@@ -962,7 +970,7 @@ export function RecordDrawer({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={confirmBan} onOpenChange={setConfirmBan}>
+      <AlertDialog open={dialog?.kind === "ban"} onOpenChange={(next) => !next && setDialog(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Ban this record?</AlertDialogTitle>
@@ -977,7 +985,7 @@ export function RecordDrawer({
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
-                setConfirmBan(false);
+                setDialog(null);
                 ban.mutate();
               }}
             >
