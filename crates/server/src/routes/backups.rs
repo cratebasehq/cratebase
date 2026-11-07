@@ -316,7 +316,7 @@ async fn write_backup(app: &App, name: &str) -> Result<(), AppError> {
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         let file = std::fs::File::create(&archive_path)?;
         let mut zip = zip::ZipWriter::new(file);
-        let options: zip::write::FileOptions<'_, ()> =
+        let options: zip::write::FileOptions<'_, '_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         add_file(&mut zip, &main_copy, main_entry_name, options)?;
@@ -363,7 +363,7 @@ fn add_file(
     zip: &mut zip::ZipWriter<std::fs::File>,
     source: &Path,
     entry: &str,
-    options: zip::write::FileOptions<'_, ()>,
+    options: zip::write::FileOptions<'_, '_, ()>,
 ) -> std::io::Result<()> {
     if !source.exists() {
         return Ok(());
@@ -378,7 +378,7 @@ fn add_tree(
     zip: &mut zip::ZipWriter<std::fs::File>,
     root: &Path,
     prefix: &str,
-    options: zip::write::FileOptions<'_, ()>,
+    options: zip::write::FileOptions<'_, '_, ()>,
 ) -> std::io::Result<()> {
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
