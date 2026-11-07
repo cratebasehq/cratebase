@@ -21,7 +21,7 @@ import { describeFailure } from "@/lib/api";
 
 /** Rendered by the router for any error thrown in a loader or a screen.
  * Before this, a failing route rendered nothing at all. */
-export function RouteError({ error, reset }: { error: Error; reset?: () => void }) {
+export function RouteError({ error, reset }: { error: unknown; reset?: () => void }) {
   const router = useRouter();
   const failure = describeFailure(error);
 
