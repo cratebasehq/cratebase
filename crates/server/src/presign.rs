@@ -349,6 +349,7 @@ pub async fn store_local_upload(app: &App, token: &str, body: bytes::Bytes) -> A
 /// `status = 'pending'`: a `consumed` ticket's key is a record's live
 /// file, never touched here even if its `expiresAt` is long past.
 pub async fn sweep_expired(app: &App) {
+    sweep_consumed(app).await;
     let now = cratebase_core::DateTime::now().to_pb_string();
     let rows = match app
         .db()
@@ -391,6 +392,69 @@ pub async fn sweep_expired(app: &App) {
     tracing::info!(swept = rows.len(), "expired pending uploads cleaned up");
 }
 
+/// How long past its expiry a `consumed` ticket is kept before the sweep
+/// inspects it. Generous: a ticket is only claimed inside its own
+/// 30-minute TTL, so anything this old is long settled.
+const CONSUMED_GRACE_SECONDS: i64 = 24 * 60 * 60;
+
+/// Reap orphaned `consumed` tickets. If the record they were claimed for
+/// no longer holds the file (the claiming write crashed after the claim,
+/// or the file was later replaced), the object and the ticket row are
+/// deleted. Tickets whose record still holds the file are left alone.
+async fn sweep_consumed(app: &App) {
+    let cutoff = cratebase_core::DateTime::from_utc(
+        chrono::Utc::now() - chrono::Duration::seconds(CONSUMED_GRACE_SECONDS),
+    )
+    .to_pb_string();
+    let rows = match app
+        .db()
+        .query(
+            r#"SELECT "id", "collectionRef", "recordRef", "filename", "key" FROM "_pendingUploads"
+               WHERE "status" = 'consumed' AND "expiresAt" < $1 LIMIT 500"#,
+            &[Sql::Text(cutoff)],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "consumed pending-upload sweep query failed");
+            return;
+        }
+    };
+    let storage = app.storage();
+    for row in &rows {
+        let (Some(id), Some(collection_ref), Some(record_ref), Some(filename), Some(key)) = (
+            row.get_str("id"),
+            row.get_str("collectionRef"),
+            row.get_str("recordRef"),
+            row.get_str("filename"),
+            row.get_str("key"),
+        ) else {
+            continue;
+        };
+        // Only delete the object when we can positively tell the record
+        // is gone or no longer references it; a lookup error means keep.
+        let orphaned = match app.db().collections.get_by_id(collection_ref) {
+            None => false,
+            Some(collection) => {
+                match records::find_by_id_raw(app.db(), &collection, record_ref).await {
+                    Ok(record) => !common::record_file_names(&record)
+                        .iter()
+                        .any(|n| n == filename),
+                    Err(e) if e.is_not_found() => true,
+                    Err(_) => continue,
+                }
+            }
+        };
+        if orphaned {
+            let _ = storage.delete(key).await;
+            // A live ticket's row is kept: the per-user quota sums
+            // consumed rows. An orphan no longer counts toward it.
+            delete_pending(app, id).await;
+        }
+    }
+}
+
 /// Resolve every `CBUP_...` token in a file field of `body.data` for
 /// `collection`/`record_id`, replacing it with the resolved file name and
 /// appending an `already_stored` [`common::StagedUpload`] to
@@ -410,6 +474,7 @@ pub async fn resolve_body_tokens(
     record_id: &str,
     body: &mut common::ParsedBody,
 ) -> ApiResult<()> {
+    let mut tickets: Vec<String> = Vec::new();
     for field in collection.fields_of_type(cratebase_core::FieldType::File) {
         let Some(value) = body.data.get(&field.name).cloned() else {
             continue;
@@ -417,7 +482,7 @@ pub async fn resolve_body_tokens(
         match value {
             Value::String(s) if is_token(&s) => {
                 let (resolved, upload) =
-                    resolve_one(app, collection, record_id, &field.name, &s).await?;
+                    resolve_one(app, collection, record_id, &field.name, &s, &mut tickets).await?;
                 body.data
                     .insert(field.name.clone(), Value::String(resolved));
                 body.uploads.push(upload);
@@ -427,8 +492,15 @@ pub async fn resolve_body_tokens(
                 for item in items {
                     match item {
                         Value::String(s) if is_token(&s) => {
-                            let (resolved, upload) =
-                                resolve_one(app, collection, record_id, &field.name, &s).await?;
+                            let (resolved, upload) = resolve_one(
+                                app,
+                                collection,
+                                record_id,
+                                &field.name,
+                                &s,
+                                &mut tickets,
+                            )
+                            .await?;
                             out.push(Value::String(resolved));
                             body.uploads.push(upload);
                         }
@@ -440,7 +512,60 @@ pub async fn resolve_body_tokens(
             _ => {}
         }
     }
+    body.presign_tickets.extend(tickets);
     Ok(())
+}
+
+/// Atomically claim every ticket validated by [`resolve_body_tokens`]
+/// (`pending` -> `consumed`, guarded by `AND status = 'pending'` and a
+/// rows-affected check, so two concurrent requests can never both win the
+/// same ticket). Called by the record handlers right before the write; a
+/// lost race rejects the request and releases anything already claimed.
+/// Pair with [`release_tickets`] if the write then fails.
+pub async fn claim_tickets(app: &App, ids: &[String]) -> ApiResult<()> {
+    let mut claimed: Vec<String> = Vec::new();
+    for id in ids {
+        let affected = app
+            .db()
+            .execute(
+                r#"UPDATE "_pendingUploads" SET "status" = 'consumed'
+                   WHERE "id" = $1 AND "status" = 'pending'"#,
+                &[Sql::Text(id.clone())],
+            )
+            .await;
+        match affected {
+            Ok(1) => claimed.push(id.clone()),
+            other => {
+                release_tickets(app, &claimed).await;
+                return match other {
+                    Ok(_) => Err(ApiError::bad_request(
+                        "This upload token has already been used.",
+                    )),
+                    Err(e) => Err(ApiError::internal(e.to_string())),
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Put claimed tickets back to `pending` after the record write failed,
+/// so the client can retry with the same token and the uploaded object is
+/// not orphaned. Guarded on `status = 'consumed'`.
+pub async fn release_tickets(app: &App, ids: &[String]) {
+    for id in ids {
+        if let Err(e) = app
+            .db()
+            .execute(
+                r#"UPDATE "_pendingUploads" SET "status" = 'pending'
+                   WHERE "id" = $1 AND "status" = 'consumed'"#,
+                &[Sql::Text(id.clone())],
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to release a pending upload ticket");
+        }
+    }
 }
 
 /// Resolve one token into its final file name plus a
@@ -453,6 +578,7 @@ async fn resolve_one(
     record_id: &str,
     field_name: &str,
     token: &str,
+    tickets: &mut Vec<String>,
 ) -> ApiResult<(String, common::StagedUpload)> {
     let pending = find_pending(app, token)
         .await
@@ -490,17 +616,7 @@ async fn resolve_one(
         )));
     }
 
-    if let Err(e) = app
-        .db()
-        .execute(
-            r#"UPDATE "_pendingUploads" SET "status" = 'consumed' WHERE "id" = $1"#,
-            &[Sql::Text(pending.id.clone())],
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "failed to mark a pending upload consumed");
-    }
-
+    tickets.push(pending.id.clone());
     let upload = common::StagedUpload::already_stored(
         field_name.to_string(),
         pending.filename.clone(),

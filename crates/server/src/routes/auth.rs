@@ -1066,7 +1066,7 @@ async fn confirm_verification(
     let structural = cratebase_auth::decode_unverified(&body.token)
         .ok()
         .filter(|c| c.token_type == cratebase_auth::TokenType::Verification && c.email().is_some());
-    let Some(_) = &structural else {
+    let Some(claims) = &structural else {
         let mut errors = BTreeMap::new();
         errors.insert(
             "token".into(),
@@ -1090,6 +1090,20 @@ async fn confirm_verification(
         );
         return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
     };
+
+    // The token was minted for a specific address. If the record's email
+    // has changed since, it must not verify the *new* address (the owner
+    // of the old mailbox could otherwise verify an address they never
+    // controlled). Not single-use via `tokenKey` rotation: that would sign
+    // the user out everywhere, and replaying a verification is idempotent.
+    if claims.email() != Some(record.email().as_str()) {
+        let mut errors = BTreeMap::new();
+        errors.insert(
+            "token".into(),
+            FieldError::new(codes::INVALID_TOKEN, "Invalid or expired token."),
+        );
+        return Err(ApiError(AppError::validation(VALIDATION_FAILED, errors)));
+    }
 
     fire_request_hook(&app, &collection, &info, Some(record.clone()), |h| {
         &h.on_record_confirm_verification_request
@@ -1463,41 +1477,38 @@ pub async fn create_otp(
     let mut row = Record::new(otps.clone());
     row.set("collectionRef", Value::String(collection.id.clone()));
     row.set("recordRef", Value::String(record_id.to_string()));
-    // A non-blank placeholder so `records::create`'s required-field check
-    // passes; overwritten below with the real (SHA-256, not Argon2 — see
-    // `cratebase_auth::hash_otp`) hash.
-    row.set("password", Value::String(code.clone()));
+    // `records::create` Argon2-hashes a `password` field's plaintext, which
+    // is pointless for a short-lived OTP (see `cratebase_auth::hash_otp`),
+    // so the row is inserted with a constant non-blank placeholder (never
+    // the code) and the SHA-256 hash is written over it in the *same
+    // transaction*. The plaintext code is never stored, and no committed
+    // row can ever hold the placeholder.
+    row.set("password", Value::String("pending".to_string()));
     row.set("sentTo", Value::String(sent_to.to_string()));
-    records::create(app.db(), &app.db().collections, &mut row).await?;
-    overwrite_otp_hash(app, &otps, row.id(), &code).await?;
-    Ok((row.id().to_string(), code))
-}
-
-/// Overwrites `_otps.password` with [`cratebase_auth::hash_otp`]'s fast
-/// SHA-256, bypassing the column's usual Argon2id hashing — an OTP is
-/// single-use and discarded within minutes, so the slow hash buys
-/// nothing but latency (see `cratebase_auth::otp` module docs).
-async fn overwrite_otp_hash(
-    app: &App,
-    otps: &Arc<Collection>,
-    id: &str,
-    code: &str,
-) -> Result<(), AppError> {
+    let hash = cratebase_auth::hash_otp(&code);
     let sql = format!(
         "UPDATE {} SET \"password\" = $1 WHERE \"id\" = $2",
         cratebase_db::quote_ident(otps.table_name())
     );
-    app.db()
-        .execute(
-            &sql,
-            &[
-                cratebase_db::Sql::Text(cratebase_auth::hash_otp(code)),
-                cratebase_db::Sql::Text(id.to_string()),
-            ],
-        )
-        .await
-        .map(|_| ())
-        .map_err(AppError::from)
+    let id = app
+        .run_in_transaction(|tx| async move {
+            let mut row = row;
+            records::create(&tx, &tx.app().db().collections, &mut row)
+                .await
+                .map_err(AppError::from)?;
+            tx.execute(
+                &sql,
+                &[
+                    cratebase_db::Sql::Text(hash),
+                    cratebase_db::Sql::Text(row.id().to_string()),
+                ],
+            )
+            .await
+            .map_err(AppError::from)?;
+            Ok(row.id().to_string())
+        })
+        .await?;
+    Ok((id, code))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1576,9 +1587,17 @@ async fn auth_with_otp(
         // still pending and retry until it expires or succeeds.
         return Err(ApiError::bad_request("Invalid or expired OTP."));
     }
+    // The DELETE is the claim: `records::delete` reports `NotFound` when it
+    // removed no row, so of two concurrent requests with the same correct
+    // code only one gets past here.
+    //
+    // The OTP is consumed *before* the MFA gate: it is the first factor,
+    // and a login that stops at `401 {mfaId}` has spent it (the user
+    // requests a new code). Deferring the delete would make a code
+    // reusable across the MFA window, which is the worse trade.
     records::delete(app.db(), &app.db().collections, &otp_row)
         .await
-        .map_err(|e| ApiError(e.into()))?;
+        .map_err(|_| ApiError::bad_request("Invalid or expired OTP."))?;
 
     let mut record =
         records::find_by_id_raw(app.db(), &collection, &otp_row.get_string("recordRef"))
@@ -1803,9 +1822,12 @@ async fn auth_with_magic_link(
         None => true,
     };
     // Single-use either way — see the function doc.
+    // The DELETE is the claim (`NotFound` on zero rows), so two concurrent
+    // requests with the same token cannot both succeed. Consumed before the
+    // MFA gate, same reasoning as `auth_with_otp`.
     records::delete(app.db(), &app.db().collections, &row)
         .await
-        .map_err(|e| ApiError(e.into()))?;
+        .map_err(|_| ApiError::bad_request(MAGIC_LINK_INVALID))?;
     if expired {
         return Err(ApiError::bad_request(MAGIC_LINK_INVALID));
     }
@@ -2777,7 +2799,23 @@ pub(crate) async fn mfa_gate(
                     "A different authentication method is required.",
                 ));
             }
-            let _ = records::delete(app.db(), &app.db().collections, &row).await;
+            // The sweep cron only runs hourly, so the challenge's own age is
+            // enforced here; same window the sweep uses.
+            let ttl = if collection.auth.mfa.enabled {
+                collection.auth.mfa.duration.max(600)
+            } else {
+                600
+            };
+            let expired = match row.get_datetime("created") {
+                Some(created) => (chrono::Utc::now() - created.inner()).num_seconds() > ttl,
+                None => true,
+            };
+            // Single-use: only the request whose DELETE removes the row
+            // passes (`records::delete` is `NotFound` on zero rows).
+            let consumed = records::delete(app.db(), &app.db().collections, &row).await;
+            if expired || consumed.is_err() {
+                return Err(ApiError::bad_request("Invalid or expired MFA session."));
+            }
             Ok(MfaGate::Passed)
         }
     }

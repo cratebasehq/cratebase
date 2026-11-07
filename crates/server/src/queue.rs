@@ -754,6 +754,10 @@ struct ClaimedJob {
     payload: Value,
     attempts: i64,
     max_attempts: i64,
+    /// The `startedAt` this claim wrote. Write-backs match on it so a
+    /// worker whose job was reclaimed (and possibly re-run) cannot
+    /// overwrite the newer run's state.
+    started_at: String,
 }
 
 /// [`reclaim_stale`] then [`claim_next`] + run. Called on every tick of
@@ -776,23 +780,47 @@ async fn reclaim_stale(app: &App, stale_timeout: Duration) {
         DateTime::now().inner()
             - chrono::Duration::from_std(stale_timeout).unwrap_or(chrono::Duration::zero()),
     );
-    let reclaimed = app
-        .db()
-        .execute(
-            &format!(
-                r#"UPDATE "{COLLECTION}" SET "status" = $1 WHERE "status" = $2 AND "startedAt" <= $3"#
+    // A reclaimed run counts as an attempt (it started and never reported
+    // back), so a job that crashes its worker every time eventually
+    // dead-letters instead of looping forever. `startedAt` is cleared so
+    // the stale claim can no longer be matched by a late write-back.
+    let statements = [
+        // Out of attempts: dead-letter.
+        (
+            format!(
+                r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = "attempts" + 1,
+                   "startedAt" = '', "lastError" = 'worker lost (stale in_progress job)'
+                   WHERE "status" = $2 AND "startedAt" <= $3 AND "attempts" + 1 >= "maxAttempts""#
             ),
-            &[
-                Sql::from(STATUS_PENDING),
-                Sql::from(STATUS_IN_PROGRESS),
-                Sql::from(cutoff.to_pb_string()),
-            ],
-        )
-        .await;
-    match reclaimed {
-        Ok(0) => {}
-        Ok(n) => tracing::info!(count = n, "queue: reclaimed stale in-progress job(s)"),
-        Err(e) => tracing::warn!(error = %e, "queue: failed to reclaim stale jobs"),
+            STATUS_FAILED,
+        ),
+        // Otherwise back to pending.
+        (
+            format!(
+                r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = "attempts" + 1,
+                   "startedAt" = ''
+                   WHERE "status" = $2 AND "startedAt" <= $3"#
+            ),
+            STATUS_PENDING,
+        ),
+    ];
+    for (sql, to) in statements {
+        let reclaimed = app
+            .db()
+            .execute(
+                &sql,
+                &[
+                    Sql::from(to),
+                    Sql::from(STATUS_IN_PROGRESS),
+                    Sql::from(cutoff.to_pb_string()),
+                ],
+            )
+            .await;
+        match reclaimed {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(count = n, to, "queue: reclaimed stale in-progress job(s)"),
+            Err(e) => tracing::warn!(error = %e, "queue: failed to reclaim stale jobs"),
+        }
     }
 }
 
@@ -840,7 +868,7 @@ async fn claim_next(app: &App) -> Result<Option<ClaimedJob>, AppError> {
                 ),
                 &[
                     Sql::from(STATUS_IN_PROGRESS),
-                    Sql::from(now),
+                    Sql::from(now.clone()),
                     Sql::from(id.clone()),
                     Sql::from(STATUS_PENDING),
                 ],
@@ -859,6 +887,7 @@ async fn claim_next(app: &App) -> Result<Option<ClaimedJob>, AppError> {
             payload,
             attempts,
             max_attempts,
+            started_at: now,
         }))
     })
     .await
@@ -871,22 +900,46 @@ async fn run_job(app: &App, job: ClaimedJob, handlers: &HandlerMap, config: Tick
         None => Err(format!("no handler registered for queue '{}'", job.queue)),
     };
     match result {
-        Ok(()) => mark_completed(app, &job.id).await,
+        Ok(()) => mark_completed(app, &job).await,
         Err(err) => mark_failed_or_retry(app, &job, &err, config).await,
     }
 }
 
-async fn mark_completed(app: &App, id: &str) {
-    if let Err(e) = app
-        .db()
-        .execute(
-            &format!(r#"UPDATE "{COLLECTION}" SET "status" = $1 WHERE "id" = $2"#),
-            &[Sql::from(STATUS_COMPLETED), Sql::from(id)],
-        )
-        .await
-    {
-        tracing::warn!(error = %e, job = %id, "queue: failed to mark job completed");
+/// Write back a run's outcome only if this worker still owns the claim
+/// (`in_progress` with the `startedAt` it wrote). A zero-row update means
+/// the job was reclaimed, deleted or re-claimed meanwhile, and the stale
+/// outcome is discarded.
+async fn finish_guarded(app: &App, job: &ClaimedJob, set_sql: &str, mut params: Vec<Sql>) {
+    let n = params.len();
+    let sql = format!(
+        r#"UPDATE "{COLLECTION}" SET {set_sql} WHERE "id" = ${} AND "status" = ${} AND "startedAt" = ${}"#,
+        n + 1,
+        n + 2,
+        n + 3
+    );
+    params.push(Sql::from(job.id.clone()));
+    params.push(Sql::from(STATUS_IN_PROGRESS));
+    params.push(Sql::from(job.started_at.clone()));
+    match app.db().execute(&sql, &params).await {
+        Ok(0) => tracing::warn!(
+            job = %job.id,
+            "queue: job was reclaimed or removed while running; discarding its outcome"
+        ),
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, job = %job.id, "queue: failed to write back job outcome")
+        }
     }
+}
+
+async fn mark_completed(app: &App, job: &ClaimedJob) {
+    finish_guarded(
+        app,
+        job,
+        r#""status" = $1"#,
+        vec![Sql::from(STATUS_COMPLETED)],
+    )
+    .await;
 }
 
 /// `min(2^attempts * base, max)`, clamping the exponent so a very large
@@ -902,45 +955,36 @@ fn backoff_delay(attempts: i64, base: Duration, max: Duration) -> Duration {
 
 async fn mark_failed_or_retry(app: &App, job: &ClaimedJob, error: &str, config: TickConfig) {
     let attempts = job.attempts + 1;
-    let result = if attempts >= job.max_attempts {
-        app.db()
-            .execute(
-                &format!(
-                    r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = $2, "lastError" = $3
-                       WHERE "id" = $4"#
-                ),
-                &[
-                    Sql::from(STATUS_FAILED),
-                    Sql::from(attempts),
-                    Sql::from(error),
-                    Sql::from(job.id.clone()),
-                ],
-            )
-            .await
+    if attempts >= job.max_attempts {
+        finish_guarded(
+            app,
+            job,
+            r#""status" = $1, "attempts" = $2, "lastError" = $3"#,
+            vec![
+                Sql::from(STATUS_FAILED),
+                Sql::from(attempts),
+                Sql::from(error),
+            ],
+        )
+        .await;
     } else {
         let delay = backoff_delay(attempts, config.base_delay, config.max_delay);
         let run_after = DateTime::from_utc(
             DateTime::now().inner()
                 + chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::zero()),
         );
-        app.db()
-            .execute(
-                &format!(
-                    r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = $2, "lastError" = $3,
-                       "runAfter" = $4 WHERE "id" = $5"#
-                ),
-                &[
-                    Sql::from(STATUS_PENDING),
-                    Sql::from(attempts),
-                    Sql::from(error),
-                    Sql::from(run_after.to_pb_string()),
-                    Sql::from(job.id.clone()),
-                ],
-            )
-            .await
-    };
-    if let Err(e) = result {
-        tracing::warn!(error = %e, job = %job.id, "queue: failed to write back job outcome");
+        finish_guarded(
+            app,
+            job,
+            r#""status" = $1, "attempts" = $2, "lastError" = $3, "runAfter" = $4, "startedAt" = ''"#,
+            vec![
+                Sql::from(STATUS_PENDING),
+                Sql::from(attempts),
+                Sql::from(error),
+                Sql::from(run_after.to_pb_string()),
+            ],
+        )
+        .await;
     }
 }
 
@@ -990,6 +1034,10 @@ pub async fn retry_job(app: &App, id: &str) -> Result<(), AppError> {
 /// unlike [`retry_job`] this isn't limited to the dead-letter case, since
 /// deleting a row a caller no longer cares about (a stale `pending`
 /// duplicate, an old `completed` row) is unambiguous regardless of state.
+/// The one exception is `in_progress`: a worker is running it right now, so
+/// deleting it would let that run's side effects happen with no row to
+/// record them against. That is rejected; once the stale timeout reclaims
+/// it (or it finishes) it can be deleted.
 pub async fn delete_job(app: &App, id: &str) -> Result<(), AppError> {
     if app.db().collections.get_by_name(COLLECTION).is_none() {
         return Err(AppError::not_found("Missing or invalid queue job."));
@@ -997,13 +1045,26 @@ pub async fn delete_job(app: &App, id: &str) -> Result<(), AppError> {
     let deleted = app
         .db()
         .execute(
-            &format!(r#"DELETE FROM "{COLLECTION}" WHERE "id" = $1"#),
-            &[Sql::from(id)],
+            &format!(r#"DELETE FROM "{COLLECTION}" WHERE "id" = $1 AND "status" <> $2"#),
+            &[Sql::from(id), Sql::from(STATUS_IN_PROGRESS)],
         )
         .await
         .map_err(AppError::from)?;
     if deleted == 0 {
-        return Err(AppError::not_found("Missing or invalid queue job."));
+        let exists = app
+            .db()
+            .query_one(
+                &format!(r#"SELECT "id" FROM "{COLLECTION}" WHERE "id" = $1"#),
+                &[Sql::from(id)],
+            )
+            .await
+            .map_err(AppError::from)?
+            .is_some();
+        return Err(if exists {
+            AppError::bad_request("an in-progress job cannot be deleted.")
+        } else {
+            AppError::not_found("Missing or invalid queue job.")
+        });
     }
     Ok(())
 }
@@ -1180,6 +1241,52 @@ mod tests {
 
         let row = job_row(&app, &id).await;
         assert_eq!(row.get_str("status"), Some(STATUS_COMPLETED));
+    }
+
+    #[tokio::test]
+    async fn a_reclaimed_workers_late_outcome_is_discarded_and_reclaim_counts_attempts() {
+        let (app, _dir) = test_app().await;
+        let id = enqueue_job(&app, "slow", 3).await;
+        let claimed = claim_next(&app).await.unwrap().expect("claimed");
+        assert_eq!(claimed.id, id);
+
+        // The worker stalls past the stale timeout and the job is reclaimed.
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        reclaim_stale(&app, Duration::ZERO).await;
+        let row = job_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(1));
+
+        // Its late completion must not overwrite the reclaimed state.
+        mark_completed(&app, &claimed).await;
+        let row = job_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
+
+        // A job that keeps losing its worker dead-letters.
+        let again = claim_next(&app).await.unwrap().expect("reclaimed job");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        reclaim_stale(&app, Duration::ZERO).await;
+        let _ = again;
+        let again = claim_next(&app).await.unwrap().expect("third claim");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        reclaim_stale(&app, Duration::ZERO).await;
+        let _ = again;
+        let row = job_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_FAILED));
+        assert_eq!(row.get_i64("attempts"), Some(3));
+    }
+
+    #[tokio::test]
+    async fn an_in_progress_job_cannot_be_deleted() {
+        let (app, _dir) = test_app().await;
+        let id = enqueue_job(&app, "busy", 3).await;
+        claim_next(&app).await.unwrap().expect("claimed");
+        assert!(delete_job(&app, &id).await.is_err());
+        assert_eq!(
+            job_row(&app, &id).await.get_str("status"),
+            Some(STATUS_IN_PROGRESS)
+        );
+        assert!(delete_job(&app, "nope").await.is_err());
     }
 
     #[tokio::test]

@@ -343,7 +343,13 @@ pub async fn store_uploads(
             remove_keys(storage, &written).await;
             return Err(e);
         }
-        written.push(key);
+        // A presigned upload's object is owned by its ticket, which the
+        // handler releases on failure, so it is not rolled back here: the
+        // client can retry with the same token, and the expiry sweep
+        // removes it if they never do.
+        if !matches!(upload.data, StagedData::AlreadyStored) {
+            written.push(key);
+        }
     }
     Ok(written)
 }
@@ -396,6 +402,11 @@ pub fn record_file_names(record: &Record) -> Vec<String> {
 pub struct ParsedBody {
     pub data: Map<String, Value>,
     pub uploads: Vec<StagedUpload>,
+    /// `_pendingUploads` ids whose tokens were validated by
+    /// `presign::resolve_body_tokens` but not yet claimed. The handler
+    /// claims them atomically right before the write and releases them
+    /// if the write fails.
+    pub presign_tickets: Vec<String>,
 }
 
 impl ParsedBody {
@@ -415,6 +426,7 @@ pub fn parse_json_body(bytes: &[u8]) -> ApiResult<ParsedBody> {
         Ok(Value::Object(data)) => Ok(ParsedBody {
             data,
             uploads: Vec::new(),
+            presign_tickets: Vec::new(),
         }),
         Ok(Value::Null) => Ok(ParsedBody::default()),
         Ok(_) | Err(_) => Err(ApiError(AppError::bad_request(""))),

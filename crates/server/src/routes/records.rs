@@ -654,9 +654,16 @@ pub(crate) async fn create_record(
     )
     .await?;
 
+    crate::presign::claim_tickets(&app, &body.presign_tickets).await?;
     let storage = app.storage();
     let stored =
-        common::store_uploads(&storage, &collection.id, record.id(), &body.uploads).await?;
+        match common::store_uploads(&storage, &collection.id, record.id(), &body.uploads).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                crate::presign::release_tickets(&app, &body.presign_tickets).await;
+                return Err(e);
+            }
+        };
     let uploads = body.upload_meta();
 
     let saved = run_request(
@@ -684,6 +691,7 @@ pub(crate) async fn create_record(
         Ok(saved) => saved,
         Err(e) => {
             common::remove_keys(&storage, &stored).await;
+            crate::presign::release_tickets(&app, &body.presign_tickets).await;
             return Err(common::relabel_upload_errors(e, &body.uploads));
         }
     };
@@ -798,8 +806,26 @@ pub(crate) async fn update_record(
     )
     .await?;
 
+    // Re-enabling a webhook (typically after the auto-disable tripped)
+    // starts it from a clean slate; otherwise the very next failure would
+    // immediately re-trip the threshold.
+    if collection.name == "_webhooks"
+        && !previous.get_bool("enabled")
+        && record.get_bool("enabled")
+        && !body.data.contains_key("consecutiveFailures")
+    {
+        record.set("consecutiveFailures", Value::from(0));
+    }
+
+    crate::presign::claim_tickets(&app, &body.presign_tickets).await?;
     let storage = app.storage();
-    let stored = common::store_uploads(&storage, &collection.id, &id, &body.uploads).await?;
+    let stored = match common::store_uploads(&storage, &collection.id, &id, &body.uploads).await {
+        Ok(stored) => stored,
+        Err(e) => {
+            crate::presign::release_tickets(&app, &body.presign_tickets).await;
+            return Err(e);
+        }
+    };
     let uploads = body.upload_meta();
 
     let before = previous.clone();
@@ -845,6 +871,7 @@ pub(crate) async fn update_record(
         Ok(saved) => saved,
         Err(e) => {
             common::remove_keys(&storage, &stored).await;
+            crate::presign::release_tickets(&app, &body.presign_tickets).await;
             return Err(common::relabel_upload_errors(e, &body.uploads));
         }
     };

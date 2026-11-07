@@ -409,3 +409,38 @@ async fn a_superuser_can_reset_someones_totp_via_the_generic_collection_api() {
     assert_eq!(status, StatusCode::OK, "{body:?}");
     let _ = id;
 }
+
+/// Two simultaneous logins presenting the same backup code (each with its
+/// own MFA challenge) must not both succeed: the code is consumed by a
+/// compare-and-swap, so exactly one request wins.
+#[tokio::test]
+async fn concurrent_use_of_one_backup_code_succeeds_exactly_once() {
+    let h = Harness::new().await;
+    let id = h.create_user("jo@example.com").await;
+    let token = h.token_for(&id).await;
+    let (_secret, backup_codes) = h.enable_totp(&token).await;
+    let backup = backup_codes[0].clone();
+
+    let (_, a) = h.login("jo@example.com").await;
+    let (_, b) = h.login("jo@example.com").await;
+    let a = a["mfaId"].as_str().unwrap().to_string();
+    let b = b["mfaId"].as_str().unwrap().to_string();
+
+    let call = |mfa_id: String| {
+        let backup = backup.clone();
+        let h = &h;
+        async move {
+            h.request(
+                "POST",
+                "/api/collections/users/auth-with-totp",
+                None,
+                json!({ "mfaId": mfa_id, "code": backup }),
+            )
+            .await
+            .0
+        }
+    };
+    let (sa, sb) = tokio::join!(call(a), call(b));
+    let ok = [sa, sb].iter().filter(|s| **s == StatusCode::OK).count();
+    assert_eq!(ok, 1, "{sa} / {sb}");
+}

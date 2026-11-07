@@ -63,6 +63,9 @@ pub const JOB_NOTIFICATIONS_CLEANUP: &str = "__cbNotificationsCleanup__";
 /// drops presigned-upload tickets that expired without being claimed,
 /// and best-effort deletes the object they reserved. Cratebase-only.
 pub const JOB_PENDING_UPLOADS_SWEEP: &str = "__cbPendingUploadsSweep__";
+/// Hourly reclaim of `_cronRuns` rows stuck in `running` after a crash
+/// (`crate::cron_history::reclaim_stuck_runs`). Cratebase-only.
+pub const JOB_CRON_RUNS_RECLAIM: &str = "__cbCronRunsReclaim__";
 
 #[derive(Clone)]
 struct Job {

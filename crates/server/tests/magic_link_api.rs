@@ -284,3 +284,50 @@ async fn auth_methods_reports_magic_link() {
     assert_eq!(body["magicLink"]["enabled"], true);
     assert_eq!(body["magicLink"]["duration"], 600);
 }
+
+/// An OTP row never holds the plaintext code (the hash is written in the
+/// same transaction as the insert), and two concurrent submissions of the
+/// correct code yield exactly one login.
+#[tokio::test]
+async fn otp_is_stored_hashed_and_is_single_use_under_concurrency() {
+    let h = Harness::new().await;
+    let user_id = h.create_user("otp@example.com").await;
+    let (status, resp) = h
+        .request(
+            "PATCH",
+            "/api/collections/users",
+            Some(&h.superuser_token),
+            json!({ "otp": { "enabled": true } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{resp:?}");
+
+    let users = h.app.db().collections.get("users").unwrap();
+    let (otp_id, code) = cratebase_server::routes::auth::create_otp(&h.app, &users, &user_id, "")
+        .await
+        .expect("create otp");
+    let stored: String = cratebase_db::Executor::query_scalar(
+        h.app.db(),
+        r#"SELECT "password" FROM "_otps" WHERE "id" = $1"#,
+        &[cratebase_db::Sql::Text(otp_id.clone())],
+    )
+    .await
+    .unwrap()
+    .and_then(|v| v.as_str().map(str::to_string))
+    .unwrap();
+    assert_ne!(stored, code);
+    assert_ne!(stored, "pending");
+    assert_eq!(stored, cratebase_auth::hash_otp(&code));
+
+    let call = || {
+        h.request(
+            "POST",
+            "/api/collections/users/auth-with-otp",
+            None,
+            json!({ "otpId": otp_id, "password": code }),
+        )
+    };
+    let ((sa, _), (sb, _)) = tokio::join!(call(), call());
+    let ok = [sa, sb].iter().filter(|s| **s == StatusCode::OK).count();
+    assert_eq!(ok, 1, "{sa} / {sb}");
+}

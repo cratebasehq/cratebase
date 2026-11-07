@@ -964,6 +964,16 @@ impl App {
 
         let app = self.clone();
         let _ = self.inner.cron.add(
+            cron::JOB_CRON_RUNS_RECLAIM,
+            "0 * * * *",
+            move |_tick_at: crate::cron::TickAt| {
+                let app = app.clone();
+                async move { crate::cron_history::reclaim_stuck_runs(&app).await }
+            },
+        );
+
+        let app = self.clone();
+        let _ = self.inner.cron.add(
             cron::JOB_MAIL_LOG_CLEANUP,
             "0 */6 * * *",
             move |_tick_at: crate::cron::TickAt| {
