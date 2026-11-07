@@ -540,7 +540,7 @@ async fn render_export(app: &App, job: &ClaimedExport) -> Result<(i64, i64), Str
         let file = std::fs::File::create(&zip_path_for_blocking)
             .map_err(|e| format!("failed to create zip file: {e}"))?;
         let mut zip = zip::ZipWriter::new(file);
-        let options: zip::write::FileOptions<'_, ()> =
+        let options: zip::write::FileOptions<'_, '_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (path, entry_name) in &downloaded {
             zip.start_file(entry_name.as_str(), options)
