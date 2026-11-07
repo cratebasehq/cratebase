@@ -70,6 +70,7 @@ export function createCratebaseStart<S extends AnySchema = Record<string, Record
 
   const cache = new Map<string, { record: RecordModel; expires: number }>();
   const inflight = new Map<string, Promise<RecordModel | null>>();
+  let generation = 0;
 
   function sessionCookie(token: string, cb: CratebaseClient<S>): string {
     const secure = requestIsSecure();
@@ -114,9 +115,14 @@ export function createCratebaseStart<S extends AnySchema = Record<string, Record
     const pending = inflight.get(token);
     if (pending) return pending;
 
-    const run = (async (): Promise<RecordModel | null> => {
+    // `clearSession()` bumps `generation`; a refresh that started before
+    // it must neither populate the cache nor report a user.
+    const startGeneration = generation;
+    let run!: Promise<RecordModel | null>;
+    run = (async (): Promise<RecordModel | null> => {
       try {
         const { record } = await client().auth.refresh();
+        if (startGeneration !== generation) return null;
         if (cache.size >= CACHE_CAP && !cache.has(token)) {
           const oldest = cache.keys().next().value;
           if (oldest !== undefined) cache.delete(oldest);
@@ -124,10 +130,12 @@ export function createCratebaseStart<S extends AnySchema = Record<string, Record
         cache.set(token, { record, expires: Date.now() + cacheTtlMs });
         return record;
       } catch {
-        cache.delete(token);
+        if (startGeneration === generation) cache.delete(token);
         return null;
       } finally {
-        inflight.delete(token);
+        // Only remove our own entry: clearSession() may have dropped it
+        // and a newer refresh registered under the same token.
+        if (inflight.get(token) === run) inflight.delete(token);
       }
     })();
     inflight.set(token, run);
@@ -143,6 +151,7 @@ export function createCratebaseStart<S extends AnySchema = Record<string, Record
   }
 
   function clearSession(): void {
+    generation++;
     const token = requestToken();
     if (token) {
       cache.delete(token);

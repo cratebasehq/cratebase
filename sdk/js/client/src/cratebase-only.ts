@@ -569,6 +569,8 @@ export interface PresenceOptions {
   heartbeatMs?: number;
   staleMs?: number;
   lastSeenField?: string;
+  /** Called when a heartbeat update fails. Defaults to `console.warn`. */
+  onError?: (error: unknown) => void;
 }
 
 export interface Presence {
@@ -580,6 +582,7 @@ export interface Presence {
 interface RecordService {
   update(id: string, data: Record<string, unknown>): Promise<RecordModel>;
   create(data: Record<string, unknown>): Promise<RecordModel>;
+  delete?(id: string): Promise<unknown>;
   fullList(): Promise<RecordModel[]>;
   subscribe(
     topic: string,
@@ -638,9 +641,16 @@ export async function trackPresence(
     notify();
   });
 
+  const reportError = (err: unknown) => {
+    if (options.onError) options.onError(err);
+    else console.warn("[cratebase] presence heartbeat failed", err);
+  };
+  let stopped = false;
   const heartbeat = setInterval(() => {
     lastSeen.set(id!, Date.now());
-    void collection.update(id!, { [lastSeenField]: new Date().toISOString() });
+    collection.update(id!, { [lastSeenField]: new Date().toISOString() }).catch((err) => {
+      if (!stopped) reportError(err);
+    });
     notify();
   }, heartbeatMs);
   const sweep = setInterval(notify, Math.max(1000, Math.floor(staleMs / 4)));
@@ -655,10 +665,19 @@ export async function trackPresence(
       return () => callbacks.delete(callback);
     },
     async stop() {
+      if (stopped) return;
+      stopped = true;
       clearInterval(heartbeat);
       clearInterval(sweep);
       unsubscribeRealtime();
       callbacks.clear();
+      // Best effort: remove our row so peers see us leave immediately
+      // instead of waiting out `staleMs`.
+      try {
+        await collection.delete?.(id!);
+      } catch {
+        // Row already gone, or no delete permission — staleness covers it.
+      }
     },
   };
 }

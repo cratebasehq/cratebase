@@ -50,6 +50,9 @@ export interface SignInCodeOptions {
   createData?: Record<string, unknown>;
 }
 
+/** How long the OAuth2 popup may stay open before `signIn.social` gives up. */
+const POPUP_TIMEOUT_MS = 5 * 60_000;
+
 export type SocialMode = "redirect" | "manual" | "popup" | "pkce";
 
 export interface SignInSocialOptions {
@@ -255,14 +258,31 @@ export class AuthNamespace {
       }
       if (mode === "popup") {
         const popup = window.open(url, "cratebase-oauth2", "width=520,height=640");
-        await new Promise<void>((resolve) => {
+        const timedOut = await new Promise<boolean>((resolve) => {
+          const startedAt = Date.now();
           const timer = setInterval(() => {
-            if (!popup || popup.closed) {
+            const closed = !popup || popup.closed;
+            const expired = Date.now() - startedAt > POPUP_TIMEOUT_MS;
+            if (closed || expired) {
               clearInterval(timer);
-              resolve();
+              if (expired && !closed) {
+                try {
+                  popup?.close();
+                } catch {
+                  // Cross-origin window handles may refuse close().
+                }
+              }
+              resolve(expired && !closed);
             }
           }, 300);
         });
+        if (timedOut) {
+          throw new CratebaseError({
+            status: 0,
+            url,
+            response: { message: "Social sign-in timed out; the popup was not completed.", status: 0 },
+          });
+        }
         return this.refresh();
       }
       // "pkce": bearer-only fallback for deployments without cookie
@@ -281,13 +301,38 @@ export class AuthNamespace {
     this.store.clear();
   }
 
-  async refresh(): Promise<AuthResult> {
-    const result = await this.transport.send<AuthResult>(
-      this.basePath("auth-refresh"),
-      { method: "POST" },
-      this.authHeader,
-    );
-    return this.applyAuthResult(result);
+  private refreshInFlight: Promise<AuthResult> | undefined;
+
+  /** Single-flight: concurrent callers share one request. A 401 from the
+   * server means the session is dead, so the store is cleared rather than
+   * left holding a token that will never work again. A result that lands
+   * after the token was changed meanwhile (sign-out, another sign-in) is
+   * returned but not written, so it cannot resurrect a stale session. */
+  refresh(): Promise<AuthResult> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    const startToken = this.store.token;
+    // eslint-disable-next-line prefer-const
+    let p!: Promise<AuthResult>;
+    p = (async () => {
+      try {
+        const result = await this.transport.send<AuthResult>(
+          this.basePath("auth-refresh"),
+          { method: "POST" },
+          this.authHeader,
+        );
+        if (this.store.token !== startToken) return result;
+        return this.applyAuthResult(result);
+      } catch (err) {
+        if (err instanceof CratebaseError && err.status === 401 && this.store.token === startToken) {
+          this.store.clear();
+        }
+        throw err;
+      } finally {
+        if (this.refreshInFlight === p) this.refreshInFlight = undefined;
+      }
+    })();
+    this.refreshInFlight = p;
+    return p;
   }
 
   async methods(): Promise<AuthMethodsList> {

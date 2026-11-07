@@ -83,44 +83,60 @@ export function useRecords<T extends RecordModel = RecordModel>(
   const [records, setRecords] = useState<T[]>([]);
   const [meta, setMeta] = useState({ page: 1, perPage: 0, totalItems: 0, totalPages: 1 });
   const [loading, setLoading] = useState(enabled);
-  const [error, setError] = useState<unknown>(null);
+  // Fetch and subscribe failures are tracked separately so a successful
+  // refetch doesn't hide a dead subscription (and vice versa); `error`
+  // reports the fetch error first, else the subscribe error.
+  const [fetchError, setError] = useState<unknown>(null);
+  const [subscribeError, setSubscribeError] = useState<unknown>(null);
+  const error = fetchError ?? subscribeError;
   const [refreshNonce, setRefreshNonce] = useState(0);
   const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
 
   useEffect(() => {
     if (!enabled) {
+      // Disabled means "no data": don't keep showing the last query's rows.
+      setRecords([]);
+      setMeta({ page: 1, perPage: 0, totalItems: 0, totalPages: 1 });
+      setError(null);
+      setSubscribeError(null);
       setLoading(false);
       return;
     }
 
     let cancelled = false;
+    // Only the most recently started fetch may write state: a slow older
+    // response must not overwrite a newer one.
+    let latestRequest = 0;
     const parsedListOptions = JSON.parse(listOptionsKey) as ListOptions<T>;
     const parsedSubscribeOptions = JSON.parse(subscribeOptionsKey) as SubscribeOptions;
     const service = client.collection(collectionName);
 
     const fetchOnce = () => {
+      const request = ++latestRequest;
+      const current = () => !cancelled && request === latestRequest;
       setLoading(true);
       setError(null);
       const promise = paginated
         ? service.list(parsedListOptions).then((result) => {
-            if (cancelled) return;
+            if (!current()) return;
             setRecords(result.items as unknown as T[]);
             setMeta({ page: result.page, perPage: result.perPage, totalItems: result.totalItems, totalPages: result.totalPages });
           })
         : service.fullList(parsedListOptions).then((result) => {
-            if (cancelled) return;
+            if (!current()) return;
             setRecords(result as unknown as T[]);
             setMeta((m) => ({ ...m, ...UNPAGINATED_META, perPage: result.length, totalItems: result.length }));
           });
       promise
         .catch((err) => {
-          if (!cancelled) setError(err);
+          if (current()) setError(err);
         })
         .finally(() => {
-          if (!cancelled) setLoading(false);
+          if (current()) setLoading(false);
         });
     };
 
+    setSubscribeError(null);
     fetchOnce();
 
     let unsubscribe: (() => void) | undefined;
@@ -147,7 +163,7 @@ export function useRecords<T extends RecordModel = RecordModel>(
           };
         })
         .catch((err) => {
-          if (!cancelled) setError(err);
+          if (!cancelled) setSubscribeError(err);
         });
     }
 

@@ -17,20 +17,22 @@ import type { CratebaseClient, UploadOptions, UploadResult } from "@cratebase/cl
 import { useResolvedClient } from "./context.js";
 
 export interface UseUploadResult {
-  /** Starts an upload. Only one is tracked at a time per hook instance —
-   * calling this again while one is in flight starts a fresh one and its
-   * own `progress`, but does not cancel the previous call (use `abort()`
-   * first if that's what's wanted). */
+  /** Starts an upload. Overlapping calls are all tracked: `pending` stays
+   * `true` until every one has settled and `progress` is the mean of the
+   * overlapping uploads' progress. Starting a new one does not cancel the
+   * others (use `abort()` for that). */
   upload: (file: Blob & { name?: string }, options: UploadOptions) => Promise<UploadResult>;
-  /** 0-1 while this hook's own upload is in flight; reset to 0 when a
-   * new `upload()` call starts, and left at 1 after it succeeds. */
+  /** 0-1: mean progress of this hook's uploads in the current burst of
+   * overlapping calls; reset to 0 when a burst starts, and left at 1 after
+   * the last one succeeds. */
   progress: number;
-  /** `true` from the start of `upload()` until it settles. */
+  /** `true` from the start of the first `upload()` until the last one
+   * settles. */
   pending: boolean;
   /** The most recent failure, cleared at the start of the next `upload()`. */
   error: unknown;
-  /** Aborts the upload currently in flight, if any — a no-op otherwise.
-   * The `upload()` promise then rejects with an `AbortError`. */
+  /** Aborts every upload currently in flight — a no-op otherwise. Each
+   * `upload()` promise then rejects with an `AbortError`. */
   abort: () => void;
 }
 
@@ -39,16 +41,25 @@ export function useUpload(client?: CratebaseClient<any>): UseUploadResult {
   const [progress, setProgress] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const controllerRef = useRef<AbortController | null>(null);
+  const controllersRef = useRef<Set<AbortController>>(new Set());
+  // Per-upload fraction for the current burst of overlapping uploads.
+  const fractionsRef = useRef<Map<AbortController, number>>(new Map());
+
+  const publishProgress = useCallback(() => {
+    const values = [...fractionsRef.current.values()];
+    setProgress(values.length === 0 ? 0 : values.reduce((a, b) => a + b, 0) / values.length);
+  }, []);
 
   const abort = useCallback(() => {
-    controllerRef.current?.abort();
+    for (const controller of [...controllersRef.current]) controller.abort();
   }, []);
 
   const upload = useCallback(
     async (file: Blob & { name?: string }, options: UploadOptions): Promise<UploadResult> => {
       const controller = new AbortController();
-      controllerRef.current = controller;
+      if (controllersRef.current.size === 0) fractionsRef.current.clear();
+      controllersRef.current.add(controller);
+      fractionsRef.current.set(controller, 0);
       // A caller-supplied signal aborts this hook's own controller too,
       // so `FilesService.upload` only ever has to watch one signal.
       const callerSignal = options.signal;
@@ -60,28 +71,33 @@ export function useUpload(client?: CratebaseClient<any>): UseUploadResult {
 
       setPending(true);
       setError(null);
-      setProgress(0);
+      publishProgress();
       try {
         const result = await resolved.files.upload(file, {
           ...options,
           signal: controller.signal,
           onProgress: (fraction: number) => {
-            setProgress(fraction);
+            if (fractionsRef.current.has(controller)) {
+              fractionsRef.current.set(controller, fraction);
+              publishProgress();
+            }
             options.onProgress?.(fraction);
           },
         });
-        setPending(false);
+        fractionsRef.current.set(controller, 1);
         return result;
       } catch (err) {
-        setPending(false);
+        fractionsRef.current.delete(controller);
         setError(err);
         throw err;
       } finally {
         callerSignal?.removeEventListener("abort", onCallerAbort);
-        if (controllerRef.current === controller) controllerRef.current = null;
+        controllersRef.current.delete(controller);
+        publishProgress();
+        if (controllersRef.current.size === 0) setPending(false);
       }
     },
-    [resolved],
+    [resolved, publishProgress],
   );
 
   return { upload, progress, pending, error, abort };

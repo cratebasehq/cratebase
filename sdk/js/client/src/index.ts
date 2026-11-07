@@ -165,6 +165,14 @@ export class CratebaseClient<
     } else {
       rootStore = options.authStore ?? defaultAuthStore();
     }
+    // The SSE stream is authenticated at connect time, so a sign in/out
+    // (or token refresh) must re-open it under the new credentials.
+    let lastToken = rootStore.token;
+    rootStore.onChange((token) => {
+      if (token === lastToken) return;
+      lastToken = token;
+      this.realtime.reconnect();
+    });
     this.authNamespaces.set(this.authCollection, this.buildAuth(this.authCollection, rootStore));
     this.auth = this.authNamespaces.get(this.authCollection)!;
   }

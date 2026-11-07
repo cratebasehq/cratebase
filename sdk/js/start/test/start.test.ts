@@ -85,6 +85,18 @@ describe("getUser", () => {
     expect(await start.getUser()).toBeNull();
     expect(fetched).toHaveLength(0);
   });
+
+  test("clearSession during an in-flight refresh does not repopulate the cache", async () => {
+    const start = createCratebaseStart({ url: URL_BASE });
+    setRequest({ cookie: `cb_session=${jwt(Math.floor(Date.now() / 1000) + 3600)}` });
+    const pending = start.getUser();
+    start.clearSession();
+    expect(await pending).toBeNull();
+    // Cache must be empty: a new call hits the network again.
+    const before = fetched.length;
+    expect((await start.getUser())?.id).toBe("u1");
+    expect(fetched.length).toBe(before + 1);
+  });
 });
 
 describe("adminClient", () => {

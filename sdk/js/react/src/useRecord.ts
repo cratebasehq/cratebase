@@ -57,12 +57,19 @@ export function useRecord<T extends RecordModel = RecordModel>(
   const [deleted, setDeleted] = useState(false);
 
   useEffect(() => {
+    // New id (or disabled): never show the previous record under it.
+    setRecord(null);
+    setDeleted(false);
     if (!enabled || !id) {
       setLoading(false);
+      setError(null);
       return;
     }
 
     let cancelled = false;
+    // Once a realtime event has been applied it is newer than any fetch
+    // still in flight, so a late fetch result must not overwrite it.
+    let sawEvent = false;
     setLoading(true);
     setError(null);
     setDeleted(false);
@@ -73,7 +80,7 @@ export function useRecord<T extends RecordModel = RecordModel>(
     service
       .one(id, parsedViewOptions)
       .then((result) => {
-        if (!cancelled) setRecord(result as unknown as T);
+        if (!cancelled && !sawEvent) setRecord(result as unknown as T);
       })
       .catch((err) => {
         if (!cancelled) setError(err);
@@ -85,10 +92,13 @@ export function useRecord<T extends RecordModel = RecordModel>(
     let unsubscribe: (() => void) | undefined;
     service
       .subscribe(id, (event) => {
+        if (cancelled) return;
+        sawEvent = true;
         if (event.action === "delete") {
           setDeleted(true);
           return;
         }
+        setDeleted(false);
         setRecord(event.record as unknown as T);
       })
       .then((unsub) => {

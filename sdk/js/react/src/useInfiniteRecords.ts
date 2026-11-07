@@ -8,7 +8,7 @@
  * an activity feed where "reset to the top on new activity" is exactly
  * the desired behavior). */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CratebaseClient, ListOptions, RecordModel } from "@cratebase/client";
 import { useResolvedClient } from "./context.js";
 
@@ -64,7 +64,18 @@ export function useInfiniteRecords<T extends RecordModel = RecordModel>(
   const [error, setError] = useState<unknown>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  // Synchronous guards for `loadMore` (state is stale between a call and
+  // the next render, so two quick calls would otherwise both advance).
+  const busyRef = useRef(false);
+  const hasMoreRef = useRef(true);
+  hasMoreRef.current = hasMore;
+  // Set by the query-reset effect; tells the fetch effect that a stale
+  // `page` from the previous query is about to be reset to 1.
+  const resetPendingRef = useRef(false);
+
   const refresh = useCallback(() => {
+    busyRef.current = false;
+    setLoadingMore(false);
     setRecords([]);
     setPage(1);
     setHasMore(true);
@@ -72,15 +83,20 @@ export function useInfiniteRecords<T extends RecordModel = RecordModel>(
   }, []);
 
   const loadMore = useCallback(() => {
+    if (busyRef.current || !hasMoreRef.current) return;
+    busyRef.current = true;
     setPage((p) => p + 1);
   }, []);
 
   // Reset to page 1 whenever the query itself changes (a new filter/sort
   // shouldn't append to a list fetched under the old one).
   useEffect(() => {
+    resetPendingRef.current = true;
+    busyRef.current = false;
     setRecords([]);
     setPage(1);
     setHasMore(true);
+    setLoadingMore(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, collectionName, optionsKey, perPage, enabled]);
 
@@ -90,8 +106,16 @@ export function useInfiniteRecords<T extends RecordModel = RecordModel>(
       return;
     }
 
+    // The query just changed but `page` is still the old query's: skip;
+    // the reset effect's `setPage(1)` re-runs this effect.
+    if (resetPendingRef.current) {
+      if (page !== 1) return;
+      resetPendingRef.current = false;
+    }
+
     let cancelled = false;
     const isFirstPage = page === 1;
+    busyRef.current = true;
     if (isFirstPage) setLoading(true);
     else setLoadingMore(true);
     setError(null);
@@ -110,12 +134,14 @@ export function useInfiniteRecords<T extends RecordModel = RecordModel>(
       })
       .finally(() => {
         if (cancelled) return;
+        busyRef.current = false;
         if (isFirstPage) setLoading(false);
         else setLoadingMore(false);
       });
 
     return () => {
       cancelled = true;
+      busyRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, collectionName, optionsKey, perPage, enabled, page, refreshNonce]);
