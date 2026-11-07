@@ -79,6 +79,11 @@ async fn any_superuser_exists(executor: &dyn Executor) -> Result<bool, AppError>
 
 async fn status(State(app): State<App>) -> ApiResult<Json<Value>> {
     let needs_setup = !any_superuser_exists(app.db()).await?;
+    if needs_setup {
+        // Mint + log the install token if boot didn't (the last
+        // superuser was deleted while running).
+        app.ensure_setup_token();
+    }
     Ok(Json(json!({ "needsSetup": needs_setup })))
 }
 
@@ -132,9 +137,8 @@ async fn create_first_superuser(
     // existed... and after one was deleted without a restart (see
     // `App::init_setup_token`'s doc) — either way there is no token that
     // can satisfy this, so setup stays closed until the next boot.
-    match app.setup_token() {
-        Some(expected) if tokens_match(provided, expected) => {}
-        _ => return Err(ApiError::forbidden(BAD_TOKEN)),
+    if !tokens_match(provided, app.ensure_setup_token()) {
+        return Err(ApiError::forbidden(BAD_TOKEN));
     }
 
     let mut errors: BTreeMap<String, FieldError> = Default::default();

@@ -315,6 +315,9 @@ impl Runner {
     /// Apply every registered migration not yet in the ledger. Returns
     /// the files applied.
     pub async fn up(&self, db: &Db) -> DbResult<Vec<String>> {
+        // Held until the end of this call (dropped = rolled back =
+        // released), so two booting nodes never run migrations at once.
+        let guard = cluster_lock(db).await?;
         let done = applied(db).await?;
         let mut ran = Vec::new();
         for m in &self.migrations {
@@ -326,6 +329,7 @@ impl Runner {
             mark_applied(db, &m.file).await?;
             ran.push(m.file.clone());
         }
+        release_cluster_lock(guard).await;
         Ok(ran)
     }
 
@@ -341,6 +345,7 @@ impl Runner {
     /// registration order the moment a migration count crosses into
     /// double digits.
     pub async fn down(&self, db: &Db, n: usize) -> DbResult<Vec<String>> {
+        let guard = cluster_lock(db).await?;
         let mut done = applied(db).await?;
         done.sort_by(|a, b| {
             b.1.cmp(&a.1)
@@ -358,6 +363,7 @@ impl Runner {
             mark_reverted(db, &file).await?;
             reverted.push(file);
         }
+        release_cluster_lock(guard).await;
         Ok(reverted)
     }
 
@@ -379,6 +385,34 @@ impl Runner {
             }
         }
         Ok(out)
+    }
+}
+
+/// Arbitrary fixed key for the cross-node migration lock (the bytes
+/// `b"cb_migra"`).
+const MIGRATION_LOCK_KEY: i64 = 0x63625f6d69677261;
+
+/// On Postgres, take a transaction-scoped advisory lock on a dedicated
+/// connection and hand back the open transaction; a second node calling
+/// this blocks until the first finishes. The migrations themselves run on
+/// other pool connections. SQLite is one process (and one writer), so
+/// there is nothing to serialize.
+async fn cluster_lock(db: &Db) -> DbResult<Option<crate::engine::Transaction>> {
+    if !db.backend.is_postgres() {
+        return Ok(None);
+    }
+    let tx = db.begin().await?;
+    tx.execute(
+        "SELECT pg_advisory_xact_lock($1)",
+        &[Sql::Int(MIGRATION_LOCK_KEY)],
+    )
+    .await?;
+    Ok(Some(tx))
+}
+
+async fn release_cluster_lock(guard: Option<crate::engine::Transaction>) {
+    if let Some(tx) = guard {
+        let _ = tx.commit().await;
     }
 }
 
