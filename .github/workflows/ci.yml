@@ -30,6 +30,15 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # The service container is Postgres 16; ubuntu-latest's default
+      # pg_dump/pg_restore are newer and emit settings (e.g.
+      # `transaction_timeout`) that a 16 server rejects on restore.
+      - name: Install Postgres 16 client tools
+        run: |
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-16
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
       # rust-embed needs `web/admin/dist` and `web/email/dist` to exist
       # even for a non-dashboard build/test run (see
       # crates/server/src/dashboard.rs and crates/server/src/mail.rs).
