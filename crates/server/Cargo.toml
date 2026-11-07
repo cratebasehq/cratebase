@@ -48,7 +48,7 @@ arc-swap = "1"
 # Realtime holds a read lock on the client registry for every publish;
 # no poisoning and a cheaper read path than std::sync::RwLock.
 parking_lot = "0.12"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tempfile = "3"
 walkdir = "2"
 jsonwebtoken = "9"
