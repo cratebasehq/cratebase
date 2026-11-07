@@ -10,6 +10,10 @@
     "sdk/js/schema",
     "packages/create-cratebase"
   ],
+  "overrides": {
+    "zod": "^4.6.7",
+    "happy-dom": "^21.0.4"
+  },
   "scripts": {
     "admin:dev": "bun run --cwd web/admin dev",
     "admin:build": "RAYON_NUM_THREADS=1 bun run --cwd web/admin build",
