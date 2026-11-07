@@ -175,7 +175,13 @@ jobs:
       # instead, an entirely separate implementation not affected by
       # this advisory. Re-check this ignore if `web-push-native` or its
       # dependency tree ever changes.
-      - run: cargo audit --ignore RUSTSEC-2023-0071
+      #
+      # RUSTSEC-2026-0387 (crypto-bigint 0.5.5 timing variability) is
+      # likewise ignored: it is pulled in only via elliptic-curve 0.13
+      # (p256/k256/p384 under jwt-simple and web-push-native), and the fix
+      # (>=0.7.6) requires the unreleased elliptic-curve 0.14 line, so it
+      # is not upgradable here. Remove once jwt-simple/web-push-native move.
+      - run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0387
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
