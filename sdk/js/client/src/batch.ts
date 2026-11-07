@@ -26,6 +26,7 @@ export class BatchBuilder {
   private readonly transport: Transport;
   private readonly authHeader: () => string | undefined;
   private readonly requests: SubRequest[] = [];
+  private sealed = false;
 
   constructor(transport: Transport, authHeader: () => string | undefined) {
     this.transport = transport;
@@ -63,7 +64,12 @@ export class BatchBuilder {
     return this.create(collection, rest);
   }
 
+  private assertOpen(): void {
+    if (this.sealed) throw new Error("BatchBuilder: batch was already sent; create a new one with cb.batch().");
+  }
+
   private push(method: string, url: string, data?: Record<string, unknown>): void {
+    this.assertOpen();
     if (!data) {
       this.requests.push({ method, url });
       return;
@@ -80,7 +86,12 @@ export class BatchBuilder {
     this.requests.push({ method, url, body, files: Object.keys(files).length > 0 ? files : undefined });
   }
 
+  /** Sends the batch. A builder is single-use: a second `send()` (or
+   * adding requests after the first) throws rather than silently
+   * re-running a possibly already-applied batch. */
   async send(): Promise<BatchResult[]> {
+    this.assertOpen();
+    this.sealed = true;
     const anyFiles = this.requests.some((r) => r.files);
     if (!anyFiles) {
       return this.transport.send<BatchResult[]>(

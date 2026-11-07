@@ -72,6 +72,9 @@ export function usePresence<T = unknown>(
 
   // Subscribe to this channel's presence events and seed the list.
   useEffect(() => {
+    // A different channel (or disabled) must not show the previous
+    // channel's members.
+    setMembers([]);
     if (!enabled) {
       setLoading(false);
       return;
@@ -122,10 +125,21 @@ export function usePresence<T = unknown>(
     if (!tracking) return;
     let cancelled = false;
     const channel = client.channel<T>(channelName);
+    // Skip a beat while the previous `track` is still pending (slow
+    // network, or first call still connecting) instead of piling up
+    // overlapping requests. The next tick sends the latest state.
+    let inFlight = false;
     const beat = () => {
-      channel.presence.track(state as T).catch((err) => {
-        if (!cancelled) setError(err);
-      });
+      if (inFlight) return;
+      inFlight = true;
+      channel.presence
+        .track(state as T)
+        .catch((err) => {
+          if (!cancelled) setError(err);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
     };
     beat();
     const interval = setInterval(beat, heartbeatMs);

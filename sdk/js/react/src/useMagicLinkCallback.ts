@@ -69,20 +69,32 @@ export function useMagicLinkCallback(
     setStatus("pending");
     client.auth.signIn
       .magicLink({ token })
-      .then((result) => {
-        setStatus("success");
-        if (removeParam && typeof window !== "undefined") {
-          const url = new URL(window.location.href);
-          url.searchParams.delete(param);
-          window.history.replaceState({}, "", url.toString());
-        }
-        onSuccess?.(result);
-      })
-      .catch((err) => {
-        setStatus("error");
-        setError(err);
-        onError?.(err);
-      });
+      .then(
+        (result) => {
+          setStatus("success");
+          if (removeParam && typeof window !== "undefined") {
+            const url = new URL(window.location.href);
+            url.searchParams.delete(param);
+            window.history.replaceState({}, "", url.toString());
+          }
+          // The sign-in succeeded; a throwing callback is the caller's
+          // bug and must not flip the status to "error".
+          try {
+            onSuccess?.(result);
+          } catch (cbErr) {
+            console.error("useMagicLinkCallback: onSuccess threw", cbErr);
+          }
+        },
+        (err) => {
+          setStatus("error");
+          setError(err);
+          try {
+            onError?.(err);
+          } catch (cbErr) {
+            console.error("useMagicLinkCallback: onError threw", cbErr);
+          }
+        },
+      );
     // Runs once on mount by design (see `ran`) — a magic link is
     // single-use, so re-running this on a dependency change would just
     // fail the second time.

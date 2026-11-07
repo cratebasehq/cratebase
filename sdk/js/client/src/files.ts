@@ -72,6 +72,7 @@ function putWithProgress(
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("Upload aborted.", "AbortError"));
   if (typeof XMLHttpRequest === "undefined") {
     return fetch(url, { method: "PUT", body, signal }).then((res) => {
       if (!res.ok) throw new Error(`Upload failed with status ${res.status}.`);
@@ -85,7 +86,10 @@ function putWithProgress(
         if (e.lengthComputable) onProgress(e.loaded / e.total);
       };
     }
+    const onAbort = () => xhr.abort();
+    const cleanup = () => signal?.removeEventListener("abort", onAbort);
     xhr.onload = () => {
+      cleanup();
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress?.(1);
         resolve();
@@ -93,9 +97,15 @@ function putWithProgress(
         reject(new Error(`Upload failed with status ${xhr.status}.`));
       }
     };
-    xhr.onerror = () => reject(new Error("Upload failed: network error."));
-    xhr.onabort = () => reject(new DOMException("Upload aborted.", "AbortError"));
-    signal?.addEventListener("abort", () => xhr.abort());
+    xhr.onerror = () => {
+      cleanup();
+      reject(new Error("Upload failed: network error."));
+    };
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException("Upload aborted.", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort);
     xhr.send(body);
   });
 }
