@@ -63,6 +63,8 @@ pub struct AppInner {
     store: Store,
     plugins: std::sync::Mutex<PluginRegistry>,
     bootstrapped: std::sync::atomic::AtomicBool,
+    /// Set only when `bootstrap()` finished successfully (readiness).
+    ready: std::sync::atomic::AtomicBool,
     /// How many times a bearer token has actually been resolved (a JWT
     /// verify plus a database round trip), as opposed to being served
     /// from the per-request cache.
@@ -189,6 +191,7 @@ impl App {
                 store: Store::new(),
                 plugins: std::sync::Mutex::new(PluginRegistry::new()),
                 bootstrapped: std::sync::atomic::AtomicBool::new(false),
+                ready: std::sync::atomic::AtomicBool::new(false),
                 auth_resolutions: std::sync::atomic::AtomicU64::new(0),
                 jsvm: Arc::new(OnceLock::new()),
                 queue_handle: OnceLock::new(),
@@ -368,10 +371,17 @@ impl App {
             .clear();
     }
 
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<AppInner> {
+        Arc::downgrade(&self.inner)
+    }
+
+    pub(crate) fn upgrade(weak: &std::sync::Weak<AppInner>) -> Option<App> {
+        weak.upgrade().map(|inner| App { inner })
+    }
+
+    /// True only once `bootstrap()` has completed successfully.
     pub fn is_bootstrapped(&self) -> bool {
-        self.inner
-            .bootstrapped
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.inner.ready.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Whether `postgis` is currently installed — see
@@ -525,13 +535,34 @@ impl App {
 
         let mut event = crate::events::BootstrapEvent::new(self.clone());
         let app = self.clone();
-        self.hooks()
+        let result = self
+            .hooks()
             .on_bootstrap
             .trigger(&mut event, move |_| {
                 Box::pin(async move { app.bootstrap_inner().await })
             })
-            .await?;
-        Ok(())
+            .await;
+        match result {
+            Ok(()) => {
+                self.inner
+                    .ready
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+            Err(e) => {
+                // A failure before the database was opened left nothing
+                // behind, so the caller may retry. Past that point
+                // plugins/hooks are partly registered and a second pass
+                // would double-register them; stay refused (and not
+                // ready) instead.
+                if self.inner.db.get().is_none() {
+                    self.inner
+                        .bootstrapped
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+                Err(e.into())
+            }
+        }
     }
 
     async fn bootstrap_inner(&self) -> Result<(), AppError> {
@@ -677,6 +708,7 @@ impl App {
         if let Err(e) = crate::sessions::load_revoked(self).await {
             tracing::warn!(error = %e, "failed to load revoked sessions at boot");
         }
+        crate::sessions::start_revocation_refresh(self);
         self.inner.cron.start();
 
         let mut reload = crate::events::SettingsReloadEvent::new(self.clone(), self.settings());
@@ -1299,34 +1331,41 @@ impl App {
             .await
             .map_err(AppError::from)?
             .is_some();
-        if exists {
-            return Ok(());
+        if !exists {
+            self.ensure_setup_token();
         }
-        let token = self
-            .inner
-            .config
-            .setup_token
-            .clone()
-            .unwrap_or_else(new_setup_token);
-        let _ = self.inner.setup_token.set(token.clone());
-        // `0.0.0.0`/empty binds everything, but is not itself a URL
-        // anyone can open — print the loopback address instead, the way
-        // an operator would actually reach a freshly booted local
-        // instance.
-        let host = &self.inner.config.host;
-        let display_host = if host.is_empty() || host == "0.0.0.0" {
-            "127.0.0.1"
-        } else {
-            host.as_str()
-        };
-        tracing::warn!(
-            url = %format!(
-                "http://{display_host}:{}/_/login?token={token}",
-                self.inner.config.port
-            ),
-            "no superuser exists yet — open this URL to create the first admin account"
-        );
         Ok(())
+    }
+
+    /// Mint (once) and log the install token. Called at boot when no
+    /// superuser exists, and lazily by `routes::setup` whenever it sees
+    /// that setup is needed, so deleting the last superuser while the
+    /// process runs does not leave setup closed until a restart.
+    pub(crate) fn ensure_setup_token(&self) -> &str {
+        self.inner.setup_token.get_or_init(|| {
+            let token = self
+                .inner
+                .config
+                .setup_token
+                .clone()
+                .unwrap_or_else(new_setup_token);
+            // `0.0.0.0`/empty binds everything, but is not itself a URL
+            // anyone can open; print the loopback address instead.
+            let host = &self.inner.config.host;
+            let display_host = if host.is_empty() || host == "0.0.0.0" {
+                "127.0.0.1"
+            } else {
+                host.as_str()
+            };
+            tracing::warn!(
+                url = %format!(
+                    "http://{display_host}:{}/_/login?token={token}",
+                    self.inner.config.port
+                ),
+                "no superuser exists yet - open this URL to create the first admin account"
+            );
+            token
+        })
     }
 }
 

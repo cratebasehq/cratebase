@@ -38,7 +38,7 @@ async fn health(
     PeerAddr(peer): PeerAddr,
     headers: HeaderMap,
 ) -> (StatusCode, Json<Value>) {
-    if app.db().query("SELECT 1", &[]).await.is_err() {
+    if !app.is_bootstrapped() || app.db().query("SELECT 1", &[]).await.is_err() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({

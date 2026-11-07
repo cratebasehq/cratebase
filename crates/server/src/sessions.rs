@@ -209,27 +209,12 @@ pub async fn revoke_all_for(
     record_id: &str,
     except: Option<&[u8; 32]>,
 ) -> anyhow::Result<usize> {
-    let rows = app
-        .db()
-        .query(
-            r#"SELECT "tokenHash" FROM "_sessions" WHERE "collectionRef" = $1 AND "recordRef" = $2 AND "revoked" = 0"#,
-            &[
-                Sql::Text(collection_id.to_string()),
-                Sql::Text(record_id.to_string()),
-            ],
-        )
-        .await?;
+    // UPDATE first, then read back every revoked digest for the record.
+    // Reading the targets *before* the UPDATE (as this once did) let a
+    // token minted between the two statements get flipped to revoked in
+    // the table but never reach the in-memory set.
     let except_hex = except.map(hex);
-    let targets: Vec<String> = rows
-        .iter()
-        .filter_map(|r| r.get_str("tokenHash").map(str::to_string))
-        .filter(|h| except_hex.as_deref() != Some(h.as_str()))
-        .collect();
-    if targets.is_empty() {
-        return Ok(0);
-    }
-
-    match &except_hex {
+    let n = match &except_hex {
         Some(eh) => {
             app.db()
                 .execute(
@@ -240,7 +225,7 @@ pub async fn revoke_all_for(
                         Sql::Text(eh.clone()),
                     ],
                 )
-                .await?;
+                .await?
         }
         None => {
             app.db()
@@ -251,20 +236,54 @@ pub async fn revoke_all_for(
                         Sql::Text(record_id.to_string()),
                     ],
                 )
-                .await?;
+                .await?
         }
-    }
-
+    };
+    let rows = app
+        .db()
+        .query(
+            r#"SELECT "tokenHash" FROM "_sessions" WHERE "collectionRef" = $1 AND "recordRef" = $2 AND "revoked" = 1"#,
+            &[
+                Sql::Text(collection_id.to_string()),
+                Sql::Text(record_id.to_string()),
+            ],
+        )
+        .await?;
     {
         let mut set = app.revoked_sessions().write();
-        for hash in &targets {
-            if let Some(d) = from_hex(hash) {
+        for row in &rows {
+            if let Some(d) = row.get_str("tokenHash").and_then(from_hex) {
                 set.insert(d);
             }
         }
     }
     app.sync_revoked_len();
-    Ok(targets.len())
+    Ok(n as usize)
+}
+
+/// Multi-node (Postgres) only: re-read the revoked digests from the
+/// database every few seconds, so a revocation made on another node
+/// reaches this one's in-memory set. The database is the source of
+/// truth; the set is an add-only cache of it between sweeps. SQLite is a
+/// single process, so its own writes already keep the set current.
+pub fn start_revocation_refresh(app: &App) {
+    if !app.db().backend.is_postgres() {
+        return;
+    }
+    let weak = app.downgrade();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let Some(app) = App::upgrade(&weak) else {
+                return;
+            };
+            if let Err(e) = load_revoked(&app).await {
+                tracing::warn!(error = %e, "revoked-session refresh failed");
+            }
+        }
+    });
 }
 
 /// Boot-time load of every still-relevant revoked digest, so the
@@ -428,5 +447,47 @@ mod tests {
             "fingerprint: validation_required (Cannot be blank.)"
         );
         assert_eq!(describe(&DbError::NotFound), "not found");
+    }
+
+    async fn session_app() -> (App, tempfile::TempDir, Collection, Record) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::Config::memory(dir.path().join("cb_data"));
+        config.session_tracking = true;
+        let app = App::new(config);
+        app.bootstrap().await.expect("bootstrap");
+        let users = app.db().collections.get_by_name("users").expect("users");
+        let mut rec = Record::new(users.clone());
+        rec.set("id", Value::String("user0000000001".into()));
+        (app, dir, (*users).clone(), rec)
+    }
+
+    #[tokio::test]
+    async fn revoke_all_for_covers_every_row_including_late_mints() {
+        let (app, _dir, users, rec) = session_app().await;
+        let origin = OriginContext {
+            fingerprint: "fp".into(),
+            ..Default::default()
+        };
+        let exp = chrono::Utc::now().timestamp() + 3600;
+        for t in ["tok-a", "tok-b"] {
+            record(&app, &users, &rec, t, "login", &origin, exp).await;
+        }
+        let keep = digest("tok-a");
+        let n = revoke_all_for(&app, &users.id, "user0000000001", Some(&keep))
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(is_revoked(&app, "tok-b"));
+        assert!(!is_revoked(&app, "tok-a"));
+
+        // A token minted after the first sweep is caught by the next one.
+        record(&app, &users, &rec, "tok-c", "login", &origin, exp).await;
+        let n = revoke_all_for(&app, &users.id, "user0000000001", None)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        for t in ["tok-a", "tok-b", "tok-c"] {
+            assert!(is_revoked(&app, t), "{t}");
+        }
     }
 }

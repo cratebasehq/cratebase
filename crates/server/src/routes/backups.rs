@@ -72,6 +72,12 @@ use crate::app::App;
 use crate::extract::RequireSuperuser;
 use crate::http_error::{ApiError, ApiResult};
 
+/// Set while a restore is staged or running. A restore ends in a process
+/// restart, so it is only cleared when a restore is abandoned before it
+/// commits to the swap.
+static RESTORE_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Directory (inside the data dir) used to stage a restore.
 const RESTORE_STAGING: &str = ".cb_restore";
 /// The main database's name inside the archive, for a SQLite main
@@ -508,33 +514,67 @@ async fn restore(
     State(app): State<App>,
     _su: RequireSuperuser,
     axum::extract::Path(key): axum::extract::Path<String>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<axum::response::Response> {
     validate_key(&key).map_err(|_| ApiError::bad_request("Missing or invalid backup file."))?;
     let storage = app.backups_storage().map_err(ApiError)?;
     if !storage.exists(&key).await? {
         return Err(ApiError::bad_request("Missing or invalid backup file."));
     }
 
+    // One restore at a time: two would race on the staging directory and
+    // on terminating/swapping the same live database.
+    if RESTORE_IN_PROGRESS
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return Ok((
+            StatusCode::CONFLICT,
+            axum::Json(serde_json::json!({
+                "code": 409,
+                "message": "A backup restore is already in progress.",
+                "data": {},
+            })),
+        )
+            .into_response());
+    }
+    let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     let mut event = crate::events::BackupRestoreEvent::new(app.clone(), key);
     let app_for_finalizer = app.clone();
-    app.hooks()
+    let committed_for_finalizer = committed.clone();
+    let result = app
+        .hooks()
         .on_backup_restore
         .trigger(&mut event, move |e| {
             let app = app_for_finalizer.clone();
             let key = e.name.clone();
-            Box::pin(async move { stage_and_restart(app, key).await })
+            let committed = committed_for_finalizer.clone();
+            Box::pin(async move { stage_and_restart(app, key, committed).await })
         })
-        .await
-        .map_err(ApiError)?;
+        .await;
+    if !committed.load(std::sync::atomic::Ordering::SeqCst) {
+        // Failed or cancelled by a hook before the swap was scheduled.
+        RESTORE_IN_PROGRESS.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    result.map_err(ApiError)?;
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Extract the archive next to the data dir, verify it really is one
 /// *for this deployment's backend*, and schedule the swap/`pg_restore` +
 /// re-exec. That work happens *after* this response has been written, so
 /// the client gets its 204.
-async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
+async fn stage_and_restart(
+    app: App,
+    key: String,
+    committed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), AppError> {
     let backend = app.db().backend;
     // SQLite restores by swapping the live database *file*, which needs
     // to know its real path up front (a Postgres restore has no such
@@ -594,6 +634,7 @@ async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
     .map_err(|e| AppError::internal(e.to_string()))?
     .map_err(ExtractError::into_app_error)?;
 
+    committed.store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::spawn(async move {
         // Give the 204 time to reach the client before the process
         // disappears (SQLite) or the database starts getting
@@ -601,31 +642,33 @@ async fn stage_and_restart(app: App, key: String) -> Result<(), AppError> {
         // (Postgres).
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         app.terminate(true).await;
-        match backend {
+        // The database is closed from here on, so every outcome ends in a
+        // restart: success boots the restored data; failure boots the
+        // untouched (swap_data_dir rolls itself back) or partially restored
+        // one rather than leaving a live process with a dead database.
+        let outcome: Result<(), String> = match backend {
             Backend::Sqlite => {
                 let main_db_path =
                     main_db_path.expect("Backend::Sqlite always has a resolved sqlite_main_path");
-                if let Err(e) = swap_data_dir(&data_dir, &extracted, &main_db_path) {
-                    tracing::error!(error = %e, "restore failed while swapping the data directory");
-                    return;
-                }
+                swap_data_dir(&data_dir, &extracted, &main_db_path)
+                    .map_err(|e| format!("swapping the data directory: {e}"))
             }
             Backend::Postgres => {
                 let pgdump = extracted.join(MAIN_DB_ENTRY_PG);
-                if let Err(e) = app
+                match app
                     .db()
                     .engine
                     .restore_from(&pgdump.to_string_lossy())
                     .await
                 {
-                    tracing::error!(error = %e, "restore failed while running pg_restore");
-                    return;
-                }
-                if let Err(e) = swap_side_files_only(&data_dir, &extracted) {
-                    tracing::error!(error = %e, "restore failed while swapping the logs database/storage tree");
-                    return;
+                    Err(e) => Err(format!("running pg_restore: {e}")),
+                    Ok(_) => swap_side_files_only(&data_dir, &extracted)
+                        .map_err(|e| format!("swapping the logs database/storage tree: {e}")),
                 }
             }
+        };
+        if let Err(e) = outcome {
+            tracing::error!(error = %e, "restore failed; restarting so the database is reopened");
         }
         restart_process();
     });

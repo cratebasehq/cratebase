@@ -98,7 +98,9 @@ impl PostgresEngine {
             ),
         };
         let pool = Pool::builder(manager)
-            .max_size(max_size.max(1))
+            // At least 2: the migration runner parks one connection holding
+            // its cross-node advisory lock while migrations use another.
+            .max_size(max_size.max(2))
             .build()
             .map_err(|e| DbError::Pool(e.to_string()))?;
         drop(pool.get().await.map_err(pool_err)?);

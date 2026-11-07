@@ -68,13 +68,11 @@ impl Snapshot {
         all.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
         let by_id = all.iter().map(|c| (c.id.clone(), c.clone())).collect();
         let by_name = all.iter().map(|c| (c.name.clone(), c.clone())).collect();
-        let max_updated = all
-            .iter()
-            .map(|c| c.updated)
-            .max()
-            .map(|d| d.to_pb_string())
-            .unwrap_or_default();
-        let watermark = format!("{}:{max_updated}", all.len());
+        let watermark = watermark_of(
+            all.iter()
+                .map(|c| (c.id.clone(), c.updated.to_pb_string()))
+                .collect(),
+        );
         Snapshot {
             all,
             by_id,
@@ -304,19 +302,33 @@ pub async fn delete_in(ex: &dyn Executor, c: &Collection) -> DbResult<()> {
 /// doc for why the comparison has to be against the cache's own recorded
 /// value specifically, not some third, independently-tracked value.
 pub async fn watermark(ex: &dyn Executor) -> DbResult<String> {
-    let row = ex
-        .query_one(
-            r#"SELECT COUNT(*) AS "n", COALESCE(MAX("updated"), '') AS "u" FROM "_collections""#,
-            &[],
-        )
+    // Every `(id, updated)` pair rather than `COUNT`/`MAX`: two edits (or
+    // a create plus a delete) between polls can leave count and max
+    // unchanged, but not the set of per-row timestamps. The table is
+    // small (one row per collection).
+    let rows = ex
+        .query(r#"SELECT "id", "updated" FROM "_collections""#, &[])
         .await?;
-    let row = row.unwrap_or(Row {
-        columns: Arc::from(vec!["n".to_string(), "u".to_string()]),
-        values: vec![],
-    });
-    let count = row.get_i64("n").unwrap_or(0);
-    let updated = row.get_str("u").unwrap_or_default();
-    Ok(format!("{count}:{updated}"))
+    Ok(watermark_of(
+        rows.iter()
+            .map(|r| {
+                (
+                    r.get_str("id").unwrap_or_default().to_string(),
+                    r.get_str("updated").unwrap_or_default().to_string(),
+                )
+            })
+            .collect(),
+    ))
+}
+
+/// `"{count}:{hash of sorted (id, updated) pairs}"`; the in-memory
+/// ([`Snapshot::build`]) and live ([`watermark`]) sides share this.
+fn watermark_of(mut pairs: Vec<(String, String)>) -> String {
+    use std::hash::{Hash, Hasher};
+    pairs.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    pairs.hash(&mut h);
+    format!("{}:{:016x}", pairs.len(), h.finish())
 }
 
 const SELECT: &str = r#"SELECT "id", "name", "type", "system", "fields", "indexes",

@@ -318,7 +318,14 @@ impl RealtimeService {
 
     /// Replace a client's subscriptions and reindex it.
     fn set_subscriptions(&self, id: &str, subs: Vec<Subscription>, auth: Option<Auth>) -> bool {
-        let Some(client) = self.clients.read().get(id).cloned() else {
+        // Hold the `clients` read guard across the whole update.
+        // `unregister` takes the `clients` write lock first, so it cannot
+        // interleave between "client exists" and the index rewrite below;
+        // otherwise a concurrent unregister could clean the index and
+        // this call would then re-add an entry for a gone client.
+        // Lock order everywhere: `clients` before `by_collection`.
+        let clients = self.clients.read();
+        let Some(client) = clients.get(id) else {
             return false;
         };
         {
@@ -333,9 +340,9 @@ impl RealtimeService {
                     .insert(id.to_string());
             }
             index.retain(|_, set| !set.is_empty());
+            *client.auth.write() = auth;
+            *client.subscriptions.write() = subs;
         }
-        *client.auth.write() = auth;
-        *client.subscriptions.write() = subs;
         true
     }
 
@@ -829,11 +836,11 @@ async fn fan_out(
                 // A peer that stopped reading but never closed. Dropping
                 // it is better than growing this queue without bound.
                 tracing::debug!(client = %client_id, "realtime client too far behind; dropping");
-                app.realtime().unregister(&client_id);
+                disconnect_client(&app, &client_id);
                 break;
             }
             if client.tx.send(frame).is_err() {
-                app.realtime().unregister(&client_id);
+                disconnect_client(&app, &client_id);
                 break;
             }
         }
@@ -1458,11 +1465,11 @@ async fn channel_fan_out(app: &App, channel: &str, event: &str, data: &Value) {
             let frame = Event::default().event(&sub.key).data(payload.clone());
             if client.queued.fetch_add(1, Ordering::Relaxed) as usize >= SEND_QUEUE_LIMIT {
                 tracing::debug!(client = %client_id, "realtime client too far behind; dropping");
-                app.realtime().unregister(&client_id);
+                disconnect_client(app, &client_id);
                 break;
             }
             if client.tx.send(frame).is_err() {
-                app.realtime().unregister(&client_id);
+                disconnect_client(app, &client_id);
                 break;
             }
         }
@@ -1825,5 +1832,15 @@ mod tests {
         // `+` means a literal plus in a URI component; only a form body
         // would read it as a space. A filter like `a+b` must survive.
         assert_eq!(percent_decode("a+b%20c"), "a+b c");
+    }
+
+    #[test]
+    fn set_subscriptions_after_unregister_leaves_no_index_entry() {
+        let svc = RealtimeService::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        svc.register("c1".into(), tx);
+        svc.unregister("c1");
+        assert!(!svc.set_subscriptions("c1", vec![Subscription::parse("posts")], None));
+        assert!(svc.by_collection.read().is_empty());
     }
 }

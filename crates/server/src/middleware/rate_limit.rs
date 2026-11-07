@@ -184,6 +184,9 @@ pub struct RateLimiter {
     compiled: ArcSwap<Compiled>,
     windows: Mutex<HashMap<(String, String), Window>>,
     sweeping: AtomicBool,
+    /// The rules last passed to `configure`, so an unrelated settings
+    /// save does not wipe every live counter.
+    last_limits: Mutex<Option<RateLimits>>,
 }
 
 impl Default for RateLimiter {
@@ -192,6 +195,7 @@ impl Default for RateLimiter {
             compiled: ArcSwap::from_pointee(Compiled::default()),
             windows: Mutex::new(HashMap::new()),
             sweeping: AtomicBool::new(false),
+            last_limits: Mutex::new(None),
         }
     }
 }
@@ -204,7 +208,13 @@ impl RateLimiter {
     /// Recompile the rule set. Called from `App::apply_settings`, so the
     /// request path never sees the raw `RateLimits`.
     pub fn configure(&self, limits: &RateLimits) {
+        let mut last = self.last_limits.lock().expect("rate limiter poisoned");
+        if last.as_ref() == Some(limits) {
+            return;
+        }
         self.compiled.store(Arc::new(Compiled::build(limits)));
+        *last = Some(limits.clone());
+        drop(last);
         // A shrunk window must take effect at once, so old counters go.
         self.reset();
     }
@@ -957,5 +967,25 @@ mod tests {
             view_head, view_get,
             "HEAD on the view route must match GET too"
         );
+    }
+
+    #[test]
+    fn reconfiguring_with_identical_limits_keeps_counters() {
+        let limiter = RateLimiter::new();
+        let limits = RateLimits::default();
+        limiter.configure(&limits);
+        limiter.windows.lock().unwrap().insert(
+            ("k".into(), "l".into()),
+            Window {
+                started: Instant::now(),
+                count: 1,
+            },
+        );
+        limiter.configure(&limits);
+        assert_eq!(limiter.windows.lock().unwrap().len(), 1);
+        let mut changed = limits.clone();
+        changed.enabled = !changed.enabled;
+        limiter.configure(&changed);
+        assert!(limiter.windows.lock().unwrap().is_empty());
     }
 }
