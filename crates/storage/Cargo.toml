@@ -14,6 +14,7 @@ async-trait.workspace = true
 chrono.workspace = true
 http = "1"
 url = "2"
+tokio = { workspace = true }
 
 [dependencies.object_store]
 version = "0.14"
