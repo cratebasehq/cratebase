@@ -18,7 +18,9 @@ use tokio::task::JoinHandle as TaskHandle;
 
 use crate::bridge;
 use crate::convert::{from_js, js_error_to_app_error, to_js};
-use crate::host::{CronHandlerId, HookHandlerId, HostApi, QueueHandlerId, RouteHandlerId};
+use crate::host::{
+    CronHandlerId, HookHandlerId, HookKind, HostApi, QueueHandlerId, RouteHandlerId,
+};
 use crate::runtime::{
     file_name, list_files, JsEvent, JsEventOutcome, JsRequest, JsResponse, RuntimeConfig,
 };
@@ -51,10 +53,62 @@ pub(crate) enum Job {
     },
 }
 
+impl Job {
+    /// Fail the job without running it (pool shutting down).
+    fn reject(self, err: AppError) {
+        match self {
+            Job::Hook { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Job::Route { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+            Job::Cron { reply, .. } | Job::Queue { reply, .. } | Job::Migration { reply, .. } => {
+                let _ = reply.send(Err(err));
+            }
+        }
+    }
+}
+
 /// A message for one specific worker.
+///
+/// Reloading the handler table is a two-phase protocol driven by the pool
+/// (`Runtime::reload`) so that all workers switch generation together or
+/// not at all: `Prepare` evaluates the hook files into a side table (the
+/// worker keeps serving its current table meanwhile), then the pool sends
+/// `Commit` to everyone if every worker prepared cleanly, `Discard`
+/// otherwise.
 pub(crate) enum Control {
-    Reload(oneshot::Sender<Result<(), AppError>>),
+    Prepare(oneshot::Sender<Result<(), AppError>>),
+    Commit {
+        generation: u64,
+        reply: oneshot::Sender<()>,
+    },
+    Discard,
     Shutdown,
+}
+
+/// A registration worker 0 reports to the host. Collected while the hook
+/// files are being evaluated and applied only on commit, so the host never
+/// sees a half-loaded or failed generation.
+pub(crate) enum Registration {
+    Hook {
+        id: String,
+        kind: HookKind,
+        tags: Vec<String>,
+        priority: i32,
+    },
+    Route {
+        method: String,
+        path: String,
+        id: String,
+    },
+    Cron {
+        id: String,
+        expr: String,
+    },
+    RemoveCron(String),
+    Queue(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +143,14 @@ pub(crate) struct PendingTx {
     pub join: TaskHandle<Result<(), AppError>>,
 }
 
+/// One entry of the host stack. A transaction frame owns its
+/// [`PendingTx`], so the host override and the transaction it belongs to
+/// are pushed and popped together and cannot get out of step.
+pub(crate) struct HostFrame {
+    pub host: Arc<dyn HostApi>,
+    pub tx: Option<PendingTx>,
+}
+
 /// Per-worker state shared with the native functions installed in the
 /// context. Everything lives on the worker thread, hence `Rc`/`RefCell`.
 pub(crate) struct WorkerState {
@@ -99,14 +161,21 @@ pub(crate) struct WorkerState {
     pub host: Arc<dyn HostApi>,
     /// Hosts pushed for the duration of a call: the transactional app of
     /// a record hook, or a transaction opened from JavaScript.
-    pub host_stack: RefCell<Vec<Arc<dyn HostApi>>>,
-    pub tx_stack: RefCell<Vec<PendingTx>>,
+    pub host_stack: RefCell<Vec<HostFrame>>,
     /// Interrupt deadline for the running job.
     pub deadline: Rc<Cell<Option<Instant>>>,
+    /// Set by the interrupt handler when it fires, so "timed out" is
+    /// recorded rather than re-derived from the clock afterwards.
+    pub interrupted: Rc<Cell<bool>>,
     /// Ids reported to the host by this worker (worker 0 only), so a
     /// reload can retract them.
     pub registered_hooks: RefCell<Vec<String>>,
     pub registered_crons: RefCell<Vec<String>>,
+    /// While a (re)load is being prepared, worker 0's registrations are
+    /// collected here instead of going to the host.
+    pub staged: RefCell<Option<Vec<Registration>>>,
+    /// The handler-table generation this worker is serving.
+    pub generation: Cell<u64>,
 }
 
 impl WorkerState {
@@ -114,8 +183,48 @@ impl WorkerState {
         self.host_stack
             .borrow()
             .last()
-            .cloned()
+            .map(|f| f.host.clone())
             .unwrap_or_else(|| self.host.clone())
+    }
+
+    /// Report a registration (worker 0 only): staged while a load is being
+    /// prepared, applied to the host immediately otherwise (a runtime
+    /// `cronAdd` from inside a handler).
+    pub fn register(&self, reg: Registration) {
+        if let Some(staged) = self.staged.borrow_mut().as_mut() {
+            staged.push(reg);
+            return;
+        }
+        self.apply(reg);
+    }
+
+    fn apply(&self, reg: Registration) {
+        let host = &self.host;
+        match reg {
+            Registration::Hook {
+                id,
+                kind,
+                tags,
+                priority,
+            } => {
+                self.registered_hooks.borrow_mut().push(id.clone());
+                host.register_hook(kind, tags, HookHandlerId(id), priority);
+            }
+            Registration::Route { method, path, id } => {
+                host.register_route(&method, &path, RouteHandlerId(id));
+            }
+            Registration::Cron { id, expr } => {
+                self.registered_crons.borrow_mut().push(id.clone());
+                host.register_cron(&id, &expr, CronHandlerId(id.clone()));
+            }
+            Registration::RemoveCron(id) => {
+                self.registered_crons.borrow_mut().retain(|c| c != &id);
+                host.remove_cron(&id);
+            }
+            Registration::Queue(queue) => {
+                host.register_queue_handler(&queue, QueueHandlerId(queue.clone()));
+            }
+        }
     }
 
     /// Whether this worker reports registrations to the host.
@@ -155,20 +264,49 @@ fn run(init: WorkerInit) {
             return;
         }
     };
-    let loaded = worker.load_hooks();
-    let _ = ready.send(loaded);
+    // Startup is the first prepare; the pool commits (or discards) once
+    // every worker reported in, so a partially started pool never becomes
+    // visible to the host.
+    let _ = ready.send(worker.prepare());
 
+    // Returns false when the worker should exit.
+    let handle_control = |msg: Result<Control, crossbeam_channel::RecvError>| match msg {
+        Ok(Control::Prepare(reply)) => {
+            let _ = reply.send(worker.prepare());
+            true
+        }
+        Ok(Control::Commit { generation, reply }) => {
+            worker.commit(generation);
+            let _ = reply.send(());
+            true
+        }
+        Ok(Control::Discard) => {
+            worker.discard();
+            true
+        }
+        Ok(Control::Shutdown) | Err(_) => false,
+    };
     loop {
+        // Control messages (reload phases, shutdown) take priority over
+        // queued jobs, so a shutdown is not starved by a long job queue.
+        if let Ok(msg) = control.try_recv() {
+            if !handle_control(Ok(msg)) {
+                break;
+            }
+            continue;
+        }
         crossbeam_channel::select! {
-            recv(control) -> msg => match msg {
-                Ok(Control::Reload(reply)) => { let _ = reply.send(worker.reload()); }
-                Ok(Control::Shutdown) | Err(_) => break,
-            },
+            recv(control) -> msg => if !handle_control(msg) { break },
             recv(jobs) -> job => match job {
                 Ok(job) => worker.execute(job),
                 Err(_) => break,
             },
         }
+    }
+    // Do not leave callers hanging on a reply that will never come: fail
+    // whatever is still queued with a clear error.
+    for job in jobs.try_iter() {
+        job.reject(AppError::internal("jsvm runtime is shutting down"));
     }
 }
 
@@ -191,12 +329,18 @@ impl Worker {
             runtime.set_memory_limit(limit);
         }
         let deadline = Rc::new(Cell::new(None::<Instant>));
+        let interrupted = Rc::new(Cell::new(false));
         {
             // The interrupt handler runs on this thread only, so a plain
             // Rc is fine; it must be 'static though, hence the clone.
             let deadline = deadline.clone();
+            let interrupted = interrupted.clone();
             runtime.set_interrupt_handler(Some(Box::new(move || {
-                deadline.get().is_some_and(|d| Instant::now() >= d)
+                let fire = deadline.get().is_some_and(|d| Instant::now() >= d);
+                if fire {
+                    interrupted.set(true);
+                }
+                fire
             })));
         }
         let context = Context::full(&runtime)
@@ -208,10 +352,12 @@ impl Worker {
             handle,
             host,
             host_stack: RefCell::new(vec![]),
-            tx_stack: RefCell::new(vec![]),
             deadline,
+            interrupted,
             registered_hooks: RefCell::new(vec![]),
             registered_crons: RefCell::new(vec![]),
+            staged: RefCell::new(None),
+            generation: Cell::new(0),
         });
 
         let worker = Worker {
@@ -229,11 +375,7 @@ impl Worker {
         self.context.with(|ctx| match f(&ctx) {
             Ok(v) => Ok(v),
             Err(rquickjs::Error::Exception) => {
-                let timed_out = self
-                    .state
-                    .deadline
-                    .get()
-                    .is_some_and(|d| Instant::now() >= d);
+                let timed_out = self.state.interrupted.get();
                 Err(js_error_to_app_error(
                     &ctx,
                     ctx.catch(),
@@ -248,6 +390,7 @@ impl Worker {
     /// Run a job body with the timeout armed, and clean up anything the
     /// JavaScript side left open (transactions, host overrides).
     fn timed<T>(&self, f: impl FnOnce(&Ctx<'_>) -> rquickjs::Result<T>) -> Result<T, AppError> {
+        self.state.interrupted.set(false);
         self.state
             .deadline
             .set(Some(Instant::now() + self.state.cfg.timeout));
@@ -288,7 +431,10 @@ impl Worker {
     fn run_hook(&self, id: &HookHandlerId, event: JsEvent) -> Result<JsEventOutcome, AppError> {
         let JsEvent { data, app } = event;
         if let Some(app) = app {
-            self.state.host_stack.borrow_mut().push(app);
+            self.state.host_stack.borrow_mut().push(HostFrame {
+                host: app,
+                tx: None,
+            });
         }
         let result = self.timed(|ctx| {
             let invoke: Function = Self::cb(ctx)?.get("invokeHook")?;
@@ -338,18 +484,57 @@ impl Worker {
         let source = std::fs::read_to_string(file)
             .map_err(|e| AppError::internal(format!("cannot read {}: {e}", file.display())))?;
         let name = file_name(file);
-        self.timed(|ctx| {
+        let result = self.timed(|ctx| {
             let cb = Self::cb(ctx)?;
             cb.set("currentFile", name.as_str())?;
             cb.set("pendingMigration", JsValue::new_null(ctx.clone()))?;
             eval_file(ctx, &name, &source)?;
             let run: Function = cb.get("runMigration")?;
             run.call::<_, ()>((direction.as_str(),))
-        })
+        });
+        self.clear_load_context();
+        result
     }
 
-    /// Evaluate every `*.cb.js` in `hooks_dir`, in file-name order.
-    fn load_hooks(&self) -> Result<(), AppError> {
+    /// Forget which file is being evaluated and any `migrate()` it
+    /// registered, so neither can leak into the next load or migration
+    /// (including after a failure that skipped `runMigration`).
+    fn clear_load_context(&self) {
+        let _ = self.with_ctx(|ctx| {
+            let cb = Self::cb(ctx)?;
+            cb.set("currentFile", JsValue::new_null(ctx.clone()))?;
+            cb.set("pendingMigration", JsValue::new_null(ctx.clone()))
+        });
+    }
+
+    /// Evaluate every `*.cb.js` in `hooks_dir`, in file-name order, into a
+    /// fresh side table. The currently served table is untouched until
+    /// [`Worker::commit`]; on any failure the side table is dropped and the
+    /// previous (good) handlers keep serving.
+    fn prepare(&self) -> Result<(), AppError> {
+        *self.state.staged.borrow_mut() = self.state.reports().then(Vec::new);
+        let begun = self.timed(|ctx| {
+            Self::cb(ctx)?
+                .get::<_, Function>("beginLoad")?
+                .call::<_, ()>(())
+        });
+        let result = begun.and_then(|()| {
+            let loaded = self.load_files();
+            let ok = loaded.is_ok();
+            let ended = self.timed(|ctx| {
+                Self::cb(ctx)?
+                    .get::<_, Function>("endLoad")?
+                    .call::<_, ()>((ok,))
+            });
+            loaded.and(ended)
+        });
+        if result.is_err() {
+            *self.state.staged.borrow_mut() = None;
+        }
+        result
+    }
+
+    fn load_files(&self) -> Result<(), AppError> {
         let files = list_files(&self.state.cfg.hooks_dir, |n| n.ends_with(".cb.js"))?;
         let mut first_error = None;
         for file in files {
@@ -373,36 +558,49 @@ impl Worker {
                 first_error.get_or_insert(AppError::internal(format!("{name}: {e}")));
             }
         }
+        self.clear_load_context();
         first_error.map_or(Ok(()), Err)
     }
 
-    /// Forget every handler, retract this worker's registrations from the
-    /// host, and evaluate the hook files again.
-    fn reload(&self) -> Result<(), AppError> {
-        if self.state.reports() {
+    /// Switch to the prepared table and, on worker 0, swap the host's
+    /// registrations: the previous ones are retracted and the new ones
+    /// applied back to back, with no JavaScript evaluation in between (all
+    /// of that already happened in `prepare`), so the host never observes
+    /// an empty or half-built table.
+    fn commit(&self, generation: u64) {
+        let _ = self.with_ctx(|ctx| {
+            Self::cb(ctx)?
+                .get::<_, Function>("commit")?
+                .call::<_, ()>(())
+        });
+        let staged = self.state.staged.borrow_mut().take();
+        if let Some(staged) = staged {
             for id in self.state.registered_hooks.borrow_mut().drain(..) {
                 self.state.host.unregister_hook(&id);
             }
             for id in self.state.registered_crons.borrow_mut().drain(..) {
                 self.state.host.remove_cron(&id);
             }
-            // Routes have no per-registration id to retract individually
-            // (unlike hooks/crons above): the host's whole route table is
-            // dropped and `load_hooks` below rebuilds it from scratch as
-            // it re-evaluates every `routerAdd` call in the reloaded
-            // files, so a route a changed file no longer registers is
-            // gone rather than stale.
+            // Routes and queue handlers have no per-registration id to
+            // retract individually: the host drops the whole table and the
+            // staged registrations rebuild it from the new files.
             self.state.host.clear_routes();
-            // Same "whole table dropped, rebuilt by re-evaluating the
-            // reloaded files" story as routes above, and for the same
-            // reason — see `HostApi::clear_queue_handlers`'s doc.
             self.state.host.clear_queue_handlers();
+            for reg in staged {
+                self.state.apply(reg);
+            }
         }
-        self.with_ctx(|ctx| {
-            let reset: Function = Self::cb(ctx)?.get("reset")?;
-            reset.call::<_, ()>(())
-        })?;
-        self.load_hooks()
+        self.state.generation.set(generation);
+    }
+
+    /// Throw away a prepared-but-uncommitted table.
+    fn discard(&self) {
+        *self.state.staged.borrow_mut() = None;
+        let _ = self.with_ctx(|ctx| {
+            Self::cb(ctx)?
+                .get::<_, Function>("discard")?
+                .call::<_, ()>(())
+        });
     }
 }
 

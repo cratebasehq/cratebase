@@ -856,11 +856,14 @@
   // Registration tables
   // ---------------------------------------------------------------------
 
-  const hooks = new Map(); // id -> {fn, kind, tags}
-  const routes = new Map(); // id -> {fn, method, path, middlewares}
-  const crons = new Map(); // id -> fn
-  const queueJobs = new Map(); // queue name -> fn
-  const counters = new Map();
+  // `let`, not `const`: a reload builds a complete new set of tables off
+  // to the side and swaps them in only once every worker loaded cleanly
+  // (see `__cb.beginLoad` / `commit` below).
+  let hooks = new Map(); // id -> {fn, kind, tags}
+  let routes = new Map(); // id -> {fn, method, path, middlewares}
+  let crons = new Map(); // id -> fn
+  let queueJobs = new Map(); // queue name -> fn
+  let counters = new Map();
   let globalMiddlewares = [];
   let moduleCache = new Map();
 
@@ -1059,6 +1062,11 @@
     });
     e.request = makeRequest(data.request || { method: data.method, path: data.path, query: data.query, headers: data.headers, body: data.body, rawBody: data.rawBody, remoteIp: data.remoteIp }, e);
     e.next = () => {
+      // A second next() is a no-op: the chain only advances once.
+      if (e.__nextCalled) {
+        console.warn("e.next() called more than once; ignoring the extra call");
+        return;
+      }
       e.__nextCalled = true;
     };
     e.get = (key) => e.__store[key];
@@ -1125,17 +1133,33 @@
     };
   }
 
+  // Run a route middleware chain. Each link gets its own `e.next` that
+  // advances to the following link at most once; a repeated call is a
+  // no-op that returns undefined (and warns) instead of running more of
+  // the chain. `e.next` is restored for the caller when the link returns.
   function runChain(e, chain) {
-    let i = 0;
-    const step = () => {
-      const m = chain[i++];
+    const run = (i) => {
+      const m = chain[i];
       if (!m) return undefined;
       const fn = typeof m === "function" ? m : m && typeof m.func === "function" ? m.func : null;
-      if (!fn) return step();
-      return fn(e);
+      if (!fn) return run(i + 1);
+      const prev = e.next;
+      let advanced = false;
+      e.next = () => {
+        if (advanced) {
+          console.warn("e.next() called more than once in a route chain; ignoring the extra call");
+          return undefined;
+        }
+        advanced = true;
+        return run(i + 1);
+      };
+      try {
+        return fn(e);
+      } finally {
+        e.next = prev;
+      }
     };
-    e.next = step;
-    return step();
+    return run(0);
   }
 
   // ---------------------------------------------------------------------
@@ -1176,21 +1200,61 @@
 
   __cb.runMigration = (direction) => {
     const m = __cb.pendingMigration;
+    // Consume it so a stale migrate() registration can never leak into
+    // the next file's run.
+    __cb.pendingMigration = null;
     if (!m) throw new BadRequestError("migration file did not call migrate()");
     const fn = direction === "up" ? m.up : m.down;
     if (typeof fn !== "function") return;
     $app.runInTransaction((app) => fn(app));
   };
 
-  __cb.reset = () => {
-    hooks.clear();
-    routes.clear();
-    crons.clear();
-    queueJobs.clear();
-    counters.clear();
-    globalMiddlewares = [];
-    moduleCache = new Map();
+  // ---- two-phase reload -------------------------------------------------
+  // beginLoad: stash the live tables and install empty ones for the files
+  // to register into. endLoad: park the freshly built tables as `pending`
+  // and put the live ones back, so the worker keeps serving the previous
+  // (good) handlers until the pool decides every worker loaded cleanly.
+  // commit installs the pending tables; discard throws them away.
+  let liveTables = null;
+  let pendingTables = null;
+  const snapshotTables = () => ({ hooks, routes, crons, queueJobs, counters, globalMiddlewares, moduleCache });
+  const installTables = (t) => {
+    hooks = t.hooks;
+    routes = t.routes;
+    crons = t.crons;
+    queueJobs = t.queueJobs;
+    counters = t.counters;
+    globalMiddlewares = t.globalMiddlewares;
+    moduleCache = t.moduleCache;
     global.require = makeRequire(__cb.hooksDir);
+  };
+  __cb.beginLoad = () => {
+    pendingTables = null;
+    liveTables = snapshotTables();
+    installTables({
+      hooks: new Map(),
+      routes: new Map(),
+      crons: new Map(),
+      queueJobs: new Map(),
+      counters: new Map(),
+      globalMiddlewares: [],
+      moduleCache: new Map(),
+    });
+  };
+  __cb.endLoad = (ok) => {
+    const built = snapshotTables();
+    if (liveTables) installTables(liveTables);
+    liveTables = null;
+    pendingTables = ok ? built : null;
+    __cb.currentFile = null;
+    __cb.pendingMigration = null;
+  };
+  __cb.commit = () => {
+    if (pendingTables) installTables(pendingTables);
+    pendingTables = null;
+  };
+  __cb.discard = () => {
+    pendingTables = null;
   };
 
   function migrate(up, down) {

@@ -33,7 +33,7 @@ pub use host::{
     RecordTokenKind, RouteHandlerId, TransactionFn,
 };
 pub use runtime::{
-    JsBody, JsEvent, JsEventOutcome, JsRequest, JsResponse, MigrationLedger, Runtime,
-    RuntimeConfig, JS_RECORD_OPTIONS,
+    JsBody, JsEvent, JsEventOutcome, JsRequest, JsResponse, MigrationLedger, PoolState, Runtime,
+    RuntimeConfig, RuntimeStatus, JS_RECORD_OPTIONS,
 };
 pub use types::{write_types_file, TYPES_D_TS};
