@@ -163,7 +163,8 @@ export function RealtimeChannelsPage() {
             search={{ value: search, onChange: setSearch, placeholder: "Search channels…" }}
             actions={
               <LiveToggle
-                live={polling}
+                live={live}
+                suspended={paused}
                 onLiveChange={setLive}
                 fetching={anyFetching}
                 onRefresh={() => void queryClient.invalidateQueries({ queryKey: ["realtime-channel-stats"] })}

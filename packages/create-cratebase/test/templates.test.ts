@@ -62,3 +62,26 @@ describe("templates", () => {
     });
   }
 });
+
+describe("sign-in templates", () => {
+  const files = [
+    path.join(TEMPLATES_DIR, "nextjs", "app", "(auth)", "sign-in", "page.tsx"),
+    path.join(TEMPLATES_DIR, "vite-react", "src", "pages", "SignIn.tsx"),
+  ];
+
+  test("both guard stale in-flight results and reset per-tab state on tab switch", async () => {
+    for (const file of files) {
+      const src = await readFile(file, "utf8");
+      expect(src).toContain("flow.current");
+      expect(src).toContain("resetFlow(id)");
+      expect(src).toContain("setOtpId(null)");
+      expect(src).toContain("setMagicSent(false)");
+    }
+  });
+
+  test("both offer a way back out of the TOTP step", async () => {
+    for (const file of files) {
+      expect(await readFile(file, "utf8")).toContain("Back to sign in");
+    }
+  });
+});

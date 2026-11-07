@@ -451,6 +451,9 @@ export function RequestLogsPage() {
   const [filterInput, setFilterInput] = useState(filter);
   const [method, setMethod] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // Unlike the other live views this one starts paused on purpose: request
+  // logs are high-volume and rows shifting under the cursor while inspecting
+  // one is worse than a manual refresh.
   const [live, setLive] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 

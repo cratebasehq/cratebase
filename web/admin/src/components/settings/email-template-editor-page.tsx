@@ -683,7 +683,8 @@ export function EmailTemplateEditorPage() {
   const blocker = useBlocker({
     shouldBlockFn: ({ current: from, next }) =>
       dirtyRef.current && !leavingRef.current && from.pathname !== next.pathname,
-    enableBeforeUnload: false,
+    // Closing or reloading the tab loses the edits just like navigating away.
+    enableBeforeUnload: () => dirtyRef.current && !leavingRef.current,
     withResolver: true,
   });
 

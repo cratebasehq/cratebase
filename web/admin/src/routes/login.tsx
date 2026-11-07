@@ -46,20 +46,35 @@ function LoginPage() {
   // before the answer arrives. "needed": no superuser exists — render the
   // first-run setup form instead of login. "resolved": normal login.
   const [setupStatus, setSetupStatus] = useState<"checking" | "needed" | "resolved">("checking");
+  // A message carried across the setup -> login switch (the setup form
+  // unmounts, so it cannot show its own).
+  const [loginNotice, setLoginNotice] = useState<string | null>(null);
 
   // Ask the server whether it is even there before anyone types a password.
   // `/api/health` is unauthenticated, so this is the honest answer to the
   // failure the old login reported as "Invalid email or password."
+  // While it is down, keep asking: the server coming back should clear the
+  // warning without the user having to attempt a login.
   useEffect(() => {
+    if (reachability === "up") return;
     let cancelled = false;
-    checkHealth().then(
-      () => !cancelled && setReachability("up"),
-      () => !cancelled && setReachability("down"),
-    );
+    const probe = () =>
+      checkHealth().then(
+        () => !cancelled && setReachability("up"),
+        () => !cancelled && setReachability("down"),
+      );
+    if (reachability === "checking") {
+      void probe();
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setInterval(() => void probe(), 5000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, []);
+  }, [reachability]);
 
   // A fresh database has no superuser and therefore no way to log in —
   // ask before rendering either form. A failed check (server down, old
@@ -69,7 +84,16 @@ function LoginPage() {
     let cancelled = false;
     checkSetupStatus().then(
       (result) => !cancelled && setSetupStatus(result.needsSetup ? "needed" : "resolved"),
-      () => !cancelled && setSetupStatus("resolved"),
+      () => {
+        if (cancelled) return;
+        // Otherwise indistinguishable from "no setup needed": a fresh
+        // database on an old server would look like a login form with no
+        // way in.
+        setLoginNotice(
+          "Couldn't check whether first-run setup is needed (the server may be unreachable or older than this dashboard). If this is a new instance, reload to retry.",
+        );
+        setSetupStatus("resolved");
+      },
     );
     return () => {
       cancelled = true;
@@ -148,7 +172,12 @@ function LoginPage() {
         <main className="flex flex-1 items-center py-12">
           <div className="w-full">
             {setupStatus === "checking" ? null : setupStatus === "needed" ? (
-              <FirstRunSetupForm onFallbackToLogin={() => setSetupStatus("resolved")} />
+              <FirstRunSetupForm
+                onFallbackToLogin={(message) => {
+                  if (message) setLoginNotice(message);
+                  setSetupStatus("resolved");
+                }}
+              />
             ) : (
               <>
                 <h1 className="text-3xl font-medium tracking-tight">Sign in</h1>
@@ -156,6 +185,13 @@ function LoginPage() {
                   Superuser access to{" "}
                   <span className="font-mono text-foreground">{displayOrigin()}</span>
                 </p>
+
+                {loginNotice ? (
+                  <Alert role="status" className="mt-6">
+                    <TriangleAlert />
+                    <AlertTitle>{loginNotice}</AlertTitle>
+                  </Alert>
+                ) : null}
 
                 <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4" noValidate>
               <div className="flex flex-col gap-1.5">
@@ -307,7 +343,7 @@ function setupTokenFromUrl(): string | null {
  * superuser exists yet. Creates the first superuser, then signs in with the
  * same credentials exactly like a normal login — `POST /api/setup` never
  * mints a token itself. */
-function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => void }) {
+function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: (notice?: string) => void }) {
   const navigate = useNavigate();
   const [token] = useState(setupTokenFromUrl);
   const [email, setEmail] = useState("");
@@ -357,7 +393,7 @@ function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => voi
       } catch {
         // Created but the immediate login somehow failed — fall back to
         // the normal form rather than get stuck on a dead setup screen.
-        onFallbackToLogin();
+        onFallbackToLogin("Superuser created, but signing in failed. Sign in below.");
         return;
       }
     } catch (error) {
@@ -366,8 +402,7 @@ function FirstRunSetupForm({ onFallbackToLogin }: { onFallbackToLogin: () => voi
         // Someone else finished setup in the gap between this page loading
         // and this submit — re-derive from a fresh read, not the stale
         // "needed" state that got us here.
-        setNotice("Someone else just finished setup. Sign in below.");
-        onFallbackToLogin();
+        onFallbackToLogin("Someone else just finished setup. Sign in below.");
         return;
       }
       setFields(described.fields);

@@ -77,8 +77,10 @@ export function LogoUploader({ value, onChange, error, allowUrl = true, id = "lo
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<"upload" | "remove" | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [status, setStatus] = useState("");
+  // One message sink: an error is shown visibly (and announced); an info
+  // note is announced only.
+  const [note, setNote] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  const failure = note?.kind === "error" ? note.text : null;
   const [dragging, setDragging] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [urlOpen, setUrlOpen] = useState(() => value.trim() !== "" && !isUploadedLogo(value));
@@ -98,13 +100,11 @@ export function LogoUploader({ value, onChange, error, allowUrl = true, id = "lo
     if (!file || busy) return;
     const problem = validateFile(file);
     if (problem) {
-      setFailure(problem);
-      setStatus(problem);
+      setNote({ kind: "error", text: problem });
       return;
     }
-    setFailure(null);
     setBusy("upload");
-    setStatus("Uploading logo…");
+    setNote({ kind: "info", text: "Uploading logo…" });
     try {
       const form = new FormData();
       form.append("file", file, file.name);
@@ -112,12 +112,11 @@ export function LogoUploader({ value, onChange, error, allowUrl = true, id = "lo
       setPreviewFailed(false);
       onChange(logoUrl);
       syncSettings(logoUrl);
-      setStatus("Logo uploaded.");
+      setNote({ kind: "info", text: "Logo uploaded." });
     } catch (e) {
       const f = describeFailure(e);
       const message = f.serverMessage || f.detail || f.title;
-      setFailure(message);
-      setStatus(`Upload failed: ${message}`);
+      setNote({ kind: "error", text: `Upload failed: ${message}` });
     } finally {
       setBusy(null);
       if (inputRef.current) inputRef.current.value = "";
@@ -125,24 +124,24 @@ export function LogoUploader({ value, onChange, error, allowUrl = true, id = "lo
   }
 
   async function remove() {
-    setFailure(null);
+    if (busy) return;
     if (!isUploadedLogo(logo)) {
       // An external URL lives only in the form draft.
       onChange("");
-      setStatus("Logo removed.");
+      setNote({ kind: "info", text: "Logo removed." });
       return;
     }
+    setNote(null);
     setBusy("remove");
     try {
       await cb.send<void>("/api/settings/logo", { method: "DELETE" });
       onChange("");
       syncSettings("");
-      setStatus("Logo removed.");
+      setNote({ kind: "info", text: "Logo removed." });
     } catch (e) {
       const f = describeFailure(e);
       const message = f.serverMessage || f.detail || f.title;
-      setFailure(message);
-      setStatus(`Couldn't remove the logo: ${message}`);
+      setNote({ kind: "error", text: `Couldn't remove the logo: ${message}` });
     } finally {
       setBusy(null);
     }
@@ -256,7 +255,7 @@ export function LogoUploader({ value, onChange, error, allowUrl = true, id = "lo
         </p>
       ) : null}
       <span role="status" aria-live="polite" className="sr-only">
-        {status}
+        {note?.kind === "info" ? note.text : ""}
       </span>
 
       {allowUrl ? (

@@ -128,12 +128,21 @@ function useReloadWhenServerReturns(active: boolean) {
   const [timedOut, setTimedOut] = useState(false);
   useEffect(() => {
     if (!active) return;
+    setTimedOut(false);
     let sawDown = false;
     const startedAt = Date.now();
+    // A restart can fall entirely between two polls, so "saw it go down" is
+    // not required: past this grace period a healthy answer means the new
+    // process is serving.
+    const GRACE_MS = 10_000;
     const timer = window.setInterval(async () => {
       try {
         const response = await fetch(cb.buildURL("/api/health"), { cache: "no-store" });
-        if (response.ok && sawDown) window.location.reload();
+        if (response.ok && (sawDown || Date.now() - startedAt >= GRACE_MS)) {
+          window.clearInterval(timer);
+          window.location.reload();
+          return;
+        }
         if (!response.ok) sawDown = true;
       } catch {
         sawDown = true;
