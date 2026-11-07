@@ -29,6 +29,7 @@ use axum::{Json, Router};
 use cratebase_core::Record;
 use cratebase_db::params::ParamCipher;
 use cratebase_db::records;
+use cratebase_db::Executor;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
@@ -337,29 +338,80 @@ fn verify_code_or_backup(row: &Record, code: &str) -> ApiResult<Option<CodeMatch
     Ok(None)
 }
 
-/// Verifies `code`/a backup code against `row` and, on a match, persists
-/// whichever replay-protection update it implies (a new `lastUsedStep`,
-/// or the consumed backup code removed from `backupCodes`) before
-/// returning whether it matched at all.
+/// Verifies `code`/a backup code against `row` and, on a match, consumes
+/// it atomically. Both consumptions are compare-and-swap statements
+/// checked by rows affected, so two concurrent requests presenting the same
+/// TOTP step or backup code cannot both succeed: the loser's `UPDATE`
+/// matches zero rows and the code is treated as invalid.
 async fn verify_and_consume(app: &App, row: &mut Record, code: &str) -> ApiResult<bool> {
     let Some(matched) = verify_code_or_backup(row, code)? else {
         return Ok(false);
     };
+    let totps = app
+        .db()
+        .collections
+        .get("_totps")
+        .expect("_totps is a default system collection");
+    let table = cratebase_db::quote_ident(totps.table_name());
+    let internal = |e: cratebase_db::DbError| ApiError::internal(e.to_string());
     match matched {
-        CodeMatch::Totp(step) => row.set("lastUsedStep", json!(step)),
+        CodeMatch::Totp(step) => {
+            let sql = format!(
+                "UPDATE {table} SET \"lastUsedStep\" = $1 WHERE \"id\" = $2 AND \"lastUsedStep\" < $1"
+            );
+            let affected = app
+                .db()
+                .execute(
+                    &sql,
+                    &[
+                        cratebase_db::Sql::Real(step as f64),
+                        cratebase_db::Sql::Text(row.id().to_string()),
+                    ],
+                )
+                .await
+                .map_err(internal)?;
+            Ok(affected == 1)
+        }
         CodeMatch::BackupCode(hash) => {
-            let remaining: Vec<Value> = backup_hashes(row)
-                .into_iter()
-                .filter(|h| h != &hash)
-                .map(Value::String)
-                .collect();
-            row.set("backupCodes", Value::Array(remaining));
+            let select = format!("SELECT \"backupCodes\" FROM {table} WHERE \"id\" = $1");
+            let update = format!(
+                "UPDATE {table} SET \"backupCodes\" = $1 WHERE \"id\" = $2 AND \"backupCodes\" = $3"
+            );
+            // Re-read and retry a few times: a lost swap may only mean a
+            // *different* code was consumed meanwhile.
+            for _ in 0..5 {
+                let current = app
+                    .db()
+                    .query_one(&select, &[cratebase_db::Sql::Text(row.id().to_string())])
+                    .await
+                    .map_err(internal)?
+                    .and_then(|r| r.get_str("backupCodes").map(str::to_string))
+                    .unwrap_or_default();
+                let list: Vec<String> = serde_json::from_str(&current).unwrap_or_default();
+                if !list.iter().any(|h| h == &hash) {
+                    return Ok(false);
+                }
+                let remaining: Vec<&String> = list.iter().filter(|h| **h != hash).collect();
+                let new_text = serde_json::to_string(&remaining).unwrap_or_else(|_| "[]".into());
+                let affected = app
+                    .db()
+                    .execute(
+                        &update,
+                        &[
+                            cratebase_db::Sql::Text(new_text),
+                            cratebase_db::Sql::Text(row.id().to_string()),
+                            cratebase_db::Sql::Text(current),
+                        ],
+                    )
+                    .await
+                    .map_err(internal)?;
+                if affected == 1 {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
         }
     }
-    records::update(app.db(), &app.db().collections, row)
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok(true)
 }
 
 #[derive(Debug, Default, Deserialize)]

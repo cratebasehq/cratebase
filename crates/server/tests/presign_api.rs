@@ -561,3 +561,91 @@ async fn unknown_token_is_a_bad_request_not_a_crash() {
         .await;
     assert_eq!(status, 400, "{body}");
 }
+
+/// A create that fails after the token validated (here: a required field
+/// is missing) must not burn the ticket or delete the uploaded object -
+/// the client can fix the body and retry with the same token.
+#[tokio::test]
+async fn failed_create_releases_the_ticket() {
+    let harness = Harness::new().await;
+    harness
+        .collection(json!({
+            "name": "strict", "type": "base",
+            "listRule": "", "viewRule": "", "createRule": "", "updateRule": "", "deleteRule": "",
+            "fields": [
+                {"name": "title", "type": "text", "required": true},
+                {"name": "doc", "type": "file", "maxSelect": 1, "maxSize": 1000},
+            ],
+        }))
+        .await;
+    let (_, presigned) = harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "strict", "field": "doc", "filename": "a.txt",
+                "contentType": "text/plain", "size": 5,
+            })),
+        )
+        .await;
+    let token = presigned["token"].as_str().unwrap().to_string();
+    let record_id = presigned["recordId"].as_str().unwrap().to_string();
+    let upload_url = presigned["uploadUrl"].as_str().unwrap().to_string();
+    harness
+        .raw(Request::put(&upload_url).body(Body::from("hello")).unwrap())
+        .await;
+
+    let (status, _) = harness
+        .admin(
+            "POST",
+            "/api/collections/strict/records",
+            Some(json!({"id": record_id, "doc": token})),
+        )
+        .await;
+    assert_eq!(status, 400);
+    let (status, created) = harness
+        .admin(
+            "POST",
+            "/api/collections/strict/records",
+            Some(json!({"id": record_id, "title": "ok", "doc": token})),
+        )
+        .await;
+    assert_eq!(status, 200, "{created}");
+}
+
+/// Claiming is an atomic `pending -> consumed` transition: the second
+/// claim of the same ticket loses.
+#[tokio::test]
+async fn ticket_claim_is_atomic() {
+    let harness = Harness::new().await;
+    harness.collection(docs_collection("docs")).await;
+    harness
+        .admin(
+            "POST",
+            "/api/files/presign",
+            Some(json!({
+                "collection": "docs", "field": "doc", "filename": "a.txt",
+                "contentType": "text/plain", "size": 5,
+            })),
+        )
+        .await;
+    let id: String = harness
+        .app
+        .db()
+        .query_scalar(r#"SELECT "id" FROM "_pendingUploads" LIMIT 1"#, &[])
+        .await
+        .unwrap()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap();
+    let ids = vec![id];
+    cratebase_server::presign::claim_tickets(&harness.app, &ids)
+        .await
+        .expect("first claim wins");
+    assert!(cratebase_server::presign::claim_tickets(&harness.app, &ids)
+        .await
+        .is_err());
+    cratebase_server::presign::release_tickets(&harness.app, &ids).await;
+    cratebase_server::presign::claim_tickets(&harness.app, &ids)
+        .await
+        .expect("claim works again after release");
+}

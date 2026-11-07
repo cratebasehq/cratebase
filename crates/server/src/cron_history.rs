@@ -185,6 +185,44 @@ async fn claim_tick(app: &App, job_id: &str, source: &str, tick_at: DateTime) ->
     }
 }
 
+/// A `running` row older than this belongs to a run whose node died before
+/// [`finish_run`] (a body finishes or errors well inside it).
+const STUCK_RUN_AFTER: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
+/// Mark `running` rows older than [`STUCK_RUN_AFTER`] as `error`, so a
+/// crash mid-run doesn't leave the history showing a job as running
+/// forever. The status guard means a run that finishes concurrently is
+/// never overwritten. Hourly via `cron::JOB_CRON_RUNS_RECLAIM`.
+pub async fn reclaim_stuck_runs(app: &App) {
+    reclaim_stuck_runs_older_than(app, STUCK_RUN_AFTER).await;
+}
+
+async fn reclaim_stuck_runs_older_than(app: &App, age: std::time::Duration) {
+    let cutoff = DateTime::from_utc(
+        DateTime::now().inner() - chrono::Duration::from_std(age).unwrap_or_default(),
+    );
+    let result = app
+        .db()
+        .execute(
+            &format!(
+                r#"UPDATE "{COLLECTION}" SET "status" = $1, "message" = $2
+                   WHERE "status" = $3 AND "startedAt" < $4"#
+            ),
+            &[
+                Sql::from(STATUS_ERROR),
+                Sql::from("interrupted: the node stopped before this run finished"),
+                Sql::from(STATUS_RUNNING),
+                Sql::from(cutoff.to_pb_string()),
+            ],
+        )
+        .await;
+    match result {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(count = n, "cron: reclaimed stuck running run(s)"),
+        Err(e) => tracing::warn!(error = %e, "cron: failed to reclaim stuck runs"),
+    }
+}
+
 /// Update a won claim's row with the finished run's outcome.
 async fn finish_run(app: &App, run_id: &str, status: &str, message: &str, duration_ms: i64) {
     if let Err(e) = app
@@ -249,6 +287,44 @@ mod tests {
         let app = App::new(Config::memory(dir.path().join("cb_data")));
         app.bootstrap().await.expect("bootstrap");
         (app, dir)
+    }
+
+    #[tokio::test]
+    async fn a_stuck_running_row_is_reclaimed_but_a_fresh_one_is_left_alone() {
+        let (app, _dir) = test_app().await;
+        let old = DateTime::from_utc(DateTime::now().inner() - chrono::Duration::hours(1));
+        let Claim::Won(stuck) = claim_tick(&app, "job-a", SOURCE_JS, old).await else {
+            panic!("claim");
+        };
+        let Claim::Won(fresh) = claim_tick(&app, "job-b", SOURCE_JS, DateTime::now()).await else {
+            panic!("claim");
+        };
+        app.db()
+            .execute(
+                &format!(r#"UPDATE "{COLLECTION}" SET "startedAt" = $1 WHERE "id" = $2"#),
+                &[Sql::from(old.to_pb_string()), Sql::from(stuck.clone())],
+            )
+            .await
+            .unwrap();
+        reclaim_stuck_runs_older_than(&app, std::time::Duration::from_secs(1800)).await;
+        let status = |id: String| {
+            let app = app.clone();
+            async move {
+                app.db()
+                    .query_one(
+                        &format!(r#"SELECT "status" FROM "{COLLECTION}" WHERE "id" = $1"#),
+                        &[Sql::from(id)],
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .get_str("status")
+                    .unwrap()
+                    .to_string()
+            }
+        };
+        assert_eq!(status(stuck).await, STATUS_ERROR);
+        assert_eq!(status(fresh).await, STATUS_RUNNING);
     }
 
     #[tokio::test]
