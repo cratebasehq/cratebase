@@ -158,8 +158,8 @@ async fn tsvector_column_and_gin_index_are_created_and_used_by_the_planner() {
     // Compile a fresh `search("treasure")` condition and run it (as an
     // EXPLAIN or a real SELECT), since a `Query`/`CompiledFilter` is
     // consumed by `select_sql`'s param binding and can't be reused.
-    async fn run(
-        db: &Db,
+    async fn run<E: Executor + ?Sized>(
+        db: &E,
         posts: &Arc<Collection>,
         r: &CollectionResolver<'_>,
         explain: bool,
@@ -192,8 +192,14 @@ async fn tsvector_column_and_gin_index_are_created_and_used_by_the_planner() {
     // Force the index on and confirm it's actually a usable, correct plan
     // — see the test's doc comment for why the *unforced* plan choosing a
     // Seq Scan at this table size is expected Postgres behavior, not a bug.
-    db.execute("SET enable_seqscan = off", &[]).await.unwrap();
-    let rows = run(&db, &posts, &r, true).await;
+    // The pool has more than one connection, so a session-level SET would
+    // not reliably reach the connection the next query uses. Pin both to
+    // one connection with a transaction and `SET LOCAL`.
+    let tx = db.begin().await.unwrap();
+    tx.execute("SET LOCAL enable_seqscan = off", &[])
+        .await
+        .unwrap();
+    let rows = run(&tx, &posts, &r, true).await;
     let forced_plan: String = rows
         .iter()
         .filter_map(|row| row.get_str("QUERY PLAN"))
@@ -203,14 +209,14 @@ async fn tsvector_column_and_gin_index_are_created_and_used_by_the_planner() {
         forced_plan.to_lowercase().contains("index") && forced_plan.contains("idx_posts_search"),
         "expected idx_posts_search to be a usable plan for this query, got:\n{forced_plan}"
     );
-    let rows = run(&db, &posts, &r, false).await;
+    let rows = run(&tx, &posts, &r, false).await;
     assert_eq!(
         rows.len(),
         1,
         "the forced-index plan must return the right row"
     );
     assert_eq!(rows[0].get_str("id"), Some("treasure"));
-    db.execute("SET enable_seqscan = on", &[]).await.unwrap();
+    tx.rollback().await.unwrap();
 
     db.close().await.unwrap();
 }
