@@ -143,6 +143,10 @@ export function CollectionSettings({
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
 
+  // Unmounting (e.g. the tab changed through browser history rather than
+  // our own guard) must not leave the parent believing the form is dirty.
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
+
   // A refetch that arrives while nothing is being edited is free to land.
   useEffect(() => {
     if (!staleBaseline || dirty) return;

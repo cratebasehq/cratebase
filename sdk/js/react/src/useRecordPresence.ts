@@ -68,6 +68,7 @@ export function useRecordPresence(
   const presenceRef = useRef<Presence | null>(null);
 
   useEffect(() => {
+    setOnline(new Set());
     if (!enabled) {
       setLoading(false);
       return;

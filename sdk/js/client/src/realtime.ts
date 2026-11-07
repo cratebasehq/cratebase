@@ -24,6 +24,12 @@ function topicKey(collection: string, topic: string, options: SubscribeOptions):
   return `${collection}/${topic}?options=${encodeURIComponent(query.toString())}`;
 }
 
+/** Connection lifecycle: `idle` (never started / dropped), `connecting`
+ * (stream fetch in flight, waiting for `CB_CONNECT`), `open`, `backoff`
+ * (a reconnect timer is pending), `stopped` (`stop()` was called; a later
+ * subscribe restarts). */
+type ConnState = "idle" | "connecting" | "open" | "backoff" | "stopped";
+
 export class RealtimeClient {
   private readonly transport: Transport;
   private readonly authHeader: () => string | undefined;
@@ -32,7 +38,13 @@ export class RealtimeClient {
   private abort: AbortController | undefined;
   private connectPromise: Promise<void> | undefined;
   private reconnectDelay = RECONNECT_MIN_MS;
-  private stopped = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private state: ConnState = "idle";
+  /** Bumped on every connect/stop/reconnect so a stale stream's teardown
+   * can't clobber the state of a newer connection. */
+  private generation = 0;
+  private syncRun: Promise<void> | undefined;
+  private syncDirty = false;
 
   constructor(transport: Transport, authHeader: () => string | undefined) {
     this.transport = transport;
@@ -58,13 +70,27 @@ export class RealtimeClient {
       set = new Set();
       this.listeners.set(key, set);
     }
+    const mine = set;
     const listener: Listener = { topic: key, handler };
-    set.add(listener);
-    await this.ensureConnected();
-    await this.syncSubscriptions();
+    mine.add(listener);
+    const remove = (): void => {
+      mine.delete(listener);
+      // Only drop the map entry if it is still *our* set: after this set
+      // emptied and was removed, a newer subscribe may have registered a
+      // fresh set under the same key.
+      if (mine.size === 0 && this.listeners.get(key) === mine) {
+        this.listeners.delete(key);
+      }
+    };
+    try {
+      await this.ensureConnected();
+      await this.syncSubscriptions();
+    } catch (err) {
+      remove();
+      throw err;
+    }
     return async () => {
-      set?.delete(listener);
-      if (set && set.size === 0) this.listeners.delete(key);
+      remove();
       if (this.clientId) await this.syncSubscriptions();
     };
   }
@@ -83,69 +109,168 @@ export class RealtimeClient {
   }
 
   async stop(): Promise<void> {
-    this.stopped = true;
+    this.state = "stopped";
+    this.generation++;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
     this.abort?.abort();
+    this.abort = undefined;
     this.listeners.clear();
     this.clientId = undefined;
+    this.connectPromise = undefined;
+    this.reconnectDelay = RECONNECT_MIN_MS;
+  }
+
+  /** Call when the auth token changed (sign in / out / refresh): the SSE
+   * stream was opened with the old credentials, so drop it and reconnect
+   * (re-syncing every subscription) under the new ones. A no-op unless a
+   * stream is open and something is subscribed. */
+  reconnect(): void {
+    if (this.state !== "open" || this.listeners.size === 0) return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.reconnectDelay = RECONNECT_MIN_MS;
+    this.generation++;
+    this.abort?.abort();
+    this.abort = undefined;
+    this.clientId = undefined;
+    this.connectPromise = undefined;
+    this.state = "idle";
+    this.scheduleReconnect(0);
   }
 
   private async ensureConnected(): Promise<void> {
     if (this.clientId) return;
-    if (!this.connectPromise) this.connectPromise = this.connect();
+    if (!this.connectPromise) {
+      const p = this.connect();
+      this.connectPromise = p;
+      // A failed attempt must not stay cached: later callers retry.
+      p.catch(() => {
+        if (this.connectPromise === p) this.connectPromise = undefined;
+      });
+    }
     await this.connectPromise;
   }
 
-  private async syncSubscriptions(): Promise<void> {
-    if (!this.clientId) return;
-    const subscriptions = [...this.listeners.keys()];
-    await this.transport.send<void>(
-      "/api/realtime",
-      { method: "POST", body: { clientId: this.clientId, subscriptions } },
-      this.authHeader,
-    );
+  /** Serialised + coalesced: at most one POST in flight; changes made
+   * meanwhile trigger exactly one more POST with the latest key set, so a
+   * slow earlier request can never overwrite a newer subscription list. */
+  private syncSubscriptions(): Promise<void> {
+    if (!this.clientId) return Promise.resolve();
+    if (this.syncRun) {
+      this.syncDirty = true;
+      return this.syncRun;
+    }
+    const run = (async () => {
+      await Promise.resolve();
+      try {
+        do {
+          this.syncDirty = false;
+          if (!this.clientId) return;
+          const subscriptions = [...this.listeners.keys()];
+          await this.transport.send<void>(
+            "/api/realtime",
+            { method: "POST", body: { clientId: this.clientId, subscriptions } },
+            this.authHeader,
+          );
+        } while (this.syncDirty);
+      } finally {
+        this.syncRun = undefined;
+        this.syncDirty = false;
+      }
+    })();
+    this.syncRun = run;
+    return run;
   }
 
   private async connect(): Promise<void> {
-    this.stopped = false;
-    this.abort = new AbortController();
+    const gen = ++this.generation;
+    this.state = "connecting";
+    const abort = new AbortController();
+    this.abort = abort;
     const headers: Record<string, string> = {};
     const token = this.authHeader();
     if (token) headers["Authorization"] = token;
 
-    const res = await fetch(this.transport.buildURL("/api/realtime"), {
-      headers,
-      signal: this.abort.signal,
-      credentials: this.transport.credentials,
-    });
+    const fail = (): void => {
+      if (this.generation === gen) this.state = "idle";
+    };
+
+    let res: Response;
+    try {
+      res = await fetch(this.transport.buildURL("/api/realtime"), {
+        headers,
+        signal: abort.signal,
+        credentials: this.transport.credentials,
+      });
+    } catch (err) {
+      fail();
+      throw err;
+    }
     if (!res.ok || !res.body) {
+      fail();
       throw new Error(`realtime connection failed with status ${res.status}`);
     }
+    if (this.generation !== gen) {
+      // stop()/reconnect() ran while the fetch was in flight.
+      abort.abort();
+      throw new Error("realtime connection superseded");
+    }
 
-    const clientIdPromise = new Promise<string>((resolve) => {
+    await new Promise<string>((resolve, reject) => {
       this.readFrames(res.body!, (event, data) => {
+        if (this.generation !== gen) return;
         if (event === "CB_CONNECT") {
           const parsed = JSON.parse(data) as { clientId: string };
           this.clientId = parsed.clientId;
+          this.state = "open";
           this.reconnectDelay = RECONNECT_MIN_MS;
           resolve(parsed.clientId);
           return;
         }
         this.dispatch(event, data);
-      }).finally(() => {
-        this.clientId = undefined;
-        this.connectPromise = undefined;
-        if (!this.stopped) this.scheduleReconnect();
-      });
+      })
+        .catch(() => {
+          // Network error / abort: handled the same as a clean close.
+        })
+        .then(() => {
+          // No-op if CB_CONNECT already resolved; otherwise unblocks
+          // everyone waiting on this connection attempt.
+          reject(new Error("realtime stream closed before CB_CONNECT"));
+          if (this.generation !== gen) return;
+          this.clientId = undefined;
+          this.connectPromise = undefined;
+          this.state = "idle";
+          if (this.listeners.size > 0) this.scheduleReconnect();
+        });
     });
-    await clientIdPromise;
   }
 
-  private scheduleReconnect(): void {
-    const delay = this.reconnectDelay;
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
-    setTimeout(() => {
-      if (this.stopped || this.listeners.size === 0) return;
-      this.connectPromise = this.connect().then(() => this.syncSubscriptions());
+  private scheduleReconnect(delayOverride?: number): void {
+    if (this.reconnectTimer || this.state === "stopped") return;
+    let delay: number;
+    if (delayOverride !== undefined) {
+      delay = delayOverride;
+    } else {
+      delay = this.reconnectDelay;
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, RECONNECT_MAX_MS);
+    }
+    this.state = "backoff";
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (this.state !== "backoff") return;
+      if (this.listeners.size === 0) {
+        this.state = "idle";
+        return;
+      }
+      this.ensureConnected()
+        .then(() => this.syncSubscriptions())
+        .catch(() => {
+          // Attempt failed (or the sync did): back off and retry.
+          if (this.reconnectTimer || this.state === "stopped" || this.state === "open") return;
+          this.state = "idle";
+          if (this.listeners.size > 0) this.scheduleReconnect();
+        });
     }, delay);
   }
 

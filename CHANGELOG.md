@@ -10,6 +10,19 @@ first real tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Guarded state transitions** — presigned-upload tickets are claimed
+  atomically and released if the record write fails; queue and webhook
+  delivery write-backs only apply to the run that still owns the claim
+  (stale-reclaimed workers can no longer overwrite newer runs), reclaimed
+  queue jobs count an attempt so poison jobs dead-letter, in-progress queue
+  jobs/webhook deliveries can't be deleted/replayed, and re-enabling a
+  webhook resets its failure counter; OTP codes are never stored in
+  plaintext; MFA challenges are age-checked and single-use; TOTP step and
+  backup-code consumption is atomic; verification tokens must match the
+  record's current email; stuck `running` `_cronRuns` rows are reclaimed.
+
 ## 0.7.0 — 2026-10-11
 
 ### BREAKING — Cratebase is now fully its own API

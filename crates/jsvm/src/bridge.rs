@@ -18,13 +18,10 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::convert::{from_js, throw_app_error, to_js};
-use crate::host::{
-    CronHandlerId, HookHandlerId, HookKind, HostApi, HttpRequest, QueueHandlerId, RecordTokenKind,
-    RouteHandlerId,
-};
+use crate::host::{HookKind, HostApi, HttpRequest, RecordTokenKind};
 use crate::runtime::JS_RECORD_OPTIONS;
 use crate::security::{self, HmacAlg};
-use crate::worker::{eval_options, PendingTx, WorkerState};
+use crate::worker::{eval_options, HostFrame, PendingTx, Registration, WorkerState};
 
 const PRELUDE: &str = include_str!("prelude.js");
 
@@ -298,37 +295,43 @@ pub(crate) fn dispatch(
                     .ok_or_else(|| AppError::bad_request(format!("unknown hook {}", a.str(1))))?;
                 let tags: Vec<String> = a.parse(2, "tags").unwrap_or_default();
                 let priority = a.i64(3) as i32;
-                state.registered_hooks.borrow_mut().push(id.clone());
-                host.register_hook(kind, tags, HookHandlerId(id), priority);
+                state.register(Registration::Hook {
+                    id,
+                    kind,
+                    tags,
+                    priority,
+                });
             }
             Ok(Value::Null)
         }
         "registerRoute" => {
             if state.reports() {
-                host.register_route(&a.str(1), &a.str(2), RouteHandlerId(a.str(0)));
+                state.register(Registration::Route {
+                    id: a.str(0),
+                    method: a.str(1),
+                    path: a.str(2),
+                });
             }
             Ok(Value::Null)
         }
         "registerCron" => {
             if state.reports() {
-                let id = a.str(0);
-                state.registered_crons.borrow_mut().push(id.clone());
-                host.register_cron(&id, &a.str(1), CronHandlerId(id.clone()));
+                state.register(Registration::Cron {
+                    id: a.str(0),
+                    expr: a.str(1),
+                });
             }
             Ok(Value::Null)
         }
         "removeCron" => {
             if state.reports() {
-                let id = a.str(0);
-                state.registered_crons.borrow_mut().retain(|c| c != &id);
-                host.remove_cron(&id);
+                state.register(Registration::RemoveCron(a.str(0)));
             }
             Ok(Value::Null)
         }
         "registerQueueHandler" => {
             if state.reports() {
-                let queue = a.str(0);
-                host.register_queue_handler(&queue, QueueHandlerId(queue.clone()));
+                state.register(Registration::Queue(a.str(0)));
             }
             Ok(Value::Null)
         }
@@ -642,10 +645,12 @@ pub(crate) fn tx_begin(state: &WorkerState) -> Result<(), AppError> {
     });
     match host_rx.recv() {
         Ok(tx) => {
-            state.host_stack.borrow_mut().push(tx);
-            state.tx_stack.borrow_mut().push(PendingTx {
-                done: Some(done_tx),
-                join,
+            state.host_stack.borrow_mut().push(HostFrame {
+                host: tx,
+                tx: Some(PendingTx {
+                    done: Some(done_tx),
+                    join,
+                }),
             });
             Ok(())
         }
@@ -663,24 +668,53 @@ pub(crate) fn tx_begin(state: &WorkerState) -> Result<(), AppError> {
 }
 
 /// Finish the innermost transaction with the JavaScript body's result and
-/// return the host's commit/rollback outcome.
+/// return the host's commit/rollback outcome. Waiting for the host task is
+/// bounded by the configured JavaScript timeout so a hung host cannot pin
+/// the worker thread forever.
 pub(crate) fn tx_end(state: &WorkerState, result: Result<(), AppError>) -> Result<(), AppError> {
-    let Some(mut pending) = state.tx_stack.borrow_mut().pop() else {
+    let frame = {
+        let mut stack = state.host_stack.borrow_mut();
+        match stack.pop() {
+            Some(f) if f.tx.is_some() => f,
+            Some(f) => {
+                stack.push(f);
+                return Err(AppError::internal("txEnd without txBegin"));
+            }
+            None => return Err(AppError::internal("txEnd without txBegin")),
+        }
+    };
+    let Some(mut pending) = frame.tx else {
         return Err(AppError::internal("txEnd without txBegin"));
     };
-    state.host_stack.borrow_mut().pop();
     if let Some(done) = pending.done.take() {
         let _ = done.send(result);
     }
-    match state.handle.block_on(pending.join) {
-        Ok(r) => r,
-        Err(e) => Err(AppError::internal(format!("transaction task failed: {e}"))),
+    let limit = state.cfg.timeout;
+    let mut join = pending.join;
+    match state
+        .handle
+        .block_on(async { tokio::time::timeout(limit, &mut join).await })
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => Err(AppError::internal(format!("transaction task failed: {e}"))),
+        Err(_) => {
+            join.abort();
+            Err(AppError::internal(format!(
+                "transaction did not finish within {}ms; abandoned",
+                limit.as_millis()
+            )))
+        }
     }
 }
 
 /// Roll back transactions JavaScript left open (e.g. after an interrupt).
 pub(crate) fn abort_open_transactions(state: &WorkerState) {
-    while !state.tx_stack.borrow().is_empty() {
+    while state
+        .host_stack
+        .borrow()
+        .last()
+        .is_some_and(|f| f.tx.is_some())
+    {
         let _ = tx_end(
             state,
             Err(AppError::internal(

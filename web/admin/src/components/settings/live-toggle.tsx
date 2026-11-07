@@ -18,8 +18,13 @@ export function LiveToggle({
   onLiveChange,
   fetching,
   onRefresh,
+  suspended = false,
 }: {
+  /** The user's own on/off choice. */
   live: boolean;
+  /** Polling is temporarily held off by the page (e.g. a dialog is open)
+   * even though `live` is on. */
+  suspended?: boolean;
   onLiveChange: (live: boolean) => void;
   fetching: boolean;
   onRefresh: () => void;
@@ -31,11 +36,17 @@ export function LiveToggle({
         variant="outline"
         size="sm"
         aria-pressed={live}
-        title={live ? "Auto-refreshing every 10 s — click to pause" : "Auto-refresh paused — click to resume"}
+        title={
+          live && suspended
+            ? "Auto-refresh is held while a dialog is open"
+            : live
+              ? "Auto-refreshing every 10 s — click to pause"
+              : "Auto-refresh paused — click to resume"
+        }
         onClick={() => onLiveChange(!live)}
       >
-        <StatusDot tone={live ? "success" : "neutral"} pulse={live} />
-        {live ? "Live" : "Paused"}
+        <StatusDot tone={live && !suspended ? "success" : "neutral"} pulse={live && !suspended} />
+        {live ? (suspended ? "Live (paused)" : "Live") : "Paused"}
       </Button>
       <Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh now" title="Refresh now" onClick={onRefresh}>
         <RefreshCw className={cn(fetching && "animate-spin")} />

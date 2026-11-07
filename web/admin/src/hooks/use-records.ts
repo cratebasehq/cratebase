@@ -152,7 +152,13 @@ export function useRecordMutations(collectionName: string) {
       });
       return { previous };
     },
-    onError: (_error, _variables, context) => restore(context?.previous),
+    // A single chunk is one transaction, so nothing was deleted and the
+    // snapshot is accurate. With several chunks the earlier ones are already
+    // gone: restoring the whole snapshot would resurrect deleted rows, so
+    // leave the cache to the refetch in onSettled.
+    onError: (_error, { ids, chunkSize }, context) => {
+      if (ids.length <= chunkSize) restore(context?.previous);
+    },
     onSettled: invalidate,
   });
 

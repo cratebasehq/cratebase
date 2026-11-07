@@ -516,12 +516,35 @@ export function FileManagerPage() {
       const oldPrefix = target.key;
       const newPrefix = `${prefix}${newName}/`;
       const keys = await listAllKeysUnder(oldPrefix);
-      for (const key of keys) {
-        const destKey = `${newPrefix}${key.slice(oldPrefix.length)}`;
-        const blob = await fetchObjectBytes(key);
-        await putObject(destKey, blob, baseName(destKey));
+      const copied: string[] = [];
+      try {
+        for (const key of keys) {
+          const destKey = `${newPrefix}${key.slice(oldPrefix.length)}`;
+          const blob = await fetchObjectBytes(key);
+          await putObject(destKey, blob, baseName(destKey));
+          copied.push(destKey);
+        }
+      } catch (error) {
+        // Nothing has been deleted yet, so undo the partial copy rather than
+        // leaving a half-populated duplicate folder behind.
+        await Promise.allSettled(copied.map((key) => deleteObject(key)));
+        throw error;
       }
-      for (const key of keys) await deleteObject(key);
+      // Every copy landed; now remove the originals. A failure here leaves
+      // both trees, so say so instead of reporting a plain error.
+      let failed = 0;
+      for (const key of keys) {
+        try {
+          await deleteObject(key);
+        } catch {
+          failed += 1;
+        }
+      }
+      if (failed > 0) {
+        throw new Error(
+          `Copied to "${newPrefix}", but ${failed} of ${keys.length} original files could not be deleted. Both folders now exist — delete the old one to finish.`,
+        );
+      }
     },
     onSuccess: async () => {
       await invalidate();
@@ -529,7 +552,11 @@ export function FileManagerPage() {
       setSelected(new Set());
       setNameAction(null);
     },
-    onError: toastFailure,
+    onError: async (error) => {
+      // A partial failure may have changed what's on the server.
+      await invalidate();
+      toastFailure(error);
+    },
   });
 
   const duplicate = useMutation({

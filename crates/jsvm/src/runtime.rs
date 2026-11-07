@@ -23,6 +23,21 @@
 //! Worker threads are plain OS threads, never tokio tasks, so blocking is
 //! safe (a job never blocks a runtime worker).
 //!
+//! # Pool lifecycle
+//!
+//! The pool is [`PoolState::Ready`], [`PoolState::Reloading`],
+//! [`PoolState::Degraded`], then [`PoolState::Stopping`] / `Stopped`; see
+//! [`Runtime::status`]. A reload is a pool-wide two-phase swap (every
+//! worker loads the files into a side table, then all switch together), so
+//! workers never serve different generations, and a failed reload leaves
+//! the previous good handlers and host registrations in place (`Degraded`)
+//! instead of half-loaded ones. Worker 0's host registrations are staged
+//! during evaluation and applied only on commit.
+//!
+//! Migrations: `run_migrations_up` runs the file and *then* records it in
+//! the ledger. A crash between the two re-runs that migration on the next
+//! start, so migration bodies must be idempotent (or tolerate re-running).
+//!
 //! # `e.next()` semantics
 //!
 //! Cratebase's hook chain lets a JavaScript handler run code *after* the
@@ -44,6 +59,13 @@
 //!   handler's `try/catch` around `e.next()`.
 //! - A handler that never calls `e.next()` still stops the chain, exactly
 //!   as in Cratebase.
+//! - `e.next()` advances at most once per handler: a repeated call is a
+//!   no-op with a warning (in route chains it does not run more of the
+//!   chain). The outcome fields are independent: a response set with
+//!   `e.json()` and `next_called` can both be present (`next()` then
+//!   respond); the host applies the response and decides whether to
+//!   continue. A later `e.json()`/`e.string()`/... replaces an earlier
+//!   one (last response wins).
 //!
 //! The design leaves room for the faithful version: `e.next()` would
 //! become a native function that hands a `oneshot` to the Rust chain,
@@ -54,6 +76,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -311,10 +334,58 @@ struct WorkerHandle {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
+/// Lifecycle state of the worker pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolState {
+    /// Every worker serves the same, successfully loaded handler table.
+    Ready,
+    /// A reload is being prepared; workers keep serving the last good table.
+    Reloading,
+    /// The last reload failed. Workers keep serving the previous good
+    /// table (all of them, the same one); the files on disk are not what
+    /// is running. Cleared by the next successful reload.
+    Degraded,
+    /// `stop` is in progress.
+    Stopping,
+    Stopped,
+}
+
+/// A snapshot of the pool's health, for logs and health endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeStatus {
+    pub state: PoolState,
+    /// Handler-table generation served by every worker; bumped by each
+    /// successful (all-workers) reload. The initial load is generation 1.
+    pub generation: u64,
+    /// Why the last reload failed, while `state` is [`PoolState::Degraded`].
+    pub last_error: Option<String>,
+}
+
+/// Bookkeeping for coalescing concurrent reload requests.
+#[derive(Default)]
+struct ReloadGate {
+    /// Highest request sequence number a finished reload covered.
+    done_seq: u64,
+    /// That reload's failure message, if it failed.
+    result: Option<String>,
+}
+
 struct Inner {
     cfg: RuntimeConfig,
     jobs: crossbeam_channel::Sender<Job>,
     workers: Vec<WorkerHandle>,
+    handle: Handle,
+    status: Mutex<RuntimeStatus>,
+    reload_seq: AtomicU64,
+    reload_gate: tokio::sync::Mutex<ReloadGate>,
+}
+
+impl Inner {
+    fn set_status(&self, f: impl FnOnce(&mut RuntimeStatus)) {
+        if let Ok(mut s) = self.status.lock() {
+            f(&mut s);
+        }
+    }
 }
 
 /// The JavaScript runtime. Cheap to clone; all clones share the pool.
@@ -390,19 +461,76 @@ impl Runtime {
                 cfg,
                 jobs: job_tx,
                 workers,
+                handle,
+                status: Mutex::new(RuntimeStatus {
+                    state: PoolState::Reloading,
+                    generation: 0,
+                    last_error: None,
+                }),
+                reload_seq: AtomicU64::new(0),
+                reload_gate: tokio::sync::Mutex::new(ReloadGate::default()),
             }),
         };
 
         if let Some(e) = first_error {
+            // All-or-nothing: nothing was committed to the host, so just
+            // throw the prepared tables away and stop.
+            runtime.broadcast_discard();
             runtime.stop();
             return Err(e);
         }
+        runtime.commit_all(1).await;
 
         if runtime.inner.cfg.hooks_watch {
             spawn_watcher(Arc::downgrade(&runtime.inner), runtime.clone());
         }
 
         Ok(runtime)
+    }
+
+    fn broadcast_discard(&self) {
+        for w in &self.inner.workers {
+            let _ = w.control.send(Control::Discard);
+        }
+    }
+
+    /// Phase two of a (re)load: every worker prepared cleanly, switch them
+    /// all to the new table and bump the generation.
+    async fn commit_all(&self, generation: u64) {
+        let mut acks = Vec::with_capacity(self.inner.workers.len());
+        for w in &self.inner.workers {
+            let (tx, rx) = oneshot::channel();
+            if w.control
+                .send(Control::Commit {
+                    generation,
+                    reply: tx,
+                })
+                .is_ok()
+            {
+                acks.push(rx);
+            }
+        }
+        for rx in acks {
+            let _ = rx.await;
+        }
+        self.inner.set_status(|s| {
+            s.state = PoolState::Ready;
+            s.generation = generation;
+            s.last_error = None;
+        });
+    }
+
+    /// Current pool state, generation and last reload error.
+    pub fn status(&self) -> RuntimeStatus {
+        self.inner
+            .status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(RuntimeStatus {
+                state: PoolState::Degraded,
+                generation: 0,
+                last_error: Some("status lock poisoned".into()),
+            })
     }
 
     pub fn config(&self) -> &RuntimeConfig {
@@ -423,7 +551,7 @@ impl Runtime {
             .send(build(tx))
             .map_err(|_| AppError::internal("jsvm worker pool is shut down"))?;
         rx.await
-            .map_err(|_| AppError::internal("jsvm worker dropped the reply"))?
+            .map_err(|_| AppError::internal("jsvm worker pool is shut down"))?
     }
 
     /// Invoke a hook handler with an event snapshot. See the module docs
@@ -546,35 +674,92 @@ impl Runtime {
     }
 
     /// Re-evaluate the hook files on every worker (used in `--dev`).
-    /// Returns once every worker has reloaded; the first error, if any,
-    /// is returned but the other workers still reload.
+    ///
+    /// All-or-nothing across the pool: every worker first evaluates the
+    /// files into a side table while still serving its current one; only
+    /// if all of them succeed are the new tables switched in (and the
+    /// host's registrations swapped by worker 0), bumping the generation.
+    /// On any failure nothing changes, the previous handlers keep serving
+    /// and the pool becomes [`PoolState::Degraded`] until a later reload
+    /// succeeds. Concurrent calls are coalesced: callers that arrive while
+    /// a reload runs share one follow-up reload instead of queueing one
+    /// each.
     pub async fn reload(&self) -> Result<(), AppError> {
+        let my = self.inner.reload_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut gate = self.inner.reload_gate.lock().await;
+        if gate.done_seq >= my {
+            return gate
+                .result
+                .clone()
+                .map_or(Ok(()), |m| Err(AppError::internal(m)));
+        }
+        // Everything requested up to now is covered by this run.
+        let covered = self.inner.reload_seq.load(Ordering::SeqCst);
+        let result = self.reload_once().await;
+        gate.done_seq = covered;
+        gate.result = result.as_ref().err().map(|e| e.to_string());
+        result
+    }
+
+    async fn reload_once(&self) -> Result<(), AppError> {
+        let status = self.status();
+        if matches!(status.state, PoolState::Stopping | PoolState::Stopped) {
+            return Err(AppError::internal("jsvm runtime is shutting down"));
+        }
+        self.inner.set_status(|s| s.state = PoolState::Reloading);
         let mut receivers = Vec::with_capacity(self.inner.workers.len());
+        let mut first_error = None;
         for w in &self.inner.workers {
             let (tx, rx) = oneshot::channel();
-            if w.control.send(Control::Reload(tx)).is_ok() {
+            if w.control.send(Control::Prepare(tx)).is_ok() {
                 receivers.push(rx);
+            } else {
+                first_error.get_or_insert_with(|| AppError::internal("jsvm worker is gone"));
             }
         }
-        let mut first_error = None;
         for rx in receivers {
-            if let Ok(Err(e)) = rx.await {
-                first_error.get_or_insert(e);
+            match rx.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    first_error.get_or_insert(e);
+                }
+                Err(_) => {
+                    first_error
+                        .get_or_insert_with(|| AppError::internal("jsvm worker died on reload"));
+                }
             }
         }
-        first_error.map_or(Ok(()), Err)
-    }
-
-    /// Ask every worker to reload without waiting for the result.
-    pub fn reload_in_background(&self) {
-        for w in &self.inner.workers {
-            let (tx, _rx) = oneshot::channel();
-            let _ = w.control.send(Control::Reload(tx));
+        if let Some(e) = first_error {
+            self.broadcast_discard();
+            tracing::error!(
+                error = %e,
+                generation = status.generation,
+                "hook reload failed; still serving the previous handlers (degraded)"
+            );
+            let msg = e.to_string();
+            self.inner.set_status(|s| {
+                s.state = PoolState::Degraded;
+                s.last_error = Some(msg);
+            });
+            return Err(e);
         }
+        self.commit_all(status.generation + 1).await;
+        Ok(())
     }
 
-    /// Stop the workers. Pending jobs fail with an error.
+    /// Ask for a reload without waiting for the result.
+    pub fn reload_in_background(&self) {
+        let rt = self.clone();
+        self.inner.handle.spawn(async move {
+            if let Err(e) = rt.reload().await {
+                tracing::warn!(error = %e, "background hook reload failed");
+            }
+        });
+    }
+
+    /// Stop the workers. Jobs still queued fail with an error.
     pub fn stop(&self) {
+        self.inner.set_status(|s| s.state = PoolState::Stopping);
         for w in &self.inner.workers {
             let _ = w.control.send(Control::Shutdown);
         }
@@ -583,6 +768,7 @@ impl Runtime {
                 let _ = t.join();
             }
         }
+        self.inner.set_status(|s| s.state = PoolState::Stopped);
     }
 }
 
@@ -645,18 +831,15 @@ fn spawn_watcher(inner: Weak<Inner>, runtime: Runtime) {
     std::thread::Builder::new()
         .name("jsvm-hooks-watch".into())
         .spawn(move || {
-            let mut last = snapshot(&dir);
+            let mut last = snapshot(&dir, &[]);
             loop {
                 std::thread::sleep(interval);
                 let Some(inner) = inner.upgrade() else { break };
-                let now = snapshot(&dir);
+                let now = snapshot(&dir, &last);
                 if now != last {
                     last = now;
                     tracing::info!("cb_hooks changed, reloading");
-                    for w in &inner.workers {
-                        let (tx, _rx) = oneshot::channel();
-                        let _ = w.control.send(Control::Reload(tx));
-                    }
+                    Runtime { inner }.reload_in_background();
                 }
             }
         })
@@ -681,7 +864,11 @@ fn spawn_watcher(inner: Weak<Inner>, runtime: Runtime) {
 /// edit would.
 type FileKey = (PathBuf, Option<std::time::SystemTime>, Option<u64>);
 
-fn snapshot(dir: &Path) -> Vec<FileKey> {
+///
+/// A file that cannot be read (transient error, mid-write) keeps the hash
+/// it had in `prev` instead of becoming `None`: a read error is not a
+/// content change and must not trigger a reload on its own.
+fn snapshot(dir: &Path, prev: &[FileKey]) -> Vec<FileKey> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -697,6 +884,12 @@ fn snapshot(dir: &Path) -> Vec<FileKey> {
                     let mut hasher = std::collections::hash_map::DefaultHasher::new();
                     bytes.hash(&mut hasher);
                     hasher.finish()
+                })
+                .or_else(|| {
+                    let is_file = metadata.as_ref().is_some_and(std::fs::Metadata::is_file);
+                    is_file
+                        .then(|| prev.iter().find(|k| k.0 == p).and_then(|k| k.2))
+                        .flatten()
                 });
             out.push((p, mtime, content_hash));
         }

@@ -229,6 +229,10 @@ struct Claimed {
     record: Value,
     attempts: i64,
     max_attempts: i64,
+    /// The `startedAt` this claim wrote; write-backs match on it so a
+    /// reclaimed/replayed/re-claimed delivery is never overwritten by the
+    /// worker that lost it.
+    started_at: String,
 }
 
 /// Atomically claim the earliest due `pending` row, if any — identical
@@ -286,7 +290,7 @@ async fn claim_next(app: &App) -> Result<Option<Claimed>, AppError> {
                 ),
                 &[
                     Sql::from(STATUS_IN_PROGRESS),
-                    Sql::from(now),
+                    Sql::from(now.clone()),
                     Sql::from(id.clone()),
                     Sql::from(STATUS_PENDING),
                 ],
@@ -304,6 +308,7 @@ async fn claim_next(app: &App) -> Result<Option<Claimed>, AppError> {
             record,
             attempts: row.get_i64("attempts").unwrap_or(0),
             max_attempts: row.get_i64("maxAttempts").unwrap_or(DEFAULT_MAX_ATTEMPTS),
+            started_at: now,
         }))
     })
     .await
@@ -464,13 +469,15 @@ async fn finish(app: &App, claimed: &Claimed, outcome: Outcome) {
         .map(|c| c.to_string())
         .unwrap_or_default();
 
-    if outcome.success {
-        if let Err(e) = app
-            .db()
+    // Every write-back is guarded on this worker still owning the claim
+    // (`in_progress` + the `startedAt` it wrote); see [`Claimed::started_at`].
+    let written = if outcome.success {
+        app.db()
             .execute(
                 &format!(
                     r#"UPDATE "{COLLECTION}" SET "status" = $1, "responseCode" = $2, "responseBody" = $3,
-                       "durationMs" = $4, "deliveredAt" = $5, "error" = '' WHERE "id" = $6"#
+                       "durationMs" = $4, "deliveredAt" = $5, "error" = ''
+                       WHERE "id" = $6 AND "status" = $7 AND "startedAt" = $8"#
                 ),
                 &[
                     Sql::from(STATUS_SUCCESS),
@@ -479,12 +486,11 @@ async fn finish(app: &App, claimed: &Claimed, outcome: Outcome) {
                     Sql::from(outcome.duration_ms),
                     Sql::from(DateTime::now().to_pb_string()),
                     Sql::from(claimed.id.clone()),
+                    Sql::from(STATUS_IN_PROGRESS),
+                    Sql::from(claimed.started_at.clone()),
                 ],
             )
             .await
-        {
-            tracing::warn!(error = %e, delivery = %claimed.id, "failed to record a successful webhook delivery");
-        }
     } else {
         let attempts = claimed.attempts + 1;
         let status = if attempts >= claimed.max_attempts {
@@ -496,13 +502,12 @@ async fn finish(app: &App, claimed: &Claimed, outcome: Outcome) {
             DateTime::now().inner()
                 + chrono::Duration::from_std(backoff_delay(attempts)).unwrap_or_default(),
         );
-        if let Err(e) = app
-            .db()
+        app.db()
             .execute(
                 &format!(
                     r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = $2, "responseCode" = $3,
                        "responseBody" = $4, "durationMs" = $5, "nextAttemptAt" = $6, "error" = $7
-                       WHERE "id" = $8"#
+                       WHERE "id" = $8 AND "status" = $9 AND "startedAt" = $10"#
                 ),
                 &[
                     Sql::from(status),
@@ -513,11 +518,23 @@ async fn finish(app: &App, claimed: &Claimed, outcome: Outcome) {
                     Sql::from(next_attempt_at.to_pb_string()),
                     Sql::from(outcome.error.clone()),
                     Sql::from(claimed.id.clone()),
+                    Sql::from(STATUS_IN_PROGRESS),
+                    Sql::from(claimed.started_at.clone()),
                 ],
             )
             .await
-        {
-            tracing::warn!(error = %e, delivery = %claimed.id, "failed to record a failed webhook delivery attempt");
+    };
+    match written {
+        Ok(0) => {
+            // Reclaimed, replayed or deleted while the request was in
+            // flight: a newer run owns this delivery, so neither its row
+            // nor the webhook's failure counter is touched.
+            tracing::warn!(delivery = %claimed.id, "webhook delivery no longer owned by this worker; discarding its outcome");
+            return;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, delivery = %claimed.id, "failed to record a webhook delivery outcome");
         }
     }
 
@@ -564,13 +581,12 @@ async fn roll_up_onto_webhook(app: &App, webhook_id: &str, outcome: &Outcome) {
         return;
     }
 
-    // Two round trips rather than `UPDATE ... RETURNING`: SQLite's read
-    // connections (used by `query`/`query_one` when readers exist — a
-    // `:memory:` test database has none, but a real on-disk one does)
-    // can't run a write statement at all, so `RETURNING` would only ever
-    // work by accident of which connection happened to serve it. A rare,
-    // non-hot-path counter bump does not need to be atomic with its own
-    // read-back.
+    // The increment is a single in-database `+ 1` (never read-modify-
+    // write), and the disable is its own conditional statement evaluated
+    // against the stored counter, so concurrent failures can neither lose
+    // an increment nor both claim the disable (`rows affected == 1` is
+    // the one winner that audits). Not `UPDATE ... RETURNING`: SQLite's
+    // read connections can't run a write statement.
     if let Err(e) = app
         .db()
         .execute(
@@ -585,7 +601,27 @@ async fn roll_up_onto_webhook(app: &App, webhook_id: &str, outcome: &Outcome) {
         tracing::warn!(error = %e, webhook_id = %webhook_id, "failed to bump consecutiveFailures");
         return;
     }
-    let row = match app
+    let threshold = app.settings().webhooks.disable_after_failures.max(1);
+    match app
+        .db()
+        .execute(
+            &format!(
+                r#"UPDATE "{}" SET "enabled" = 0
+                   WHERE "id" = $1 AND "enabled" = 1 AND "consecutiveFailures" >= $2"#,
+                crate::webhooks::COLLECTION
+            ),
+            &[Sql::from(webhook_id), Sql::from(threshold)],
+        )
+        .await
+    {
+        Ok(1) => {}
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!(error = %e, webhook_id = %webhook_id, "failed to auto-disable a webhook");
+            return;
+        }
+    }
+    let row = app
         .db()
         .query_one(
             &format!(
@@ -595,34 +631,17 @@ async fn roll_up_onto_webhook(app: &App, webhook_id: &str, outcome: &Outcome) {
             &[Sql::from(webhook_id)],
         )
         .await
-    {
-        Ok(row) => row,
-        Err(e) => {
-            tracing::warn!(error = %e, webhook_id = %webhook_id, "failed to read back consecutiveFailures");
-            return;
-        }
-    };
-    let Some(row) = row else { return };
-    let failures = row.get_i64("consecutiveFailures").unwrap_or(0);
-    let threshold = app.settings().webhooks.disable_after_failures.max(1);
-    if failures < threshold {
-        return;
-    }
-    if let Err(e) = app
-        .db()
-        .execute(
-            &format!(
-                r#"UPDATE "{}" SET "enabled" = 0 WHERE "id" = $1"#,
-                crate::webhooks::COLLECTION
-            ),
-            &[Sql::from(webhook_id)],
-        )
-        .await
-    {
-        tracing::warn!(error = %e, webhook_id = %webhook_id, "failed to auto-disable a webhook");
-        return;
-    }
-    let name = row.get_str("name").unwrap_or_default().to_string();
+        .ok()
+        .flatten();
+    let failures = row
+        .as_ref()
+        .and_then(|r| r.get_i64("consecutiveFailures"))
+        .unwrap_or(threshold);
+    let name = row
+        .as_ref()
+        .and_then(|r| r.get_str("name"))
+        .unwrap_or_default()
+        .to_string();
     crate::audit::write(
         app,
         None,
@@ -655,18 +674,32 @@ pub async fn replay(app: &App, id: &str) -> Result<(), AppError> {
         .execute(
             &format!(
                 r#"UPDATE "{COLLECTION}" SET "status" = $1, "attempts" = 0, "nextAttemptAt" = $2,
-                   "error" = '' WHERE "id" = $3"#
+                   "error" = '' WHERE "id" = $3 AND "status" <> $4"#
             ),
             &[
                 Sql::from(STATUS_PENDING),
                 Sql::from(DateTime::now().to_pb_string()),
                 Sql::from(id),
+                Sql::from(STATUS_IN_PROGRESS),
             ],
         )
         .await
         .map_err(AppError::from)?;
     if updated == 0 {
-        return Err(AppError::not_found("Missing or invalid webhook delivery."));
+        let exists = app
+            .db()
+            .query_one(
+                &format!(r#"SELECT "id" FROM "{COLLECTION}" WHERE "id" = $1"#),
+                &[Sql::from(id)],
+            )
+            .await
+            .map_err(AppError::from)?
+            .is_some();
+        return Err(if exists {
+            AppError::bad_request("a delivery that is in progress cannot be replayed.")
+        } else {
+            AppError::not_found("Missing or invalid webhook delivery.")
+        });
     }
     Ok(())
 }
@@ -824,7 +857,81 @@ mod tests {
             record: json!({"id": "rec1"}),
             attempts,
             max_attempts,
+            started_at: "2000-01-01 00:00:00.000Z".to_string(),
         }
+    }
+
+    /// Simulate the claim `claim_next` would have made for `claimed`, then
+    /// run [`finish`] - `finish` only writes back for an owned claim.
+    async fn run_finish(app: &App, claimed: &Claimed, outcome: Outcome) {
+        app.db()
+            .execute(
+                &format!(
+                    r#"UPDATE "{COLLECTION}" SET "status" = $1, "startedAt" = $2 WHERE "id" = $3"#
+                ),
+                &[
+                    Sql::from(STATUS_IN_PROGRESS),
+                    Sql::from(claimed.started_at.clone()),
+                    Sql::from(claimed.id.clone()),
+                ],
+            )
+            .await
+            .unwrap();
+        finish(app, claimed, outcome).await;
+    }
+
+    #[tokio::test]
+    async fn a_lost_claim_cannot_overwrite_a_newer_run_or_bump_the_counter() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 6).await;
+        let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 6)
+            .await
+            .unwrap();
+        // The row is pending again (reclaimed/replayed): the old worker's
+        // late failure must be discarded entirely.
+        finish(
+            &app,
+            &claimed_for(&id, &webhook_id, 0, 6),
+            Outcome {
+                success: false,
+                response_code: Some(500),
+                response_body: String::new(),
+                error: "late".to_string(),
+                duration_ms: 1,
+            },
+        )
+        .await;
+        let row = delivery_row(&app, &id).await;
+        assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
+        assert_eq!(row.get_i64("attempts"), Some(0));
+        assert_eq!(
+            webhook_row(&app, &webhook_id)
+                .await
+                .get_i64("consecutiveFailures"),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_an_in_progress_delivery() {
+        let (app, _dir) = test_app().await;
+        let webhook_id = insert_webhook(&app, "https://example.com/hook", None, 6).await;
+        let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 6)
+            .await
+            .unwrap();
+        app.db()
+            .execute(
+                &format!(r#"UPDATE "{COLLECTION}" SET "status" = $1 WHERE "id" = $2"#),
+                &[Sql::from(STATUS_IN_PROGRESS), Sql::from(id.clone())],
+            )
+            .await
+            .unwrap();
+        assert!(replay(&app, &id).await.is_err());
+        assert_eq!(
+            delivery_row(&app, &id).await.get_str("status"),
+            Some(STATUS_IN_PROGRESS)
+        );
+        assert!(replay(&app, "missing").await.is_err());
     }
 
     #[tokio::test]
@@ -868,7 +975,7 @@ mod tests {
             .await
             .unwrap();
 
-        finish(
+        run_finish(
             &app,
             &claimed_for(&id, &webhook_id, 0, 6),
             Outcome {
@@ -907,14 +1014,14 @@ mod tests {
         };
 
         // Attempt 1 of 2: retried, not given up yet.
-        finish(&app, &claimed_for(&id, &webhook_id, 0, 2), failing()).await;
+        run_finish(&app, &claimed_for(&id, &webhook_id, 0, 2), failing()).await;
         let row = delivery_row(&app, &id).await;
         assert_eq!(row.get_str("status"), Some(STATUS_PENDING));
         assert_eq!(row.get_i64("attempts"), Some(1));
         assert!(row.get_str("error").unwrap_or_default().contains("500"));
 
         // Attempt 2 of 2 == maxAttempts: gives up.
-        finish(&app, &claimed_for(&id, &webhook_id, 1, 2), failing()).await;
+        run_finish(&app, &claimed_for(&id, &webhook_id, 1, 2), failing()).await;
         let row = delivery_row(&app, &id).await;
         assert_eq!(row.get_str("status"), Some(STATUS_FAILED));
         assert_eq!(row.get_i64("attempts"), Some(2));
@@ -950,7 +1057,7 @@ mod tests {
             )
             .await
             .unwrap();
-            finish(&app, &claimed_for(&id, &webhook_id, i, 100), failing()).await;
+            run_finish(&app, &claimed_for(&id, &webhook_id, i, 100), failing()).await;
         }
 
         let webhook = webhook_row(&app, &webhook_id).await;
@@ -986,7 +1093,8 @@ mod tests {
             .await
             .unwrap();
 
-        attempt(&app, claimed_for(&id, &webhook_id, 0, 1)).await;
+        let claimed = claim_next(&app).await.unwrap().expect("claimed");
+        attempt(&app, claimed).await;
 
         let row = delivery_row(&app, &id).await;
         assert_eq!(row.get_str("status"), Some(STATUS_FAILED));
@@ -1047,7 +1155,7 @@ mod tests {
         let id = enqueue_delivery(&app, &webhook_id, "create", "widgets", "rec1", json!({}), 1)
             .await
             .unwrap();
-        finish(
+        run_finish(
             &app,
             &claimed_for(&id, &webhook_id, 0, 1),
             Outcome {

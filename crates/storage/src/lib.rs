@@ -160,7 +160,11 @@ impl Storage {
     /// Streams shorter than one multipart chunk (5 MiB) are written with a
     /// single `put`; longer ones go through the driver's multipart upload
     /// (S3 `CreateMultipartUpload`, or a temp file renamed into place for
-    /// the local driver), which is aborted if the stream errors.
+    /// the local driver). The upload is aborted if the stream errors, a part
+    /// fails, or the returned future is dropped mid-upload (best effort: the
+    /// abort is spawned on the current tokio runtime; with no runtime, or if
+    /// the process dies, bucket lifecycle rules for incomplete multipart
+    /// uploads are the backstop).
     /// `size_hint` lets a caller that knows the length skip the initial
     /// buffering decision; it's advisory only.
     pub async fn put_stream<S>(
@@ -193,25 +197,32 @@ impl Storage {
         }
 
         let upload = self.store.put_multipart(&path).await?;
-        let mut writer = WriteMultipart::new_with_chunk_size(upload, MULTIPART_CHUNK_SIZE);
-        writer.write(&buffered);
+        let mut writer = UploadGuard::new(WriteMultipart::new_with_chunk_size(
+            upload,
+            MULTIPART_CHUNK_SIZE,
+        ));
+        writer.get().write(&buffered);
         drop(buffered);
         loop {
             match stream.next().await {
                 Some(Ok(chunk)) => {
-                    writer.write(&chunk);
+                    writer.get().write(&chunk);
                     // Bound in-flight parts so a fast producer can't queue
                     // the whole file in memory ahead of the network.
-                    writer.wait_for_capacity(4).await?;
+                    if let Err(e) = writer.get().wait_for_capacity(4).await {
+                        writer.abort().await;
+                        return Err(e.into());
+                    }
                 }
                 Some(Err(e)) => {
-                    writer.abort().await?;
+                    writer.abort().await;
                     return Err(StorageError::Io(e));
                 }
                 None => break,
             }
         }
-        writer.finish().await?;
+        // `finish` aborts the upload itself when completing it fails.
+        writer.take().finish().await?;
         Ok(())
     }
 
@@ -342,9 +353,92 @@ impl std::fmt::Debug for Storage {
     }
 }
 
+/// Owns an in-progress multipart upload and aborts it on drop unless it was
+/// explicitly finished or aborted, so a cancelled `put_stream` does not
+/// orphan its parts.
+struct UploadGuard(Option<WriteMultipart>);
+
+impl UploadGuard {
+    fn new(w: WriteMultipart) -> Self {
+        Self(Some(w))
+    }
+
+    fn get(&mut self) -> &mut WriteMultipart {
+        self.0.as_mut().expect("upload already consumed")
+    }
+
+    /// Hand the writer back (to finish it); the guard no longer aborts.
+    fn take(&mut self) -> WriteMultipart {
+        self.0.take().expect("upload already consumed")
+    }
+
+    async fn abort(&mut self) {
+        if let Some(w) = self.0.take() {
+            // Nothing more to do if the abort itself fails; the caller is
+            // already returning the original error.
+            let _ = w.abort().await;
+        }
+    }
+}
+
+impl Drop for UploadGuard {
+    fn drop(&mut self) {
+        if let Some(w) = self.0.take() {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = w.abort().await;
+                });
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn leftover_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = vec![];
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn put_stream_dropped_mid_upload_aborts_multipart() {
+        let dir = temp_dir();
+        let storage = Storage::local(&dir).unwrap();
+        let chunk = Bytes::from(vec![1u8; 1024 * 1024]);
+        // Six chunks (past the multipart threshold) and then a stream that
+        // never yields again; the timeout drops the upload future.
+        let stream = futures::stream::iter((0..6).map(move |_| Ok::<_, io::Error>(chunk.clone())))
+            .chain(futures::stream::pending());
+        let res = tokio::time::timeout(
+            Duration::from_millis(300),
+            storage.put_stream("cancelled.bin", stream, None),
+        )
+        .await;
+        assert!(res.is_err(), "upload should still have been in flight");
+        // The abort runs on a spawned task; give it a moment.
+        for _ in 0..50 {
+            if leftover_files(&dir).is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(leftover_files(&dir), Vec::<std::path::PathBuf>::new());
+        assert!(!storage.exists("cancelled.bin").await.unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn temp_dir() -> std::path::PathBuf {
         use std::sync::atomic::{AtomicUsize, Ordering};

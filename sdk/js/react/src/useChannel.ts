@@ -60,6 +60,10 @@ export function useChannel<T = unknown>(
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const channelRef = useRef<Channel<T> | null>(null);
+  // `true` between an enabled subscription's cleanup and the next one's
+  // start (unmount, or a name/client change in flight): publishing then
+  // must fail loudly rather than quietly build a throwaway channel.
+  const closedRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) {
@@ -68,6 +72,8 @@ export function useChannel<T = unknown>(
     }
 
     let cancelled = false;
+    closedRef.current = false;
+    setLastMessage(null);
     const channel = client.channel<T>(name);
     channelRef.current = channel;
     setError(null);
@@ -75,6 +81,7 @@ export function useChannel<T = unknown>(
     let unsubscribe: (() => void) | undefined;
     channel
       .subscribe((message) => {
+        if (cancelled) return;
         setLastMessage(message);
         onMessageRef.current?.(message as ChannelMessage);
       })
@@ -94,12 +101,17 @@ export function useChannel<T = unknown>(
       cancelled = true;
       unsubscribe?.();
       channelRef.current = null;
+      closedRef.current = true;
+      setConnected(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, name, enabled]);
 
   const publish = useCallback(
     (event: string, data?: T) => {
+      if (!channelRef.current && closedRef.current) {
+        return Promise.reject(new Error(`useChannel("${name}"): channel is closed (unmounted or switching channels)`));
+      }
       const channel = channelRef.current ?? client.channel<T>(name);
       return channel.publish(event, data);
     },

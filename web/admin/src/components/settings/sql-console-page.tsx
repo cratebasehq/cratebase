@@ -194,8 +194,23 @@ export function SqlConsolePage() {
 
   function execute(text: string, write: boolean) {
     if (text.trim().length === 0 || run.isPending) return;
+    // The toggle is mid-confirmation: running now would silently use the
+    // old (read-only) mode, so make the user finish or cancel it first.
+    if (confirmingWrite) {
+      toast.info("Finish or cancel the write-mode confirmation first");
+      return;
+    }
     remember(text);
-    run.mutate({ sql: text, write });
+    run.mutate(
+      { sql: text, write },
+      {
+        // Write mode is armed for one run only: whatever the outcome, the
+        // next run starts read-only again.
+        onSettled: () => {
+          if (write) setWriteMode(false);
+        },
+      },
+    );
   }
 
   // Table-name (and, where the schema exposes it, column-name) completion
@@ -221,6 +236,7 @@ export function SqlConsolePage() {
   const executeRef = useRef<(text: string) => void>(() => {});
   useEffect(() => {
     executeRef.current = (text) => execute(text, writeMode);
+    // (no dependency array: re-assigned every render so it never goes stale)
   });
 
   const extensions = useMemo(
@@ -408,7 +424,7 @@ export function SqlConsolePage() {
           </div>
         </div>
 
-        {isWriteStatement && sqlText.trim().length > 0 ? (
+        {sqlText.trim().length > 0 && (writeMode || isWriteStatement) ? (
           <div
             role="status"
             className={cn(
@@ -418,8 +434,10 @@ export function SqlConsolePage() {
           >
             <AlertTriangle aria-hidden className={cn("size-3.5 shrink-0", writeMode ? "text-warning" : "text-info")} />
             {writeMode
-              ? "This statement modifies data or schema and cannot be undone."
-              : "This looks like a write statement. Read-only mode will reject it — turn on write mode above to run it."}
+              ? isWriteStatement
+                ? "This statement modifies data or schema and cannot be undone. Write mode disarms after this run."
+                : "Write mode is armed: this statement runs with write access even if it doesn't look like a write. It disarms after this run."
+              : "This looks like a write statement (a guess from its first word). In read-only mode the server decides and may reject it — turn on write mode above to run it."}
           </div>
         ) : null}
 

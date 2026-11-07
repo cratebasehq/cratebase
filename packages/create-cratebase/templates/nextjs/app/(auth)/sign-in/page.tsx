@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { CratebaseError } from "@cratebase/client";
@@ -23,6 +23,10 @@ export default function SignInPage() {
   const [mfaId, setMfaId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // Bumped whenever the visible flow changes (tab switch, leaving MFA). A
+  // request started under an older value must not touch state or navigate
+  // when it finally settles.
+  const flow = useRef(0);
 
   // Password tab state
   const [identity, setIdentity] = useState("");
@@ -37,6 +41,16 @@ export default function SignInPage() {
   const [magicEmail, setMagicEmail] = useState("");
   const [magicSent, setMagicSent] = useState(false);
 
+  function resetFlow(next: Tab) {
+    flow.current += 1;
+    setTab(next);
+    setError(null);
+    setPending(false);
+    setOtpId(null);
+    setOtpCode("");
+    setMagicSent(false);
+  }
+
   function handleMfa(err: unknown): boolean {
     if (err instanceof CratebaseError && err.mfaId) {
       setMfaId(err.mfaId);
@@ -47,49 +61,59 @@ export default function SignInPage() {
 
   async function handlePasswordSubmit(e: FormEvent) {
     e.preventDefault();
+    const run = flow.current;
     setPending(true);
     setError(null);
     try {
       await cb.auth.signIn.password({ identity, password });
+      if (run !== flow.current) return;
       router.push("/dashboard");
     } catch (err) {
+      if (run !== flow.current) return;
       if (!handleMfa(err)) setError(err instanceof Error ? err.message : "Sign-in failed.");
     } finally {
-      setPending(false);
+      if (run === flow.current) setPending(false);
     }
   }
 
   async function handleOtpRequest(e: FormEvent) {
     e.preventDefault();
+    const run = flow.current;
     setPending(true);
     setError(null);
     try {
       const { otpId } = await cb.auth.otp.request({ email: otpEmail });
+      if (run !== flow.current) return;
       setOtpId(otpId);
     } catch (err) {
+      if (run !== flow.current) return;
       setError(err instanceof Error ? err.message : "Couldn't send a code.");
     } finally {
-      setPending(false);
+      if (run === flow.current) setPending(false);
     }
   }
 
   async function handleOtpConfirm(e: FormEvent) {
     e.preventDefault();
     if (!otpId) return;
+    const run = flow.current;
     setPending(true);
     setError(null);
     try {
       await cb.auth.signIn.otp({ otpId, code: otpCode });
+      if (run !== flow.current) return;
       router.push("/dashboard");
     } catch (err) {
+      if (run !== flow.current) return;
       if (!handleMfa(err)) setError(err instanceof Error ? err.message : "That code didn't work.");
     } finally {
-      setPending(false);
+      if (run === flow.current) setPending(false);
     }
   }
 
   async function handleMagicLinkRequest(e: FormEvent) {
     e.preventDefault();
+    const run = flow.current;
     setPending(true);
     setError(null);
     try {
@@ -97,11 +121,13 @@ export default function SignInPage() {
         email: magicEmail,
         redirectUrl: `${window.location.origin}/auth/magic-link`,
       });
+      if (run !== flow.current) return;
       setMagicSent(true);
     } catch (err) {
+      if (run !== flow.current) return;
       setError(err instanceof Error ? err.message : "Couldn't send a magic link.");
     } finally {
-      setPending(false);
+      if (run === flow.current) setPending(false);
     }
   }
 
@@ -110,6 +136,18 @@ export default function SignInPage() {
       <main className="card mx-auto my-16 w-full max-w-sm">
         <h1 className="mb-4 text-xl font-semibold">Two-factor verification</h1>
         <TotpChallenge mfaId={mfaId} onSuccess={() => router.push("/dashboard")} />
+        <button
+          type="button"
+          className="muted mt-4 text-sm underline"
+          onClick={() => {
+            flow.current += 1;
+            setMfaId(null);
+            setError(null);
+            setPending(false);
+          }}
+        >
+          Back to sign in
+        </button>
       </main>
     );
   }
@@ -135,8 +173,7 @@ export default function SignInPage() {
             aria-selected={tab === id}
             aria-controls="signin-panel"
             onClick={() => {
-              setTab(id);
-              setError(null);
+              if (id !== tab) resetFlow(id);
             }}
             className={`flex-1 rounded-md px-2 py-1.5 transition-colors ${
               tab === id ? "bg-white font-medium shadow-sm dark:bg-black/40" : "muted hover:text-current"

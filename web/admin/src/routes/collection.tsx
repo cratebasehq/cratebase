@@ -806,7 +806,12 @@ function CollectionPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={confirmLeaveSettings} onOpenChange={(open) => !open && setConfirmLeaveSettings(false)}>
+      <AlertDialog open={confirmLeaveSettings} onOpenChange={(open) => {
+          if (open) return;
+          setConfirmLeaveSettings(false);
+          setPendingTab(undefined);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Leave the schema editor?</AlertDialogTitle>

@@ -19,19 +19,34 @@ import "./index.css";
  * `{status, message, data}` envelope.
  */
 let redirectingToLogin = false;
+// A second expiry that lands mid-redirect is not ignored: it is remembered so
+// the redirect re-runs once the first settles, guaranteeing we end on /login
+// with a cleared session even if the first navigation was superseded.
+let expiredAgain = false;
+
+function redirectToLogin(announce = true) {
+  redirectingToLogin = true;
+  expiredAgain = false;
+  signOut();
+  queryClient.cancelQueries().finally(() => {
+    queryClient.clear();
+    if (announce) {
+      toast.error("Your session expired", { description: "Sign in again to continue." });
+    }
+    void router.navigate({ to: "/login" }).finally(() => {
+      redirectingToLogin = false;
+      if (expiredAgain) redirectToLogin(false);
+    });
+  });
+}
 
 function handleGlobalError(error: unknown, silent = false) {
   if (isSessionExpired(error)) {
-    if (redirectingToLogin) return;
-    redirectingToLogin = true;
-    signOut();
-    queryClient.cancelQueries().finally(() => {
-      queryClient.clear();
-      toast.error("Your session expired", { description: "Sign in again to continue." });
-      void router.navigate({ to: "/login" }).finally(() => {
-        redirectingToLogin = false;
-      });
-    });
+    if (redirectingToLogin) {
+      expiredAgain = true;
+      return;
+    }
+    redirectToLogin();
     return;
   }
 
