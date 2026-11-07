@@ -942,7 +942,7 @@ fn build_backup_archive(main_db_contents: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
-        let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        let options: zip::write::FileOptions<'_, '_, ()> = zip::write::FileOptions::default();
         zip.start_file("data.db", options).unwrap();
         std::io::Write::write_all(&mut zip, main_db_contents).unwrap();
         zip.finish().unwrap();
